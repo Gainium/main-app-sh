@@ -2733,6 +2733,27 @@ export const BotSchema = /* GraphQL */ `
     unpnlValue: Float
     unpnlCondition: String
     dcValue: String
+    enableSunday: Boolean
+    sundayStart: String
+    sundayEnd: String
+    enableMonday: Boolean
+    mondayStart: String
+    mondayEnd: String
+    enableTuesday: Boolean
+    tuesdayStart: String
+    tuesdayEnd: String
+    enableWednesday: Boolean
+    wednesdayStart: String
+    wednesdayEnd: String
+    enableThursday: Boolean
+    thursdayStart: String
+    thursdayEnd: String
+    enableFriday: Boolean
+    fridayStart: String
+    fridayEnd: String
+    enableSaturday: Boolean
+    saturdayStart: String
+    saturdayEnd: String
   }
   enum MAEnum {
     sma
@@ -4216,6 +4237,7 @@ export const BotSchema = /* GraphQL */ `
     UNPNL
     DC
     OBFVG
+    SESSIONS
   }
   enum BBCrossingEnum {
     middle
@@ -4334,6 +4356,27 @@ export const BotSchema = /* GraphQL */ `
     unpnlValue: Float
     unpnlCondition: String
     dcValue: String
+    enableSunday: Boolean
+    sundayStart: String
+    sundayEnd: String
+    enableMonday: Boolean
+    mondayStart: String
+    mondayEnd: String
+    enableTuesday: Boolean
+    tuesdayStart: String
+    tuesdayEnd: String
+    enableWednesday: Boolean
+    wednesdayStart: String
+    wednesdayEnd: String
+    enableThursday: Boolean
+    thursdayStart: String
+    thursdayEnd: String
+    enableFriday: Boolean
+    fridayStart: String
+    fridayEnd: String
+    enableSaturday: Boolean
+    saturdayStart: String
+    saturdayEnd: String
   }
   enum IndicatorSection {
     sl

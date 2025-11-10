@@ -125,6 +125,7 @@ import {
   PriorPivotResult,
   QFLResult,
   SuperTrendResult,
+  SessionsResult,
 } from '@gainium/indicators'
 
 export type PercentileResult = {
@@ -4039,6 +4040,17 @@ function createDCABotHelper<
                     srCrossingValue === SRCrossingEnum.resistance
                       ? lastData.value.high
                       : lastData.value.low
+                }
+                if (
+                  lastData.type === IndicatorEnum.sessions &&
+                  prevData.type === IndicatorEnum.sessions
+                ) {
+                  // For Sessions, we check the inSession boolean value
+                  // The indicator returns true when in an enabled session, false otherwise
+                  last = lastData.value.inSession ? 1 : 0
+                  prev = prevData.value.inSession ? 1 : 0
+                  value = 1 // When comparing, we check if last is equal to 1 (in session)
+                  prevValue = 1
                 }
                 lastDataString = `${last}`
                 prevDataString = `${prev}`
@@ -10400,6 +10412,11 @@ function createDCABotHelper<
           const data = last.value as PivotResult
           value =
             srCrossingValue === SRCrossingEnum.resistance ? data.high : data.low
+        }
+        if (type === IndicatorEnum.sessions) {
+          const data = last.value as SessionsResult
+          // For Sessions, we return 1 when in session, 0 when not
+          value = data.inSession ? 1 : 0
         }
         if (type === IndicatorEnum.bb || type === IndicatorEnum.kc) {
           const data = last.value as {

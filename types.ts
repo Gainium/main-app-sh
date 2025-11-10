@@ -13,6 +13,7 @@ import {
   DCResult,
   PercentileResult,
   OBFVGResult,
+  SessionsResult,
 } from '@gainium/indicators'
 import {
   DCABacktestingInput,
@@ -3127,6 +3128,7 @@ export enum IndicatorEnum {
   unpnl = 'UNPNL',
   dc = 'DC',
   obfvg = 'OBFVG',
+  sessions = 'SESSIONS',
 }
 
 export enum MAEnum {
@@ -3213,6 +3215,7 @@ export type IndicatorHistory = { time: number } & (
   | { type: IndicatorEnum.sr; value: PivotResult }
   | { type: IndicatorEnum.qfl; value: QFLResult }
   | { type: IndicatorEnum.psar; value: { psar: number; price: number } }
+  | { type: IndicatorEnum.sessions; value: SessionsResult }
 )
 
 type Percentile = {
@@ -3391,6 +3394,30 @@ export type IndicatorConfig =
     }
   | ({ type: IndicatorEnum.vo; voShort: number; voLong: number } & Percentile)
   | { type: IndicatorEnum.ecd }
+  | {
+      type: IndicatorEnum.sessions
+      enableSunday: boolean
+      sundayStart: string
+      sundayEnd: string
+      enableMonday: boolean
+      mondayStart: string
+      mondayEnd: string
+      enableTuesday: boolean
+      tuesdayStart: string
+      tuesdayEnd: string
+      enableWednesday: boolean
+      wednesdayStart: string
+      wednesdayEnd: string
+      enableThursday: boolean
+      thursdayStart: string
+      thursdayEnd: string
+      enableFriday: boolean
+      fridayStart: string
+      fridayEnd: string
+      enableSaturday: boolean
+      saturdayStart: string
+      saturdayEnd: string
+    }
 
 export type Prices = {
   pair: string

@@ -45,6 +45,7 @@ import {
   KeltnerChannelPB,
   DonchianChannels,
   OBFVG,
+  Sessions,
 } from '@gainium/indicators'
 import { v4 } from 'uuid'
 import {
@@ -259,6 +260,7 @@ class InternalIndicator {
     | KeltnerChannelPB
     | DonchianChannels
     | OBFVG
+    | Sessions
   private data: IndicatorHistory[]
   private lastPrice = 0
   private subscribers: IndicatorSubscribers[]
@@ -764,6 +766,32 @@ class InternalIndicator {
       this.indicator = new OBFVG()
       this.length = 1000
     }
+    if (indicatorConfig.type === IndicatorEnum.sessions) {
+      this.indicator = new Sessions(
+        indicatorConfig.enableSunday,
+        indicatorConfig.sundayStart,
+        indicatorConfig.sundayEnd,
+        indicatorConfig.enableMonday,
+        indicatorConfig.mondayStart,
+        indicatorConfig.mondayEnd,
+        indicatorConfig.enableTuesday,
+        indicatorConfig.tuesdayStart,
+        indicatorConfig.tuesdayEnd,
+        indicatorConfig.enableWednesday,
+        indicatorConfig.wednesdayStart,
+        indicatorConfig.wednesdayEnd,
+        indicatorConfig.enableThursday,
+        indicatorConfig.thursdayStart,
+        indicatorConfig.thursdayEnd,
+        indicatorConfig.enableFriday,
+        indicatorConfig.fridayStart,
+        indicatorConfig.fridayEnd,
+        indicatorConfig.enableSaturday,
+        indicatorConfig.saturdayStart,
+        indicatorConfig.saturdayEnd,
+      )
+      this.length = 1 // Sessions indicator only needs current candle
+    }
 
     this.type = indicatorConfig.type
     this.data = []
@@ -1140,13 +1168,15 @@ class InternalIndicator {
         this.indicator instanceof MOM ||
         this.indicator instanceof ECD ||
         this.indicator instanceof DonchianChannels ||
-        this.indicator instanceof OBFVG)
+        this.indicator instanceof OBFVG ||
+        this.indicator instanceof Sessions)
     ) {
       this.indicator?.next({
         high: +value.h,
         low: +value.l,
         close: +value.c,
         open: +value.o,
+        timestamp: time,
       })
     }
     if (
