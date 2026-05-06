@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.0] - 2026-05-06
+
+### Added
+
+- Polling for HL orders
+
 ## [1.16.2] - 2026-04-30
 
 ### Fixed

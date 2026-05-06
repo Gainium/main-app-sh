@@ -2847,6 +2847,7 @@ function createComboBotHelper<
       this.usedOrderId = new Map()
     }
     override async afterBotStop() {
+      this.stopHyperliquidOrderPoll()
       for (const m of this.allMinigrids) {
         await this.processCloseMinigrid(m.schema._id)
       }

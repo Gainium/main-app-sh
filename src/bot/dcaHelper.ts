@@ -15342,6 +15342,7 @@ function createDCABotHelper<
           this.emit('bot settings update', data)
         }
         this.startPriceTimer()
+        this.startHyperliquidOrderPoll()
         this.finishLoad = true
       } catch (e) {
         this.serviceRestart = false
@@ -15364,6 +15365,7 @@ function createDCABotHelper<
 
     async afterBotStop() {
       this.stopPriceTimer()
+      this.stopHyperliquidOrderPoll()
       return
     }
     /**

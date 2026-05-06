@@ -268,6 +268,13 @@ class MainBot<T extends IMainBot> {
   blockPriceCheck = false
   priceTimeout = 2.5 * 60 * 1000
   priceTimer: NodeJS.Timeout | null = null
+  /** Hyperliquid order-status poller. HL's user-stream websocket has a
+   *  10-connection-per-IP cap and quirky reconnect behaviour; instead we
+   *  poll order status periodically for any limit order this bot is
+   *  tracking. Market orders surface as already-FILLED in the place-order
+   *  response, so they don't need polling. */
+  hyperliquidPollTimer: NodeJS.Timeout | null = null
+  hyperliquidPollInterval = 30 * 1000
   /** Math helper instance */
   math: MathHelper
   /** Service restart flag */
@@ -3680,6 +3687,170 @@ class MainBot<T extends IMainBot> {
       }
       next()
     }
+  }
+
+  /**
+   * Start the Hyperliquid order-status poller. No-op for non-HL bots.
+   * Hyperliquid's user-stream WS has a 10-connection-per-IP cap and
+   * quirky reconnect behaviour; instead we poll order status periodically
+   * for any limit order this bot is tracking. Market orders surface as
+   * already-FILLED in the place-order response, so they don't need
+   * polling.
+   *
+   * Lives on MainBot so every helper subclass (grid / dca / combo /
+   * hedge) inherits it without each having to re-define it.
+   */
+  startHyperliquidOrderPoll() {
+    this.handleDebug('Starting HL order poll')
+    if (!this.hyperliquid) {
+      this.handleDebug('Not starting HL poll as this is not a Hyperliquid bot')
+      return
+    }
+    if (this.hyperliquidPollTimer) {
+      clearInterval(this.hyperliquidPollTimer)
+    }
+    this.hyperliquidPollTimer = setInterval(
+      () => this.pollHyperliquidOrdersFn(this.botId),
+      this.hyperliquidPollInterval,
+    )
+  }
+
+  /** Stop the Hyperliquid order-status poller. */
+  stopHyperliquidOrderPoll() {
+    if (this.hyperliquidPollTimer) {
+      clearInterval(this.hyperliquidPollTimer)
+      this.hyperliquidPollTimer = null
+    }
+  }
+
+  /**
+   * Hyperliquid order-status poller body. Walks every limit order this
+   * bot is currently tracking that is still NEW or PARTIALLY_FILLED,
+   * calls `getOrder` per cloid, and synthesises a UserDataStreamEvent
+   * for the existing `accountCallback` path when the remote state has
+   * moved on from the local snapshot. Downstream callbacks (DCA / grid /
+   * combo) don't need to know whether the update came from the WS
+   * stream or the poller.
+   *
+   * Always uses one-by-one `getOrder` (weight 2 each). The alternative
+   * `getAllOpenOrders` is weight 20 per dex and the connector iterates
+   * every dex in `listDexNames()` regardless of whether the user has
+   * orders there, so the crossover for "all-open is cheaper" sits at
+   * roughly K = 80 open orders — far above what any normal bot tracks.
+   */
+  @IdMute(mutex, (botId: string) => `${botId}pollHyperliquidOrders`)
+  async pollHyperliquidOrdersFn(_botId: string) {
+    if (!this.exchange || !this.data || !this.hyperliquid || this.reload) {
+      this.handleDebug(
+        `HL poll skipped: exchange ${!!this.exchange}, data ${!!this.data}, hyperliquid ${this.hyperliquid}, reload ${this.reload}`,
+      )
+      return
+    }
+
+    const targets: { id: string; symbol: string }[] = []
+    for (const id of this.ordersKeys) {
+      // HL cloids are 0x-prefixed 32-byte hex (length 34 incl. 0x).
+      if (!id.startsWith('0x') || id.length !== 34) {
+        this.handleDebug(`HL poll skipping ${id} as not a valid HL cloid`)
+        continue
+      }
+      const order = this.orders.get(id)
+      if (!order) {
+        this.handleDebug(`HL poll skipping ${id} as not found in orders map`)
+        continue
+      }
+      if (order.type !== 'LIMIT') {
+        this.handleDebug(
+          `HL poll skipping ${id} as type ${order.type} is not LIMIT`,
+        )
+        continue
+      }
+      if (order.status !== 'NEW' && order.status !== 'PARTIALLY_FILLED') {
+        {
+          this.handleDebug(
+            `HL poll skipping ${id} as status ${order.status} is not NEW or PARTIALLY_FILLED`,
+          )
+          continue
+        }
+      }
+      targets.push({ id, symbol: order.symbol })
+    }
+    if (!targets.length) {
+      this.handleDebug(
+        `HL poll found no targets among ${this.ordersKeys.size} orders`,
+      )
+      return
+    }
+    this.handleDebug(
+      `HL poll checking ${targets.length} targets among ${this.ordersKeys.size} orders`,
+    )
+    for (const t of targets) {
+      if (!this.exchange) {
+        this.handleDebug(
+          `HL poll aborting before getOrder for ${t.id} as exchange is gone`,
+        )
+        return
+      }
+      this.handleDebug(`HL poll request ${t.id} ${t.symbol}`)
+      const result = await this.exchange.getOrder({
+        symbol: t.symbol,
+        newClientOrderId: t.id,
+      })
+      this.handleDebug(
+        `HL poll response ${t.id} status=${result.data?.status ?? result.reason ?? 'NOTOK'} executed=${result.data?.executedQty ?? '?'}`,
+      )
+      if (result.status !== StatusEnum.ok || !result.data) {
+        this.handleDebug(
+          `HL poll skipping ${t.id} as getOrder failed with reason: ${result.reason}`,
+        )
+        continue
+      }
+      await this.maybeEmitHyperliquidPolledOrder(result.data)
+    }
+  }
+
+  /**
+   * Compare a polled CommonOrder against the locally-cached order and,
+   * if the status or executed quantity has changed, synthesise the
+   * matching ExecutionReport and feed it through `accountCallback` —
+   * the same entry point the websocket userStream uses. Idempotent:
+   * if the local snapshot already matches the remote, no event fires.
+   */
+  protected async maybeEmitHyperliquidPolledOrder(
+    o: CommonOrder,
+  ): Promise<void> {
+    const cloid = `${o.clientOrderId ?? ''}`
+    if (!cloid) return
+    const local = this.orders.get(cloid)
+    if (!local) return
+
+    const isPartial = o.status === 'NEW' && +(o.executedQty ?? 0) > 0
+    const newStatus: OrderStatusType = isPartial ? 'PARTIALLY_FILLED' : o.status
+    const localExec = +(local.executedQty ?? 0)
+    const remoteExec = +(o.executedQty ?? 0)
+    if (local.status === newStatus && localExec === remoteExec) {
+      return
+    }
+
+    const evt: ExecutionReport = {
+      creationTime: o.transactTime ?? Date.now(),
+      eventTime: Date.now(),
+      eventType: 'executionReport',
+      newClientOrderId: cloid,
+      orderId: o.orderId,
+      orderStatus: newStatus,
+      orderTime: o.updateTime || o.transactTime || Date.now(),
+      orderType: o.type,
+      originalClientOrderId: cloid,
+      price: o.price,
+      quantity: o.origQty,
+      side: o.side,
+      symbol: o.symbol,
+      totalQuoteTradeQuantity: o.cummulativeQuoteQty ?? '0',
+      totalTradeQuantity: o.executedQty,
+    }
+    this.handleLog(`HL polled order ${cloid} emitting status=${newStatus}`)
+    await this.accountCallback(evt)
   }
 
   /**
