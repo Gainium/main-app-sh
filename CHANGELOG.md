@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.1] - 2026-05-07
+
+### Changed
+
+- Control polling by ENV variable
+
 ## [1.17.0] - 2026-05-06
 
 ### Added

@@ -3706,6 +3706,16 @@ class MainBot<T extends IMainBot> {
       this.handleDebug('Not starting HL poll as this is not a Hyperliquid bot')
       return
     }
+    // Opt-in via env. The poll uses `getOrder` REST and is purely
+    // additive to the websocket user-stream — left disabled by
+    // default so deployments that haven't sized their HL rate-limit
+    // budget don't accidentally double-spend it.
+    if (process.env.HYPERLIQUID_POLL_ORDERS !== 'true') {
+      this.handleDebug(
+        'Not starting HL poll — HYPERLIQUID_POLL_ORDERS is not "true"',
+      )
+      return
+    }
     if (this.hyperliquidPollTimer) {
       clearInterval(this.hyperliquidPollTimer)
     }
