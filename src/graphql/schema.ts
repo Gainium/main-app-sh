@@ -5260,7 +5260,7 @@ export const BotSchema = /* GraphQL */ `
     futures: Boolean
     coinm: Boolean
     futuresStrategy: FuturesStrategyEnum
-    strategu: StrategyEnum
+    strategy: StrategyEnum
     slLimit: Boolean
     tpSlLimit: Boolean
     feeOrder: Boolean
