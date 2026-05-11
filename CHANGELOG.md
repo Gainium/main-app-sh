@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.2] - 2026-05-11
+
+### Fixed
+
+- Hyperliquid symbol precision
+
 ## [1.17.1] - 2026-05-07
 
 ### Changed

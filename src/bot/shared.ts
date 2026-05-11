@@ -4,6 +4,7 @@ import { feeDb, globalVarsDb, pairDb, userDb } from '../db/dbInit'
 import { IdMute, IdMutex } from '../utils/mutex'
 import logger from '../utils/logger'
 import RedisClient, { RedisWrapper } from '../db/redis'
+import ExpirableMap from '../utils/expirableMap'
 
 import {
   type FeesSchema,
@@ -283,6 +284,8 @@ class BotSharedData {
     GlobalVariablesSchema
   >(globalVarsDb, 'globalVars', this.updateGlobalVars.bind(this))
 
+  private pairByCodeCache = new ExpirableMap<string, string>(10 * 60 * 1000)
+
   constructor() {
     this.initRedis = this.initRedis.bind(this)
     this.initRedis()
@@ -474,6 +477,23 @@ class BotSharedData {
     force = false,
   ): Promise<CleanGlobalVariablesSchema | undefined> {
     return this.globalVars.getData(_id, subId, { _id, userId }, {}, force)
+  }
+
+  public async getPairByCode(
+    exchange: ExchangeEnum,
+    code: string,
+  ): Promise<string | undefined> {
+    const key = `${exchange}@${code}`
+    const cached = this.pairByCodeCache.get(key)
+    if (cached) {
+      return cached
+    }
+    const res = await pairDb.readData({ exchange, code })
+    const pair = res.data?.result?.pair
+    if (pair) {
+      this.pairByCodeCache.set(key, pair)
+    }
+    return pair
   }
 }
 
