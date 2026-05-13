@@ -1459,16 +1459,19 @@ const botStats: Schema<BotStats> = new Schema({
     profit: {
       avgWinningTradeDuration: Number,
       maxWinningTradeDuration: Number,
+      totalTime: Number,
     },
     loss: {
       avgLosingTradeDuration: Number,
       maxLosingTradeDuration: Number,
+      totalTime: Number,
     },
     general: {
       maxDealDuration: Number,
       avgDealDuration: Number,
       dealsPerDay: Number,
       workingTime: Number,
+      totalTime: Number,
     },
   },
   chart: [

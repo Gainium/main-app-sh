@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.3] - 2026-05-13
+
+### Fixed
+
+- Avg lossing/winning/global deals duration
+
 ## [1.17.2] - 2026-05-11
 
 ### Fixed

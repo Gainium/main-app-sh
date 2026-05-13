@@ -3315,16 +3315,19 @@ export const BotSchema = /* GraphQL */ `
   type botStatsDurationProfit {
     avgWinningTradeDuration: Float
     maxWinningTradeDuration: Float
+    totalTime: Float
   }
   type botStatsDurationLoss {
     avgLosingTradeDuration: Float
     maxLosingTradeDuration: Float
+    totalTime: Float
   }
   type botStatsDurationGeneral {
     maxDealDuration: Float
     avgDealDuration: Float
     dealsPerDay: Float
     workingTime: Float
+    totalTime: Float
   }
   type botStatsDuration {
     profit: botStatsDurationProfit

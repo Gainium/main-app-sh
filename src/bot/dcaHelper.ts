@@ -18426,16 +18426,19 @@ function createDCABotHelper<
             profit: {
               avgWinningTradeDuration: 0,
               maxWinningTradeDuration: 0,
+              totalTime: 0,
             },
             loss: {
               avgLosingTradeDuration: 0,
               maxLosingTradeDuration: 0,
+              totalTime: 0,
             },
             general: {
               maxDealDuration: 0,
               avgDealDuration: 0,
               dealsPerDay: 0,
               workingTime: 0,
+              totalTime: 0,
             },
           },
           chart: [],
@@ -18927,9 +18930,6 @@ function createDCABotHelper<
           stats.numerical.profit.series.perc =
             deal.profit.totalUsd / stats.numerical.general.startBalance.usd
         }
-        if (isNaN(stats.duration.profit.avgWinningTradeDuration)) {
-          stats.duration.profit.avgWinningTradeDuration = 0
-        }
       }
       if (isLoss) {
         stats.numerical.deals.loss += 1
@@ -19197,17 +19197,32 @@ function createDCABotHelper<
         stats.numerical.usage.maxTheoreticalUsage = maxUsage
       }
       const duration = end - deal.createTime
-      if (
-        isProfit &&
-        duration > stats.duration.profit.maxWinningTradeDuration
-      ) {
-        stats.duration.profit.maxWinningTradeDuration = duration
+      if (isProfit) {
+        if (duration > stats.duration.profit.maxWinningTradeDuration) {
+          stats.duration.profit.maxWinningTradeDuration = duration
+        }
+        stats.duration.profit.totalTime =
+          (stats.duration.profit.totalTime ?? 0) + duration
+        stats.duration.profit.avgWinningTradeDuration =
+          stats.duration.profit.totalTime / stats.numerical.deals.profit
       }
-      if (isLoss && duration > stats.duration.loss.maxLosingTradeDuration) {
-        stats.duration.loss.maxLosingTradeDuration = duration
+      if (isLoss) {
+        if (duration > stats.duration.loss.maxLosingTradeDuration) {
+          stats.duration.loss.maxLosingTradeDuration = duration
+        }
+        stats.duration.loss.totalTime =
+          (stats.duration.loss.totalTime ?? 0) + duration
+        stats.duration.loss.avgLosingTradeDuration =
+          stats.duration.loss.totalTime / stats.numerical.deals.loss
       }
       if (duration > stats.duration.general.maxDealDuration) {
         stats.duration.general.maxDealDuration = duration
+      }
+      stats.duration.general.totalTime =
+        (stats.duration.general.totalTime ?? 0) + duration
+      if (totalDeals) {
+        stats.duration.general.avgDealDuration =
+          stats.duration.general.totalTime / totalDeals
       }
 
       if (workingDays) {

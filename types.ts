@@ -1943,16 +1943,19 @@ export type BotStats = {
     profit: {
       avgWinningTradeDuration: number
       maxWinningTradeDuration: number
+      totalTime: number
     }
     loss: {
       avgLosingTradeDuration: number
       maxLosingTradeDuration: number
+      totalTime: number
     }
     general: {
       maxDealDuration: number
       avgDealDuration: number
       dealsPerDay: number
       workingTime: number
+      totalTime: number
     }
   }
   chart: {
