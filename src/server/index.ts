@@ -106,7 +106,13 @@ async function start() {
           document.head.appendChild(script)
         }
       },
-      onBeforeRequest: async ({ request }: { request: Request }) => {
+      onBeforeRequest: async ({
+        requestBuilder,
+        request,
+      }: {
+        requestBuilder: Request
+        request: Request
+      }) => {
         const token = request.headers.get('token') ?? ''
         const secret = request.headers.get('secret') ?? ''
         if (
@@ -142,8 +148,8 @@ async function start() {
           ).toString(window.CryptoJS.enc.Base64)
           request.headers.delete('secret') // Remove secret from headers
           // Add time and signature headers (token already exists from auth)
-          request.headers.set('time', time)
-          request.headers.set('signature', signature)
+          requestBuilder.headers.set('time', time)
+          requestBuilder.headers.set('signature', signature)
         }
       },
       metaData: {

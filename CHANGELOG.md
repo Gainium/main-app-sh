@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.4] - 2026-05-14
+
+### Fixed
+
+- Scalar headers interceptor
+
 ## [1.17.3] - 2026-05-13
 
 ### Fixed
