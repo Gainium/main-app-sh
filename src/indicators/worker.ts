@@ -98,7 +98,8 @@ parentPort?.on('message', (data: IndicatorServiceParentMessage) => {
   if (
     data.event === 'removeCallback' ||
     data.event === 'subscribe' ||
-    data.event === 'unsubscribe'
+    data.event === 'unsubscribe' ||
+    data.event === 'getState'
   ) {
     IndicatorOperations.getInstance().methodIndicator(data)
   }

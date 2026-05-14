@@ -19,6 +19,9 @@ import type {
   IndicatorServiceParentMessageRemoveCallback,
   IndicatorServiceChildMessageDeleteIndicator,
   IndicatorServiceParentMessageDeleteIndicator,
+  IndicatorServiceParentMessageGetState,
+  IndicatorServiceChildMessageGetState,
+  IndicatorState,
   LogLevel,
 } from '../../types'
 import { IdMute, IdMutex } from '../utils/mutex'
@@ -724,6 +727,40 @@ class InternalIndicatorsFactory {
       this.indicators.set(id, find)
       await this.removeCallbackIndicator(id)
     }
+  }
+
+  public async getRoomState(roomId: string): Promise<IndicatorState | null> {
+    const indicator = this.indicators.get(roomId)
+    if (!indicator) {
+      return null
+    }
+    const worker = this.getWorkerById(indicator.workerId)
+    if (!worker) {
+      return null
+    }
+    return await new Promise<IndicatorState | null>((resolve, reject) => {
+      const response = v4()
+      const timeoutId = setTimeout(() => {
+        worker.off('message', cb)
+        reject(new Error('Get room state timeout'))
+      }, 10000)
+      const cb = (m: any) => {
+        const msg = m as IndicatorServiceChildMessageGetState
+        if (msg && msg.response === response) {
+          clearTimeout(timeoutId)
+          worker.off('message', cb)
+          resolve(msg.data)
+        }
+      }
+      const payload: IndicatorServiceParentMessageGetState = {
+        event: 'getState',
+        payload: [],
+        id: roomId,
+        response,
+      }
+      worker.on('message', cb)
+      worker.postMessage(payload)
+    })
   }
 }
 

@@ -69,6 +69,7 @@ import type {
   IndicatorCb,
   IndicatorCreationConfig,
   SubscribeInternalIndicatorReponse,
+  IndicatorState,
 } from '../../types'
 import { IdMute, IdMutex } from '../utils/mutex'
 import { isKucoin, isOkx, isUsdmKucoin } from '../utils/exchange'
@@ -320,6 +321,7 @@ class InternalIndicator {
   private test = false
   private limitMultiplier = 0
   private is1d?: boolean = false
+  private lastSentUpdateAt = 0
   private rabbitClient = new RabbitClient()
   constructor({
     indicatorConfig,
@@ -370,6 +372,7 @@ class InternalIndicator {
     this.connectCandle = this.connectCandle.bind(this)
     this.publishToRedis = this.publishToRedis.bind(this)
     this.cb = (data, price, is1d) => {
+      this.lastSentUpdateAt = +new Date()
       this.publishToRedis(this.id, { data, price, is1d })
     }
     this.cb = this.cb.bind(this)
@@ -1027,6 +1030,37 @@ class InternalIndicator {
 
   get currentData() {
     return this.data
+  }
+
+  public getState(): IndicatorState {
+    return {
+      id: this.id,
+      type: this.type,
+      indicatorName: this.indicatorName,
+      exchange: this.exchange,
+      symbol: this.symbol,
+      symbolCode: this.symbolCode,
+      interval: this.interval,
+      period: this.period,
+      loaded: this.loaded,
+      closed: this.closed,
+      is1d: !!this.is1d,
+      test: this.test,
+      limitMultiplier: this.limitMultiplier,
+      warmupCandles: this.length,
+      allowedToProcessPriceUpdate: this.allowedToProcessPriceUpdate,
+      subscribers: this.subscribers.length,
+      data: [...this.data],
+      lastPrice: this.lastPrice,
+      lastCandle: { ...this.lastCandle },
+      current: { o: this.o, h: this.h, l: this.l, c: this.c, v: this.v },
+      start: this.start,
+      to: this.to,
+      lastCandleTime: this.lastCandleTime,
+      lastCandleTimestamp: this.lastCandleTimestamp,
+      lastSentUpdateAt: this.lastSentUpdateAt,
+      recentCandleStarts: [...this.updateCandlesHistory].sort((a, b) => b - a),
+    }
   }
 }
 

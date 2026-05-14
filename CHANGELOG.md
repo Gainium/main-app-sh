@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.5] - 2026-05-14
+
+### Added
+
+- Indicator state ednpoint
+
 ## [1.17.4] - 2026-05-14
 
 ### Fixed
