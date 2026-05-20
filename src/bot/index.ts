@@ -124,7 +124,7 @@ const PER_PAGE = 20
 
 const mutex = new IdMutex()
 
-type WebhookData = {
+export type WebhookData = {
   action?: WebhookActionEnum
   uuid?: string
   symbol?: string

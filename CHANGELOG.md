@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.6] - 2026-05-20
+
+### Added
+
+- Adapters for parent features
+
 ## [1.17.5] - 2026-05-14
 
 ### Added

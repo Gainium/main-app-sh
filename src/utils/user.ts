@@ -8,6 +8,7 @@ import {
   ClearUserSchema,
   FreeAsset,
   ResetAccountTypeEnum,
+  ResetLogEntry,
   DCADealStatusEnum,
 } from '../../types'
 import {
@@ -89,6 +90,19 @@ let lockBalance = false
 
 const rabbitClient = new Rabbit()
 
+type UserFilter = Record<string, unknown>
+let userListFilter: <T extends UserFilter>(filter: T) => T = (f) => f
+
+/**
+ * Lets the parent package narrow which users core treats as "eligible"
+ * (e.g. exclude pending-delete users). Core stays delete-agnostic.
+ */
+export const setUserListFilter = (
+  fn: <T extends UserFilter>(filter: T) => T,
+) => {
+  userListFilter = fn
+}
+
 const processBalanceUpdate = async () => {
   const next = async () => {
     lockBalance = false
@@ -108,9 +122,11 @@ const processBalanceUpdate = async () => {
     }
     const { userId, e } = msg
     /** Check exchange in user account */
-    const user = await userDb.readData({
-      exchanges: { $elemMatch: { uuid: e.uuid } },
-    })
+    const user = await userDb.readData(
+      userListFilter({
+        exchanges: { $elemMatch: { uuid: e.uuid } },
+      }),
+    )
     if (user.status === StatusEnum.notok) {
       logger.warn(`Get user in update balance: ${user.reason}`)
     } else {
@@ -490,11 +506,15 @@ const connectUserBalance = async (
   ec = ExchangeChooser,
 ) => {
   const users = await userDb.readData(
-    id
-      ? { _id: id }
-      : {
-          last_active: { $gt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000) },
-        },
+    userListFilter(
+      id
+        ? { _id: id }
+        : {
+            last_active: {
+              $gt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
+            },
+          },
+    ),
     undefined,
     {},
     true,
@@ -625,7 +645,7 @@ const updateUserFee = async (
   ec = ExchangeChooser,
 ) => {
   const users = await userDb.readData(
-    id ? { _id: id } : {},
+    userListFilter(id ? { _id: id } : {}),
     undefined,
     {},
     true,
@@ -805,7 +825,7 @@ const userSnapshots = async (
 ) => {
   let rates: Prices = []
   const users = await userDb.readData(
-    id ? { _id: id } : {},
+    userListFilter(id ? { _id: id } : {}),
     undefined,
     {},
     true,
@@ -1000,15 +1020,29 @@ export const updateUserSteps = async (
 
 const processing = new Set<string>()
 
-export const resetUser = async (userId: string, type: ResetAccountTypeEnum) => {
+export const resetUser = async (
+  userId: string,
+  type: ResetAccountTypeEnum,
+): Promise<ResetLogEntry[]> => {
   const prefix = `Reset user ${userId} ${type}`
+  const log: ResetLogEntry[] = []
+  const push = (entry: Omit<ResetLogEntry, 'at'>) => {
+    log.push({ ...entry, at: new Date() })
+  }
   if (!userId) {
     logger.error(`${prefix} | UserId is empty`)
-    return
+    push({ step: 'precondition', status: 'error', reason: 'userId is empty' })
+    return log
   }
   try {
     if (processing.has(userId)) {
       logger.debug(`${prefix} | Already in progress`)
+      push({
+        step: 'precondition',
+        status: 'skipped',
+        reason: 'already in progress',
+      })
+      return log
     }
     processing.add(userId)
     userId = userId.toString()
@@ -1016,13 +1050,15 @@ export const resetUser = async (userId: string, type: ResetAccountTypeEnum) => {
     const userRequest = await userDb.readData({ _id: userId })
     if (userRequest.status === StatusEnum.notok) {
       logger.error(`${prefix} | Cannot read user ${userRequest.reason}`)
+      push({ step: 'readUser', status: 'error', reason: userRequest.reason })
       processing.delete(userId)
-      return
+      return log
     }
     if (!userRequest.data.result) {
       logger.error(`${prefix} | Cannot find user`)
+      push({ step: 'readUser', status: 'error', reason: 'user not found' })
       processing.delete(userId)
-      return
+      return log
     }
     const user = userRequest.data.result
     const isPaper = type === ResetAccountTypeEnum.paper
@@ -1387,35 +1423,50 @@ export const resetUser = async (userId: string, type: ResetAccountTypeEnum) => {
           r.fn.then((res) => {
             if (res.status === StatusEnum.ok) {
               logger.debug(`${prefix} | ${r.name} ${res.reason}`)
+              push({
+                step: 'deleteMany',
+                collection: r.name,
+                status: 'ok',
+                reason: res.reason,
+              })
             } else {
               logger.error(`${prefix} | ${r.name} delete error ${res.reason}`)
+              push({
+                step: 'deleteMany',
+                collection: r.name,
+                status: 'error',
+                reason: res.reason,
+              })
             }
           }),
         ),
       )
 
-      await userDb
-        .updateData(
-          { _id: userId },
-          {
-            $set: {
-              exchanges: isAll
-                ? []
-                : user.exchanges.filter((e) =>
-                    isPaper
-                      ? !paperExchanges.includes(e.provider)
-                      : paperExchanges.includes(e.provider),
-                  ),
-            },
+      const userUpdate = await userDb.updateData(
+        { _id: userId },
+        {
+          $set: {
+            exchanges: isAll
+              ? []
+              : user.exchanges.filter((e) =>
+                  isPaper
+                    ? !paperExchanges.includes(e.provider)
+                    : paperExchanges.includes(e.provider),
+                ),
           },
-        )
-        .then((res) => {
-          if (res.status === StatusEnum.ok) {
-            logger.debug(`${prefix} | User updated`)
-          } else {
-            logger.error(`${prefix} | User update error ${res.reason}`)
-          }
+        },
+      )
+      if (userUpdate.status === StatusEnum.ok) {
+        logger.debug(`${prefix} | User updated`)
+        push({ step: 'updateUserExchanges', status: 'ok' })
+      } else {
+        logger.error(`${prefix} | User update error ${userUpdate.reason}`)
+        push({
+          step: 'updateUserExchanges',
+          status: 'error',
+          reason: userUpdate.reason,
         })
+      }
 
       logger.debug(`${prefix} | User updated. Checking global vars`)
       const vars = await globalVarsDb.readData({ userId }, {}, {}, true)
@@ -1428,9 +1479,13 @@ export const resetUser = async (userId: string, type: ResetAccountTypeEnum) => {
     }
     processing.delete(userId)
     logger.debug(`${prefix} | End`)
+    push({ step: 'end', status: 'ok' })
+    return log
   } catch (e) {
     logger.error(`${prefix} | Error ${e}`)
+    push({ step: 'exception', status: 'error', reason: `${e}` })
     processing.delete(userId)
+    return log
   }
 }
 
