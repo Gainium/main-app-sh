@@ -579,13 +579,6 @@ class InternalIndicator {
     this.h = +h
     this.l = +l
     this.v = +v
-    if (forceOld) {
-      old.o = +o
-      old.h = +h
-      old.l = +l
-      old.c = +c
-      old.v = +v
-    }
     const exchangesWithClosedOnly = [
       ExchangeEnum.binance,
       ExchangeEnum.bybit,
@@ -598,7 +591,17 @@ class InternalIndicator {
     )
     // closed-only streams deliver `start` as the just-closed candle's own start
     // (legacy streams use the next-period open), so they index like `forceOld`.
+    // msg itself carries the closed candle's final OHLCV, so route it through
+    // `old` (which the else-branch feeds to the indicator) instead of letting
+    // the stale per-instance accumulator from the previous event sneak through.
     const closedCandleAlreadyKnown = forceOld || isClosedOnly
+    if (forceOld || isClosedOnly) {
+      old.o = +o
+      old.h = +h
+      old.l = +l
+      old.c = +c
+      old.v = +v
+    }
     const startIndex = closedCandleAlreadyKnown ? start : start - this.period
     if (
       ((start > this.start && this.start !== 0) || isClosedOnly || forceOld) &&

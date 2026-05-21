@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.8] - 2026-05-21
+
+### Fixed
+
+- Indicator duplicated candles
+
 ## [1.17.7] - 2026-05-21
 
 ### Fixed
