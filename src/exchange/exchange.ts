@@ -798,15 +798,15 @@ class Exchange extends AbstractExchange {
                 exchange: eName,
                 zone: this.bybitHost,
               })
-            )?.data?.result?.code ?? ''
+            )?.data?.result?.code || ''
         }
         code =
-          codeWithZone ??
+          codeWithZone ||
           (
             await brokerCodesDb.readData({
               exchange: eName,
             })
-          )?.data?.result?.code ??
+          )?.data?.result?.code ||
           ''
         this.brokerCodes.set(key, code)
       }
