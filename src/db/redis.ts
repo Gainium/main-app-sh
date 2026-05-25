@@ -181,6 +181,22 @@ export class RedisWrapper {
       })
     }
   }
+  public async incr(key: string): Promise<number | undefined> {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.incr(key).catch((e) => {
+        logger.error(`${prefix} Redis incr Error: ${e}`)
+        return undefined
+      })
+    }
+    return undefined
+  }
+  public async expire(key: string, seconds: number) {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.expire(key, seconds).catch((e) => {
+        logger.error(`${prefix} Redis expire Error: ${e}`)
+      })
+    }
+  }
   public async hSet(key: string, field: string, value: string) {
     if (this.instance && this.instance.isReady) {
       return await this.instance.hSet(key, field, value).catch((e) => {
