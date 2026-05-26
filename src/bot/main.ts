@@ -212,6 +212,7 @@ export const notEnoughErrors = [
   'Order failed. Insufficient',
   'Insufficient balance',
   'Insufficient position',
+  'insufficientAvailableFunds',
 ]
 
 export const eventMap: { [x: string]: string } = {

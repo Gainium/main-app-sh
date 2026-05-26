@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.9] - 2026-05-26
+
+### Changed
+
+- Not enough balance dictionary
+
 ## [1.17.8] - 2026-05-21
 
 ### Fixed
