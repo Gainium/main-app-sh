@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.10] - 2026-05-28
+
+### Changed
+
+- Enforce profitCurrency and orderFixedIn on server side for grid bot.
+
 ## [1.17.9] - 2026-05-26
 
 ### Changed

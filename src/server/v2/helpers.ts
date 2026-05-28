@@ -5,6 +5,7 @@ import {
   BotVars,
   CreateDCABotInput,
   ExchangeInUser,
+  BotSettings,
 } from '../../../types'
 import { globalVarsDb } from '../../db/dbInit'
 import DB from '../../db'
@@ -187,6 +188,17 @@ export const addAditionalFields = (
             paths: [],
           } as BotVars,
         ),
+  }
+}
+
+export const applyGridFuturesConstraints = <T extends Partial<BotSettings>>(
+  settings: T,
+): T => {
+  if (!settings.futures) return settings
+  return {
+    ...settings,
+    profitCurrency: 'quote',
+    orderFixedIn: settings.coinm ? 'quote' : 'base',
   }
 }
 

@@ -119,6 +119,7 @@ import {
   HEDGE_DCA_PER_WORKER,
   HEDGE_PER_WORKER,
 } from '../config'
+import { applyGridFuturesConstraints } from '../server/v2/helpers'
 
 const PER_PAGE = 20
 
@@ -3204,7 +3205,8 @@ class Bot<T extends UserSchema = UserSchema> {
     },
     paperContext: boolean,
   ) {
-    const { vars, ...settings } = _settings
+    const { vars, ...rawSettings } = _settings
+    const settings = applyGridFuturesConstraints(rawSettings)
     if (
       (isPaper(settings.exchange) && !paperContext) ||
       (!isPaper(settings.exchange) && paperContext)
@@ -4256,7 +4258,10 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     const settingKeys = Object.keys(settings)
     if (settingKeys.length > 0) {
-      set.$set.settings = { ...oldSettings.settings, ...settings }
+      set.$set.settings = applyGridFuturesConstraints({
+        ...oldSettings.settings,
+        ...settings,
+      })
     }
     const ignoreChanges = [
       'coinm',

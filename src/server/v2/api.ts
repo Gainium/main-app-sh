@@ -79,6 +79,7 @@ import {
   replaceVarsInInput,
   addAditionalFields,
   addIndicatorsDefaults,
+  applyGridFuturesConstraints,
   sortFields,
 } from './helpers'
 import RedisClient from '../../db/redis'
@@ -2267,12 +2268,12 @@ const v2API = <R extends UserSchema = UserSchema>(
       const { userData, exchange, paperContext } = contextValidation
 
       // Merge defaults with user input, then override exchange-specific fields
-      const settings: CreateGridBotInput = {
+      const settings: CreateGridBotInput = applyGridFuturesConstraints({
         ...GRID_FORM_DEFAULTS,
         ...input,
         // Override futures/coinm based on exchange provider (not user input!)
         ...addAditionalFields(input, exchange),
-      }
+      } as CreateGridBotInput)
 
       delete (settings as any).vars
 
@@ -4670,11 +4671,11 @@ const v2API = <R extends UserSchema = UserSchema>(
 
         // grid
         const gridInput = input as CreateGridBotInputRaw
-        const settings: CreateGridBotInput = {
+        const settings: CreateGridBotInput = applyGridFuturesConstraints({
           ...GRID_FORM_DEFAULTS,
           ...gridInput,
           ...addAditionalFields(gridInput, exchange),
-        }
+        } as CreateGridBotInput)
         delete (settings as any).vars
 
         const validate = await validateCreateGridBotInput(
