@@ -57,6 +57,7 @@ import {
 } from '../../types'
 import BotInstance from '../bot'
 import utils, { isFutures } from '../utils'
+import { isExchangeEnabled } from '../utils/adminConfig'
 import userUtils, { checkLicenseKey, updateUserSteps } from '../utils/user'
 import { getBalances } from './handlers/balance.handler'
 import { deleteBotMessage, getBotMessage } from './handlers/botMessage.handler'
@@ -5126,6 +5127,13 @@ const resolvers = <
         const tradeType = _tradeType ?? TradeTypeEnum.spot
         const { passphrase } = input
         let { key, secret } = input
+        if (!isExchangeEnabled(provider)) {
+          return {
+            status: StatusEnum.notok,
+            reason: `Exchange ${provider} is disabled by host configuration`,
+            data: null,
+          }
+        }
         const user = await findUser(token)
         if (user.status === StatusEnum.notok) {
           return user

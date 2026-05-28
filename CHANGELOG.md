@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.18.0] - 2026-05-28
+
+### Added
+
+- Self-hosted admin-config sync (gated by `ADMIN_CONFIG_ENABLED`). Reads
+  `gainium:admin:enabled_exchanges` from Redis, subscribes to
+  `gainium:admin:config` pubsub, and runs a 10s periodic refresh as a
+  safety net. When the flag is off (cloud / unflagged) every code path
+  is a hard no-op — no extra Redis traffic, no timers, no log lines.
+
 ## [1.17.10] - 2026-05-28
 
 ### Changed

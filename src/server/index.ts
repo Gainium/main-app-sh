@@ -26,6 +26,7 @@ import { filesDb, userDb } from '../db/dbInit'
 import { CORS_ORIGIN, GRAPH_QL_PORT, JWT_SECRET, SERVER_HOST } from '../config'
 import { addHealthEndpoint } from '../utils/healthServer'
 import swaggerDoc from './swagger.json'
+import { startAdminConfigSync } from '../utils/adminConfig'
 
 swaggerDoc.servers = [{ url: `${SERVER_HOST}` }]
 
@@ -72,6 +73,7 @@ type ApolloContext = {
 
 async function start() {
   userUtils.connectUserBalance()
+  await startAdminConfigSync()
   const port = GRAPH_QL_PORT
 
   const app = express()
