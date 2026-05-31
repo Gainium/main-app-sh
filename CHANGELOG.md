@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.18.1] - 2026-05-31
+
+### Added
+
+- `getBotEvents`: optional `category` input (`recent`/`deals`/`alerts`) and a
+  `counts` response field for server-side categorization. `recent` is the full
+  feed (no filter); `alerts` = error/warning type; `deals` = deal-tied events
+  that aren't alerts. Counts are computed only when `category` is supplied, so
+  callers that don't request them are unaffected (no extra count queries).
+
 ## [1.18.0] - 2026-05-28
 
 ### Added

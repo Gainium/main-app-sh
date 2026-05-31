@@ -1276,11 +1276,17 @@ export const BotSchema = /* GraphQL */ `
     reason: String
     data: gridSettings
   }
+  type botEventCounts {
+    recent: Float
+    deals: Float
+    alerts: Float
+  }
   type getBotEventsResponse implements BasicResponse {
     status: Status
     reason: String
     data: [botEvent]
     total: Float
+    counts: botEventCounts
   }
   scalar StringOrAny
   type botEvent {
@@ -1350,6 +1356,7 @@ export const BotSchema = /* GraphQL */ `
     filterModel: GridFilterModel
     hedge: Boolean
     combo: Boolean
+    category: String
   }
   type SplitTime {
     d: String

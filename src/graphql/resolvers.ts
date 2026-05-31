@@ -1009,6 +1009,7 @@ const resolvers = <
           filterModel?: { items: [] }
           hedge?: boolean
           combo?: boolean
+          category?: 'recent' | 'deals' | 'alerts'
         }
       },
       { token, req }: InputRequest,
@@ -1020,7 +1021,7 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { botId: _botId, hedge, combo, ...grid } = input
+      const { botId: _botId, hedge, combo, category, ...grid } = input
       let botId = [_botId]
       const { filter, ...rest } = mapDataGridOptionsToMongoOptions(grid)
       if (hedge) {
@@ -1039,11 +1040,41 @@ const resolvers = <
         }
         botId = bot.data.result.bots.map((b) => `${b}`)
       }
+      // Server-side categorization. "recent" is the full activity feed (all
+      // events, newest first — no filter); "deals" and "alerts" are filtered
+      // subsets. Alerts = error/warning type; deals = deal-tied events that
+      // aren't alerts.
+      const alertCond = { type: { $in: ['error', 'warning'] } }
+      const dealCond = { deal: { $exists: true, $nin: [null, ''] } }
+      const categoryCond = (
+        cat?: 'recent' | 'deals' | 'alerts',
+      ): object | null => {
+        if (cat === 'alerts') {
+          return alertCond
+        }
+        if (cat === 'deals') {
+          return { $and: [dealCond, { $nor: [alertCond] }] }
+        }
+        // 'recent' (and no category) → all events, unfiltered.
+        return null
+      }
+      // Base conditions (botId + user search/filter), shared by the data
+      // query and every per-category count. Combined via $and so a search
+      // $or never collides with a category $nor/$or.
+      const baseConds: object[] = [{ botId: { $in: botId } }]
+      if ((filter as { $and?: object[] }).$and) {
+        baseConds.push(...(filter as { $and: object[] }).$and)
+      }
+      if ((filter as { $or?: object[] }).$or) {
+        baseConds.push({ $or: (filter as { $or: object[] }).$or })
+      }
+      const buildQuery = (cat?: 'recent' | 'deals' | 'alerts') => {
+        const cond = categoryCond(cat)
+        const conds = cond ? [...baseConds, cond] : baseConds
+        return conds.length > 1 ? { $and: conds } : conds[0]
+      }
       const result = await botEventDb.readData(
-        {
-          botId: { $in: botId },
-          ...filter,
-        },
+        buildQuery(category),
         {},
         rest,
         true,
@@ -1052,10 +1083,30 @@ const resolvers = <
       if (result.status === StatusEnum.notok) {
         return result
       }
+      // Per-bucket counts are only needed by the categorized drawer, which
+      // always sends `category`. Legacy callers (no category) skip the 3
+      // extra count queries entirely — keeps this change load-neutral for
+      // them.
+      let counts:
+        | { recent: number; deals: number; alerts: number }
+        | undefined
+      if (category) {
+        const [recentCount, dealsCount, alertsCount] = await Promise.all([
+          botEventDb.countData(buildQuery('recent')),
+          botEventDb.countData(buildQuery('deals')),
+          botEventDb.countData(buildQuery('alerts')),
+        ])
+        counts = {
+          recent: recentCount.data?.result ?? 0,
+          deals: dealsCount.data?.result ?? 0,
+          alerts: alertsCount.data?.result ?? 0,
+        }
+      }
       return {
         ...result,
         data: result.data.result,
         total: result.data.count,
+        ...(counts ? { counts } : {}),
       }
     },
     getDCABot: async (
