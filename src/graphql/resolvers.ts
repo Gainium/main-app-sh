@@ -1087,9 +1087,7 @@ const resolvers = <
       // always sends `category`. Legacy callers (no category) skip the 3
       // extra count queries entirely — keeps this change load-neutral for
       // them.
-      let counts:
-        | { recent: number; deals: number; alerts: number }
-        | undefined
+      let counts: { recent: number; deals: number; alerts: number } | undefined
       if (category) {
         const [recentCount, dealsCount, alertsCount] = await Promise.all([
           botEventDb.countData(buildQuery('recent')),
