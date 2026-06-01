@@ -4,6 +4,7 @@
   "description": "Main app",
   "author": "Maksym Shamko",
   "private": true,
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "fullInit": "export GAINIUM_INDICATORS=@gainium/indicators && export GAINIUM_BACKTESTER=@gainium/backtester && (npm uninstall $GAINIUM_INDICATORS $GAINIUM_BACKTESTER || true) && npm cache clean --force && npm install $GAINIUM_INDICATORS@git+https://github.com/Gainium/indicators.git && npm install $GAINIUM_BACKTESTER@git+https://github.com/Gainium/backtester.git && unset GAINIUM_INDICATORS && unset GAINIUM_BACKTESTER",
     "build": "tsc --project tsconfig.json",

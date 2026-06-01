@@ -2,6 +2,24 @@
 
 Welcome to the Gainium main backend repository! This guide will help you contribute to our comprehensive crypto-trading platform that provides automated trading bots, backtesting, and portfolio management.
 
+## Contributor License Agreement (CLA)
+
+This project is licensed under the **Business Source License 1.1** (see
+[`LICENSE`](./LICENSE)). Before your first contribution can be merged, you
+must sign our Contributor License Agreement.
+
+The process is automated by a GitHub Action:
+
+1. Open your pull request.
+2. The CLA bot will comment on the PR with a link to [`CLA.md`](./CLA.md).
+3. Read the CLA. If you agree, post the exact sentence the bot tells you
+   in a PR comment:
+
+   > `I have read the CLA Document and I hereby sign the CLA`
+
+4. The bot records your signature and the PR is unblocked. You only need
+   to sign once — future PRs from the same GitHub account are auto-cleared.
+
 ## Table of Contents
 
 - [Overview](#overview)
