@@ -5,10 +5,10 @@ Gainium ("the Project Maintainer"). This Contributor License Agreement
 ("Agreement") documents the rights granted by contributors to the Project
 Maintainer.
 
-This Agreement is intended to be compatible with projects licensed under the
-Business Source License 1.1 (BSL) and its eventual change to the Apache
-License 2.0. It is adapted from the Apache Software Foundation Individual
-Contributor License Agreement.
+This Agreement is intended to be compatible with projects licensed under
+the Fair Core License, Version 1.0 (FCL-1.0-Apache-2.0) and its eventual
+change to the Apache License 2.0. It is adapted from the Apache Software
+Foundation Individual Contributor License Agreement.
 
 By submitting a Contribution to any repository covered by this Agreement
 (for example, by opening a pull request and confirming acceptance via the
@@ -43,12 +43,12 @@ display, publicly perform, sublicense, and distribute Your Contributions
 and such derivative works.
 
 You further agree that the Project Maintainer may license Your
-Contribution under any terms it chooses, **including but not limited to the
-Business Source License 1.1, the Apache License 2.0, any other open-source
-or source-available license, and any proprietary or commercial license.**
-This expressly includes the right of the Project Maintainer to use Your
-Contribution in production and to operate commercial hosted services based
-on it.
+Contribution under any terms it chooses, **including but not limited to
+the Fair Core License 1.0 (FCL-1.0-Apache-2.0), the Apache License 2.0,
+any other open-source or source-available license, and any proprietary or
+commercial license.** This expressly includes the right of the Project
+Maintainer to use Your Contribution in production and to operate
+commercial hosted services based on it.
 
 ## 3. Grant of Patent License
 

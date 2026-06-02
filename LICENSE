@@ -1,141 +1,104 @@
-Business Source License 1.1
+# Fair Core License, Version 1.0, Apache 2.0 Future License
+(FCL-1.0-Apache-2.0)
 
-License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
-"Business Source License" is a trademark of MariaDB Corporation Ab.
+Licensed Work:  @gainium/main-app-sh
+Copyright (c) 2026 Gainium
 
------------------------------------------------------------------------------
+## Abbreviations
 
-Parameters
+"FCL" means the Fair Core License, Version 1.0, also referenced as
+"fcl-1.0", "FCL-1.0", or "FCL-1.0-Apache-2.0".
 
-Licensor:             Gainium
+## Acceptance
 
-Licensed Work:        @gainium/main-app-sh
-                      The Licensed Work is (c) 2026 Gainium.
+In order to receive this license, you must agree to its rules. The rules
+of this license are both obligations under that agreement and conditions
+to your license. You must not do anything with the software that triggers
+a rule that you cannot or will not follow.
 
-Additional Use Grant: You may make use of the Licensed Work for any
-                      Non-Commercial Use. You may also make use of the
-                      Licensed Work for Internal Business Use, including
-                      self-hosting the Licensed Work for your own
-                      operations.
+## Licenses
 
-                      "Non-Commercial Use" means any use that is not
-                      primarily intended for or directed toward commercial
-                      advantage or monetary compensation. Non-Commercial
-                      Use includes, without limitation: personal use,
-                      educational and academic use, research, evaluation
-                      and testing, and use by a non-profit organization
-                      for its own operations.
+The licensor grants you copyright licenses to do everything with the
+software that would otherwise infringe the licensor's copyright in it,
+for any **Permitted Purpose**.
 
-                      "Internal Business Use" means using the Licensed
-                      Work within your own organization to support your
-                      operations, provided that you do not make the
-                      functionality of the Licensed Work available to
-                      third parties as a hosted or managed service.
+The licensor grants you a patent license that covers patent claims the
+licensor can license, or becomes able to license, that you would infringe
+by using the software for a Permitted Purpose. This patent license does
+not cover any patent claims that you cause to be infringed by
+modifications or additions to the software. If you or your company make
+any written claim that the software infringes or contributes to
+infringement of any patent, your patent license for the software granted
+under these terms ends immediately. If your company makes such a claim,
+your patent license ends immediately for work on behalf of your company.
 
-                      The Additional Use Grant does not permit you to:
-                        (a) offer the Licensed Work, or any derivative of
-                            it, to third parties as a hosted or managed
-                            service for a fee or other commercial benefit
-                            (a "Commercial Service");
-                        (b) embed the Licensed Work, or any derivative of
-                            it, in a product that you offer to third
-                            parties for a fee or other commercial benefit;
-                        (c) use the Licensed Work to provide a service
-                            that materially competes with any commercial
-                            offering of the Licensor.
+## Permitted Purpose
 
-                      For any use that exceeds this Additional Use Grant
-                      and is not otherwise permitted under the License,
-                      please contact licensing@gainium.io to discuss
-                      commercial licensing terms.
+A Permitted Purpose is any purpose other than a **Competing Use**.
 
-Change Date:          2030-06-01
+## Competing Use
 
-Change License:       Apache License, Version 2.0
+A Competing Use means use of the software in or for a commercial product
+or service that competes with, or is intended to compete with, any
+product or service the licensor offers using the software. A Competing
+Use includes, but is not limited to:
 
------------------------------------------------------------------------------
+  - offering the software, or any derivative of it, to third parties as a
+    hosted, managed, or embedded service (a "Service") that competes with
+    a Service offered by the licensor;
 
-Notice
+  - distributing the software, or any derivative of it, as part of a
+    commercial product that competes with a product offered by the
+    licensor;
 
-The Business Source License (this document, or the "License") is not an
-Open Source license. However, the Licensed Work will eventually be made
-available under an Open Source license, as stated in this License.
+  - using the software to provide a commercial trading-bot,
+    portfolio-management, or related financial-tools service to third
+    parties.
 
------------------------------------------------------------------------------
+For the avoidance of doubt, the following uses are **Permitted Purposes**
+and are not Competing Uses:
 
-Terms
+  - personal, educational, academic, or research use;
+  - non-profit operations;
+  - internal business use, including self-hosting the software within
+    your own organization to support your own operations, provided you
+    do not make the functionality of the software available to third
+    parties as a Service.
 
-1.  Grant of Rights. The Licensor hereby grants you the right to copy,
-    modify, create derivative works, redistribute, and make non-production
-    use of the Licensed Work. The Licensor may make an Additional Use
-    Grant, above, permitting limited production use.
+If you wish to use the software for a Competing Use, please contact the
+licensor at **licensing@gainium.io** to discuss a commercial license.
 
-2.  Effective on the Change Date, or the fourth anniversary of the first
-    publicly available distribution of a specific version of the Licensed
-    Work under this License, whichever comes first, the Licensor hereby
-    grants you rights under the terms of the Change License, and the
-    rights granted in the paragraph above terminate.
+## Notices
 
-3.  If your use of the Licensed Work does not comply with the requirements
-    currently in effect as described in this License, you must purchase a
-    commercial license from the Licensor, its affiliated entities, or
-    authorized resellers, or you must refrain from using the Licensed
-    Work.
+You must ensure that anyone who gets a copy of any part of the software
+from you, with or without changes, also gets the text of this license,
+including the copyright notice above. You may not remove or obscure any
+licensing, copyright, or other notices of the licensor in the software.
 
-4.  All copies of the original and modified Licensed Work, and derivative
-    works of the Licensed Work, are subject to this License. This License
-    applies separately for each version of the Licensed Work and the
-    Change Date may vary for each version of the Licensed Work released by
-    the Licensor.
+## No Other Rights
 
-5.  You must conspicuously display this License on each original or
-    modified copy of the Licensed Work. If you receive the Licensed Work
-    in original or modified form from a third party, the terms and
-    conditions set forth in this License apply to your use of that work.
+This license does not imply any license to any of the licensor's
+trademarks, service marks, or logos.
 
-6.  Any use of the Licensed Work in violation of this License will
-    automatically terminate your rights under this License for the current
-    and all other versions of the Licensed Work.
+## Future Public License
 
-7.  This License does not grant you any right in any trademark or logo of
-    the Licensor or its affiliates (provided that you may use a trademark
-    or logo of the Licensor as expressly required by this License).
+On the second anniversary of the date the licensor first distributed the
+software under these terms, the **Apache License, Version 2.0** will
+become available as an additional license under which you may use the
+software. From that date forward, you may continue to use the software
+under this Fair Core License or, at your option, under the Apache
+License 2.0.
 
-8.  TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS
-    PROVIDED ON AN "AS IS" BASIS. THE LICENSOR HEREBY DISCLAIMS ALL
-    WARRANTIES AND CONDITIONS, EXPRESS OR IMPLIED, INCLUDING (WITHOUT
-    LIMITATION) WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-    PURPOSE, NON-INFRINGEMENT, AND TITLE.
+This Fair Core License applies separately for each version of the
+software, and the second-anniversary date is calculated separately for
+each version released under these terms.
 
------------------------------------------------------------------------------
+## Disclaimer
 
-Covenants of Licensor
-
-In consideration of the right to use this License's text and the
-"Business Source License" name and trademark, Licensor covenants to
-MariaDB, and to all other recipients of the Licensed Work to be provided
-by Licensor:
-
-1.  To specify as the Change License the GPL Version 2.0 or any later
-    version, or a license that is compatible with GPL Version 2.0 or a
-    later version, where "compatible" means that software provided under
-    the Change License can be included in a program with software
-    provided under GPL Version 2.0 or a later version. Licensor may
-    specify additional Change Licenses without limitation.
-
-2.  To either: (a) specify an additional grant of rights to use that does
-    not impose any additional restriction on the right granted in this
-    License, as the Additional Use Grant; or (b) insert the text
-    "None".
-
-3.  To specify a Change Date.
-
-4.  Not to modify this License in any other way.
-
------------------------------------------------------------------------------
-
-Notice
-
-The Business Source License (this document, or the "License") is not an
-Open Source license. However, the Licensed Work will eventually be made
-available under an Open Source license, as stated in this License.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
