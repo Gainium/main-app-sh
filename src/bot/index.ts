@@ -1427,6 +1427,7 @@ class Bot<T extends UserSchema = UserSchema> {
           delete d.__v
           return {
             ...d,
+            paperContext: !!paperContext,
             botName:
               botNames.find((name) => d.botId === name._id.toString())?.settings
                 .name || '',
@@ -1504,6 +1505,7 @@ class Bot<T extends UserSchema = UserSchema> {
           delete d.__v
           return {
             ...d,
+            paperContext: !!paperContext,
             botName:
               botNames.find((name) => d.botId === name._id.toString())?.settings
                 .name || '',
@@ -1581,6 +1583,7 @@ class Bot<T extends UserSchema = UserSchema> {
           delete d.__v
           return {
             ...d,
+            paperContext: !!paperContext,
             botName:
               botNames.find((name) => d.botId === name._id.toString())?.settings
                 .name || '',
@@ -1658,6 +1661,7 @@ class Bot<T extends UserSchema = UserSchema> {
           delete d.__v
           return {
             ...d,
+            paperContext: !!paperContext,
             botName:
               botNames.find((name) => d.botId === name._id.toString())?.settings
                 .name || '',
@@ -9752,7 +9756,10 @@ class Bot<T extends UserSchema = UserSchema> {
         return {
           status: StatusEnum.ok,
           data: {
-            deals: findTransactionsRequest.data.result,
+            deals: findTransactionsRequest.data.result.map((d) => ({
+              ...d,
+              paperContext: !!paperContext,
+            })),
             page,
             total: findTransactionsRequest.data.count,
           },
@@ -9946,7 +9953,10 @@ class Bot<T extends UserSchema = UserSchema> {
         return {
           status: StatusEnum.ok,
           data: {
-            deals: findTransactionsRequest.data.result,
+            deals: findTransactionsRequest.data.result.map((d) => ({
+              ...d,
+              paperContext: !!paperContext,
+            })),
             page,
             total: findTransactionsRequest.data.count,
           },
@@ -10008,7 +10018,10 @@ class Bot<T extends UserSchema = UserSchema> {
         return {
           status: StatusEnum.ok,
           data: {
-            deals: findTransactionsRequest.data.result,
+            deals: findTransactionsRequest.data.result.map((d) => ({
+              ...d,
+              paperContext: !!paperContext,
+            })),
             page,
             total: findTransactionsRequest.data.count,
           },
@@ -10070,7 +10083,10 @@ class Bot<T extends UserSchema = UserSchema> {
         return {
           status: StatusEnum.ok,
           data: {
-            deals: findTransactionsRequest.data.result,
+            deals: findTransactionsRequest.data.result.map((d) => ({
+              ...d,
+              paperContext: !!paperContext,
+            })),
             page,
             total: findTransactionsRequest.data.count,
           },
@@ -10240,7 +10256,10 @@ class Bot<T extends UserSchema = UserSchema> {
         return {
           status: StatusEnum.ok,
           data: {
-            deals: findTransactionsRequest.data.result,
+            deals: findTransactionsRequest.data.result.map((d) => ({
+              ...d,
+              paperContext: !!paperContext,
+            })),
           },
         }
       }
@@ -10276,7 +10295,10 @@ class Bot<T extends UserSchema = UserSchema> {
         return {
           status: StatusEnum.ok,
           data: {
-            deals: findTransactionsRequest.data.result,
+            deals: findTransactionsRequest.data.result.map((d) => ({
+              ...d,
+              paperContext: !!paperContext,
+            })),
           },
         }
       }

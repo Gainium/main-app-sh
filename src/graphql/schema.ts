@@ -3911,6 +3911,7 @@ export const BotSchema = /* GraphQL */ `
     price: Float
   }
   type dcaDeal {
+    paperContext: Boolean
     parentBotId: String
     flags: [String]
     closeTrigger: String
@@ -3989,6 +3990,7 @@ export const BotSchema = /* GraphQL */ `
     qty: Float
   }
   type comboDeal {
+    paperContext: Boolean
     parentBotId: String
     flags: [String]
     closeTrigger: String

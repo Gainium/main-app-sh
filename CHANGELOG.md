@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.18.2] - 2026-06-02
+
+### Added
+
+- Expose `paperContext` on `dcaDeal`/`comboDeal` GraphQL types and stamp it on
+  returned deals (list + per-bot, incl. hedge) so clients can tell a deal's
+  trading context without inferring it. Additive/backward-compatible.
+
 ## [1.18.1] - 2026-05-31
 
 ### Added
