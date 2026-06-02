@@ -149,6 +149,7 @@ export const AddExchangeInput = /* GraphQL */ `
     okxSource: String
     bybitHost: BybitHost
     subaccount: Boolean
+    shouldCheckAffiliate: Boolean
   }
 `
 

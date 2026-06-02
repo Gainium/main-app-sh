@@ -665,6 +665,7 @@ const updateUserFee = async (
             e.okxSource,
             e.bybitHost,
             e.subaccount,
+            e.affiliate,
           )
           const userId = u._id.toString()
           const fees = await provider.getAllUserFees()

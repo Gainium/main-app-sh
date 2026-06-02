@@ -1087,6 +1087,11 @@ class MainBot<T extends IMainBot> {
       this.data.exchange,
     )
     if (exchange) {
+      const shouldCheckAffiliate =
+        !this.data.paperContext &&
+        this.data.exchange.indexOf('hyperliquid') !== -1 &&
+        (await this.getUser())?.exchanges.find((e) => e.uuid === exchangeUUID)
+          ?.affiliate
       this.exchange = exchange(
         key || '',
         secret || '',
@@ -1096,6 +1101,7 @@ class MainBot<T extends IMainBot> {
         okxSource,
         bybitHost,
         subaccount,
+        shouldCheckAffiliate,
       )
       this.handleLog('Load exchange provider')
       if (update) {

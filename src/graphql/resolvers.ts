@@ -95,6 +95,7 @@ import {
   userDb as _userDb,
   hedgeComboBacktestDb,
   hedgeDcaBacktestDb,
+  brokerCodesDb,
 } from '../db/dbInit'
 import { errorAccess } from './errorResponse'
 import {
@@ -5152,6 +5153,7 @@ const resolvers = <
             stablecoinBalance?: number
             coinToTopUp?: string
             tradeType?: TradeTypeEnum
+            shouldCheckAffiliate?: boolean
           },
           'uuid'
         >
@@ -5173,6 +5175,7 @@ const resolvers = <
           bybitHost,
           subaccount,
         } = input
+        const { shouldCheckAffiliate } = input
         const tradeType = _tradeType ?? TradeTypeEnum.spot
         const { passphrase } = input
         let { key, secret } = input
@@ -5187,7 +5190,6 @@ const resolvers = <
         if (user.status === StatusEnum.notok) {
           return user
         }
-
         const tradeTypesToUse =
           tradeType === TradeTypeEnum.all
             ? [TradeTypeEnum.spot, TradeTypeEnum.futures]
@@ -5360,7 +5362,37 @@ const resolvers = <
               okxSource,
               bybitHost,
             )
-
+            let affiliate = false
+            if (
+              !paper &&
+              shouldCheckAffiliate &&
+              [
+                ExchangeEnum.hyperliquid,
+                ExchangeEnum.hyperliquidLinear,
+              ].includes(e)
+            ) {
+              const code = await brokerCodesDb.readData({
+                exchange: ExchangeEnum.hyperliquid,
+              })
+              if (code.status === StatusEnum.ok && code.data.result) {
+                affiliate = !!(await ex.getAffiliate(code.data.result.code))
+                  ?.data
+                logger.info(
+                  `Add exchange affiliate check for user ${user.data._id} (${user.data.username}), exchange: "${e}", code: "${code.data.result.code}", affiliate: ${affiliate}`,
+                )
+                if (!affiliate) {
+                  return {
+                    status: StatusEnum.notok,
+                    reason: `To use ${e} exchange you need to follow the instructions.`,
+                    data: null,
+                  }
+                }
+              } else {
+                logger.info(
+                  `Add exchange affiliate check failed to get broker code for user ${user.data._id} (${user.data.username}), exchange: "${e}"`,
+                )
+              }
+            }
             const saveDataRequest = await userDb.updateData(
               { _id: user.data._id },
               {
@@ -5497,6 +5529,7 @@ const resolvers = <
                       keysType,
                       okxSource,
                       bybitHost,
+                      affiliate,
                       passphrase: passphrase ? encrypt(passphrase) : undefined,
                       status: true,
                       lastUpdated: +new Date(),

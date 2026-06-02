@@ -1555,6 +1555,7 @@ export type ExchangeInUser = {
   zeroFee?: boolean
   subaccount?: boolean
   bybitHost?: BybitHost
+  affiliate?: boolean
 }
 
 export interface FavoritePairsSchema extends SchemaI {

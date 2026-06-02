@@ -38,6 +38,7 @@ class Exchange extends AbstractExchange {
   protected isOkx: boolean
   protected brokerCodes = new ExpirableMap<string, string>(60 * 60 * 1000) // 1 hour cache
   protected timeProfiler = TimeProfiler.getInstance()
+  protected shouldCheckAffiliate = false
   constructor(
     exchange: ExchangeEnum,
     key: string,
@@ -48,6 +49,7 @@ class Exchange extends AbstractExchange {
     okxSource?: OKXSource,
     bybitHost?: BybitHost,
     subaccount?: boolean,
+    shouldCheckAffiliate?: boolean,
   ) {
     super(
       key,
@@ -65,6 +67,7 @@ class Exchange extends AbstractExchange {
       ExchangeEnum.okxLinear,
       ExchangeEnum.okxInverse,
     ].includes(this.exchange)
+    this.shouldCheckAffiliate = shouldCheckAffiliate ?? false
   }
 
   protected saveTimeProfile(_profile: ExchangeRequestTimeProfile) {
@@ -779,7 +782,17 @@ class Exchange extends AbstractExchange {
       'Content-type': 'application/json',
     }
     let code = ''
-    if (endpoint === 'order' && method === 'post') {
+    const shouldCheckExchange = [
+      ExchangeEnum.hyperliquid,
+      ExchangeEnum.hyperliquidLinear,
+    ].includes(this.exchange)
+      ? this.shouldCheckAffiliate
+      : true
+    if (
+      ((endpoint === 'order' && method === 'post') ||
+        (endpoint.startsWith('fees') && method === 'get')) &&
+      shouldCheckExchange
+    ) {
       const eName = this.exchange.startsWith('hyperliquid')
         ? ExchangeEnum.hyperliquid
         : this.exchange

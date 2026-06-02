@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.18.3] - 2026-06-02
+
+### Added
+
+- Hyperliquid builder fees
+
 ## [1.18.2] - 2026-06-02
 
 ### Added
