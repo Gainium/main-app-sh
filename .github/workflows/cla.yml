@@ -38,8 +38,12 @@ jobs:
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA. ✅'
 
-          # Accounts that never need to sign (you and bots).
-          allowlist: 'maksymshamko,aressanch,claude,dependabot[bot],bot*'
+          # Accounts that never need to sign (you, AI assistants emitting
+          # Co-Authored-By:, and bots). The action matches each commit's
+          # GitHub login OR email — emails are needed because
+          # Co-Authored-By: Claude <noreply@anthropic.com> doesn't reverse-
+          # lookup to a GitHub user and would otherwise block the PR.
+          allowlist: 'maksymshamko,aressanch,claude,noreply@anthropic.com,*@anthropic.com,dependabot[bot],bot*,*[bot]'
 
           # Re-trigger signing when the CLA text itself changes.
           # remote-organization-name:   # set only if signatures live in another org
