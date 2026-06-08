@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.18.4] - 2026-06-08
+
+### Fixed
+
+- Exchange disabled by host configuration for paper exchanges
+
 ## [1.18.3] - 2026-06-02
 
 ### Added

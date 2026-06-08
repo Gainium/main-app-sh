@@ -1,5 +1,7 @@
+import { removePaperFormExchangeName } from '../exchange/helpers'
 import RedisClient from '../db/redis'
 import logger from './logger'
+import { ExchangeEnum } from '../../types'
 
 // Self-hosted admin-config sync. Gated entirely by ADMIN_CONFIG_ENABLED:
 // in cloud builds (flag absent) every export is a hard no-op — no Redis
@@ -32,9 +34,10 @@ export function isAdminConfigEnabled(): boolean {
  * cloud builds AND before the first refresh completes so we don't
  * reject in-flight mutations during boot.
  */
-export function isExchangeEnabled(exchange: string): boolean {
+export function isExchangeEnabled(exchange: ExchangeEnum): boolean {
   if (!ENABLED) return true
   if (!initialized || cache === null) return true
+  exchange = removePaperFormExchangeName(exchange)
   return cache.has(exchange)
 }
 
