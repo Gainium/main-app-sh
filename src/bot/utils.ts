@@ -630,6 +630,7 @@ export const errorDict = {
   'EFunding:Unknown withdraw key': 'Withdrawal error',
   'EFunding:Invalid amount': orderParams,
   wouldNotReducePosition: futuresPosition,
+  'less than the minimum amount': orderParams,
 }
 
 export const getErrorSubType = (string: string): string => {

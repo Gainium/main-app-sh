@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.18.5] - 2026-06-09
+
+### Changed
+
+- Error dictionary
+
 ## [1.18.4] - 2026-06-08
 
 ### Fixed
