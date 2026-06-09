@@ -1324,6 +1324,10 @@ class MainBot<T extends IMainBot> {
     message: string,
     time: number,
     _messageToSet?: string,
+    // User-initiated actions (e.g. a manual add/reduce funds) must always be
+    // reported back, even if an identical-subType message is already active or
+    // was throttled. When true, bypass the de-dup / throttle gates below.
+    force = false,
   ) {
     if (this.ignoreErrors) {
       return
@@ -1350,6 +1354,7 @@ class MainBot<T extends IMainBot> {
     }
     let _id = v4()
     if (
+      force ||
       !(
         this.data?.status === BotStatusEnum.error &&
         this.data?.previousStatus !== BotStatusEnum.error &&
@@ -1365,13 +1370,14 @@ class MainBot<T extends IMainBot> {
         showUser: true,
       })
       const notDeletedCount = notDeleted.data?.result ?? 0
-      if (notDeletedCount > 0) {
+      if (!force && notDeletedCount > 0) {
         return
       }
       let save = true
       if (
-        subType === 'Not enough balance' ||
-        (subType === 'Uncategorized' && isMaxDeals)
+        !force &&
+        (subType === 'Not enough balance' ||
+          (subType === 'Uncategorized' && isMaxDeals))
       ) {
         const notDeletedBalance = await this.messagesDb.countData({
           botId: this.data?.parentBotId || this.botId,
@@ -1481,6 +1487,9 @@ class MainBot<T extends IMainBot> {
     setError = true,
     sendError = true,
     setEvent = true,
+    // Propagated to processError: when true the error is always reported to
+    // the user, even if a same-subType message is already active/throttled.
+    force = false,
   ): Promise<void> {
     if (this.ignoreErrors) {
       return
@@ -1556,6 +1565,7 @@ class MainBot<T extends IMainBot> {
       message,
       time,
       messageToSet,
+      force,
     )
   }
 
@@ -1676,8 +1686,20 @@ class MainBot<T extends IMainBot> {
     sendError = true,
   ): Promise<void> {
     const errorString = typeof e === 'string' ? e : e.message
+    // A manual add/reduce-funds order carries addFundsId / reduceFundsId;
+    // automatic safety orders don't. Such a user-initiated failure must always
+    // be reported, never collapsed into an existing same-subType message.
+    const isManualFunds = !!(order.addFundsId || order.reduceFundsId)
     if (!this.isErrorNotEnoughBalance(errorString)) {
-      return this.handleErrors(e, method, step, setError, sendError)
+      return this.handleErrors(
+        e,
+        method,
+        step,
+        setError,
+        sendError,
+        true,
+        isManualFunds,
+      )
     }
     this.updateNotEnoughBalanceErrors(order)
     let message = `Not enough balance Order id: ${order.clientOrderId}, side: ${
@@ -1741,6 +1763,7 @@ class MainBot<T extends IMainBot> {
         message,
         time,
         message,
+        isManualFunds,
       )
     }
   }

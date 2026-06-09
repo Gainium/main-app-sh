@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.18.6] - 2026-06-09
+
+### Fixed
+
+- A manual add/reduce-funds failure on a deal is now always reported to the
+  user, even when a same-type message (e.g. "Not enough balance") is already
+  active for the bot. Previously the error de-duplication gate could swallow
+  the user-initiated failure, leaving the terminal with no feedback.
+
 ## [1.18.5] - 2026-06-09
 
 ### Changed
