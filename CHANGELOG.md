@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.18.7] - 2026-06-10
+
+### Changed
+
+- Enable gzip/deflate compression on all API responses (`compression`
+  middleware). The large `getAllPairs` payload (~3.4MB) and other big JSON
+  responses now transfer ~15x smaller, cutting response time from several
+  seconds to sub-second.
+
 ## [1.18.6] - 2026-06-09
 
 ### Fixed

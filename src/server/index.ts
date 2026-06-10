@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import express from 'express'
+import compression from 'compression'
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import bodyParser from 'body-parser'
 import { ApolloServer } from '@apollo/server'
@@ -81,6 +82,11 @@ async function start() {
   if (!SERVER_HOST) {
     throw 'Missed server host'
   }
+
+  // gzip/deflate all compressible responses (notably the ~3.4MB getAllPairs
+  // JSON, which is highly repetitive and shrinks ~10x). Registered before any
+  // route so it wraps every response, including the Apollo GraphQL middleware.
+  app.use(compression())
 
   app.use(
     '/api/docs/v2',
