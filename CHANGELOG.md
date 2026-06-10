@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.18.8] - 2026-06-10
+
+### Changed
+
+- Backtester performance fix. 
+
 ## [1.18.7] - 2026-06-10
 
 ### Changed
