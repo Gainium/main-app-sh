@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.18.9] - 2026-06-11
+
+### Fixed
+- DIV indicator logic
+
 ## [1.18.8] - 2026-06-10
 
 ### Changed
