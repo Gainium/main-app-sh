@@ -10,6 +10,7 @@ import {
   ResetAccountTypeEnum,
   ResetLogEntry,
   DCADealStatusEnum,
+  BaseReturn,
 } from '../../types'
 import {
   BotStatusEnum,
@@ -1024,6 +1025,10 @@ const processing = new Set<string>()
 export const resetUser = async (
   userId: string,
   type: ResetAccountTypeEnum,
+  cb?: (
+    userId: string,
+    type: ResetAccountTypeEnum,
+  ) => Promise<BaseReturn<string>>,
 ): Promise<ResetLogEntry[]> => {
   const prefix = `Reset user ${userId} ${type}`
   const log: ResetLogEntry[] = []
@@ -1442,7 +1447,18 @@ export const resetUser = async (
           }),
         ),
       )
-
+      const exchangesToDelete = (
+        isAll
+          ? user.exchanges
+          : user.exchanges.filter((e) =>
+              isPaper
+                ? paperExchanges.includes(e.provider)
+                : !paperExchanges.includes(e.provider),
+            )
+      ).map((e) => e.uuid)
+      for (const uuid of exchangesToDelete) {
+        disconnectUserBalance(uuid)
+      }
       const userUpdate = await userDb.updateData(
         { _id: userId },
         {
@@ -1477,6 +1493,16 @@ export const resetUser = async (
       await updateRelatedBotsInVar(
         (vars.data?.result ?? []).map((v) => `${v._id}`),
       )
+    }
+    if (cb) {
+      const cbResult = await cb(userId, type)
+      if (cbResult.status === StatusEnum.ok) {
+        logger.debug(`${prefix} | Callback executed successfully`)
+        push({ step: 'callback', status: 'ok' })
+      } else {
+        logger.error(`${prefix} | Callback error ${cbResult.reason}`)
+        push({ step: 'callback', status: 'error', reason: cbResult.reason })
+      }
     }
     processing.delete(userId)
     logger.debug(`${prefix} | End`)

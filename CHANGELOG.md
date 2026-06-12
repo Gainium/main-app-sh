@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.18.10] - 2026-06-12
+
+### Changed
+- Reset user process
+
 ## [1.18.9] - 2026-06-11
 
 ### Fixed
