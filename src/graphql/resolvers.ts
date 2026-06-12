@@ -77,6 +77,7 @@ import {
   pairDb,
   rateDb,
   snapshotDb,
+  snapshotPerExchangeDb,
   transactionDb,
   userPeriodDb,
   comboBotDb,
@@ -521,6 +522,39 @@ const resolvers = <
         true,
       )
       return result
+    },
+    getSnapshotPerExchange: async (
+      _parent: any,
+      { input }: { input?: { uuid?: string; from?: number; to?: number } },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const { uuid, from, to } = input ?? {}
+      const useFrom = typeof from === 'number' && isFinite(from) && !isNaN(from)
+      const useTo = typeof to === 'number' && isFinite(to) && !isNaN(to)
+      const result = await snapshotPerExchangeDb.readData(
+        {
+          userId: user.data._id,
+          paperContext: paperContext ? { $eq: true } : { $ne: true },
+          uuid,
+          ...((useFrom || useTo) && {
+            updateTime: {
+              ...(useFrom && { $gt: from }),
+              ...(useTo && { $lt: to }),
+            },
+          }),
+        },
+        {},
+        {},
+        true,
+      )
+      return result.data?.result
     },
     updateStatus: async (
       _parent: any,
@@ -5996,6 +6030,17 @@ const resolvers = <
           })
         if (deleteBalances.status !== StatusEnum.ok) {
           return deleteBalances
+        }
+        const deleteSnapshotsByExchange = await snapshotPerExchangeDb
+          .deleteManyData({ userId: `${user.data._id}`, uuid })
+          .then((res) => {
+            logger.debug(
+              `Delete Exchange for ${user.data._id} ${uuid}: snaphost ${res.reason}`,
+            )
+            return res
+          })
+        if (deleteSnapshotsByExchange.status !== StatusEnum.ok) {
+          return deleteSnapshotsByExchange
         }
         userUtils.disconnectUserBalance(uuid)
         userUtils.userSnapshots(

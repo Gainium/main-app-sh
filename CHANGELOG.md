@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.19.0] - 2026-06-12
+
+### Added
+- Snapshots per exchange
+
 ## [1.18.10] - 2026-06-12
 
 ### Changed

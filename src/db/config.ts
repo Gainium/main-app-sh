@@ -39,4 +39,5 @@ export const collections = {
   brokerCodes: 'brokerCodes',
   hedgeComboBacktest: 'hedgeComboBacktest',
   hedgeDcaBacktest: 'hedgeDcaBacktest',
+  snapshotsPerExchange: 'snapshotsPerExchange',
 }

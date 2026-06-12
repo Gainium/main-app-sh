@@ -37,6 +37,7 @@ import {
   BrokerCodesSchema,
   HedgeComboBacktestingResult,
   HedgeDCABacktestingResult,
+  SnapshotPerExchangeSchema,
 } from '../../types'
 import { SYNC_USER } from '../config'
 
@@ -160,6 +161,10 @@ const models = {
   hedgeDcaBacktest: model<HedgeDCABacktestingResult>(
     `${collections.hedgeDcaBacktest}`,
     schema.hedgeDcaBacktest,
+  ),
+  snapshotsPerExchange: model<SnapshotPerExchangeSchema>(
+    `${collections.snapshotsPerExchange}`,
+    schema.snapshotsPerExchange,
   ),
 }
 

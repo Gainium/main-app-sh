@@ -56,6 +56,7 @@ import {
   snapshotDb,
   botDb,
   dcaBotDb,
+  snapshotPerExchangeDb,
 } from '../db/dbInit'
 import RedisClient from '../db/redis'
 import Rabbit from '../db/rabbit'
@@ -961,6 +962,50 @@ const userSnapshots = async (
         userId,
         paperContext: paperContext ? { $eq: true } : { $ne: true },
       })
+      for (const e of exchangesTotal) {
+        const currentDoc = await snapshotPerExchangeDb.readData({
+          updateTime,
+          userId,
+          paperContext: paperContext ? { $eq: true } : { $ne: true },
+          uuid: e.uuid,
+        })
+        if (currentDoc.status === 'OK' && currentDoc.data.result) {
+          const data = await snapshotPerExchangeDb.updateData(
+            { _id: currentDoc.data.result._id.toString() },
+            {
+              $set: {
+                totalUsd: e.totalUsd,
+              },
+            },
+          )
+          if (data.status === 'OK') {
+            logger.debug(
+              `Snapshot per exchange | ${u.username} ${userId} ${e.uuid} updated`,
+            )
+          } else {
+            logger.error(
+              `Snapshot per exchange | ${u.username} ${userId} ${e.uuid} error ${data.reason}`,
+            )
+          }
+        } else {
+          const data = await snapshotPerExchangeDb.createData({
+            userId,
+            updateTime,
+            totalUsd: e.totalUsd,
+            paperContext: paperContext ? true : false,
+            uuid: e.uuid,
+          })
+          if (data.status === 'OK') {
+            logger.debug(
+              `Snapshot per exchange | ${u.username} ${userId} ${e.uuid} saved`,
+            )
+          } else {
+            logger.error(
+              `Snapshot per exchange | ${u.username} ${userId} ${e.uuid} error ${data.reason}`,
+            )
+          }
+        }
+      }
       if (currentSnapshot.status === 'OK' && currentSnapshot.data.result) {
         const data = await snapshotDb.updateData(
           { _id: currentSnapshot.data.result._id.toString() },
@@ -1458,6 +1503,10 @@ export const resetUser = async (
       ).map((e) => e.uuid)
       for (const uuid of exchangesToDelete) {
         disconnectUserBalance(uuid)
+        await snapshotPerExchangeDb.deleteManyData({
+          userId,
+          uuid,
+        })
       }
       const userUpdate = await userDb.updateData(
         { _id: userId },

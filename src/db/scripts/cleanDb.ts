@@ -249,7 +249,7 @@ const clearOldSnapshots = async () => {
 
   await snapshotDb
     .deleteManyData({
-      created: { $lt: new Date(+new Date() - 30 * 24 * 60 * 60 * 1000) },
+      created: { $lt: new Date(+new Date() - 90 * 24 * 60 * 60 * 1000) },
     })
     .then((res) => {
       logger.debug(`Clean old snapshots ${res.reason}`)

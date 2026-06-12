@@ -165,6 +165,9 @@ export const UserSchema = /* GraphQL */ `
     getUserPeriods: getUserPeriodsResponse
     getUserFavoritePairs: userFavoritePairsResponse
     getUserFavoriteIndicators: userFavoriteIndicatorsResponse
+    getSnapshotPerExchange(
+      input: getSnapshotPerExchangeInput
+    ): getSnapshotPerExchangeResponse
   }
   type Mutation {
     resetAccount(input: resetAccountInput!): resetAccountResponse
@@ -205,6 +208,26 @@ export const UserSchema = /* GraphQL */ `
     setHedge(input: setHedgeInput!): setHedgeResponse
     setZeroFee(input: setZeroFeeInput!): setHedgeResponse
     setVideoUpdate(input: setVideoUpdateInput!): setVideoUpdateResponse
+  }
+  input getSnapshotPerExchangeInput {
+    uuid: String
+    from: Float
+    to: Float
+  }
+  type getSnapshotPerExchangeResponseDataResult {
+    userId: String
+    updateTime: Float
+    totalUsd: Float
+    uuid: String
+    paperContext: Boolean
+  }
+  type getSnapshotPerExchangeResponseData {
+    result: [getSnapshotPerExchangeResponseDataResult]
+  }
+  type getSnapshotPerExchangeResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: getSnapshotPerExchangeResponseData
   }
 
   enum resetAccountTypeEnum {

@@ -2727,6 +2727,14 @@ export interface SnapshotSchema extends SchemaI {
   paperContext?: boolean
 }
 
+export interface SnapshotPerExchangeSchema extends SchemaI {
+  userId: string
+  updateTime: number
+  totalUsd: number
+  uuid: string
+  paperContext?: boolean
+}
+
 export type CleanSnapshotSchema = ExcludeDoc<SnapshotSchema>
 
 export type PriceMessage = {
