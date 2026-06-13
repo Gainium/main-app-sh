@@ -974,7 +974,13 @@ export const checkDCADealSettings = (
     if (mslKeys.length !== mslKeysSet.size) {
       return { status: StatusEnum.notok, reason: 'Duplicate multi sl uuid' }
     }
-    if (!mslKeys.every((k) => multiTpKeys.includes(k))) {
+    // Validate each item's KEYS are within the allowed set (target/amount/uuid).
+    // NB: must check Object.keys(s), not the uuid values — comparing uuid values
+    // against the key-name list rejects every real uuid (only the REST API path runs
+    // this validator; the GraphQL/UI path does not, which is why the UI was unaffected).
+    if (
+      !msl.every((s) => Object.keys(s).every((k) => multiTpKeys.includes(k)))
+    ) {
       return { status: StatusEnum.notok, reason: 'Unknown multi sl settings' }
     }
   }
@@ -1058,7 +1064,13 @@ export const checkDCADealSettings = (
     if (mtpKeys.length !== mtpKeysSet.size) {
       return { status: StatusEnum.notok, reason: 'Duplicate multi tp uuid' }
     }
-    if (!mtpKeys.every((k) => multiTpKeys.includes(k))) {
+    // Validate each item's KEYS are within the allowed set (target/amount/uuid).
+    // NB: must check Object.keys(s), not the uuid values — comparing uuid values
+    // against the key-name list rejects every real uuid (only the REST API path runs
+    // this validator; the GraphQL/UI path does not, which is why the UI was unaffected).
+    if (
+      !mtp.every((s) => Object.keys(s).every((k) => multiTpKeys.includes(k)))
+    ) {
       return { status: StatusEnum.notok, reason: 'Unknown multi tp settings' }
     }
   }

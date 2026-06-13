@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.19.1] - 2026-06-13
+
+### Fixed
+- REST-API multi-TP/SL validation rejected every real UUID (compared uuid values against the key allowlist)
+
 ## [1.19.0] - 2026-06-12
 
 ### Added
