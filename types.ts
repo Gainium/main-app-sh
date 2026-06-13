@@ -1595,6 +1595,10 @@ export interface UserSchema extends SchemaI {
     permission: APIPermission
     paperContext?: boolean
     botId?: string
+    /** Set when this key was minted for an OAuth grant (a "connected app").
+     *  Such keys are managed under Settings → Connected apps, not the regular
+     *  API Keys list, so the UI filters them out there. */
+    oauthClientId?: string
   }[]
   shouldOnBoard?: boolean
   shouldOnBoardExchange?: boolean

@@ -428,6 +428,7 @@ export const UserSchema = /* GraphQL */ `
     name: String
     paperContext: Boolean
     botId: String
+    oauthClientId: String
   }
   type user {
     _id: String

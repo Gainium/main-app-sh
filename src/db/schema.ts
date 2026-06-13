@@ -194,6 +194,7 @@ export const userAPIKeys: Schema<UserSchema['apiKeys']> = new Schema({
   name: String,
   paperContext: Boolean,
   botId: String,
+  oauthClientId: String,
 })
 
 const botEventSchema: Schema<BotEventSchema> = new Schema({
