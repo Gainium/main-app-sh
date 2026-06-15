@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.20.0] - 2026-06-15
+
+### Changed
+- Bybit exchange account stores a free-text domain instead of a fixed zone; `bybitHost` GraphQL field is now `String` (the `BybitHost` enum was removed) and the DB field is no longer enum-restricted.
+
+### Added
+- Migration v43: convert existing Bybit account zone codes (`eu`/`com`/…) to bare domains (`bybit.eu`/`bybit.com`/…).
+
 ## [1.19.1] - 2026-06-13
 
 ### Fixed

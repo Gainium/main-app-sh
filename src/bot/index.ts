@@ -47,7 +47,6 @@ import {
   DCACustom,
   MultiTP,
   MainBot,
-  BybitHost,
   LogLevel,
   CreateDCABotInput,
 } from '../../types'
@@ -338,7 +337,7 @@ class Bot<T extends UserSchema = UserSchema> {
     passphrase?: string,
     keysType?: CoinbaseKeysType,
     okxSource?: OKXSource,
-    bybitHost?: BybitHost,
+    bybitHost?: string,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService(

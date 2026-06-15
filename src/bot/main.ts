@@ -27,7 +27,6 @@ import type {
   ClearDCABotSchema,
   BaseReturn,
   PriceMessage,
-  BybitHost,
   BotSchema,
 } from '../../types'
 import {
@@ -1072,7 +1071,7 @@ class MainBot<T extends IMainBot> {
     passphrase?: string,
     keysType?: CoinbaseKeysType,
     okxSource?: OKXSource,
-    bybitHost?: BybitHost,
+    bybitHost?: string,
     subaccount?: boolean,
     update?: boolean,
   ) {
