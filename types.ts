@@ -1554,7 +1554,7 @@ export type ExchangeInUser = {
   okxSource?: OKXSource
   zeroFee?: boolean
   subaccount?: boolean
-  bybitHost?: BybitHost
+  bybitHost?: string
   affiliate?: boolean
 }
 
@@ -4287,7 +4287,7 @@ export type UpdateBotExchangeDto = {
   userId: string
   keysType?: CoinbaseKeysType
   okxSource?: OKXSource
-  bybitHost?: BybitHost
+  bybitHost?: string
 }
 
 export type UpdateBotExchangeInfoDto = {

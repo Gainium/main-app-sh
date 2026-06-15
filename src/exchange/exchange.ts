@@ -19,7 +19,6 @@ import {
   CoinbaseKeysType,
   ExchangeRequestTimeProfile,
   OKXSource,
-  BybitHost,
 } from '../../types'
 import axios, { AxiosError } from 'axios'
 import http from 'http'
@@ -47,7 +46,7 @@ class Exchange extends AbstractExchange {
     _environment?: 'live' | 'sandbox',
     keysType?: CoinbaseKeysType,
     okxSource?: OKXSource,
-    bybitHost?: BybitHost,
+    bybitHost?: string,
     subaccount?: boolean,
     shouldCheckAffiliate?: boolean,
   ) {

@@ -1,7 +1,6 @@
 import axios from 'axios'
 import http from 'http'
 import {
-  BybitHost,
   CoinbaseKeysType,
   ExchangeEnum,
   OKXSource,
@@ -38,7 +37,7 @@ const verifyNormal = async (
   passphrase?: string,
   keysType?: CoinbaseKeysType,
   okxSource?: OKXSource,
-  bybitHost?: BybitHost,
+  bybitHost?: string,
   subaccount?: boolean,
 ): Promise<VerifyResponse> => {
   const authHeaders: Record<string, string> = {
@@ -123,7 +122,7 @@ const verifyExchange = async (
   passphrase?: string,
   keysType?: CoinbaseKeysType,
   okxSource?: OKXSource,
-  bybitHost?: BybitHost,
+  bybitHost?: string,
   subaccount?: boolean,
 ): Promise<VerifyResponse> => {
   if (paperExchanges.includes(provider)) {
