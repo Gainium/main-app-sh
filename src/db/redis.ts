@@ -160,12 +160,55 @@ export class RedisWrapper {
   get isReady() {
     return this.instance?.isReady
   }
-  public async set(key: string, value: string) {
+  public async set(key: string, value: string, ttlSec?: number) {
     if (this.instance && this.instance.isReady) {
-      return await this.instance.set(key, value).catch((e) => {
+      // Backward compatible: 2-arg calls behave exactly as before. When a
+      // positive TTL is supplied we use SET ... EX so the key self-expires
+      // (kills the historical key-leak in the auth limiters).
+      const options =
+        typeof ttlSec === 'number' && ttlSec > 0
+          ? { EX: Math.floor(ttlSec) }
+          : undefined
+      return await this.instance.set(key, value, options).catch((e) => {
         logger.error(`${prefix} Redis set Error: ${e}`)
       })
     }
+  }
+  /**
+   * Atomic INCR. Returns the new counter value, or undefined when Redis is
+   * unavailable (callers must treat undefined as "could not count" and decide
+   * their own fail-open/closed policy).
+   */
+  public async incr(key: string): Promise<number | undefined> {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.incr(key).catch((e) => {
+        logger.error(`${prefix} Redis incr Error: ${e}`)
+        return undefined
+      })
+    }
+    return undefined
+  }
+  /** Set a TTL (seconds) on an existing key. */
+  public async expire(key: string, sec: number) {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.expire(key, Math.floor(sec)).catch((e) => {
+        logger.error(`${prefix} Redis expire Error: ${e}`)
+      })
+    }
+  }
+  /**
+   * Remaining TTL (seconds) for a key. Mirrors Redis TTL semantics: -2 if the
+   * key does not exist, -1 if it exists without a TTL. Returns undefined when
+   * Redis is unavailable.
+   */
+  public async ttl(key: string): Promise<number | undefined> {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.ttl(key).catch((e) => {
+        logger.error(`${prefix} Redis ttl Error: ${e}`)
+        return undefined
+      })
+    }
+    return undefined
   }
   public async del(key: string) {
     if (this.instance && this.instance.isReady) {
