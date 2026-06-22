@@ -3,6 +3,7 @@ import {
   AllPricesResponse,
   BaseReturn,
   CandleResponse,
+  FundingRateResponse,
   CommonOrder,
   ExchangeEnum,
   ExchangeInfo,
@@ -443,6 +444,46 @@ class PaperExchange extends AbstractExchange implements Exchange {
       res.reason.includes('parameter verification failed')
     ) {
       return this.returnGood<CandleResponse[]>()([])
+    }
+    return res
+  }
+
+  async getFundingRateHistory(
+    symbol: string,
+    from?: number,
+    to?: number,
+    limit?: number,
+  ): Promise<BaseReturn<FundingRateResponse[]>> {
+    // Paper deals accrue real funding: the paper service proxies this through
+    // to exchange-connector for the underlying real exchange + symbol.
+    const params: {
+      symbol: string
+      from?: number
+      to?: number
+      limit?: number
+    } = { symbol }
+    if (from) {
+      params.from = from
+    }
+    if (to) {
+      params.to = to
+    }
+    if (limit) {
+      params.limit = limit
+    }
+    const res = await this.apiCall<BaseReturn<FundingRateResponse[]>>({
+      endpoint: 'exchange/fundingRateHistory',
+      method: 'get',
+      params: {
+        ...params,
+        exchange: this.exchange,
+      },
+    }).catch(this.handlePaperErrors())
+    if (
+      res.status === StatusEnum.notok &&
+      res.reason.includes('parameter verification failed')
+    ) {
+      return this.returnGood<FundingRateResponse[]>()([])
     }
     return res
   }

@@ -3,6 +3,7 @@ import {
   AllPricesResponse,
   BaseReturn,
   CandleResponse,
+  FundingRateResponse,
   CommonOrder,
   ExchangeEnum,
   ExchangeInfo,
@@ -451,6 +452,52 @@ class Exchange extends AbstractExchange {
     ) {
       return this.returnGood<CandleResponse[]>()([])
     }
+    return result.data
+  }
+
+  async getFundingRateHistory(
+    symbol: string,
+    from?: number,
+    to?: number,
+    limit?: number,
+    timeProfile = this.getEmptyTimeProfile('getFundingRateHistory'),
+  ): Promise<BaseReturn<FundingRateResponse[]>> {
+    const params: {
+      symbol: string
+      from?: number
+      to?: number
+      limit?: number
+    } = { symbol }
+    if (from) {
+      params.from = from
+    }
+    if (to) {
+      params.to = to
+    }
+    if (limit) {
+      params.limit = limit
+    }
+    const result = await this.apiCall<FundingRateResponse[]>(
+      {
+        endpoint: 'fundingRateHistory',
+        method: 'get',
+        params: {
+          ...params,
+          exchange: this.exchange,
+        },
+      },
+      timeProfile,
+    ).catch(
+      this.handleError(
+        this.getFundingRateHistory,
+        symbol,
+        from,
+        to,
+        limit,
+        timeProfile,
+      ),
+    )
+    this.saveTimeProfile(result.timeProfile)
     return result.data
   }
 

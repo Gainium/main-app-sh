@@ -5,6 +5,7 @@ import Bot from '../bot/index'
 import cleanJob from '../db/scripts/cleanCron'
 import removeOldFiles from '../backtest/process/cron'
 import { saveRate, exchangeFullUpdate } from '../utils/cron/exchange'
+import { publishFunding } from '../utils/cron/funding'
 import { checkBacktests } from '../utils/cron/backtest'
 import HealthServer from '../utils/healthServer'
 
@@ -28,6 +29,12 @@ cron.schedule('20 */1 * * *', async () => {
 
 cron.schedule('15 */1 * * *', async () => {
   Bot.getInstance().closeOldStartDeals()
+})
+
+// Funding fees: every hour at :05, just after on-the-hour settlements. SH uses
+// exchange candles for mark price; cloud overrides with the archive source.
+cron.schedule('5 */1 * * *', async () => {
+  publishFunding()
 })
 
 cron.schedule('0 0 * * *', async () => {

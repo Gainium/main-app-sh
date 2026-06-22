@@ -209,6 +209,49 @@ export class RedisWrapper {
       })
     }
   }
+  /**
+   * Add one or more scored members to a sorted set. Pass an array to add many
+   * in a single command (e.g. a heartbeat registry flush).
+   */
+  public async zAdd(
+    key: string,
+    members:
+      | { score: number; value: string }
+      | { score: number; value: string }[],
+  ) {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.zAdd(key, members).catch((e) => {
+        logger.error(`${prefix} Redis zAdd Error: ${e}`)
+      })
+    }
+  }
+  /**
+   * Members with score in [min, max]. Use '-inf'/'+inf' or '(123' (exclusive)
+   * per the Redis ZRANGEBYSCORE syntax.
+   */
+  public async zRangeByScore(
+    key: string,
+    min: number | string,
+    max: number | string,
+  ) {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.zRangeByScore(key, min, max).catch((e) => {
+        logger.error(`${prefix} Redis zRangeByScore Error: ${e}`)
+      })
+    }
+  }
+  /** Remove members with score in [min, max]; used to prune stale entries. */
+  public async zRemRangeByScore(
+    key: string,
+    min: number | string,
+    max: number | string,
+  ) {
+    if (this.instance && this.instance.isReady) {
+      return await this.instance.zRemRangeByScore(key, min, max).catch((e) => {
+        logger.error(`${prefix} Redis zRemRangeByScore Error: ${e}`)
+      })
+    }
+  }
   @IdMute(mutexConcurrentely, () => 'subscribe')
   public async subscribe(
     key: string,

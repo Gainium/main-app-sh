@@ -95,6 +95,13 @@ import Rabbit from '../db/rabbit'
 import { RunWithDelay } from '../utils/delay'
 import BotSharedData, { type StreamData } from './shared'
 import SharedStream from './sharedStream'
+import FundingStream, { fundingChannel } from './fundingStream'
+import FundingStore from './fundingStore'
+import {
+  computeFunding,
+  type SignedFill,
+  type FundingComputeResult,
+} from './fundingProcessor'
 import Bot from '.'
 import { SKIP_REDIS } from '../config'
 
@@ -941,6 +948,7 @@ class MainBot<T extends IMainBot> {
     if (this.userStreamChannel) {
       this.sharedStream.removeListener(this.userStreamChannel, this.botId)
     }
+    this.stopFunding()
   }
 
   async getExchangeData() {
@@ -1874,6 +1882,153 @@ class MainBot<T extends IMainBot> {
           this.data?.exchange ?? ExchangeEnum.binance,
         )}`,
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Funding fees
+  //
+  // The funding store (keyed by the real exchange + universal symbol) is the
+  // source of truth; FundingStream pub/sub is only a wake-up. Subclasses react
+  // in `onFundingNotify` — Grid per-bot, DCA/Combo per open deal. Catch-up after
+  // a restart / on deal-open is the same path: just call `onFundingNotify`.
+  // ---------------------------------------------------------------------------
+
+  /** Real exchange name (paper bots accrue real rates). */
+  protected fundingExchangeName() {
+    return removePaperFormExchangeName(
+      this.data?.exchange ?? ExchangeEnum.binance,
+    )
+  }
+
+  protected fundingChannelFor(symbol: string) {
+    return fundingChannel(this.fundingExchangeName(), symbol)
+  }
+
+  private onFundingNotifyBound = (_msg: string, channelKey: string) =>
+    this.onFundingNotify(channelKey)
+
+  protected async subscribeFunding(symbol: string) {
+    if (!this.futures) {
+      return
+    }
+    await FundingStream.getInstance().addListener(
+      this.fundingChannelFor(symbol),
+      this.botId,
+      this.onFundingNotifyBound,
+    )
+  }
+
+  protected async unsubscribeFunding(symbol: string) {
+    await FundingStream.getInstance().removeListener(
+      this.fundingChannelFor(symbol),
+      this.botId,
+    )
+  }
+
+  /** Symbol carried in a `funding@<exchange>@<symbol>` channel key. */
+  protected fundingSymbolFromChannel(channelKey: string) {
+    return channelKey.split('@')[2] ?? ''
+  }
+
+  /**
+   * Symbol used on the funding channel/registry/store. Kraken & Hyperliquid
+   * pass the exchange code through their connectors, so we subscribe by code
+   * (cheap lookup from shared exchange info); everyone else uses the pair.
+   */
+  protected async toFundingSymbol(pair: string): Promise<string> {
+    if (this.isKraken || this.hyperliquid) {
+      const ed = await this.getExchangeInfo(pair)
+      return ed?.code ?? pair
+    }
+    return pair
+  }
+
+  /** Reverse of {@link toFundingSymbol}: funding symbol → the bot's pair. */
+  protected async fromFundingSymbol(fundingSym: string): Promise<string> {
+    if (this.isKraken || this.hyperliquid) {
+      const pair = await this.sharedData.getPairByCode(
+        this.fundingExchangeName() as ExchangeEnum,
+        fundingSym,
+      )
+      return pair ?? fundingSym
+    }
+    return fundingSym
+  }
+
+  /**
+   * React to a settled-funding notify (or a catch-up call) for one symbol.
+   * Default no-op; overridden by Grid (per-bot) and DCA/Combo (per deal).
+   */
+  protected async onFundingNotify(_channelKey: string): Promise<void> {
+    return
+  }
+
+  /**
+   * Start funding tracking on bot load (futures only). Subclasses subscribe
+   * their symbols and run a catch-up. Default no-op.
+   */
+  protected async startFunding(): Promise<void> {
+    return
+  }
+
+  /** Tear down all funding subscriptions for this bot. */
+  protected async stopFunding(): Promise<void> {
+    await FundingStream.getInstance().removeAllForBot(this.botId)
+  }
+
+  /**
+   * Signed fills (buy +, sell −) for a deal from in-memory orders — no DB
+   * round-trip, no full scan (uses the status+deal index). DCA/Combo keep all
+   * deal orders in RAM, so this is complete for them. Ascending by time.
+   */
+  protected getSignedFillsFromMemory(dealId: string): SignedFill[] {
+    return this.getOrdersByStatusAndDealId({ status: 'FILLED', dealId })
+      .map((o) => ({
+        time: +o.updateTime,
+        signedQty:
+          +(o.executedQty ?? o.origQty ?? 0) * (o.side === 'BUY' ? 1 : -1),
+      }))
+      .sort((a, b) => a.time - b.time)
+  }
+
+  /**
+   * Shared store-read + funding math. `storeSymbol` keys the funding store
+   * (code for kraken/HL); `pair` is the bot's pair (for exchange info / usd
+   * rate). `getQtyAt` resolves the signed position at a settlement from RAM.
+   */
+  protected async computeFundingFor(
+    storeSymbol: string,
+    pair: string,
+    offset: number,
+    getQtyAt: (eventTime: number) => number,
+  ): Promise<FundingComputeResult> {
+    const events = await FundingStore.getEventsAfter(
+      this.fundingExchangeName(),
+      storeSymbol,
+      offset,
+    )
+    if (!events.length) {
+      return {
+        deltaQuote: 0,
+        deltaUsd: 0,
+        maxTime: offset,
+        lastTime: offset,
+        applied: 0,
+        entries: [],
+      }
+    }
+    const inverse = this.coinm
+    const ed = await this.getExchangeInfo(pair)
+    const contractMultiplier = inverse ? ((ed as any)?.contractSize ?? 1) : 1
+    const usdRate = (await this.getUsdRate(pair)) || 1
+    return computeFunding({
+      events,
+      offset,
+      getQtyAt,
+      inverse,
+      contractMultiplier,
+      usdRate,
+    })
   }
 
   redisSubCb(msg: string) {

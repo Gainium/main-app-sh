@@ -314,6 +314,28 @@ const profit = {
   gridProfitUsd: Number,
 }
 
+// Funding fees accrued on a futures position. Kept separate from `profit`
+// because deal-close recomputes profit.total from scratch (which would wipe a
+// running funding accumulator). `offset` is the dedup cursor — per-deal for
+// DCA/Combo, per-bot for Grid; on the bot aggregate for DCA/Combo it is unused.
+const funding = {
+  total: Number, // cumulative funding in quote asset (signed; negative = paid)
+  totalUsd: Number,
+  offset: Number, // last processed fundingTime (ms)
+  lastTime: Number, // last applied settlement time (ms)
+  // Last 25 applied settlements — cheap to keep, very useful for debugging.
+  history: [
+    {
+      time: Number,
+      rate: Number,
+      markPrice: Number,
+      qty: Number, // signed position at settlement
+      feeQuote: Number,
+      feeUsd: Number,
+    },
+  ],
+}
+
 const profitByAssets = [
   {
     asset: String,
@@ -348,6 +370,7 @@ const botCommon = {
   statusReason: String,
   showErrorWarning: String,
   profit,
+  funding,
   profitByAssets,
   profitToday: {
     start: Number,
@@ -525,6 +548,15 @@ const botSchema: Schema<BotSchema> = new Schema({
     qty: Number,
     price: Number,
   },
+  // Last few signed-position breakpoints {time, qty}, newest last. Lets the
+  // funding processor rewind the position to a past settlement without reading
+  // orders (grid drops filled orders from RAM once transacted).
+  positionHistory: [
+    {
+      time: Number,
+      qty: Number,
+    },
+  ],
   lastPositionChange: Number,
   stats: {
     drawdownPercent: RequiredNumber,
@@ -1707,6 +1739,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   initialPrice: Number,
   lastPrice: Number,
   profit: profit,
+  funding: funding,
   feePaid: {
     base: Number,
     quote: Number,
@@ -1885,6 +1918,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   initialPrice: Number,
   lastPrice: Number,
   profit: profit,
+  funding: funding,
   feePaid: {
     base: Number,
     quote: Number,

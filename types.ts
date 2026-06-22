@@ -1222,6 +1222,28 @@ export enum DCACloseTriggerEnum {
   base = 'base',
 }
 
+export interface FundingHistoryEntry {
+  time: number
+  rate: number
+  markPrice?: number
+  /** Signed position held at the settlement */
+  qty: number
+  feeQuote: number
+  feeUsd: number
+}
+
+export interface Funding {
+  /** Cumulative funding in quote asset (signed; negative = paid by us) */
+  total: number
+  totalUsd: number
+  /** Last processed fundingTime (ms) — dedup cursor */
+  offset: number
+  /** Last applied settlement time (ms) — UI "last funding" */
+  lastTime: number
+  /** Last 25 applied settlements (debug). */
+  history?: FundingHistoryEntry[]
+}
+
 export interface DCADealsSchema extends SchemaI {
   action?: ActionsEnum
   closeTrigger?: DCACloseTriggerEnum
@@ -1250,6 +1272,7 @@ export interface DCADealsSchema extends SchemaI {
     base?: number
     quote?: number
   }
+  funding?: Funding
   avgPrice: number
   displayAvg: number
   commission: number
@@ -1355,6 +1378,7 @@ export interface ComboDealsSchema extends DCADealsSchema {
     base?: number
     quote?: number
   }
+  funding?: Funding
   avgPrice: number
   displayAvg: number
   commission: number
@@ -1729,6 +1753,7 @@ export interface MainBot<T = BaseSettings> extends SchemaI {
     pureBase?: number
     pureQuote?: number
   }
+  funding?: Funding
   profitByAssets?: { asset: string; total: number; totalUsd: number }[]
   profitToday: {
     start: number
@@ -1799,6 +1824,8 @@ export interface BotSchema extends MainBot<BotSettings> {
     required: Asset
   }
   position: PositionInBot
+  /** Signed-position breakpoints {time, qty}, newest last (funding rewind). */
+  positionHistory?: { time: number; qty: number }[]
   stats: ProfitLossStats
   lastPositionChange?: number
   lastPriceRangeAlert?: number
@@ -3157,6 +3184,16 @@ export type TradeResponse = {
   firstId: number
   lastId: number
   timestamp: number
+}
+
+export type FundingRateResponse = {
+  symbol: string
+  /** Settled funding rate as a fraction, e.g. -0.000123 */
+  fundingRate: number
+  /** Settlement time in milliseconds */
+  fundingTime: number
+  /** Mark price associated with the funding charge, when supplied */
+  markPrice?: number
 }
 
 export type AllPricesResponse = {

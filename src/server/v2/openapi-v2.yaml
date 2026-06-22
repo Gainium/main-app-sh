@@ -2311,6 +2311,40 @@ components:
                   type: number
                   description: Total profit in USD
                   example: 1250.5
+            funding:
+              type: object
+              description: Funding fees accrued on the bot's futures position(s)
+              properties:
+                total:
+                  type: number
+                  description: Cumulative funding in quote asset (signed; negative = paid)
+                  example: -1.23
+                totalUsd:
+                  type: number
+                  description: Cumulative funding in USD (signed; negative = paid)
+                  example: -1.23
+                lastTime:
+                  type: number
+                  description: Last applied settlement time (ms)
+                  example: 1705737600000
+                history:
+                  type: array
+                  description: Last 25 applied settlements (Grid only; DCA/Combo keep per-deal)
+                  items:
+                    type: object
+                    properties:
+                      time:
+                        type: number
+                      rate:
+                        type: number
+                      markPrice:
+                        type: number
+                      qty:
+                        type: number
+                      feeQuote:
+                        type: number
+                      feeUsd:
+                        type: number
             deals:
               type: object
               description: Deal statistics
@@ -2434,6 +2468,40 @@ components:
               type: number
               description: Total profit in USD
               example: 75
+        funding:
+          type: object
+          description: Funding fees accrued on the deal's futures position
+          properties:
+            total:
+              type: number
+              description: Cumulative funding in quote asset (signed; negative = paid)
+              example: -0.42
+            totalUsd:
+              type: number
+              description: Cumulative funding in USD (signed; negative = paid)
+              example: -0.42
+            lastTime:
+              type: number
+              description: Last applied settlement time (ms)
+              example: 1705737600000
+            history:
+              type: array
+              description: Last 25 applied settlements
+              items:
+                type: object
+                properties:
+                  time:
+                    type: number
+                  rate:
+                    type: number
+                  markPrice:
+                    type: number
+                  qty:
+                    type: number
+                  feeQuote:
+                    type: number
+                  feeUsd:
+                    type: number
         created:
           type: number
           description: Deal creation timestamp
@@ -2886,6 +2954,40 @@ components:
                 totalUsd:
                   type: number
                   example: 4500
+            funding:
+              type: object
+              description: Funding fees accrued on the grid's futures position
+              properties:
+                total:
+                  type: number
+                  description: Cumulative funding in quote asset (signed; negative = paid)
+                  example: -1.23
+                totalUsd:
+                  type: number
+                  description: Cumulative funding in USD (signed; negative = paid)
+                  example: -1.23
+                lastTime:
+                  type: number
+                  description: Last applied settlement time (ms)
+                  example: 1705737600000
+                history:
+                  type: array
+                  description: Last 25 applied settlements
+                  items:
+                    type: object
+                    properties:
+                      time:
+                        type: number
+                      rate:
+                        type: number
+                      markPrice:
+                        type: number
+                      qty:
+                        type: number
+                      feeQuote:
+                        type: number
+                      feeUsd:
+                        type: number
             levels:
               type: object
               description: Grid level statistics

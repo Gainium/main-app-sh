@@ -1177,6 +1177,9 @@ function createDCABotHelper<
           }
         }
       }
+      if (this.futures) {
+        await this.startFunding().catch(() => undefined)
+      }
       this.endMethod(_id)
     }
 
@@ -1468,6 +1471,9 @@ function createDCABotHelper<
           orderSizeType,
           parentBotId: this.data.parentBotId,
           action: this.data.settings.futures ? undefined : this.data.action,
+          // Funding cursor starts at deal creation so we never backfill funding
+          // from before the deal existed.
+          funding: { total: 0, totalUsd: 0, offset: time, lastTime: 0 },
           tags: ['TPrev150925'],
         } as any)
         if (record.status === StatusEnum.notok) {
@@ -1491,6 +1497,11 @@ function createDCABotHelper<
           closeByTp: false,
         })
         this.resetPending(this.botId, symbol)
+        if (this.futures) {
+          await this.subscribeFunding(
+            await this.toFundingSymbol(symbolData.symbol),
+          )
+        }
         this.emit('bot deal update', record.data)
         this.updateBotDeals(this.botId, true)
         this.endMethod(_id)
@@ -1503,6 +1514,161 @@ function createDCABotHelper<
       this.endMethod(_id)
       return
     }
+    // ---- Funding fees (DCA/Combo: per open deal, offset on each deal) ----
+
+    protected override async startFunding(): Promise<void> {
+      if (!this.futures) {
+        return
+      }
+      const open = this.getDealsByStatusAndSymbol({
+        status: [DCADealStatusEnum.open, DCADealStatusEnum.start],
+      })
+      const pairs = new Set<string>()
+      for (const fd of open) {
+        const pair = fd.deal.symbol?.symbol
+        if (pair) {
+          pairs.add(pair)
+        }
+      }
+      for (const pair of pairs) {
+        const fundingSym = await this.toFundingSymbol(pair)
+        await this.subscribeFunding(fundingSym)
+        await this.onFundingNotify(this.fundingChannelFor(fundingSym))
+      }
+    }
+
+    protected override async onFundingNotify(
+      channelKey: string,
+    ): Promise<void> {
+      if (!this.futures) {
+        return
+      }
+      const fundingSym = this.fundingSymbolFromChannel(channelKey)
+      if (!fundingSym) {
+        return
+      }
+      const pair = await this.fromFundingSymbol(fundingSym)
+      const deals = this.getDealsByStatusAndSymbol({
+        status: DCADealStatusEnum.open,
+        symbol: pair,
+      })
+      for (const fd of deals) {
+        await this.processDealFunding(fd.deal._id)
+      }
+    }
+
+    @IdMute(mutex, (dealId: string) => `${dealId}funding`)
+    private async processDealFunding(dealId: string) {
+      const fd = this.getDeal(dealId)
+      if (!fd) {
+        return
+      }
+      const deal = fd.deal
+      const pair = deal.symbol?.symbol
+      if (!pair) {
+        return
+      }
+      const fundingSym = await this.toFundingSymbol(pair)
+      const offset = deal.funding?.offset ?? deal.createTime
+      // Deals keep all their orders in RAM — derive the position from those
+      // in-memory fills (no DB round-trip), folding fills up to each settlement.
+      const fills = this.getSignedFillsFromMemory(dealId)
+      const getQtyAt = (eventTime: number) =>
+        fills.reduce(
+          (sum, f) => (f.time <= eventTime ? sum + f.signedQty : sum),
+          0,
+        )
+      const result = await this.computeFundingFor(
+        fundingSym,
+        pair,
+        offset,
+        getQtyAt,
+      )
+      if (result.applied === 0) {
+        return
+      }
+      this.handleDebug(
+        `Funding for deal ${dealId}. Quote: ${result.deltaQuote}, USD: ${result.deltaUsd}, max time: ${result.maxTime}, last time: ${result.lastTime}, applied: ${result.applied}`,
+      )
+      // Per-deal commit: atomic + CAS on the deal's own offset.
+      await this.dealsDb.updateData(
+        { _id: dealId, 'funding.offset': offset } as any,
+        {
+          $inc: {
+            'funding.total': result.deltaQuote,
+            'funding.totalUsd': result.deltaUsd,
+          },
+          $set: {
+            'funding.offset': result.maxTime,
+            'funding.lastTime': result.lastTime,
+          },
+          $push: {
+            'funding.history': { $each: result.entries, $slice: -25 },
+          },
+        } as any,
+      )
+      // Bot-level aggregate (no offset — each deal owns its own). lastTime via
+      // $max: a bot can hold several symbols whose settlements differ.
+      await this.db?.updateData(
+        { _id: this.botId } as any,
+        {
+          $inc: {
+            'funding.total': result.deltaQuote,
+            'funding.totalUsd': result.deltaUsd,
+          },
+          $max: { 'funding.lastTime': result.lastTime },
+        } as any,
+      )
+      // In-memory mirrors.
+      const f = deal.funding ?? {
+        total: 0,
+        totalUsd: 0,
+        offset,
+        lastTime: 0,
+        history: [],
+      }
+      deal.funding = {
+        total: (f.total ?? 0) + result.deltaQuote,
+        totalUsd: (f.totalUsd ?? 0) + result.deltaUsd,
+        offset: result.maxTime,
+        lastTime: result.lastTime,
+        history: [...(f.history ?? []), ...result.entries].slice(-25),
+      }
+      this.setDeal(fd, false)
+      if (this.data) {
+        const bf = this.data.funding ?? {
+          total: 0,
+          totalUsd: 0,
+          offset: 0,
+          lastTime: 0,
+        }
+        this.data.funding = {
+          total: (bf.total ?? 0) + result.deltaQuote,
+          totalUsd: (bf.totalUsd ?? 0) + result.deltaUsd,
+          offset: bf.offset ?? 0,
+          lastTime: Math.max(bf.lastTime ?? 0, result.lastTime),
+        }
+      }
+      // Push the change to the UI (deal + bot aggregate).
+      this.emit('bot deal update', deal)
+      this.emit('bot settings update', { funding: this.data?.funding })
+    }
+
+    /** Settle funding one last time, then drop the symbol sub if unused. */
+    private async finishDealFunding(dealId: string, pair: string) {
+      if (!this.futures || !pair) {
+        return
+      }
+      await this.processDealFunding(dealId)
+      const others = this.getDealsByStatusAndSymbol({
+        status: [DCADealStatusEnum.open, DCADealStatusEnum.start],
+        symbol: pair,
+      }).filter((fd) => fd.deal._id !== dealId)
+      if (!others.length) {
+        await this.unsubscribeFunding(await this.toFundingSymbol(pair))
+      }
+    }
+
     /**
      * Clear deal timer
      */
@@ -1570,6 +1736,8 @@ function createDCABotHelper<
         this.orders &&
         dealId
       ) {
+        // Settle any funding accrued up to close before the deal leaves memory.
+        await this.finishDealFunding(dealId, findDeal.deal.symbol?.symbol ?? '')
         const profitBase = await this.profitBase(findDeal.deal)
         if (tpOrder) {
           this.handleLog('TP order FILLED')
@@ -1899,6 +2067,23 @@ function createDCABotHelper<
             undefined,
             tpOrder,
           )
+        }
+
+        // Fold settled funding into the realized P&L so the headline profit
+        // (deal + bot aggregate) is net of funding. `funding.total` stays as the
+        // breakdown line; the UI must not add it again for closed deals.
+        const fundingTotal = findDeal.deal.funding?.total ?? 0
+        const fundingTotalUsd = findDeal.deal.funding?.totalUsd ?? 0
+        if (
+          findDeal.deal.status === DCADealStatusEnum.closed &&
+          (fundingTotal || fundingTotalUsd)
+        ) {
+          findDeal.deal.profit.total += fundingTotal
+          findDeal.deal.profit.totalUsd += fundingTotalUsd
+          this.data.profit.total += fundingTotal
+          this.data.profit.totalUsd += fundingTotalUsd
+          this.updateData({ profit: this.data.profit })
+          this.saveDeal(findDeal, { profit: findDeal.deal.profit })
         }
 
         if (stop) {

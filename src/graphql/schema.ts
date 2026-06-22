@@ -2690,6 +2690,7 @@ export const BotSchema = /* GraphQL */ `
     newBalance: Boolean
     transactionsCount: Level
     profit: Profit
+    funding: Funding
     profitByAssets: [ProfitByAssets]
     symbol: Symbol
     profitToday: ProfitToday
@@ -3423,6 +3424,7 @@ export const BotSchema = /* GraphQL */ `
     lastUsdRate: [priceAssetMap]
     lastPrice: [priceAssetMap]
     profit: Profit
+    funding: Funding
     profitByAssets: [ProfitByAssets]
     symbol: [MultiPairSymbols]
     profitToday: ProfitToday
@@ -3548,6 +3550,7 @@ export const BotSchema = /* GraphQL */ `
     lastUsdRate: [priceAssetMap]
     lastPrice: [priceAssetMap]
     profit: Profit
+    funding: Funding
     profitByAssets: [ProfitByAssets]
     symbol: [MultiPairSymbols]
     profitToday: ProfitToday
@@ -3954,6 +3957,7 @@ export const BotSchema = /* GraphQL */ `
     initialPrice: Float
     lastPrice: Float
     profit: Profit
+    funding: Funding
     feePaid: FeePaid
     avgPrice: Float
     displayAvg: Float
@@ -4033,6 +4037,7 @@ export const BotSchema = /* GraphQL */ `
     initialPrice: Float
     lastPrice: Float
     profit: Profit
+    funding: Funding
     feePaid: FeePaid
     avgPrice: Float
     displayAvg: Float
@@ -4170,6 +4175,20 @@ export const BotSchema = /* GraphQL */ `
     asset: String
     total: FloatOrInfinity
     totalUsd: FloatOrInfinity
+  }
+  type FundingHistoryEntry {
+    time: Float
+    rate: Float
+    markPrice: Float
+    qty: Float
+    feeQuote: Float
+    feeUsd: Float
+  }
+  type Funding {
+    total: FloatOrInfinity
+    totalUsd: FloatOrInfinity
+    lastTime: Float
+    history: [FundingHistoryEntry]
   }
   type Symbol {
     symbol: String

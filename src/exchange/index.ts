@@ -10,6 +10,7 @@ import type {
   ReturnGood,
   OrderTypeT,
   CandleResponse,
+  FundingRateResponse,
   AllPricesResponse,
   PositionSide,
   LeverageBracket,
@@ -76,6 +77,12 @@ export interface Exchange {
     startTime?: number,
     endTime?: number,
   ): Promise<BaseReturn<TradeResponse[]>>
+  getFundingRateHistory(
+    symbol: string,
+    from?: number,
+    to?: number,
+    limit?: number,
+  ): Promise<BaseReturn<FundingRateResponse[]>>
   getAllPrices(cache?: boolean): Promise<BaseReturn<AllPricesResponse[]>>
   changeMargin(data: {
     symbol: string
@@ -280,6 +287,12 @@ abstract class AbsctractExchange implements Exchange {
     startTime?: number,
     endTime?: number,
   ): Promise<BaseReturn<TradeResponse[]>>
+  abstract getFundingRateHistory(
+    symbol: string,
+    from?: number,
+    to?: number,
+    limit?: number,
+  ): Promise<BaseReturn<FundingRateResponse[]>>
   /**
    * Get all prices
    */

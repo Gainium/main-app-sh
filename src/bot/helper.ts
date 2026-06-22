@@ -381,6 +381,9 @@ function createBotHelper<
         )
       }
       this.handleLog('Load orders end')
+      if (this.futures) {
+        await this.startFunding().catch(() => undefined)
+      }
       this.endMethod(_id)
     }
 
@@ -1940,9 +1943,152 @@ function createBotHelper<
         `Position after ${order.clientOrderId}, size: ${current.qty}, price: ${current.price}, side: ${current.side}`,
       )
       this.data.position = current
-      this.updateData({ position: current })
+      // Keep a short signed-position breakpoint trail for funding rewind.
+      const signedQty =
+        (current.side === PositionSide.SHORT ? -1 : 1) * +current.qty
+      const positionHistory = [
+        ...(this.data.positionHistory ?? []),
+        { time: +(order.updateTime ?? Date.now()), qty: signedQty },
+      ].slice(-10)
+      this.data.positionHistory = positionHistory
+      this.updateData({ position: current, positionHistory })
       this.emit('bot settings update', { position: current })
     }
+    // ---- Funding fees (Grid: per-bot, offset on the bot) ----
+
+    protected override async startFunding(): Promise<void> {
+      if (!this.futures || this.botType !== BotType.grid) {
+        return
+      }
+      const pair = this.data?.settings.pair
+      if (!pair) {
+        return
+      }
+      // Initialise the offset to "now" the first time so we don't backfill
+      // funding from before the feature existed.
+      if (typeof this.data?.funding?.offset !== 'number') {
+        const offset = +new Date()
+        if (this.data) {
+          this.data.funding = {
+            total: 0,
+            totalUsd: 0,
+            offset,
+            lastTime: 0,
+          }
+        }
+        await this.updateData({ funding: this.data?.funding })
+      }
+      const fundingSym = await this.toFundingSymbol(pair)
+      await this.subscribeFunding(fundingSym)
+      await this.onFundingNotify(this.fundingChannelFor(fundingSym))
+    }
+
+    protected override async onFundingNotify(
+      channelKey: string,
+    ): Promise<void> {
+      if (!this.futures || this.botType !== BotType.grid) {
+        return
+      }
+      const fundingSym = this.fundingSymbolFromChannel(channelKey)
+      if (!fundingSym) {
+        return
+      }
+      await this.processGridFunding(fundingSym)
+    }
+
+    /** Resolve the signed position as of a settlement from the breakpoint trail. */
+    private gridQtyResolver(): (eventTime: number) => number {
+      const hist = this.data?.positionHistory ?? []
+      const pos = this.data?.position
+      const currentSigned = pos
+        ? (pos.side === PositionSide.SHORT ? -1 : 1) * +pos.qty
+        : 0
+      return (eventTime: number) => {
+        if (!hist.length) {
+          return currentSigned
+        }
+        let qty = hist[0].qty
+        for (const bp of hist) {
+          if (bp.time <= eventTime) {
+            qty = bp.qty
+          } else {
+            break
+          }
+        }
+        return qty
+      }
+    }
+
+    @IdMute(mutex, (fundingSym: string) => `${fundingSym}funding`)
+    private async processGridFunding(fundingSym: string) {
+      const pair = this.data?.settings.pair
+      if (!pair) {
+        return
+      }
+      const offset = this.data?.funding?.offset ?? 0
+      const result = await this.computeFundingFor(
+        fundingSym,
+        pair,
+        offset,
+        this.gridQtyResolver(),
+      )
+      if (result.applied === 0) {
+        return
+      }
+      this.handleDebug(
+        `Funding. Quote: ${result.deltaQuote}, USD: ${result.deltaUsd}, max time: ${result.maxTime}, last time: ${result.lastTime}, applied: ${result.applied}`,
+      )
+      // Atomic + CAS on the offset (no read-modify-write clobber of concurrent
+      // fill writes); also mirror into the in-memory bot.
+      await this.db?.updateData(
+        { _id: this.botId, 'funding.offset': offset } as any,
+        {
+          $inc: {
+            'funding.total': result.deltaQuote,
+            'funding.totalUsd': result.deltaUsd,
+            // Grid has no deal close to fold at, and profit.total accumulates
+            // (never reset), so fold funding into the headline P&L live.
+            'profit.total': result.deltaQuote,
+            'profit.totalUsd': result.deltaUsd,
+          },
+          $set: {
+            'funding.offset': result.maxTime,
+            'funding.lastTime': result.lastTime,
+          },
+          $push: {
+            'funding.history': { $each: result.entries, $slice: -25 },
+          },
+        } as any,
+      )
+      if (this.data) {
+        const f = this.data.funding ?? {
+          total: 0,
+          totalUsd: 0,
+          offset,
+          lastTime: 0,
+          history: [],
+        }
+        this.data.funding = {
+          total: (f.total ?? 0) + result.deltaQuote,
+          totalUsd: (f.totalUsd ?? 0) + result.deltaUsd,
+          offset: result.maxTime,
+          lastTime: result.lastTime,
+          history: [...(f.history ?? []), ...result.entries].slice(-25),
+        }
+        if (this.data.profit) {
+          this.data.profit.total =
+            (this.data.profit.total ?? 0) + result.deltaQuote
+          this.data.profit.totalUsd =
+            (this.data.profit.totalUsd ?? 0) + result.deltaUsd
+        }
+      }
+      // Push the change to the UI.
+      this.emit('bot settings update', {
+        funding: this.data?.funding,
+        profit: this.data?.profit,
+      })
+    }
+
     /**
      * Sort function for order queue
      */

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.20.0] - 2026-06-22
+
+### Added
+- Get funding rate history
+
 ## [1.19.1] - 2026-06-13
 
 ### Fixed
