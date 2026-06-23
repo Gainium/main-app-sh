@@ -184,6 +184,23 @@ class Bot<T extends UserSchema = UserSchema> {
       used: number
       time: number
     }[]
+    // Event-loop delay (ms) reported by the worker on each health ping — the
+    // leading signal of a wedging worker (blocked loop) before the ping times out.
+    lag?: {
+      mean: number
+      max: number
+    }
+    lagHistory?: {
+      mean: number
+      max: number
+      time: number
+    }[]
+    // Consecutive health-ping failures; reset to 0 on any successful pong. Used to
+    // distinguish a sustained wedge from transient deploy/restart ping noise.
+    consecutiveFails?: number
+    // Whether we've already escalated a WEDGED alert for the current fail episode,
+    // so we escalate once per episode rather than every 5-minute ping.
+    wedgedNotified?: boolean
     botIds: Map<string, string>
     logLevel?: LogLevel
   }[] = []

@@ -12,6 +12,7 @@ import {
 import { IdMute, IdMutex } from '../../utils/mutex'
 import logger from '../../utils/logger'
 import v8 from 'v8'
+import { monitorEventLoopDelay } from 'perf_hooks'
 import { v4 } from 'uuid'
 import createComboBotHelper from '../../bot/comboHelper'
 import createHedgeBotHelper from '../hedgeHelper'
@@ -20,6 +21,17 @@ import createBotHelper from '../../bot/helper'
 const mutex = new IdMutex()
 
 const mutexConcurrentely = new IdMutex(1000)
+
+/**
+ * Event-loop delay histogram for this worker. A blocked/saturated event loop is
+ * the root cause behind the recurring "bot stuck in error, only a manual restart
+ * clears it" signature: the loop can't service the bot's orders, so the bot never
+ * re-evaluates itself out of the error state. We sample mean/max delay and report
+ * it to the parent on each health ping (then reset), so the parent has a leading
+ * signal of a wedging worker before the ping itself starts timing out.
+ */
+const eventLoopMonitor = monitorEventLoopDelay({ resolution: 20 })
+eventLoopMonitor.enable()
 
 class BotOperations {
   static instance: BotOperations
@@ -201,6 +213,12 @@ class BotOperations {
       }
       if (ping) {
         const data = v8.getHeapStatistics()
+        // ns → ms; reset so each sample reflects the window since the last ping.
+        const eventLoopLag = {
+          mean: Math.round(eventLoopMonitor.mean / 1e6),
+          max: Math.round(eventLoopMonitor.max / 1e6),
+        }
+        eventLoopMonitor.reset()
         parentPort?.postMessage({
           event: 'pong',
           pong: {
@@ -210,6 +228,7 @@ class BotOperations {
               used: data.total_physical_size,
               code: data.total_heap_size_executable,
             },
+            eventLoopLag,
           },
         })
       }
