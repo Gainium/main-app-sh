@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.21.0] - 2026-06-25
+
+### Added
+- Paper `SPOT & Futures` accounts can be funded independently per market (SPOT / USDⓈ-M / COIN-M) via an optional `topUps` array on `addExchange`; omitting it preserves the previous single-top-up behavior
+
 ## [1.20.0] - 2026-06-22
 
 ### Added

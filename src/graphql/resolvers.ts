@@ -5186,6 +5186,7 @@ const resolvers = <
           ExchangeInUser & {
             stablecoinBalance?: number
             coinToTopUp?: string
+            topUps?: { provider: ExchangeEnum; asset: string; amount: number }[]
             tradeType?: TradeTypeEnum
             shouldCheckAffiliate?: boolean
           },
@@ -5203,6 +5204,7 @@ const resolvers = <
           name,
           stablecoinBalance,
           coinToTopUp,
+          topUps,
           tradeType: _tradeType,
           keysType,
           okxSource,
@@ -5337,30 +5339,35 @@ const resolvers = <
               key = v4()
               secret = v4()
               const exch = mapPaperToReal(e as PaperExchangeType)
+              // Per-sub-account funding: prefer an explicit topUps entry for
+              // this exact created provider (independent SPOT/USDⓈ-M/COIN-M
+              // funding); otherwise fall back to the legacy single top-up,
+              // keeping the COIN-M coin-margined default (0.5 BTC) for `all`.
+              const topUpFor = Array.isArray(topUps)
+                ? topUps.find((t) => t.provider === e)
+                : undefined
+              const isAllCoinm =
+                tradeType === TradeTypeEnum.all &&
+                (e === ExchangeEnum.paperBinanceCoinm ||
+                  e === ExchangeEnum.paperBybitCoinm ||
+                  e === ExchangeEnum.paperOkxInverse ||
+                  e === ExchangeEnum.paperKucoinInverse ||
+                  e === ExchangeEnum.paperBitgetCoinm ||
+                  e === ExchangeEnum.paperKrakenCoinm)
               const paperUserCreationResult = await createPaperUser({
                 key,
                 secret,
                 balance: [
                   {
                     exchange: exch,
-                    amount:
-                      tradeType === TradeTypeEnum.all &&
-                      (e === ExchangeEnum.paperBinanceCoinm ||
-                        e === ExchangeEnum.paperBybitCoinm ||
-                        e === ExchangeEnum.paperOkxInverse ||
-                        e === ExchangeEnum.paperKucoinInverse ||
-                        e === ExchangeEnum.paperBitgetCoinm ||
-                        e === ExchangeEnum.paperKrakenCoinm)
+                    amount: topUpFor
+                      ? topUpFor.amount
+                      : isAllCoinm
                         ? 0.5
                         : stablecoinBalance || 50,
-                    asset:
-                      tradeType === TradeTypeEnum.all &&
-                      (e === ExchangeEnum.paperBinanceCoinm ||
-                        e === ExchangeEnum.paperBybitCoinm ||
-                        e === ExchangeEnum.paperOkxInverse ||
-                        e === ExchangeEnum.paperKucoinInverse ||
-                        e === ExchangeEnum.paperBitgetCoinm ||
-                        e === ExchangeEnum.paperKrakenCoinm)
+                    asset: topUpFor
+                      ? topUpFor.asset
+                      : isAllCoinm
                         ? 'BTC'
                         : coinToTopUp || 'USDT',
                   },

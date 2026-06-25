@@ -136,6 +136,18 @@ const UserResponse = /* GraphQL */ `
 `
 
 export const AddExchangeInput = /* GraphQL */ `
+  # Per-sub-account paper top-up. A "SPOT & Futures" (tradeType: all)
+  # create spawns one paper account per market (SPOT, USDⓈ-M, COIN-M);
+  # an optional topUps entry funds each independently, keyed by the
+  # created account's own provider. When topUps is omitted the legacy
+  # single coinToTopUp/stablecoinBalance is used for every account, so
+  # existing callers are unaffected.
+  input paperTopUpInput {
+    provider: Exchange!
+    asset: String!
+    amount: Float!
+  }
+
   input addExchangeInput {
     key: String!
     secret: String!
@@ -145,6 +157,7 @@ export const AddExchangeInput = /* GraphQL */ `
     stablecoinBalance: Float
     coinToTopUp: String
     tradeType: TradeTypeEnum
+    topUps: [paperTopUpInput!]
     keysType: String
     okxSource: String
     bybitHost: BybitHost
