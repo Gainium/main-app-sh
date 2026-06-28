@@ -1155,60 +1155,70 @@ function createBotHelper<
       }
       const _id = this.startMethod('checkOrdersAfterReconnect')
       this.blockCheck = true
-      this.handleLog('Check order after user stream reconnect')
-      const filledOrders: Order[] = []
-      for (const o of this.getOrdersByStatusAndDealId({
-        defaultStatuses: true,
-      })) {
-        const getOrder = await this.getOrder(o.clientOrderId, o.symbol, false)
-        if (!getOrder || !getOrder.data) {
-          this.handleWarn(`Not enough data to get order ${o.clientOrderId}`)
-          continue
-        }
-        if (getOrder.status === StatusEnum.notok) {
-          this.handleWarn(`Cannot get order ${getOrder.reason}`)
-          continue
-        }
-        const mergedOrder = await this.mergeCommonOrderWithOrder(
-          getOrder.data,
-          o,
-        )
-        if (mergedOrder.status !== o.status) {
-          this.emit('bot update', mergedOrder)
-          this.deleteOrder(mergedOrder.clientOrderId)
-          if (mergedOrder.status !== 'CANCELED') {
-            this.setOrder(mergedOrder)
+      try {
+        this.handleLog('Check order after user stream reconnect')
+        const filledOrders: Order[] = []
+        for (const o of this.getOrdersByStatusAndDealId({
+          defaultStatuses: true,
+        })) {
+          const getOrder = await this.getOrder(o.clientOrderId, o.symbol, false)
+          if (!getOrder || !getOrder.data) {
+            this.handleWarn(`Not enough data to get order ${o.clientOrderId}`)
+            continue
           }
-          this.handleDebug(
-            `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} is ${mergedOrder.status}.`,
-          )
-          this.updateOrderOnDb(mergedOrder)
-          if (mergedOrder.status === 'FILLED') {
-            filledOrders.push(mergedOrder)
+          if (getOrder.status === StatusEnum.notok) {
+            this.handleWarn(`Cannot get order ${getOrder.reason}`)
+            continue
           }
-        } else {
+          const mergedOrder = await this.mergeCommonOrderWithOrder(
+            getOrder.data,
+            o,
+          )
+          if (mergedOrder.status !== o.status) {
+            this.emit('bot update', mergedOrder)
+            this.deleteOrder(mergedOrder.clientOrderId)
+            if (mergedOrder.status !== 'CANCELED') {
+              this.setOrder(mergedOrder)
+            }
+            this.handleDebug(
+              `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} is ${mergedOrder.status}.`,
+            )
+            this.updateOrderOnDb(mergedOrder)
+            if (mergedOrder.status === 'FILLED') {
+              filledOrders.push(mergedOrder)
+            }
+          } else {
+            this.handleDebug(
+              `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
+            )
+          }
+        }
+        const [lastFilled] = filledOrders.sort(
+          (a, b) => b.updateTime - a.updateTime,
+        )
+        if (lastFilled) {
           this.handleDebug(
-            `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
+            `Rebuilding grid after ${lastFilled.clientOrderId}, ${lastFilled.side}, base: ${lastFilled.executedQty}, quote: ${lastFilled.cummulativeQuoteQty}, price: ${lastFilled.price}`,
           )
         }
-      }
-      const [lastFilled] = filledOrders.sort(
-        (a, b) => b.updateTime - a.updateTime,
-      )
-      if (lastFilled) {
-        this.handleDebug(
-          `Rebuilding grid after ${lastFilled.clientOrderId}, ${lastFilled.side}, base: ${lastFilled.executedQty}, quote: ${lastFilled.cummulativeQuoteQty}, price: ${lastFilled.price}`,
+        for (const o of filledOrders) {
+          this.processFilledOrder(
+            o,
+            o.updateTime,
+            o.clientOrderId !== lastFilled.clientOrderId,
+          )
+        }
+      } catch (e) {
+        // Never leave blockCheck stuck on a throw — a wedged blockCheck silently
+        // freezes all future order checks for this bot (root cause of the
+        // user-stream-reconnect stall, community thread 4863).
+        this.handleWarn(
+          `Check orders after reconnect failed: ${(e as Error).message}`,
         )
+      } finally {
+        this.blockCheck = false
+        this.endMethod(_id)
       }
-      for (const o of filledOrders) {
-        this.processFilledOrder(
-          o,
-          o.updateTime,
-          o.clientOrderId !== lastFilled.clientOrderId,
-        )
-      }
-      this.blockCheck = false
-      this.endMethod(_id)
     }
     /** Check orders after service restart */
     private async checkOrders(_lastPrice?: number | null) {
@@ -1221,275 +1231,286 @@ function createBotHelper<
       }
       const _id = this.startMethod('checkOrders')
       this.blockCheck = true
-      if (this.serviceRestart) {
-        if (!this.data) {
-          this.blockCheck = false
-          this.endMethod(_id)
-          return
-        }
-
-        const { pair } = this.data.settings
-        const ed = await this.getExchangeInfo(pair)
-        if (!ed) {
-          this.blockCheck = false
-          this.endMethod(_id)
-          return
-        }
-        const activeTPSLOrder = this.getOrdersByStatusAndDealId({
-          defaultStatuses: true,
-        }).find((o) => o.typeOrder === TypeOrderEnum.stop)
-        if (activeTPSLOrder) {
-          const tpslOrderData = await this.getOrder(
-            activeTPSLOrder.clientOrderId,
-            pair,
-            true,
-          )
-          if (!tpslOrderData || !tpslOrderData.data) {
-            this.handleWarn(
-              `Not enough data to get order ${activeTPSLOrder.clientOrderId}`,
-            )
-          } else if (tpslOrderData.status === StatusEnum.notok) {
-            this.handleWarn(`Cannot get order ${tpslOrderData.reason}`)
-          } else {
-            const updatedOrder = await this.mergeCommonOrderWithOrder(
-              tpslOrderData.data,
-              activeTPSLOrder,
-            )
-            if (updatedOrder.status === 'CANCELED') {
-              this.deleteOrder(updatedOrder.clientOrderId)
-              this.handleDebug(
-                `TP/SL order ${updatedOrder.clientOrderId} is CANCELED.`,
-              )
-              this.restart = false
-              this.serviceRestart = false
-              this.updateOrderOnDb(updatedOrder)
-              this.blockCheck = false
-              this.endMethod(_id)
-              return this.processSellAtStop(
-                updatedOrder.type === 'MARKET'
-                  ? CloseGRIDTypeEnum.closeByMarket
-                  : CloseGRIDTypeEnum.closeByLimit,
-              )
-            } else if (updatedOrder.status === 'FILLED') {
-              this.setOrder(updatedOrder)
-              this.handleDebug(
-                `TP/SL order ${updatedOrder.clientOrderId} is FILLED.`,
-              )
-              this.updateOrderOnDb(updatedOrder)
-              this.blockCheck = false
-              this.endMethod(_id)
-              return this.processFilledOrder(
-                updatedOrder,
-                updatedOrder.updateTime,
-              )
-            } else if (
-              updatedOrder.status === 'PARTIALLY_FILLED' &&
-              activeTPSLOrder.status === 'NEW'
-            ) {
-              this.setOrder(updatedOrder)
-              this.handleDebug(
-                `TP/SL order ${updatedOrder.clientOrderId} is PARTIALLY_FILLED.`,
-              )
-              this.blockCheck = false
-              this.endMethod(_id)
-              return this.updateOrderOnDb(updatedOrder)
-            } else {
-              this.handleDebug(
-                `TP/SL order not changed ${updatedOrder.clientOrderId}`,
-              )
-            }
+      try {
+        if (this.serviceRestart) {
+          if (!this.data) {
+            this.blockCheck = false
+            this.endMethod(_id)
+            return
           }
-        }
-        const activeSwapOrder = this.getOrdersByStatusAndDealId({
-          defaultStatuses: true,
-        }).find((o) => o.typeOrder === TypeOrderEnum.swap)
-        if (activeSwapOrder) {
-          const swapData = await this.getOrder(
-            activeSwapOrder.clientOrderId,
-            pair,
-            true,
-          )
-          if (!swapData || !swapData.data) {
-            this.handleWarn(
-              `Not enough data to get order ${activeSwapOrder.clientOrderId}`,
-            )
-          } else if (swapData.status === StatusEnum.notok) {
-            this.handleWarn(`Cannot get order ${swapData.reason}`)
-          } else {
-            const updatedOrder = await this.mergeCommonOrderWithOrder(
-              swapData.data,
-              activeSwapOrder,
-            )
-            if (updatedOrder.status === 'CANCELED') {
-              this.swapAssetData = null
-              this.handleDebug(
-                `Swap order ${updatedOrder.clientOrderId} is CANCELED.`,
-              )
-              this.restart = false
-              this.serviceRestart = false
-              this.updateOrderOnDb(updatedOrder)
-              this.blockCheck = false
-              this.endMethod(_id)
-              return this.swapAssets()
-            } else if (updatedOrder.status === 'FILLED') {
-              this.swapAssetData = updatedOrder
-              this.handleDebug(
-                `Swap order ${updatedOrder.clientOrderId} is FILLED.`,
-              )
-              this.updateOrderOnDb(updatedOrder)
-              this.blockCheck = false
-              this.endMethod(_id)
-              return this.processFilledSwap(updatedOrder)
-            } else if (
-              updatedOrder.status === 'PARTIALLY_FILLED' &&
-              activeSwapOrder.status === 'NEW'
-            ) {
-              this.swapAssetData = updatedOrder
-              this.handleDebug(
-                `Swap order ${updatedOrder.clientOrderId} is PARTIALLY_FILLED.`,
-              )
-              this.blockCheck = false
-              this.endMethod(_id)
-              return this.updateOrderOnDb(updatedOrder)
-            } else {
-              this.handleDebug(
-                `Swap order not changed ${updatedOrder.clientOrderId}`,
-              )
-            }
-          }
-        }
-        let lastPrice = _lastPrice
-        if (!lastPrice) {
-          lastPrice = await this.getLatestPrice(pair)
-        }
-        if (lastPrice) {
-          await this.generateCurrentGrids(
-            lastPrice,
-            this.lastFilled?.side
-              ? this.lastFilled.side === 'BUY'
-                ? OrderSideEnum.buy
-                : OrderSideEnum.sell
-              : OrderSideEnum.buy,
-          )
 
-          const activeRegularOrders = this.getOrdersByStatusAndDealId({
+          const { pair } = this.data.settings
+          const ed = await this.getExchangeInfo(pair)
+          if (!ed) {
+            this.blockCheck = false
+            this.endMethod(_id)
+            return
+          }
+          const activeTPSLOrder = this.getOrdersByStatusAndDealId({
             defaultStatuses: true,
-          }).filter((o) => o.typeOrder === TypeOrderEnum.regular)
-
-          const canceledOrders: Order[] = []
-          const filledOrders: Order[] = []
-          const partiallyFilledOrders: Order[] = []
-          let newOrders: Grid[] = []
-          const diff = this.findDiff(
-            this.grids,
-            activeRegularOrders.map((o) => this.mapOrderToGrid(o, false)),
-            true,
-          )
-          if (diff.new.length > 0) {
-            newOrders = diff.new
-          }
-          if (diff.cancel.length > 0) {
-            for (const c of diff.cancel) {
-              await this.cancelGridOnExchange(c)
-            }
-          }
-          for (const o of activeRegularOrders.filter(
-            (ao) =>
-              !diff.cancel
-                .map((c) => c.newClientOrderId)
-                .includes(ao.clientOrderId),
-          )) {
-            const exchangeData = await this.getOrder(
-              o.clientOrderId,
+          }).find((o) => o.typeOrder === TypeOrderEnum.stop)
+          if (activeTPSLOrder) {
+            const tpslOrderData = await this.getOrder(
+              activeTPSLOrder.clientOrderId,
               pair,
               true,
             )
-            if (!exchangeData || !exchangeData.data) {
-              this.handleWarn(`Not enough data to get order ${o.clientOrderId}`)
+            if (!tpslOrderData || !tpslOrderData.data) {
+              this.handleWarn(
+                `Not enough data to get order ${activeTPSLOrder.clientOrderId}`,
+              )
+            } else if (tpslOrderData.status === StatusEnum.notok) {
+              this.handleWarn(`Cannot get order ${tpslOrderData.reason}`)
             } else {
-              if (exchangeData.status === StatusEnum.notok) {
-                this.handleWarn(`Cannot get order ${exchangeData.reason}`)
-              } else {
-                const updatedOrder = await this.mergeCommonOrderWithOrder(
-                  exchangeData.data,
-                  o,
+              const updatedOrder = await this.mergeCommonOrderWithOrder(
+                tpslOrderData.data,
+                activeTPSLOrder,
+              )
+              if (updatedOrder.status === 'CANCELED') {
+                this.deleteOrder(updatedOrder.clientOrderId)
+                this.handleDebug(
+                  `TP/SL order ${updatedOrder.clientOrderId} is CANCELED.`,
                 )
-                if (updatedOrder.status === 'CANCELED') {
-                  this.emit('bot update', updatedOrder)
-                  this.deleteOrder(updatedOrder.clientOrderId)
-                  this.handleDebug(
-                    `Order ${updatedOrder.clientOrderId} is CANCELED.`,
-                  )
-                  this.updateOrderOnDb(updatedOrder)
-                  canceledOrders.push(o)
-                } else if (updatedOrder.status === 'FILLED') {
-                  this.emit('bot update', updatedOrder)
-                  this.deleteOrder(updatedOrder.clientOrderId)
-                  if (this.data?.settings.profitCurrency === 'base') {
-                    this.setOrder(updatedOrder)
-                  }
-                  this.handleDebug(
-                    `Order ${updatedOrder.clientOrderId} is FILLED.`,
-                  )
-                  this.updateOrderOnDb(updatedOrder)
-                  filledOrders.push(updatedOrder)
-                } else if (
-                  o.status === 'NEW' &&
-                  updatedOrder.status === 'PARTIALLY_FILLED'
-                ) {
-                  this.emit('bot update', updatedOrder)
-                  this.setOrder(updatedOrder)
-                  this.handleDebug(
-                    `Order ${updatedOrder.clientOrderId} is PARTIALLY_FILLED.`,
-                  )
-                  this.updateOrderOnDb(updatedOrder)
-                  partiallyFilledOrders.push(o)
-                } else {
-                  this.handleDebug(
-                    `Regular order not changed ${updatedOrder.clientOrderId}`,
-                  )
-                }
+                this.restart = false
+                this.serviceRestart = false
+                this.updateOrderOnDb(updatedOrder)
+                this.blockCheck = false
+                this.endMethod(_id)
+                return this.processSellAtStop(
+                  updatedOrder.type === 'MARKET'
+                    ? CloseGRIDTypeEnum.closeByMarket
+                    : CloseGRIDTypeEnum.closeByLimit,
+                )
+              } else if (updatedOrder.status === 'FILLED') {
+                this.setOrder(updatedOrder)
+                this.handleDebug(
+                  `TP/SL order ${updatedOrder.clientOrderId} is FILLED.`,
+                )
+                this.updateOrderOnDb(updatedOrder)
+                this.blockCheck = false
+                this.endMethod(_id)
+                return this.processFilledOrder(
+                  updatedOrder,
+                  updatedOrder.updateTime,
+                )
+              } else if (
+                updatedOrder.status === 'PARTIALLY_FILLED' &&
+                activeTPSLOrder.status === 'NEW'
+              ) {
+                this.setOrder(updatedOrder)
+                this.handleDebug(
+                  `TP/SL order ${updatedOrder.clientOrderId} is PARTIALLY_FILLED.`,
+                )
+                this.blockCheck = false
+                this.endMethod(_id)
+                return this.updateOrderOnDb(updatedOrder)
+              } else {
+                this.handleDebug(
+                  `TP/SL order not changed ${updatedOrder.clientOrderId}`,
+                )
               }
             }
           }
-          if (filledOrders.length > 0) {
-            const [lastFilled] = filledOrders.sort(
-              (a, b) => b.updateTime - a.updateTime,
+          const activeSwapOrder = this.getOrdersByStatusAndDealId({
+            defaultStatuses: true,
+          }).find((o) => o.typeOrder === TypeOrderEnum.swap)
+          if (activeSwapOrder) {
+            const swapData = await this.getOrder(
+              activeSwapOrder.clientOrderId,
+              pair,
+              true,
             )
-            this.handleDebug(
-              `Rebuilding grid after ${lastFilled.clientOrderId}, ${lastFilled.side}, base: ${lastFilled.executedQty}, quote: ${lastFilled.cummulativeQuoteQty}, price: ${lastFilled.price}`,
-            )
-            for (const o of filledOrders) {
-              this.processFilledOrder(
-                o,
-                o.updateTime,
-                o.clientOrderId !== lastFilled.clientOrderId,
+            if (!swapData || !swapData.data) {
+              this.handleWarn(
+                `Not enough data to get order ${activeSwapOrder.clientOrderId}`,
               )
+            } else if (swapData.status === StatusEnum.notok) {
+              this.handleWarn(`Cannot get order ${swapData.reason}`)
+            } else {
+              const updatedOrder = await this.mergeCommonOrderWithOrder(
+                swapData.data,
+                activeSwapOrder,
+              )
+              if (updatedOrder.status === 'CANCELED') {
+                this.swapAssetData = null
+                this.handleDebug(
+                  `Swap order ${updatedOrder.clientOrderId} is CANCELED.`,
+                )
+                this.restart = false
+                this.serviceRestart = false
+                this.updateOrderOnDb(updatedOrder)
+                this.blockCheck = false
+                this.endMethod(_id)
+                return this.swapAssets()
+              } else if (updatedOrder.status === 'FILLED') {
+                this.swapAssetData = updatedOrder
+                this.handleDebug(
+                  `Swap order ${updatedOrder.clientOrderId} is FILLED.`,
+                )
+                this.updateOrderOnDb(updatedOrder)
+                this.blockCheck = false
+                this.endMethod(_id)
+                return this.processFilledSwap(updatedOrder)
+              } else if (
+                updatedOrder.status === 'PARTIALLY_FILLED' &&
+                activeSwapOrder.status === 'NEW'
+              ) {
+                this.swapAssetData = updatedOrder
+                this.handleDebug(
+                  `Swap order ${updatedOrder.clientOrderId} is PARTIALLY_FILLED.`,
+                )
+                this.blockCheck = false
+                this.endMethod(_id)
+                return this.updateOrderOnDb(updatedOrder)
+              } else {
+                this.handleDebug(
+                  `Swap order not changed ${updatedOrder.clientOrderId}`,
+                )
+              }
             }
           }
-          for (const o of canceledOrders) {
-            this.handleDebug(
-              `Send order again ${o.clientOrderId}, ${o.side}, base: ${
-                o.origQty
-              }, quote: ${+o.price * +o.origQty}, price: ${o.price}`,
-            )
-            await this.placeRegularOrder(this.mapOrderToGrid(o), ed)
+          let lastPrice = _lastPrice
+          if (!lastPrice) {
+            lastPrice = await this.getLatestPrice(pair)
           }
-          for (const g of newOrders) {
-            if (!this.filledWhileLoading.has(`${g.side}-${g.price}-${g.qty}`)) {
+          if (lastPrice) {
+            await this.generateCurrentGrids(
+              lastPrice,
+              this.lastFilled?.side
+                ? this.lastFilled.side === 'BUY'
+                  ? OrderSideEnum.buy
+                  : OrderSideEnum.sell
+                : OrderSideEnum.buy,
+            )
+
+            const activeRegularOrders = this.getOrdersByStatusAndDealId({
+              defaultStatuses: true,
+            }).filter((o) => o.typeOrder === TypeOrderEnum.regular)
+
+            const canceledOrders: Order[] = []
+            const filledOrders: Order[] = []
+            const partiallyFilledOrders: Order[] = []
+            let newOrders: Grid[] = []
+            const diff = this.findDiff(
+              this.grids,
+              activeRegularOrders.map((o) => this.mapOrderToGrid(o, false)),
+              true,
+            )
+            if (diff.new.length > 0) {
+              newOrders = diff.new
+            }
+            if (diff.cancel.length > 0) {
+              for (const c of diff.cancel) {
+                await this.cancelGridOnExchange(c)
+              }
+            }
+            for (const o of activeRegularOrders.filter(
+              (ao) =>
+                !diff.cancel
+                  .map((c) => c.newClientOrderId)
+                  .includes(ao.clientOrderId),
+            )) {
+              const exchangeData = await this.getOrder(
+                o.clientOrderId,
+                pair,
+                true,
+              )
+              if (!exchangeData || !exchangeData.data) {
+                this.handleWarn(
+                  `Not enough data to get order ${o.clientOrderId}`,
+                )
+              } else {
+                if (exchangeData.status === StatusEnum.notok) {
+                  this.handleWarn(`Cannot get order ${exchangeData.reason}`)
+                } else {
+                  const updatedOrder = await this.mergeCommonOrderWithOrder(
+                    exchangeData.data,
+                    o,
+                  )
+                  if (updatedOrder.status === 'CANCELED') {
+                    this.emit('bot update', updatedOrder)
+                    this.deleteOrder(updatedOrder.clientOrderId)
+                    this.handleDebug(
+                      `Order ${updatedOrder.clientOrderId} is CANCELED.`,
+                    )
+                    this.updateOrderOnDb(updatedOrder)
+                    canceledOrders.push(o)
+                  } else if (updatedOrder.status === 'FILLED') {
+                    this.emit('bot update', updatedOrder)
+                    this.deleteOrder(updatedOrder.clientOrderId)
+                    if (this.data?.settings.profitCurrency === 'base') {
+                      this.setOrder(updatedOrder)
+                    }
+                    this.handleDebug(
+                      `Order ${updatedOrder.clientOrderId} is FILLED.`,
+                    )
+                    this.updateOrderOnDb(updatedOrder)
+                    filledOrders.push(updatedOrder)
+                  } else if (
+                    o.status === 'NEW' &&
+                    updatedOrder.status === 'PARTIALLY_FILLED'
+                  ) {
+                    this.emit('bot update', updatedOrder)
+                    this.setOrder(updatedOrder)
+                    this.handleDebug(
+                      `Order ${updatedOrder.clientOrderId} is PARTIALLY_FILLED.`,
+                    )
+                    this.updateOrderOnDb(updatedOrder)
+                    partiallyFilledOrders.push(o)
+                  } else {
+                    this.handleDebug(
+                      `Regular order not changed ${updatedOrder.clientOrderId}`,
+                    )
+                  }
+                }
+              }
+            }
+            if (filledOrders.length > 0) {
+              const [lastFilled] = filledOrders.sort(
+                (a, b) => b.updateTime - a.updateTime,
+              )
               this.handleDebug(
-                `Order wasn't found in orders, but must be in grid ${
-                  g.side
-                }, base: ${g.qty}, quote: ${g.price * g.qty}, price: ${g.price}`,
+                `Rebuilding grid after ${lastFilled.clientOrderId}, ${lastFilled.side}, base: ${lastFilled.executedQty}, quote: ${lastFilled.cummulativeQuoteQty}, price: ${lastFilled.price}`,
               )
-              await this.placeRegularOrder(g, ed)
+              for (const o of filledOrders) {
+                this.processFilledOrder(
+                  o,
+                  o.updateTime,
+                  o.clientOrderId !== lastFilled.clientOrderId,
+                )
+              }
+            }
+            for (const o of canceledOrders) {
+              this.handleDebug(
+                `Send order again ${o.clientOrderId}, ${o.side}, base: ${
+                  o.origQty
+                }, quote: ${+o.price * +o.origQty}, price: ${o.price}`,
+              )
+              await this.placeRegularOrder(this.mapOrderToGrid(o), ed)
+            }
+            for (const g of newOrders) {
+              if (
+                !this.filledWhileLoading.has(`${g.side}-${g.price}-${g.qty}`)
+              ) {
+                this.handleDebug(
+                  `Order wasn't found in orders, but must be in grid ${
+                    g.side
+                  }, base: ${g.qty}, quote: ${g.price * g.qty}, price: ${g.price}`,
+                )
+                await this.placeRegularOrder(g, ed)
+              }
             }
           }
+          this.serviceRestart = false
         }
-        this.serviceRestart = false
+        this.blockCheck = false
+        this.endMethod(_id)
+      } catch (e) {
+        // Never leave blockCheck stuck on a throw (see checkOrdersAfterReconnect).
+        this.handleWarn(`Check orders failed: ${(e as Error).message}`)
+        this.blockCheck = false
+        this.endMethod(_id)
       }
-      this.blockCheck = false
-      this.endMethod(_id)
     }
     /** Place regular order */
     private async placeRegularOrder(order: Grid, ed: ClearPairsSchema) {

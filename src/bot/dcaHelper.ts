@@ -8581,56 +8581,64 @@ function createDCABotHelper<
       }
       const _id = this.startMethod('checkOrdersAfterReconnect')
       this.blockCheck = true
-      this.handleLog('Check order after user stream reconnect')
-      const filledOrders: Order[] = []
-      const partiallyFilledOrders: Order[] = []
-      for (const o of this.getOrdersByStatusAndDealId({
-        defaultStatuses: true,
-      })) {
-        const getOrder = await this.getOrder(o.clientOrderId, o.symbol, false)
-        if (!getOrder || !getOrder.data) {
-          this.handleWarn(`Not enough data to get order ${o.clientOrderId}`)
-          continue
+      try {
+        this.handleLog('Check order after user stream reconnect')
+        const filledOrders: Order[] = []
+        const partiallyFilledOrders: Order[] = []
+        for (const o of this.getOrdersByStatusAndDealId({
+          defaultStatuses: true,
+        })) {
+          const getOrder = await this.getOrder(o.clientOrderId, o.symbol, false)
+          if (!getOrder || !getOrder.data) {
+            this.handleWarn(`Not enough data to get order ${o.clientOrderId}`)
+            continue
+          }
+          if (getOrder.status === StatusEnum.notok) {
+            this.handleWarn(`Cannot get order ${getOrder.reason}`)
+            continue
+          }
+          const mergedOrder = await this.mergeCommonOrderWithOrder(
+            getOrder.data,
+            o,
+          )
+          if (mergedOrder.status !== o.status) {
+            this.emit('bot update', mergedOrder)
+            this.deleteOrder(mergedOrder.clientOrderId)
+            if (mergedOrder.status !== 'CANCELED') {
+              this.setOrder(mergedOrder)
+            }
+            this.handleDebug(
+              `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} is ${
+                mergedOrder.status
+              }. Base ${mergedOrder.origQty} (${mergedOrder.executedQty}), quote ${
+                mergedOrder.cummulativeQuoteQty
+              } (${+mergedOrder.executedQty * +mergedOrder.price}), price ${
+                mergedOrder.price
+              }`,
+            )
+            this.updateOrderOnDb(mergedOrder)
+            if (mergedOrder.status === 'FILLED') {
+              filledOrders.push(mergedOrder)
+            }
+            if (mergedOrder.status === 'PARTIALLY_FILLED') {
+              partiallyFilledOrders.push(mergedOrder)
+            }
+          } else {
+            this.handleDebug(
+              `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
+            )
+          }
         }
-        if (getOrder.status === StatusEnum.notok) {
-          this.handleWarn(`Cannot get order ${getOrder.reason}`)
-          continue
-        }
-        const mergedOrder = await this.mergeCommonOrderWithOrder(
-          getOrder.data,
-          o,
+        this.processOrdersAfterCheck(filledOrders, partiallyFilledOrders)
+      } catch (e) {
+        // Never leave blockCheck stuck on a throw (see grid checkOrdersAfterReconnect).
+        this.handleWarn(
+          `Check orders after reconnect failed: ${(e as Error).message}`,
         )
-        if (mergedOrder.status !== o.status) {
-          this.emit('bot update', mergedOrder)
-          this.deleteOrder(mergedOrder.clientOrderId)
-          if (mergedOrder.status !== 'CANCELED') {
-            this.setOrder(mergedOrder)
-          }
-          this.handleDebug(
-            `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} is ${
-              mergedOrder.status
-            }. Base ${mergedOrder.origQty} (${mergedOrder.executedQty}), quote ${
-              mergedOrder.cummulativeQuoteQty
-            } (${+mergedOrder.executedQty * +mergedOrder.price}), price ${
-              mergedOrder.price
-            }`,
-          )
-          this.updateOrderOnDb(mergedOrder)
-          if (mergedOrder.status === 'FILLED') {
-            filledOrders.push(mergedOrder)
-          }
-          if (mergedOrder.status === 'PARTIALLY_FILLED') {
-            partiallyFilledOrders.push(mergedOrder)
-          }
-        } else {
-          this.handleDebug(
-            `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
-          )
-        }
+      } finally {
+        this.blockCheck = false
+        this.endMethod(_id)
       }
-      this.processOrdersAfterCheck(filledOrders, partiallyFilledOrders)
-      this.blockCheck = false
-      this.endMethod(_id)
     }
 
     async getDiffForCheckOrders(
