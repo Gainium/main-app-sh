@@ -17654,6 +17654,13 @@ function createDCABotHelper<
             child: false,
             childIds: _deals,
             parentId: null,
+            // Carry the hedge wrapper id (undefined for non-hedge bots) so the
+            // merged deal is classified as a hedge-leg deal exactly like every
+            // other deal on this leg. Without it the hedge*DealList queries —
+            // which select hedge-leg deals via `parentBotId: { $exists: true }`
+            // — silently drop the merged deal, so it never shows in the hedge
+            // bot's Deals view.
+            parentBotId: this.data.parentBotId,
             gridBreakpoints: [],
             paperContext: this.data.paperContext,
             strategy: this.data.settings.strategy,

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.22.1] - 2026-06-28
+
+### Fixed
+- Merging deals on a hedge bot (DCA or Combo) now tags the resulting merged deal with its hedge wrapper id (`parentBotId`). Previously the merged deal was created without it, so the `hedge*DealList` queries — which select hedge-leg deals via `parentBotId: { $exists: true }` — dropped it, and the merged deal never appeared in the hedge bot's Deals view in the new dashboard (it only surfaced in the legacy UI).
+
 ## [1.22.0] - 2026-06-28
 
 ### Added
