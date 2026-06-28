@@ -75,21 +75,6 @@ class BotOperations {
     userId: string
   }[] = []
 
-  // --- Tier-2 reconciliation sweep (opt-in) ---------------------------------
-  // Safety net for silently-dead user streams ("connected" but delivering no
-  // order updates): periodically re-run each running grid/DCA bot's existing
-  // reconnect reconcile so a missed order fill is caught within one interval
-  // instead of stalling the bot until a manual restart (community thread 4863).
-  // Opt-in via RECONCILE_SWEEP_ENABLED=true since it touches the hottest path;
-  // jittered + overlap-guarded to bound REST load. First probe of the broader
-  // discrepancy monitor — see runbook user-stream-staleness-and-reconciliation.md.
-  private reconcileSweepTimer: NodeJS.Timeout | null = null
-  private reconcileSweepRunning = false
-
-  constructor() {
-    this.startReconcileSweep()
-  }
-
   @IdMute(mutex, (data: CreateBotDto) => `createBot${data.botId}`)
   public createBot(data: CreateBotDto) {
     try {
@@ -342,70 +327,6 @@ class BotOperations {
         }
         return true
       })
-    }
-  }
-
-  /**
-   * Tier-2 reconciliation sweep. Periodically re-runs each running grid/DCA bot's
-   * existing `checkOrdersAfterReconnect` reconcile so order fills missed by a
-   * silently-dead user stream are picked up within one interval, instead of the
-   * bot stalling until a manual restart. Routed through `methodBot` so each call
-   * is serialized per-bot with live order processing (no races); it is a no-op
-   * for idle bots, since the reconcile walks only known active orders. Opt-in.
-   */
-  startReconcileSweep() {
-    if (process.env.RECONCILE_SWEEP_ENABLED !== 'true') {
-      return
-    }
-    if (this.reconcileSweepTimer) {
-      return
-    }
-    const interval = Math.max(
-      30_000,
-      +(process.env.RECONCILE_SWEEP_INTERVAL_MS ?? 120_000),
-    )
-    this.reconcileSweepTimer = setInterval(() => {
-      void this.runReconcileSweep(interval)
-    }, interval)
-    logger.debug(
-      `Worker ${threadId} reconcile sweep enabled (every ${interval}ms)`,
-    )
-  }
-
-  private async runReconcileSweep(interval: number) {
-    if (this.reconcileSweepRunning) {
-      return
-    }
-    this.reconcileSweepRunning = true
-    try {
-      // Snapshot ids so a concurrent create/delete can't disturb the walk.
-      const targets: { botType: BotType; id: string }[] = [
-        ...this.bots.map((b) => ({ botType: BotType.grid, id: b.id })),
-        ...this.dcaBots.map((b) => ({ botType: BotType.dca, id: b.id })),
-      ]
-      if (targets.length === 0) {
-        return
-      }
-      // Spread calls across ~80% of the interval so we never burst the balancer.
-      const gap = Math.max(0, Math.floor((interval * 0.8) / targets.length))
-      for (const t of targets) {
-        void this.methodBot({
-          do: 'method',
-          botType: t.botType,
-          botId: t.id,
-          method: 'checkOrdersAfterReconnect',
-          args: [t.id],
-        }).catch(() => undefined)
-        if (gap) {
-          await new Promise((r) => setTimeout(r, gap))
-        }
-      }
-    } catch (e) {
-      logger.warn(
-        `Worker ${threadId} reconcile sweep failed: ${(e as Error).message}`,
-      )
-    } finally {
-      this.reconcileSweepRunning = false
     }
   }
 }

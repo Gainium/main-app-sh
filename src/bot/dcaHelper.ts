@@ -8629,6 +8629,13 @@ function createDCABotHelper<
             )
           }
         }
+        if (this.reconcileViaSweep && filledOrders.length > 0) {
+          // Greppable health signal: the periodic sweep (not a reconnect)
+          // caught order fills the user stream had dropped.
+          this.handleLog(
+            `reconcile-sweep caught ${filledOrders.length} missed fill(s)`,
+          )
+        }
         this.processOrdersAfterCheck(filledOrders, partiallyFilledOrders)
       } catch (e) {
         // Never leave blockCheck stuck on a throw (see grid checkOrdersAfterReconnect).
@@ -15536,6 +15543,7 @@ function createDCABotHelper<
         }
         this.startPriceTimer()
         this.startHyperliquidOrderPoll()
+        this.startReconcileSweep()
         this.finishLoad = true
       } catch (e) {
         this.serviceRestart = false
@@ -15559,6 +15567,7 @@ function createDCABotHelper<
     async afterBotStop() {
       this.stopPriceTimer()
       this.stopHyperliquidOrderPoll()
+      this.stopReconcileSweep()
       return
     }
     /**

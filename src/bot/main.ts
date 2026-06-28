@@ -282,6 +282,11 @@ class MainBot<T extends IMainBot> {
    *  response, so they don't need polling. */
   hyperliquidPollTimer: NodeJS.Timeout | null = null
   hyperliquidPollInterval = 30 * 1000
+  /** Periodic reconciliation-sweep timer (opt-in). See startReconcileSweep. */
+  reconcileSweepTimer: NodeJS.Timeout | null = null
+  /** True while a reconcile is running because the sweep timer fired it
+   *  (vs a real user-stream reconnect), for distinct logging. */
+  reconcileViaSweep = false
   /** Math helper instance */
   math: MathHelper
   /** Service restart flag */
@@ -1312,6 +1317,9 @@ class MainBot<T extends IMainBot> {
       await q()
     }
     this.runAfterLoadingQueue = []
+    // Arm the reconciliation sweep on every load (fresh start AND service
+    // reload), so a bot restored after a restart is also protected.
+    this.startReconcileSweep()
   }
 
   async priceUpdateCallback(_botId: string, _msg: PriceMessage) {
@@ -3914,6 +3922,61 @@ class MainBot<T extends IMainBot> {
     if (this.hyperliquidPollTimer) {
       clearInterval(this.hyperliquidPollTimer)
       this.hyperliquidPollTimer = null
+    }
+  }
+
+  /**
+   * Periodic reconciliation sweep — the safety net for a silently-dead user
+   * stream ("connected" but delivering no order updates). It re-runs this bot's
+   * existing reconnect reconcile (`callbackAfterUserStream` =
+   * checkOrdersAfterReconnect for grid/DCA) on a timer, so an order fill missed
+   * by the stream is picked up within one interval instead of stalling the bot
+   * until a manual restart (community thread 4863).
+   *
+   * Lives on MainBot so every helper subclass that sets `callbackAfterUserStream`
+   * inherits it, and it runs wherever the bot instance runs — in-process (cloud
+   * overlay) or in a worker (self-hosted) — so the fix works in both editions.
+   * It pulls actual order status (immune to the "missed vs quiet" ambiguity) and
+   * never touches the stream, so there is no reconnect-window event loss; the
+   * reconcile is a no-op when nothing changed. Opt-in via RECONCILE_SWEEP_ENABLED.
+   */
+  startReconcileSweep() {
+    if (process.env.RECONCILE_SWEEP_ENABLED !== 'true') {
+      return
+    }
+    // Only bot types with a reconnect reconcile (grid / DCA) participate.
+    if (!this.callbackAfterUserStream) {
+      return
+    }
+    if (this.reconcileSweepTimer) {
+      clearInterval(this.reconcileSweepTimer)
+    }
+    const interval = Math.max(
+      30_000,
+      +(process.env.RECONCILE_SWEEP_INTERVAL_MS ?? 120_000),
+    )
+    this.reconcileSweepTimer = setInterval(() => {
+      // Mark sweep-initiated reconciles so checkOrdersAfterReconnect can log
+      // distinctly when *this* timer (not a real reconnect) catches a missed
+      // fill — that count is the health signal for user-stream staleness.
+      this.reconcileViaSweep = true
+      void Promise.resolve(this.callbackAfterUserStream?.(this.botId))
+        .catch((e) =>
+          this.handleWarn(`reconcile-sweep failed: ${(e as Error).message}`),
+        )
+        .finally(() => {
+          this.reconcileViaSweep = false
+        })
+    }, interval)
+    // Greppable: confirms the sweep is enabled+armed for this bot (once on load).
+    this.handleLog(`reconcile-sweep armed (every ${interval}ms)`)
+  }
+
+  /** Stop the reconciliation sweep. */
+  stopReconcileSweep() {
+    if (this.reconcileSweepTimer) {
+      clearInterval(this.reconcileSweepTimer)
+      this.reconcileSweepTimer = null
     }
   }
 

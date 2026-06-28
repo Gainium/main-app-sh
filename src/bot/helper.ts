@@ -1197,6 +1197,13 @@ function createBotHelper<
           (a, b) => b.updateTime - a.updateTime,
         )
         if (lastFilled) {
+          if (this.reconcileViaSweep) {
+            // Greppable health signal: the periodic sweep (not a reconnect)
+            // caught order fills the user stream had dropped.
+            this.handleLog(
+              `reconcile-sweep caught ${filledOrders.length} missed fill(s)`,
+            )
+          }
           this.handleDebug(
             `Rebuilding grid after ${lastFilled.clientOrderId}, ${lastFilled.side}, base: ${lastFilled.executedQty}, quote: ${lastFilled.cummulativeQuoteQty}, price: ${lastFilled.price}`,
           )
@@ -2379,6 +2386,7 @@ function createBotHelper<
       try {
         this.startPriceTimer()
         this.startHyperliquidOrderPoll()
+        this.startReconcileSweep()
         const checkStartCondition = await this.checkPriceToStart()
         this.handleLog(`Check start condition: ${checkStartCondition}`)
         if (checkStartCondition && this.data && !this.data.haveStarted) {
@@ -4114,6 +4122,7 @@ function createBotHelper<
     async afterBotStop() {
       this.stopPriceTimer()
       this.stopHyperliquidOrderPoll()
+      this.stopReconcileSweep()
       return
     }
     /** Check if price not update */

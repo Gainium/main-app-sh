@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.22.2] - 2026-06-28
+
+### Changed
+- Reconciliation sweep (1.22.0) moved from `BotOperations` (worker bot-service) to the per-instance `MainBot` base class (`startReconcileSweep`/`stopReconcileSweep`, armed in `runAfterLoading()` + grid/DCA start, cleared on stop). The cloud build runs bots in-process via the `src/bot/` overlay, so the worker path never executed there; the per-instance timer runs wherever the bot instance runs, so the sweep now works in **both cloud and self-hosted**. Adds greppable logs: `reconcile-sweep armed (every Xms)` per bot on load, and `reconcile-sweep caught N missed fill(s)` when the sweep (not a reconnect) reconciled a stream-dropped fill.
+
 ## [1.22.1] - 2026-06-28
 
 ### Fixed
