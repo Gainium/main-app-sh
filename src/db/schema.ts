@@ -215,17 +215,23 @@ const botEventSchema: Schema<BotEventSchema> = new Schema({
 // Append-only record of reconciliation-sweep catches (a fill the user stream
 // dropped that the periodic sweep recovered). Powers the admin user-stream
 // health page; rows expire via TTL (see registerIndexes).
-const reconcileSweepSchema: Schema<ReconcileSweepSchema> = new Schema({
-  botId: RequiredString,
-  botType: { ...RequiredString, enum: BotType },
-  userId: RequiredString,
-  exchange: RequiredString,
-  exchangeUUID: RequiredString,
-  paperContext: Boolean,
-  pair: String,
-  missedFills: RequiredNumber,
-  ...CreatedUpdated,
-})
+const reconcileSweepSchema: Schema<ReconcileSweepSchema> = new Schema(
+  {
+    botId: RequiredString,
+    botType: { ...RequiredString, enum: BotType },
+    userId: RequiredString,
+    exchange: RequiredString,
+    exchangeUUID: RequiredString,
+    paperContext: Boolean,
+    pair: String,
+    missedFills: RequiredNumber,
+    ...CreatedUpdated,
+  },
+  // Pin the collection explicitly. Mongoose otherwise lowercases the model
+  // name (e.g. `dcaBots` → `dcabots`); the admin-app reader + backfill must
+  // match this exact name or they silently read an empty collection.
+  { collection: 'reconcilesweepcatches' },
+)
 
 const userSchema: Schema<UserSchema> = new Schema({
   bigAccount: Boolean,

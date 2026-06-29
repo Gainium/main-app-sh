@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.22.4] - 2026-06-29
+
+### Fixed
+- Pin the reconcile-sweep collection name explicitly to `reconcilesweepcatches`. Mongoose lowercases derived model collection names (e.g. `dcaBots` → `dcabots`), so the previously-configured `reconcileSweepCatches` model would have written live catches to a lowercased collection that the admin-app reader/backfill didn't match — the admin page would have shown backfilled history but never live data. Now both sides use the same explicit lowercase name.
+
 ## [1.22.3] - 2026-06-29
 
 ### Added
