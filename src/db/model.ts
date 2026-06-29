@@ -5,6 +5,7 @@ import { collections } from './config'
 import {
   BalancesSchema,
   BotEventSchema,
+  ReconcileSweepSchema,
   BotMessageSchema,
   BotSchema,
   DCABacktestingResult,
@@ -49,6 +50,10 @@ const models = {
   ),
   user: model<UserSchema>(`${collections.user}`, schema.user),
   botEvent: model<BotEventSchema>(`${collections.botEvent}`, schema.botEvent),
+  reconcileSweep: model<ReconcileSweepSchema>(
+    `${collections.reconcileSweep}`,
+    schema.reconcileSweep,
+  ),
   favoritePair: model<FavoritePairsSchema>(
     `${collections.favoritePairs}`,
     schema.favoritePairs,
@@ -171,6 +176,7 @@ const models = {
 export const syncIndexes = async (user = true) => {
   registerIndexes()
   await models.botEvent.syncIndexes()
+  await models.reconcileSweep.syncIndexes()
   await models.balance.syncIndexes()
   await models.backtest.syncIndexes()
   await models.gridBacktest.syncIndexes()

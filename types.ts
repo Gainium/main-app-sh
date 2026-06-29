@@ -1658,6 +1658,18 @@ export interface BotEventSchema extends SchemaI {
   symbol?: string
 }
 
+export interface ReconcileSweepSchema extends SchemaI {
+  botId: string
+  botType: BotType
+  userId: string
+  exchange: string
+  exchangeUUID: string
+  paperContext: boolean
+  pair?: string
+  /** Number of fills the sweep recovered in this catch (the log's "caught N"). */
+  missedFills: number
+}
+
 export type CleanBotEventSchema = ExcludeDoc<BotEventSchema>
 
 export type ClearUserSchema = ExcludeDoc<UserSchema>

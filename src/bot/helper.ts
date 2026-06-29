@@ -1203,6 +1203,7 @@ function createBotHelper<
             this.handleLog(
               `reconcile-sweep caught ${filledOrders.length} missed fill(s)`,
             )
+            this.recordReconcileSweepCatch(filledOrders.length)
           }
           this.handleDebug(
             `Rebuilding grid after ${lastFilled.clientOrderId}, ${lastFilled.side}, base: ${lastFilled.executedQty}, quote: ${lastFilled.cummulativeQuoteQty}, price: ${lastFilled.price}`,

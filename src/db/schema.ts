@@ -2,6 +2,7 @@ import { Schema } from 'mongoose'
 import type {
   BalancesSchema,
   BotEventSchema,
+  ReconcileSweepSchema,
   BotMessageSchema,
   BotSchema,
   DCABacktestingResult,
@@ -208,6 +209,21 @@ const botEventSchema: Schema<BotEventSchema> = new Schema({
   type: { type: String, enum: MessageTypeEnum },
   deal: String,
   symbol: String,
+  ...CreatedUpdated,
+})
+
+// Append-only record of reconciliation-sweep catches (a fill the user stream
+// dropped that the periodic sweep recovered). Powers the admin user-stream
+// health page; rows expire via TTL (see registerIndexes).
+const reconcileSweepSchema: Schema<ReconcileSweepSchema> = new Schema({
+  botId: RequiredString,
+  botType: { ...RequiredString, enum: BotType },
+  userId: RequiredString,
+  exchange: RequiredString,
+  exchangeUUID: RequiredString,
+  paperContext: Boolean,
+  pair: String,
+  missedFills: RequiredNumber,
   ...CreatedUpdated,
 })
 
@@ -2759,6 +2775,11 @@ const brokerCodes = new Schema<BrokerCodesSchema>({
 export const registerIndexes = () => {
   brokerCodes.index({ exchange: 1, zone: 1 }, { unique: true })
 
+  reconcileSweepSchema.index({ created: -1 })
+  reconcileSweepSchema.index({ exchangeUUID: 1, created: -1 })
+  // Retain ~90 days of catches; bounds growth without manual cleanup.
+  reconcileSweepSchema.index({ created: 1 }, { expireAfterSeconds: 7776000 })
+
   userProfitByHour.index({ userId: 1 })
 
   backtestRequest.index({ userid: 1 })
@@ -2847,6 +2868,7 @@ const schema = {
   globalVariables: globalVariablesSchema,
   user: userSchema,
   botEvent: botEventSchema,
+  reconcileSweep: reconcileSweepSchema,
   favoritePairs: favoritePairsSchema,
   favoriteIndicators: favoriteIndicatorsSchema,
   bot: botSchema,

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.22.3] - 2026-06-29
+
+### Added
+- Persist reconciliation-sweep catches to the `reconcileSweepCatches` collection (`MainBot.recordReconcileSweepCatch`, fire-and-forget at the grid/DCA catch sites) — `botId/botType/userId/exchange/exchangeUUID/paperContext/pair/missedFills`, 90-day TTL. Powers the admin "User Stream Health" page; a rising per-account catch rate = that account's user stream is silently dead. No-op when `RECONCILE_SWEEP_ENABLED` is off.
+
 ## [1.22.2] - 2026-06-28
 
 ### Changed

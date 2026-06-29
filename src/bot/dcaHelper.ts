@@ -8635,6 +8635,7 @@ function createDCABotHelper<
           this.handleLog(
             `reconcile-sweep caught ${filledOrders.length} missed fill(s)`,
           )
+          this.recordReconcileSweepCatch(filledOrders.length)
         }
         this.processOrdersAfterCheck(filledOrders, partiallyFilledOrders)
       } catch (e) {

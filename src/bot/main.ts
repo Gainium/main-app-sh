@@ -83,6 +83,7 @@ import RedisClient, { RedisWrapper } from '../db/redis'
 import {
   balanceDb,
   botEventDb,
+  reconcileSweepDb,
   botMessageDb,
   brokerCodesDb,
   comboBotDb,
@@ -269,6 +270,8 @@ class MainBot<T extends IMainBot> {
   messagesDb = botMessageDb
   /** DB instance to work with bot events */
   botEventDb = botEventDb
+  /** DB instance recording reconciliation-sweep catches (user-stream health) */
+  reconcileSweepDb = reconcileSweepDb
   /** Exchange instance */
   exchange: Exchange | null
   lastCheckPerSymbol: Map<string, number> = new Map()
@@ -3978,6 +3981,31 @@ class MainBot<T extends IMainBot> {
       clearInterval(this.reconcileSweepTimer)
       this.reconcileSweepTimer = null
     }
+  }
+
+  /**
+   * Persist a reconciliation-sweep catch (a fill the user stream dropped that
+   * the periodic sweep recovered). Fire-and-forget — never block or throw into
+   * the order-check path. Powers the admin user-stream health page: a rising
+   * per-account catch rate means that account's user stream is silently dead.
+   */
+  protected recordReconcileSweepCatch(missedFills: number) {
+    void this.reconcileSweepDb
+      .createData({
+        botId: this.botId,
+        botType: this.botType,
+        userId: this.userId,
+        exchange: `${this.data?.exchange ?? this.exchange ?? ''}`,
+        exchangeUUID: `${this.data?.exchangeUUID ?? ''}`,
+        paperContext: !!this.data?.paperContext,
+        pair: this.data?.settings?.pair?.[0],
+        missedFills,
+      })
+      .catch((e) =>
+        this.handleWarn(
+          `reconcile-sweep record failed: ${(e as Error).message}`,
+        ),
+      )
   }
 
   /**
