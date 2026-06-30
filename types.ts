@@ -233,9 +233,28 @@ export enum OrderSideEnum {
   sell = 'SELL',
 }
 
+/**
+ * Normalized asset class of a tradable instrument. Exchanges now list real-world
+ * assets (stocks/ETFs/commodities/metals/forex/indices) alongside crypto.
+ * FROZEN CONTRACT — other repos (exchange-connector, dashboards) depend on these
+ * exact string values. Keep in sync with exchange-connector's `AssetClass`.
+ */
+export type AssetClass =
+  | 'crypto'
+  | 'stock'
+  | 'etf'
+  | 'commodity'
+  | 'metal'
+  | 'forex'
+  | 'index'
+
 export type ExchangeInfo = {
   wsCode?: string
   code?: string
+  // Coarse asset-class signal from the connector where the exchange exposes an
+  // authoritative flag (e.g. Bitget `isRwa` => 'stock'). Absent => treat as
+  // 'crypto'. main-app refines/normalizes this into `assetCategory`. Danger List #1.
+  assetClass?: AssetClass
   baseAsset: {
     minAmount: number
     maxAmount: number
@@ -2263,6 +2282,12 @@ export interface PairsSchema extends SchemaI {
   }
   type?: string
   crossAvailable?: boolean
+  /**
+   * Normalized asset class persisted on every pair (default 'crypto'). Computed
+   * by `classifyAssetClass` in the pairs cron from curated lists + the connector
+   * signal. FROZEN GraphQL/DB field name — dashboards depend on it. Danger List #12.
+   */
+  assetCategory: AssetClass
 }
 
 export interface StoreFilesSchema extends SchemaI {

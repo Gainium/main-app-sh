@@ -830,6 +830,13 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
   },
   type: String,
   crossAvailable: Boolean,
+  // Normalized asset class (crypto/stock/etf/commodity/metal/forex/index).
+  // Defaults to 'crypto' so legacy/un-backfilled pairs read as crypto.
+  assetCategory: {
+    type: String,
+    enum: ['crypto', 'stock', 'etf', 'commodity', 'metal', 'forex', 'index'],
+    default: 'crypto',
+  },
   ...CreatedUpdated,
 })
 

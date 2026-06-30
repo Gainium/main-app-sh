@@ -5,7 +5,13 @@ import RedisClient from '../../db/redis'
 import { isPaper } from '../../exchange/paper/utils'
 import utils from '../user'
 
-import { ExchangeEnum, type ClearPairsSchema, StatusEnum } from '../../../types'
+import {
+  ExchangeEnum,
+  type ClearPairsSchema,
+  type AssetClass,
+  StatusEnum,
+} from '../../../types'
+import { classifyAssetClass } from '../assetClass'
 import { Kraken } from 'node-kraken-api'
 import axios from 'axios'
 
@@ -72,14 +78,51 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
           true,
           true,
         )
+        // Paper exchanges proxy exchange-info through paper-trading, which does
+        // not carry the connector's `assetClass`. Mirror the class from the
+        // already-synced real twin (paperBitget → bitget) so paper pairs are
+        // classified identically. Real twins precede their paper copy in
+        // `providers`, so the lookup is populated by the time we reach paper.
+        let paperRealMap: Map<string, AssetClass | undefined> | undefined
+        if (isPaper(provider)) {
+          const realName = provider.replace(/^paper/, '')
+          const realExchange = (realName.charAt(0).toLowerCase() +
+            realName.slice(1)) as ExchangeEnum
+          const realPairs = await pairDb.readData<ClearPairsSchema>(
+            { exchange: realExchange },
+            { pair: 1, assetCategory: 1 },
+            {},
+            true,
+            true,
+          )
+          if (realPairs.status === StatusEnum.ok) {
+            paperRealMap = new Map(
+              realPairs.data.result.map((p) => [p.pair, p.assetCategory]),
+            )
+          }
+        }
         if (allDbPairs.status === StatusEnum.ok) {
           for (const info of exchangeInfo.data) {
             const getPair = allDbPairs.data.result.find(
               (p) => p.pair === info.pair,
             )
+            // Asset class comes from the exchange's authoritative signal
+            // (connector); paper twins inherit it from their real exchange.
+            const assetCategory = classifyAssetClass({
+              exchange: provider,
+              pair: info.pair,
+              baseAsset: info.baseAsset.name,
+              quoteAsset: info.quoteAsset.name,
+              connectorAssetClass: paperRealMap
+                ? paperRealMap.get(info.pair)
+                : info.assetClass,
+            })
             if (getPair) {
               if (
                 getPair.wsCode !== info.wsCode ||
+                // Treat an assetCategory change as an update so existing pairs
+                // get backfilled on the next cron run.
+                getPair.assetCategory !== assetCategory ||
                 getPair.code !== info.code ||
                 getPair.baseAsset.name !== info.baseAsset.name ||
                 getPair.baseAsset.minAmount !== info.baseAsset.minAmount ||
@@ -107,6 +150,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 updateMap.set(_id, {
                   ...info,
                   exchange: provider,
+                  assetCategory,
                   _id,
                 })
               }
@@ -115,6 +159,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
               createMap.push({
                 ...info,
                 exchange: provider,
+                assetCategory,
               })
             }
           }

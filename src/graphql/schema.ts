@@ -51,6 +51,7 @@ export const BasicSchema = /* GraphQL */ `
     maxOrders: Int
     priceAssetPrecision: Float
     crossAvailable: Boolean
+    assetCategory: String
   }
   type getPairResponse implements BasicResponse {
     status: Status
@@ -83,6 +84,7 @@ export const BasicSchema = /* GraphQL */ `
     maxOrders: Float
     priceAssetPrecision: Float
     crossAvailable: Boolean
+    assetCategory: String
   }
   type allPairInfo {
     result: [pairDetailedInfo]

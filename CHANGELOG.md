@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.23.0] - 2026-06-30
+
+### Added
+- Normalized `assetCategory` (crypto/stock/etf/commodity/metal/forex/index, default crypto) on the `pairs` collection + `getAllPairs` GraphQL, classified authoritatively from the connector's `assetClass` (no heuristics). `classifyAssetClass` trusts the exchange signal; the pairs cron persists it and paper exchanges inherit their real twin's class.
+
 ## [1.22.4] - 2026-06-29
 
 ### Fixed
