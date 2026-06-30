@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.23.1] - 2026-06-30
+
+### Fixed
+- Stock/ETF icons: venue-gate `normalizeStockTicker` so Bitget reality (`RAAPL`), Bybit-spot xstock (`AAPLX`) and Kraken xStock (`AAPLX` on `krakenUsdm`) bases resolve to their clean ticker for logo lookup. Upper-case wrapper strips (`R`-prefix / `X`-suffix) are gated to the venue that mints them — and to its `paper` twin — so clean tickers that start with `R` (`RBLX`) or end in `X` (`NFLX` on `bybitLinear`) are no longer mangled; lower-case wrappers (`rTSLA`/`AAPLx`/`AAPLon`) still strip on any venue.
+
 ## [1.23.0] - 2026-06-30
 
 ### Added
