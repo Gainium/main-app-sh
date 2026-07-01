@@ -5,6 +5,7 @@ import {
   MessageTypeEnum,
   StatusEnum,
   UserSchema,
+  ExchangeEnum,
 } from '../../../types'
 import { isPaper } from '../../utils'
 import { resetPaperData } from '../../graphql/handlers/paper'
@@ -149,7 +150,7 @@ const clearRealOldCanceledOrders = async () => {
   await orderDb
     .deleteManyData({
       updated: { $lt: new Date(+new Date() - 30 * 24 * 60 * 60 * 1000) },
-      exchange: { $ne: 'bybit' },
+      exchange: { $ne: ExchangeEnum.bybit },
       status: { $in: ['CANCELED', 'EXPIRED'] },
     })
     .then((res) =>
@@ -158,7 +159,7 @@ const clearRealOldCanceledOrders = async () => {
   await orderDb
     .deleteManyData({
       updated: { $lt: new Date(+new Date() - 30 * 24 * 60 * 60 * 1000) },
-      exchange: { $eq: 'bybit' },
+      exchange: { $eq: ExchangeEnum.bybit },
       executedQty: {
         $in: [
           '0',

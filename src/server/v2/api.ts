@@ -2415,7 +2415,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const deal = await dcaDealsDb.readData({
           _id: dealId,
           userId: user.id,
-          type: { $eq: 'terminal' },
+          type: { $eq: DCATypeEnum.terminal },
           status: {
             $nin: [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],
           },
@@ -2524,7 +2524,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const deal = await dcaDealsDb.readData({
           _id: dealId,
           userId: user.id,
-          type: { $eq: 'terminal' },
+          type: { $eq: DCATypeEnum.terminal },
           status: {
             $nin: [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],
           },
@@ -3479,8 +3479,8 @@ const v2API = <R extends UserSchema = UserSchema>(
             : await dcaDealsDb.readData({
                 _id: dealId,
                 userId: user.id,
-                ...(dealType === 'terminal'
-                  ? { type: { $eq: 'terminal' } }
+                ...(dealType === DCATypeEnum.terminal
+                  ? { type: { $eq: DCATypeEnum.terminal } }
                   : {}),
                 status: {
                   $nin: [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],

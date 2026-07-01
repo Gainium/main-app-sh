@@ -55,7 +55,6 @@ import {
   BaseReturn,
   BotSchema,
   BotSettings,
-  BotStatus,
   BotStatusEnum,
   BotType,
   BuyTypeEnum,
@@ -2683,7 +2682,7 @@ class Bot<T extends UserSchema = UserSchema> {
   public async getPublicBotList(
     type: BotType,
     userId: string,
-    status?: BotStatus,
+    status?: BotStatusEnum,
     paperContext?: boolean,
     page = 1,
   ) {
