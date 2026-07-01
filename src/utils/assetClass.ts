@@ -65,7 +65,12 @@ export function normalizeStockTicker(
   symbol: string,
   opts?: NormalizeStockTickerOpts,
 ): string {
-  const s = symbol || ''
+  const raw = symbol || ''
+  // Hyperliquid HIP-3 builder-dex bases carry a `dex:` prefix (`xyz:AAPL`,
+  // `flx:NVDA`) that main-app persists verbatim. Strip it so the clean
+  // underlying ticker resolves on logo.dev. Colons only appear in these
+  // builder-dex bases, and this runs only for stock/etf rows.
+  const s = raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw
   // Normalize the venue: lower-case and drop the `paper` prefix so the paper
   // twins (`paperBitget`, `paperBybit`, `paperBybitLinear`, …) gate exactly
   // like their real counterparts — the local/paper stack lists these RWAs too.

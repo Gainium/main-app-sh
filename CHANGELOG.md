@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.23.2] - 2026-07-01
+
+### Fixed
+- Stock/ETF icons: `normalizeStockTicker` now strips a Hyperliquid HIP-3 builder-dex prefix (`xyz:AAPL` → `AAPL`) so tokenized-stock perps resolve their clean ticker for logo lookup.
+
 ## [1.23.1] - 2026-06-30
 
 ### Fixed
