@@ -4981,10 +4981,17 @@ export type InputRequest = {
   userAgent?: string
   req: {
     user?: { username: string; authorized: boolean }
-    cookies: { a?: string; aid?: string }
+    cookies: { a?: string; aid?: string; gdid?: string }
   }
+  // Express response — present in the GraphQL context so auth resolvers can set
+  // the device cookie (gdid) on a successful login. Typed loosely (only the
+  // `cookie` method is used) to avoid pulling express types into core.
+  res?: { cookie: (name: string, value: string, options?: unknown) => unknown }
   paperContext: boolean
   ip?: string
+  // Opaque device id resolved from the gdid cookie (or freshly minted on this
+  // request). Used to record loginHistory and detect new devices.
+  deviceId?: string
 }
 
 export enum BybitHost {
