@@ -1,9 +1,14 @@
 # Changelog
 
-## [1.24.2] - 2026-07-02
+## [1.24.3] - 2026-07-03
 
 ### Fixed
-- Archiving a bot now sticks for bots in any active state, not just already-stopped ones. The archive update required the bot to already be `closed`, so archiving a running bot (e.g. a hedge-combo bot) from the list silently did nothing — the request returned OK but the bot came back after a re-login/browser reopen. Applies to all bot types (DCA/Grid/Combo/Hedge Combo/Hedge DCA).
+- Archiving a running bot now fails with a clear "Only stopped bots can be archived. Stop the bot first." error instead of silently reporting success and reappearing after a re-login/browser reopen. `setArchiveStatus` filtered the update on `status: closed`, so archiving a running bot (e.g. a hedge-combo bot) matched 0 docs yet still returned OK — the dashboard showed a false success and hid the bot locally until the next full reload. The legacy rule (only stopped bots are archivable) is preserved; the failure is now explicit and nothing is mutated on a rejected archive. Applies to all bot types (DCA/Grid/Combo/Hedge Combo/Hedge DCA).
+
+## [1.24.2] - 2026-07-02
+
+### Changed
+- (Superseded by 1.24.3 — not deployed) Dropped the `status: closed` guard so archiving worked on bots in any active state. Replaced by an explicit error, to keep the legacy "stop before archiving" rule.
 
 ## [1.24.1] - 2026-07-02
 

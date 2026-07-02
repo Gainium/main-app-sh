@@ -7249,15 +7249,48 @@ class Bot<T extends UserSchema = UserSchema> {
     archive: boolean,
     paperContext?: boolean,
   ) {
+    // Legacy rule: only stopped (`closed`) bots can be archived. Each branch
+    // below filters the update on `status: closed`, so archiving a running
+    // bot matches 0 docs — but updateMany still reports OK, so the API used
+    // to return a false success. The dashboard then hid the bot locally and
+    // it reappeared on the next full reload. Fail loudly instead, before
+    // closeAllDeals runs, so nothing is mutated on a rejected archive.
+    if (archive) {
+      const archiveDb = (
+        type === BotType.grid
+          ? this.botDb
+          : type === BotType.combo
+            ? this.comboBotDb
+            : type === BotType.hedgeCombo
+              ? hedgeComboBotDb
+              : type === BotType.hedgeDca
+                ? hedgeDCABotDb
+                : this.dcaBotDb
+      ) as { readData: (...args: any[]) => Promise<any> }
+      const current = await archiveDb.readData(
+        { _id: { $in: botIds }, userId, isDeleted: { $ne: true } },
+        { _id: true, status: true },
+        undefined,
+        true,
+      )
+      if (current.status === StatusEnum.notok) {
+        return current
+      }
+      const notClosed = (current.data?.result ?? []).filter(
+        (b: { status?: BotStatusEnum }) => b.status !== BotStatusEnum.closed,
+      )
+      if (notClosed.length > 0) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Only stopped bots can be archived. Stop the bot first.',
+          data: [],
+        }
+      }
+    }
     if (type === BotType.grid) {
       const findBotsData = await this.botDb.updateManyData(
         {
-          // Only constrain by status when UN-archiving (archived → closed).
-          // When archiving, match the bot by id regardless of its current
-          // status — the UI offers Archive for running bots too, and a
-          // `status: closed` guard here silently no-ops (updateMany still
-          // returns OK), so the bot reappears once the client cache clears.
-          ...(archive ? {} : { status: BotStatusEnum.archive }),
+          status: archive ? BotStatusEnum.closed : BotStatusEnum.archive,
           _id: { $in: botIds },
           userId,
         },
@@ -7288,12 +7321,9 @@ class Bot<T extends UserSchema = UserSchema> {
       const findComboBotsData = await this.comboBotDb.updateManyData(
         {
           $and: [
-            // Only constrain by status when UN-archiving (archived → closed).
-            // When archiving, match the bot by id regardless of its current
-            // status — the UI offers Archive for running bots too, and a
-            // `status: closed` guard here silently no-ops (updateMany still
-            // returns OK), so the bot reappears once the client cache clears.
-            ...(archive ? [] : [{ status: BotStatusEnum.archive }]),
+            {
+              status: archive ? BotStatusEnum.closed : BotStatusEnum.archive,
+            },
             { _id: { $in: botIds as any[] } },
             { userId },
           ],
@@ -7335,12 +7365,9 @@ class Bot<T extends UserSchema = UserSchema> {
       const findComboBotsData = await hedgeComboBotDb.updateManyData(
         {
           $and: [
-            // Only constrain by status when UN-archiving (archived → closed).
-            // When archiving, match the bot by id regardless of its current
-            // status — the UI offers Archive for running bots too, and a
-            // `status: closed` guard here silently no-ops (updateMany still
-            // returns OK), so the bot reappears once the client cache clears.
-            ...(archive ? [] : [{ status: BotStatusEnum.archive }]),
+            {
+              status: archive ? BotStatusEnum.closed : BotStatusEnum.archive,
+            },
             { _id: { $in: botIds as any[] } },
             { userId },
           ],
@@ -7382,12 +7409,9 @@ class Bot<T extends UserSchema = UserSchema> {
       const findDcaBotsData = await hedgeDCABotDb.updateManyData(
         {
           $and: [
-            // Only constrain by status when UN-archiving (archived → closed).
-            // When archiving, match the bot by id regardless of its current
-            // status — the UI offers Archive for running bots too, and a
-            // `status: closed` guard here silently no-ops (updateMany still
-            // returns OK), so the bot reappears once the client cache clears.
-            ...(archive ? [] : [{ status: BotStatusEnum.archive }]),
+            {
+              status: archive ? BotStatusEnum.closed : BotStatusEnum.archive,
+            },
             { _id: { $in: botIds as any[] } },
             { userId },
           ],
@@ -7428,12 +7452,9 @@ class Bot<T extends UserSchema = UserSchema> {
     const findDCABotsData = await this.dcaBotDb.updateManyData(
       {
         $and: [
-          // Only constrain by status when UN-archiving (archived → closed).
-          // When archiving, match the bot by id regardless of its current
-          // status — the UI offers Archive for running bots too, and a
-          // `status: closed` guard here silently no-ops (updateMany still
-          // returns OK), so the bot reappears once the client cache clears.
-          ...(archive ? [] : [{ status: BotStatusEnum.archive }]),
+          {
+            status: archive ? BotStatusEnum.closed : BotStatusEnum.archive,
+          },
           { _id: { $in: botIds as any[] } },
           { userId },
         ],
