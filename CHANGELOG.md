@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.24.2] - 2026-07-02
+
+### Fixed
+- Archiving a bot now sticks for bots in any active state, not just already-stopped ones. The archive update required the bot to already be `closed`, so archiving a running bot (e.g. a hedge-combo bot) from the list silently did nothing — the request returned OK but the bot came back after a re-login/browser reopen. Applies to all bot types (DCA/Grid/Combo/Hedge Combo/Hedge DCA).
+
 ## [1.24.1] - 2026-07-02
 
 ### Fixed
