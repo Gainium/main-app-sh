@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.24.1] - 2026-07-02
+
+### Fixed
+- Combo bot stop: `ComboBot.afterBotStop()` now delegates to `super.afterBotStop()`, so stopping a combo bot also clears the price timer and reconcile-sweep interval (previously left running — combo arms both via the inherited DCA `start()`).
+
 ## [1.24.0] - 2026-07-02
 
 ### Added
