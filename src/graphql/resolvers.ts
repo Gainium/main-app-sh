@@ -61,6 +61,7 @@ import { isExchangeEnabled } from '../utils/adminConfig'
 import userUtils, { checkLicenseKey, updateUserSteps } from '../utils/user'
 import { getBalances } from './handlers/balance.handler'
 import { deleteBotMessage, getBotMessage } from './handlers/botMessage.handler'
+import { getQuantRulesStatus } from './handlers/quantRules.handler'
 import verify, { bybitAccountType } from '../exchange/verify'
 import { getExchangeTradeType } from '../exchange/helpers'
 import {
@@ -3252,6 +3253,20 @@ const resolvers = <
         input?.pageSize,
         input?.search,
       )
+    },
+    getQuantRulesStatus: async (
+      _parent: any,
+      _args: any,
+      { token, req }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return getQuantRulesStatus(user.data._id)
     },
     resetDealSettings: async (
       _parent: any,

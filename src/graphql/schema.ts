@@ -702,6 +702,7 @@ export const BotSchema = /* GraphQL */ `
     getLatestOrders(input: getLatestOrdersInput): getLatestOrdersResponse
     getPortfolioByUser(input: getPortfolioByUser): getPortfolioResponse
     getMessageBot(input: getMessageBotInput): botMessageGetResponse
+    getQuantRulesStatus: quantRulesStatusResponse
     resetDealSettings(input: resetDealSettingsInput): resetDealSettingsResponse
     resetComboDealSettings(
       input: resetDealSettingsInput
@@ -2285,6 +2286,20 @@ export const BotSchema = /* GraphQL */ `
     reason: String
     data: botMessageList
     total: Float
+  }
+  type quantRulesCooldown {
+    exchangeUUID: String
+    exchange: String
+    symbol: String
+    scope: String
+    level: Int
+    until: String
+    violationCount24h: Int
+  }
+  type quantRulesStatusResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: [quantRulesCooldown]
   }
   type restartResponse implements BasicResponse {
     status: Status

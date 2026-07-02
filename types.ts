@@ -1689,6 +1689,27 @@ export interface ReconcileSweepSchema extends SchemaI {
   missedFills: number
 }
 
+// One Binance Futures Quantitative Rules (-4400) cooldown event. Written by the
+// bot engine's QuantRulesGuard when a NEW cooldown (or escalation) is detected;
+// read by the getQuantRulesStatus GraphQL query, admin-app, and the dashboard.
+// Collection name is pinned all-lowercase ('quantrulesevents') — external
+// readers depend on exactly this literal (mongoose lowercasing gotcha).
+export interface QuantRulesEventSchema extends SchemaI {
+  userId: string
+  exchangeUUID: string
+  exchange?: string
+  /** null/absent for account-scope (level 3) events. */
+  symbol?: string
+  scope: 'symbol' | 'account'
+  level: 1 | 2 | 3
+  until: Date
+  violationCount24h?: number
+  botId?: string
+  botType?: string
+  dealId?: string
+  reason?: string
+}
+
 export type CleanBotEventSchema = ExcludeDoc<BotEventSchema>
 
 export type ClearUserSchema = ExcludeDoc<UserSchema>

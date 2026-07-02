@@ -15569,6 +15569,7 @@ function createDCABotHelper<
       this.stopPriceTimer()
       this.stopHyperliquidOrderPoll()
       this.stopReconcileSweep()
+      this.stopQuantRulesRetries()
       return
     }
     /**

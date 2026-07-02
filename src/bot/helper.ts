@@ -4124,6 +4124,7 @@ function createBotHelper<
       this.stopPriceTimer()
       this.stopHyperliquidOrderPoll()
       this.stopReconcileSweep()
+      this.stopQuantRulesRetries()
       return
     }
     /** Check if price not update */

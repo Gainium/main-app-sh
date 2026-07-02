@@ -3,6 +3,7 @@ import type {
   BalancesSchema,
   BotEventSchema,
   ReconcileSweepSchema,
+  QuantRulesEventSchema,
   BotMessageSchema,
   BotSchema,
   DCABacktestingResult,
@@ -231,6 +232,33 @@ const reconcileSweepSchema: Schema<ReconcileSweepSchema> = new Schema(
   // name (e.g. `dcaBots` → `dcabots`); the admin-app reader + backfill must
   // match this exact name or they silently read an empty collection.
   { collection: 'reconcilesweepcatches' },
+)
+
+// Binance Futures Quantitative Rules (-4400) cooldown events. Written by the
+// bot engine's QuantRulesGuard on each NEW cooldown / escalation; read by the
+// getQuantRulesStatus GraphQL query, admin-app, and the dashboard. Rows expire
+// via TTL (see registerIndexes).
+const quantRulesEventSchema: Schema<QuantRulesEventSchema> = new Schema(
+  {
+    userId: RequiredString,
+    exchangeUUID: RequiredString,
+    exchange: String,
+    // Absent for account-scope (level 3) events.
+    symbol: String,
+    scope: { ...RequiredString, enum: ['symbol', 'account'] },
+    level: RequiredNumber,
+    until: RequiredDate,
+    violationCount24h: Number,
+    botId: String,
+    botType: String,
+    dealId: String,
+    reason: String,
+    ...CreatedUpdated,
+  },
+  // Pin the collection explicitly. Mongoose otherwise lowercases the model
+  // name; the admin-app reader + dashboard GraphQL projection must match this
+  // exact literal or they silently read an empty collection.
+  { collection: 'quantrulesevents' },
 )
 
 const userSchema: Schema<UserSchema> = new Schema({
@@ -2793,6 +2821,11 @@ export const registerIndexes = () => {
   // Retain ~90 days of catches; bounds growth without manual cleanup.
   reconcileSweepSchema.index({ created: 1 }, { expireAfterSeconds: 7776000 })
 
+  quantRulesEventSchema.index({ userId: 1, created: -1 })
+  quantRulesEventSchema.index({ until: -1 })
+  // Retain ~90 days of cooldown events; bounds growth without manual cleanup.
+  quantRulesEventSchema.index({ created: 1 }, { expireAfterSeconds: 7776000 })
+
   userProfitByHour.index({ userId: 1 })
 
   backtestRequest.index({ userid: 1 })
@@ -2882,6 +2915,7 @@ const schema = {
   user: userSchema,
   botEvent: botEventSchema,
   reconcileSweep: reconcileSweepSchema,
+  quantRulesEvent: quantRulesEventSchema,
   favoritePairs: favoritePairsSchema,
   favoriteIndicators: favoriteIndicatorsSchema,
   bot: botSchema,

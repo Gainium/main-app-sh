@@ -67,12 +67,14 @@ import {
   convertDCABotToObject,
   exchangeOrdersLimits,
   exchangeProblems,
+  exchangeRules,
   futuresLiquidation,
   futuresPosition,
   getErrorSubType,
   indicatorsError,
   orderPrice,
 } from './utils'
+import QuantRulesGuard from './quantRulesGuard'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
 import { updateUserSteps } from '../utils/user'
@@ -287,6 +289,13 @@ class MainBot<T extends IMainBot> {
   hyperliquidPollInterval = 30 * 1000
   /** Periodic reconciliation-sweep timer (opt-in). See startReconcileSweep. */
   reconcileSweepTimer: NodeJS.Timeout | null = null
+  /**
+   * Deferred re-sends of orders soft-skipped by a Binance Quantitative Rules
+   * (-4400) cooldown, keyed by clientOrderId so a given order has at most one
+   * pending retry (clear-and-replace on reschedule). See the pre-send gate in
+   * sendOrderToExchange.
+   */
+  quantRulesRetryTimers: Map<string, NodeJS.Timeout> = new Map()
   /** True while a reconcile is running because the sweep timer fired it
    *  (vs a real user-stream reconnect), for distinct logging. */
   reconcileViaSweep = false
@@ -1455,6 +1464,9 @@ class MainBot<T extends IMainBot> {
             terminal,
             symbol: this.data?.settings.pair[0],
             exchange: this.data?.exchange,
+            // Additive: lets the dashboard recognise e.g. a Quantitative Rules
+            // cooldown warning without parsing the message text. No event rename.
+            subType,
           })
           this.cbEmit(setError, messageToSet)
         }
@@ -1551,6 +1563,15 @@ class MainBot<T extends IMainBot> {
       messageToSet = `Unable to place limit order due to exchange price rules, will retry again when price changes.`
       setError = false
       sendError = false
+    }
+    if (subType === exchangeRules) {
+      // Binance Futures Quantitative Rules (-4400): the account/symbol is in a
+      // temporary reduce-only cooldown. Don't error the bot or fail the deal —
+      // the guard delays new orders and retries after the cooldown expires.
+      // Keep it a user-visible warning so they know why orders paused; closing
+      // positions still works throughout.
+      messageToSet = `Binance temporarily restricted new orders on this account (Futures Quantitative Rules). New orders are paused and will resume automatically once the cooldown ends. Closing positions still works.`
+      setError = false
     }
     const type = setError ? MessageTypeEnum.error : MessageTypeEnum.warning
     if (setEvent) {
@@ -3984,6 +4005,101 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Cancel all pending Quantitative Rules deferred retries. MUST be called on
+   * bot stop (afterBotStop) — a retry firing after the bot stopped would place
+   * a rogue order on the exchange for a bot the user believes is stopped.
+   */
+  stopQuantRulesRetries() {
+    for (const timer of this.quantRulesRetryTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.quantRulesRetryTimers.clear()
+  }
+
+  /**
+   * Is a Quantitative Rules deferred retry still wanted when its timer fires?
+   * If the order belongs to a deal, the deal must still be open — a reduceOnly
+   * TP can close a deal DURING a cooldown, and re-sending one of its orders
+   * afterwards would create an orphan on the exchange. DCA/combo helpers hold
+   * a `deals` Map keyed by dealId; grid bots have no such map (their orders
+   * are perpetual while the bot runs), so default to true.
+   */
+  protected isOrderStillWanted(order: Order): boolean {
+    const deals = (this as { deals?: Map<string, unknown> }).deals
+    if (order.dealId && deals instanceof Map) {
+      return deals.has(order.dealId)
+    }
+    return true
+  }
+
+  /**
+   * Schedule a bounded, deduped re-send of an order soft-skipped by a Binance
+   * Quantitative Rules (-4400) cooldown. The order was NOT sent to the exchange
+   * (delay, don't fail), so nothing else will re-place it reliably during normal
+   * running; this timer is the self-heal path. It fires shortly after the
+   * cooldown expires, re-checks (so an escalation extends the wait via the gate
+   * inside sendOrderToExchange), and re-sends. Keyed by clientOrderId so a given
+   * order has at most one pending retry (clear-and-replace on reschedule).
+   */
+  protected scheduleQuantRulesRetry(
+    order: Order,
+    returnError: boolean | undefined,
+    cooldown: {
+      until: number | null
+      level: number | null
+      scope: string | null
+    },
+  ): void {
+    const key = order.clientOrderId
+    const existing = this.quantRulesRetryTimers.get(key)
+    if (existing) {
+      clearTimeout(existing)
+    }
+    const now = +new Date()
+    // Small buffer past expiry to avoid a re-send landing on the exact boundary.
+    const delayMs = Math.max(1000, (cooldown.until ?? now) - now + 1000)
+    const untilIso = cooldown.until
+      ? new Date(cooldown.until).toISOString()
+      : 'unknown'
+    this.handleLog(
+      `Order ${key} delayed by Binance Quantitative Rules cooldown (level ${
+        cooldown.level ?? '?'
+      }, ${cooldown.scope ?? '?'}) until ${untilIso}. Reduce-only orders continue to work. Will retry in ${Math.ceil(
+        delayMs / 1000,
+      )}s`,
+    )
+    const timer = setTimeout(() => {
+      this.quantRulesRetryTimers.delete(key)
+      // Re-check inside sendOrderToExchange's gate; if still restricted it will
+      // re-schedule another retry. Fire-and-forget with guards against a
+      // stopped/torn-down bot and against a deal that closed during the
+      // cooldown (a reduceOnly TP can fill while restricted — re-sending its
+      // order would orphan it on the exchange).
+      if (this.ignoreErrors || !this.data || !this.exchange) {
+        return
+      }
+      if (!this.isOrderStillWanted(order)) {
+        this.handleLog(
+          `Quantitative Rules deferred retry dropped for ${key}: deal ${order.dealId} no longer open`,
+        )
+        return
+      }
+      void this.sendOrderToExchange(order, returnError as any).catch((e) =>
+        this.handleWarn(
+          `Quantitative Rules deferred retry failed for ${key}: ${
+            (e as Error)?.message ?? e
+          }`,
+        ),
+      )
+    }, delayMs)
+    // Don't keep the event loop alive solely for a cooldown retry.
+    if (typeof timer.unref === 'function') {
+      timer.unref()
+    }
+    this.quantRulesRetryTimers.set(key, timer)
+  }
+
+  /**
    * Persist a reconciliation-sweep catch (a fill the user stream dropped that
    * the periodic sweep recovered). Fire-and-forget — never block or throw into
    * the order-check path. Powers the admin user-stream health page: a rising
@@ -4906,6 +5022,57 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
+        // Binance Futures Quantitative Rules (-4400) pre-send gate. Only for
+        // real Binance USD-M/COIN-M futures, and only for orders that would
+        // OPEN/INCREASE exposure (reduceOnly orders + cancels still work under
+        // a restriction, so they are never gated). When the account/symbol is
+        // in a cooldown we do NOT hit the exchange — hammering it would escalate
+        // Binance's penalty (L1 -> L2 -> L3). We DELAY, never fail: the bot must
+        // not enter error status and the deal must not be marked failed.
+        if (
+          !request &&
+          this.isRealBinanceFutures &&
+          !requestData.reduceOnly &&
+          this.needToSendOrder(order)
+        ) {
+          const cooldown = await QuantRulesGuard.check(
+            `${this.data.exchangeUUID}`,
+            requestData.symbol,
+          )
+          if (cooldown.restricted && cooldown.until) {
+            const remainingMs = cooldown.until - +new Date()
+            if (remainingMs > 0 && remainingMs <= 60_000) {
+              // Short tail: wait it out inline, then re-check once and proceed.
+              this.handleLog(
+                `Order ${order.clientOrderId} waiting ${Math.ceil(
+                  remainingMs / 1000,
+                )}s for Binance Quantitative Rules cooldown (level ${
+                  cooldown.level
+                }, ${cooldown.scope}) before sending`,
+              )
+              await sleep(remainingMs)
+              const recheck = await QuantRulesGuard.check(
+                `${this.data.exchangeUUID}`,
+                requestData.symbol,
+              )
+              if (recheck.restricted) {
+                this.endMethod(_id)
+                return this.scheduleQuantRulesRetry(order, returnError, recheck)
+              }
+            } else if (remainingMs > 60_000) {
+              // Long cooldown: soft-skip (no exchange call, no error) and let a
+              // bounded deferred retry re-attempt after the cooldown expires.
+              // NOTE: the engine's own reconciliation (checkOrders /
+              // reconcile-sweep) only reliably re-places missing orders on
+              // service restart or on the next fill, and the sweep is opt-in
+              // (RECONCILE_SWEEP_ENABLED), so we cannot rely on it to re-send an
+              // order that was never placed. The deferred retry below is the
+              // self-heal path; it dedups on clientOrderId.
+              this.endMethod(_id)
+              return this.scheduleQuantRulesRetry(order, returnError, cooldown)
+            }
+          }
+        }
         request = request ?? (await this.exchange.openOrder(requestData))
         if (
           request.status === StatusEnum.notok &&
@@ -4921,6 +5088,59 @@ class MainBot<T extends IMainBot> {
           })
         }
         if (request.status === StatusEnum.notok) {
+          // Binance Futures Quantitative Rules (-4400) detection. Track the
+          // violation per account+symbol, compute/refresh the cooldown, and
+          // route to the DELAY path (soft-skip + deferred retry) instead of
+          // hard-erroring the bot — repeatedly hammering Binance during a
+          // restriction escalates the penalty (L1 -> L2 -> L3).
+          if (
+            this.isRealBinanceFutures &&
+            !order.reduceOnly &&
+            this.needToSendOrder(order) &&
+            (this.getErrorSubType(request.reason) === exchangeRules ||
+              request.reason.indexOf('-4400') !== -1)
+          ) {
+            const violation = await QuantRulesGuard.recordViolation({
+              userId: this.userId,
+              exchangeUUID: `${this.data.exchangeUUID}`,
+              exchange: `${this.data.exchange}`,
+              symbol: order.symbol,
+              botId: this.data?.parentBotId || this.botId,
+              botType: `${this.botType}`,
+              dealId: order.dealId,
+              reason: request.reason,
+            })
+            // Alert the user once per window (escalations alert again). The
+            // handleErrors exchangeRules branch keeps this a non-erroring
+            // warning; `force` bypasses the 24h same-subType de-dup so an
+            // escalation still surfaces.
+            if (violation.isNew) {
+              await this.handleErrors(
+                request.reason,
+                'sendOrderToExchange()',
+                `Send new order request ${order.clientOrderId}, qty ${order.origQty}, price ${order.price}, side ${order.side}`,
+                false,
+                true,
+                true,
+                true,
+              )
+            }
+            // Clean up the local order record and defer a bounded retry that
+            // re-checks the cooldown before re-sending (self-heals the skip).
+            if (this.orders && this.orders.size > 0) {
+              this.deleteOrder(order.clientOrderId)
+              this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+            }
+            this.endMethod(_id)
+            if (returnError) {
+              return request.reason
+            }
+            return this.scheduleQuantRulesRetry(order, returnError, {
+              scope: violation.scope,
+              level: violation.level,
+              until: violation.until,
+            })
+          }
           if (
             request.reason.toLowerCase().indexOf('MARKET_LOT_SIZE') !== -1 &&
             order.type === 'MARKET' && [
@@ -5567,6 +5787,19 @@ class MainBot<T extends IMainBot> {
 
   get kucoinSpot() {
     return this.data?.exchange === ExchangeEnum.kucoin
+  }
+
+  /**
+   * True only for REAL Binance USD-M / COIN-M futures — the accounts Binance's
+   * Quantitative Rules (-4400) actually restrict. Excludes spot Binance and all
+   * paper variants (paper never trips -4400), so the cooldown guard never gates
+   * simulated or spot orders.
+   */
+  get isRealBinanceFutures() {
+    return (
+      this.data?.exchange === ExchangeEnum.binanceUsdm ||
+      this.data?.exchange === ExchangeEnum.binanceCoinm
+    )
   }
 
   async getOKXDenominator(symbol: string) {
