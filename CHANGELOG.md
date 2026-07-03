@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.24.5] - 2026-07-03
+
+### Changed
+- Deals list REST (`GET /api/v2/deals/:dealType`): cache the exact total count in Redis (60s TTL, keyed on the query filter) instead of running a full `countDocuments` on every page load. The `meta.count`/`meta.total` response stays exact within the TTL; the page rows are still fetched live. Cache is best-effort — any Redis error falls back to a live count. Removes the per-request count aggregation that dominated the Mongo slow log for large accounts.
+
 ## [1.24.3] - 2026-07-03
 
 ### Fixed
