@@ -2861,6 +2861,8 @@ export const registerIndexes = () => {
   hedgeDCABacktestingResult.index({ shareId: 1 })
 
   comboTransactionSchema.index({ userId: 1 })
+  // Bot-engine per-bot transaction load (botId far more selective than userId).
+  comboTransactionSchema.index({ botId: 1, userId: 1 })
 
   botMessageSchema.index({
     userId: 1,
@@ -2871,6 +2873,10 @@ export const registerIndexes = () => {
     botId: 1,
     subType: 1,
   })
+  // Bot-error bulk soft-delete filters (botId, isDeleted) with a residual
+  // subType:{$ne}; the userId-leading indexes above can't serve a botId-first
+  // predicate. botId is write-once (static); isDeleted is one-way/low-cardinality.
+  botMessageSchema.index({ botId: 1, isDeleted: 1 })
 
   botSchema.index({ userId: 1 })
 
@@ -2884,12 +2890,21 @@ export const registerIndexes = () => {
   comboProfitSchema.index({ userId: 1 })
 
   dcaBotSchema.index({ userId: 1 })
+  // Webhook path looks bots up by uuid (write-once/static) — was a COLLSCAN.
+  dcaBotSchema.index({ uuid: 1 })
 
   hedgeComboBotSchema.index({ userId: 1 })
   hedgeDcaBotSchema.index({ userId: 1 })
 
   dcaDealSchema.index({ userId: 1 })
   dcaDealSchema.index({ botId: 1 })
+  // Deals list (find({userId,status:'open',...}).sort({createTime:-1})): partial
+  // index on open deals only serves the sort directly and stays tiny. createTime
+  // is write-once (static); membership churns only on the open->closed transition.
+  dcaDealSchema.index(
+    { userId: 1, createTime: -1 },
+    { partialFilterExpression: { status: 'open' } },
+  )
 
   favoritePairsSchema.index({ userId: 1 })
 
@@ -2907,6 +2922,8 @@ export const registerIndexes = () => {
   snapshotsSchema.index({ userId: 1 })
 
   transactionSchema.index({ userId: 1 })
+  // Bot-engine per-bot transaction load (botId far more selective than userId).
+  transactionSchema.index({ botId: 1, userId: 1 })
 
   userPeriod.index({ userId: 1 })
 
