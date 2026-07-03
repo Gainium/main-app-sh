@@ -5034,3 +5034,18 @@ export type CreateDCABotInput = DCABotSettings & {
   uuid?: string
   vars?: BotVars | null
 }
+
+export enum StreamWatchdogConfigStatusEnum {
+  on = 'on',
+  off = 'off',
+}
+
+export enum StreamWatchdogConfigTypeEnum {
+  user = 'user',
+  auto = 'auto',
+}
+
+export interface StreamWatchdogConfigSchema extends SchemaI {
+  status: StreamWatchdogConfigStatusEnum
+  type: StreamWatchdogConfigTypeEnum
+}

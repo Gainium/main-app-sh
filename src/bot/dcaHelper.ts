@@ -15544,7 +15544,7 @@ function createDCABotHelper<
         }
         this.startPriceTimer()
         this.startHyperliquidOrderPoll()
-        this.startReconcileSweep()
+        this.startConsumerHeartbeat()
         this.finishLoad = true
       } catch (e) {
         this.serviceRestart = false
@@ -15568,7 +15568,7 @@ function createDCABotHelper<
     async afterBotStop() {
       this.stopPriceTimer()
       this.stopHyperliquidOrderPoll()
-      this.stopReconcileSweep()
+      this.stopConsumerHeartbeat()
       this.stopQuantRulesRetries()
       return
     }

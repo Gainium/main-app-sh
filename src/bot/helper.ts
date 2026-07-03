@@ -2387,7 +2387,7 @@ function createBotHelper<
       try {
         this.startPriceTimer()
         this.startHyperliquidOrderPoll()
-        this.startReconcileSweep()
+        this.startConsumerHeartbeat()
         const checkStartCondition = await this.checkPriceToStart()
         this.handleLog(`Check start condition: ${checkStartCondition}`)
         if (checkStartCondition && this.data && !this.data.haveStarted) {
@@ -4123,7 +4123,7 @@ function createBotHelper<
     async afterBotStop() {
       this.stopPriceTimer()
       this.stopHyperliquidOrderPoll()
-      this.stopReconcileSweep()
+      this.stopConsumerHeartbeat()
       this.stopQuantRulesRetries()
       return
     }

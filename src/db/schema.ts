@@ -45,6 +45,7 @@ import type {
   HedgeComboBacktestingResult,
   HedgeDCABacktestingResult,
   SnapshotPerExchangeSchema,
+  StreamWatchdogConfigSchema,
 } from '../../types'
 import {
   APIPermission,
@@ -110,6 +111,8 @@ import {
   LWValueEnum,
   RRSlTypeEnum,
   LWConditionEnum,
+  StreamWatchdogConfigTypeEnum,
+  StreamWatchdogConfigStatusEnum,
 } from '../../types'
 import { collections } from './config'
 
@@ -2813,6 +2816,12 @@ const brokerCodes = new Schema<BrokerCodesSchema>({
   code: String,
 })
 
+const streamWatchdogConfig = new Schema<StreamWatchdogConfigSchema>({
+  status: { type: String, enum: StreamWatchdogConfigStatusEnum },
+  type: { type: String, enum: StreamWatchdogConfigTypeEnum },
+  ...CreatedUpdated,
+})
+
 export const registerIndexes = () => {
   brokerCodes.index({ exchange: 1, zone: 1 }, { unique: true })
 
@@ -2975,6 +2984,7 @@ const schema = {
   hedgeComboBacktest: hedgeComboBacktestingResult,
   hedgeDcaBacktest: hedgeDCABacktestingResult,
   snapshotsPerExchange: snapshotsPerExchangeSchema,
+  streamWatchdogConfig,
 }
 
 export default schema
