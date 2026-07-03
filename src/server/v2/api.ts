@@ -499,33 +499,67 @@ const v2API = <R extends UserSchema = UserSchema>(
       const skip = (page - 1) * limit
 
       try {
-        // Select appropriate database based on deal type
-        const result =
-          dealType === 'combo'
-            ? await comboDealsDb.readData(
-                filter,
-                projection,
-                { sort: { createTime: -1 }, skip, limit },
-                true,
-                true,
-              )
-            : await dcaDealsDb.readData(
-                filter,
-                projection,
-                { sort: { createTime: -1 }, skip, limit },
-                true,
-                true,
-              )
+        const isCombo = dealType === 'combo'
+
+        // The exact total for a given filter changes slowly (a user's deal
+        // count moves only as deals open/close), so cache it briefly instead of
+        // running a full countDocuments on every page load. meta.count/total stay
+        // exact within the short TTL. Best-effort: any cache error falls back to a
+        // live count, so correctness never depends on Redis.
+        const countKey = `dealsCount:${dealType}:${JSON.stringify(filter)}`
+        let cachedCount: number | null = null
+        try {
+          const redis = await RedisClient.getInstance()
+          const raw = await redis.get(countKey)
+          if (raw != null && raw !== '') cachedCount = Number(raw)
+        } catch {
+          // ignore cache read failure
+        }
+
+        // Fetch the page WITHOUT the count (countNeed=false); the count comes
+        // from the cache or a separate countData below.
+        const result = isCombo
+          ? await comboDealsDb.readData(
+              filter,
+              projection,
+              { sort: { createTime: -1 }, skip, limit },
+              true,
+              false,
+            )
+          : await dcaDealsDb.readData(
+              filter,
+              projection,
+              { sort: { createTime: -1 }, skip, limit },
+              true,
+              false,
+            )
 
         if (result.status === StatusEnum.notok) {
           res.status(500).send(result)
           return
         }
 
+        let count = cachedCount
+        if (count === null) {
+          const countRes = isCombo
+            ? await comboDealsDb.countData(filter)
+            : await dcaDealsDb.countData(filter)
+          count =
+            countRes.status === StatusEnum.ok
+              ? countRes.data.result
+              : result.data.result.length
+          try {
+            const redis = await RedisClient.getInstance()
+            await redis.set(countKey, String(count), 60)
+          } catch {
+            // ignore cache write failure
+          }
+        }
+
         const meta: ResponseMeta = {
           page,
-          total: Math.ceil(result.data.count / limit),
-          count: result.data.count,
+          total: Math.ceil(count / limit),
+          count,
           onPage: result.data.result.length,
         }
 
