@@ -42,4 +42,5 @@ export const collections = {
   hedgeComboBacktest: 'hedgeComboBacktest',
   hedgeDcaBacktest: 'hedgeDcaBacktest',
   snapshotsPerExchange: 'snapshotsPerExchange',
+  streamWatchdogConfig: 'streamWatchdogConfig',
 }

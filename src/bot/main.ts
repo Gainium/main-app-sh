@@ -288,7 +288,7 @@ class MainBot<T extends IMainBot> {
   hyperliquidPollTimer: NodeJS.Timeout | null = null
   hyperliquidPollInterval = 30 * 1000
   /** Periodic reconciliation-sweep timer (opt-in). See startReconcileSweep. */
-  reconcileSweepTimer: NodeJS.Timeout | null = null
+  consumerHeartbeatTimer: NodeJS.Timeout | null = null
   /**
    * Deferred re-sends of orders soft-skipped by a Binance Quantitative Rules
    * (-4400) cooldown, keyed by clientOrderId so a given order has at most one
@@ -1088,6 +1088,32 @@ class MainBot<T extends IMainBot> {
         this.userStreamInitialStart = false
       }
     }
+    if ((msg ?? '').includes('RECONCILE VIA SWEEP')) {
+      this.reconcileViaSweep = true
+      void Promise.resolve(this.callbackAfterUserStream?.(this.botId))
+        .catch((e) =>
+          this.handleWarn(`reconcile-sweep failed: ${(e as Error).message}`),
+        )
+        .finally(() => {
+          this.reconcileViaSweep = false
+        })
+    }
+    if ((msg ?? '').includes('INFORM USERS')) {
+      reconcileSweepDb
+        .countData({
+          exchangeUUID: this.data?.exchangeUUID,
+          created: { $gt: new Date(+new Date() - 60 * 60 * 1000) },
+        })
+        .then((res) => {
+          if ((res.data?.result ?? 0) > 0) {
+            this.handleErrors(
+              `We're having trouble keeping your exchange connection up to date. Gainium is not receiving live updates for this account right now. We've attempted to reconnect automatically, but the issue is still present.`,
+              '',
+              '',
+            )
+          }
+        })
+    }
   }
 
   public async setExchangeCredentials(
@@ -1331,7 +1357,7 @@ class MainBot<T extends IMainBot> {
     this.runAfterLoadingQueue = []
     // Arm the reconciliation sweep on every load (fresh start AND service
     // reload), so a bot restored after a restart is also protected.
-    this.startReconcileSweep()
+    this.startConsumerHeartbeat()
   }
 
   async priceUpdateCallback(_botId: string, _msg: PriceMessage) {
@@ -3949,58 +3975,57 @@ class MainBot<T extends IMainBot> {
     }
   }
 
-  /**
-   * Periodic reconciliation sweep — the safety net for a silently-dead user
-   * stream ("connected" but delivering no order updates). It re-runs this bot's
-   * existing reconnect reconcile (`callbackAfterUserStream` =
-   * checkOrdersAfterReconnect for grid/DCA) on a timer, so an order fill missed
-   * by the stream is picked up within one interval instead of stalling the bot
-   * until a manual restart (community thread 4863).
-   *
-   * Lives on MainBot so every helper subclass that sets `callbackAfterUserStream`
-   * inherits it, and it runs wherever the bot instance runs — in-process (cloud
-   * overlay) or in a worker (self-hosted) — so the fix works in both editions.
-   * It pulls actual order status (immune to the "missed vs quiet" ambiguity) and
-   * never touches the stream, so there is no reconnect-window event loss; the
-   * reconcile is a no-op when nothing changed. Opt-in via RECONCILE_SWEEP_ENABLED.
-   */
-  startReconcileSweep() {
-    if (process.env.RECONCILE_SWEEP_ENABLED !== 'true') {
-      return
-    }
-    // Only bot types with a reconnect reconcile (grid / DCA) participate.
-    if (!this.callbackAfterUserStream) {
-      return
-    }
-    if (this.reconcileSweepTimer) {
-      clearInterval(this.reconcileSweepTimer)
-    }
-    const interval = Math.max(
-      30_000,
-      +(process.env.RECONCILE_SWEEP_INTERVAL_MS ?? 120_000),
-    )
-    this.reconcileSweepTimer = setInterval(() => {
-      // Mark sweep-initiated reconciles so checkOrdersAfterReconnect can log
-      // distinctly when *this* timer (not a real reconnect) catches a missed
-      // fill — that count is the health signal for user-stream staleness.
-      this.reconcileViaSweep = true
-      void Promise.resolve(this.callbackAfterUserStream?.(this.botId))
+  private async heartbeatConsumer() {
+    try {
+      if (!this.redisDb || !this.data) {
+        return
+      }
+      const accountId = `${this.data.exchangeUUID}`
+      const pipeline = this.redisDb.instance?.multi()
+      if (!pipeline) {
+        return
+      }
+      pipeline.set(`stream:hasConsumer:${accountId}`, '1', {
+        EX: 30,
+      })
+      pipeline.zAdd(
+        'stream:lastEventTime',
+        { score: 0, value: accountId },
+        { comparison: 'GT' },
+      )
+      await pipeline
+        .execAsPipeline()
         .catch((e) =>
-          this.handleWarn(`reconcile-sweep failed: ${(e as Error).message}`),
+          this.handleError(
+            `Failed to heartbeat consumer for ${accountId}: ${
+              (e as Error)?.message ?? e
+            }`,
+          ),
         )
-        .finally(() => {
-          this.reconcileViaSweep = false
-        })
+    } catch (e) {
+      this.handleError(
+        `Failed to heartbeat consumer: ${(e as Error)?.message ?? e}`,
+      )
+    }
+  }
+
+  startConsumerHeartbeat() {
+    if (this.consumerHeartbeatTimer) {
+      clearInterval(this.consumerHeartbeatTimer)
+    }
+    const interval = 30_000
+    this.consumerHeartbeatTimer = setInterval(() => {
+      this.heartbeatConsumer()
     }, interval)
     // Greppable: confirms the sweep is enabled+armed for this bot (once on load).
-    this.handleLog(`reconcile-sweep armed (every ${interval}ms)`)
+    this.handleLog(`Consumer hearbeat armed (every ${interval}ms)`)
   }
 
   /** Stop the reconciliation sweep. */
-  stopReconcileSweep() {
-    if (this.reconcileSweepTimer) {
-      clearInterval(this.reconcileSweepTimer)
-      this.reconcileSweepTimer = null
+  stopConsumerHeartbeat() {
+    if (this.consumerHeartbeatTimer) {
+      clearInterval(this.consumerHeartbeatTimer)
+      this.consumerHeartbeatTimer = null
     }
   }
 
