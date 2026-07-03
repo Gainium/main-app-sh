@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.25.0] - 2026-07-03
+
+### Added
+- User Stream Watchdog. 
+
 ## [1.24.3] - 2026-07-03
 
 ### Fixed

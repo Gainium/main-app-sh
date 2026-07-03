@@ -40,6 +40,7 @@ import {
   HedgeComboBacktestingResult,
   HedgeDCABacktestingResult,
   SnapshotPerExchangeSchema,
+  StreamWatchdogConfigSchema,
 } from '../../types'
 import { SYNC_USER } from '../config'
 
@@ -175,6 +176,10 @@ const models = {
   snapshotsPerExchange: model<SnapshotPerExchangeSchema>(
     `${collections.snapshotsPerExchange}`,
     schema.snapshotsPerExchange,
+  ),
+  streamWatchdogConfig: model<StreamWatchdogConfigSchema>(
+    `${collections.streamWatchdogConfig}`,
+    schema.streamWatchdogConfig,
   ),
 }
 

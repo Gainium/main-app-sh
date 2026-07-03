@@ -1,6 +1,6 @@
 {
   "name": "@gainium/main-app",
-  "version": "1.24.3",
+  "version": "1.25.0",
   "description": "Main app",
   "author": "Maksym Shamko",
   "private": true,
@@ -31,7 +31,8 @@
     "generate:definitions": "ts-node src/utils/generate-definitions.ts",
     "generate:docs": "npm run generate:schemas && npm run generate:ai-docs",
     "sort:openapi": "ts-node src/utils/sort-openapi.ts",
-    "prepare": "husky"
+    "prepare": "husky",
+    "streamWatchdog": "LOG_LEVEL=debug node -r dotenv/config ./dist/src/server/streamWatchdog.js"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.3",
