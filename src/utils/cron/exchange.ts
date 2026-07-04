@@ -80,25 +80,31 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
           true,
         )
         // Paper exchanges proxy exchange-info through paper-trading, which does
-        // not carry the connector's `assetClass`. Mirror the class from the
-        // already-synced real twin (paperBitget → bitget) so paper pairs are
-        // classified identically. Real twins precede their paper copy in
-        // `providers`, so the lookup is populated by the time we reach paper.
-        let paperRealMap: Map<string, AssetClass | undefined> | undefined
+        // not carry the connector's `assetClass` or `isCanonical`. Mirror both
+        // from the already-synced real twin (paperHyperliquid → hyperliquid) so
+        // paper pairs classify and filter identically. Real twins precede their
+        // paper copy in `providers`, so the lookup is populated by the time we
+        // reach paper.
+        let paperRealMap:
+          | Map<string, { assetCategory?: AssetClass; isCanonical?: boolean }>
+          | undefined
         if (isPaper(provider)) {
           const realName = provider.replace(/^paper/, '')
           const realExchange = (realName.charAt(0).toLowerCase() +
             realName.slice(1)) as ExchangeEnum
           const realPairs = await pairDb.readData<ClearPairsSchema>(
             { exchange: realExchange },
-            { pair: 1, assetCategory: 1 },
+            { pair: 1, assetCategory: 1, isCanonical: 1 },
             {},
             true,
             true,
           )
           if (realPairs.status === StatusEnum.ok) {
             paperRealMap = new Map(
-              realPairs.data.result.map((p) => [p.pair, p.assetCategory]),
+              realPairs.data.result.map((p) => [
+                p.pair,
+                { assetCategory: p.assetCategory, isCanonical: p.isCanonical },
+              ]),
             )
           }
         }
@@ -115,15 +121,25 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
               baseAsset: info.baseAsset.name,
               quoteAsset: info.quoteAsset.name,
               connectorAssetClass: paperRealMap
-                ? paperRealMap.get(info.pair)
+                ? paperRealMap.get(info.pair)?.assetCategory
                 : info.assetClass,
             })
+            // Canonical/curated-listing flag (HL spot only). Paper twins have
+            // no signal of their own, so mirror the real twin; otherwise take
+            // the connector's value (undefined for every non-HL exchange =>
+            // treated as canonical by the picker).
+            const isCanonical = paperRealMap
+              ? paperRealMap.get(info.pair)?.isCanonical
+              : info.isCanonical
             if (getPair) {
               if (
                 getPair.wsCode !== info.wsCode ||
                 // Treat an assetCategory change as an update so existing pairs
                 // get backfilled on the next cron run.
                 getPair.assetCategory !== assetCategory ||
+                // Same for the canonical flag (undefined -> bool backfills on
+                // first run; then only rewrites when it actually changes).
+                getPair.isCanonical !== isCanonical ||
                 getPair.code !== info.code ||
                 getPair.baseAsset.name !== info.baseAsset.name ||
                 getPair.baseAsset.minAmount !== info.baseAsset.minAmount ||
@@ -152,6 +168,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   ...info,
                   exchange: provider,
                   assetCategory,
+                  isCanonical,
                   _id,
                 })
               }
@@ -161,6 +178,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 ...info,
                 exchange: provider,
                 assetCategory,
+                isCanonical,
               })
             }
           }

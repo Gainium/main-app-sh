@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.27.0] - 2026-07-04
+
+### Added
+- Pairs now carry an `isCanonical` flag (Hyperliquid spot only: HL-canonical or Unit-bridged = true; permissionless HIP-1 = false; absent elsewhere = canonical), persisted and exposed on `getAllPairs`, for the dashboard "Canonical only" pair-picker toggle. Paper twins mirror their real twin's flag (and `assetCategory`) since paper-trading proxies exchange-info without either signal.
+
 ## [1.26.1] - 2026-07-04
 
 ### Fixed

@@ -277,6 +277,11 @@ export type ExchangeInfo = {
   }
   type?: string
   crossAvailable?: boolean
+  // Whether the market is a canonical / officially-curated listing (currently
+  // only Hyperliquid spot sets it: HL-canonical or Unit-bridged). Undefined for
+  // every other exchange => treated as canonical. Drives the pair-picker
+  // "Canonical only" toggle. Danger List #1.
+  isCanonical?: boolean
 }
 
 export type TpSlCondition = 'valueChanged' | 'priceReached'
@@ -2316,6 +2321,13 @@ export interface PairsSchema extends SchemaI {
    * signal. FROZEN GraphQL/DB field name — dashboards depend on it. Danger List #12.
    */
   assetCategory: AssetClass
+  /**
+   * Whether the market is a canonical / officially-curated listing. Currently
+   * only Hyperliquid spot sets it (HL-canonical or Unit-bridged = true;
+   * permissionless HIP-1 = false). Absent for every other exchange => treated as
+   * canonical. Drives the pair-picker "Canonical only" toggle.
+   */
+  isCanonical?: boolean
 }
 
 export interface StoreFilesSchema extends SchemaI {

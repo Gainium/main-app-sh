@@ -872,6 +872,10 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
     enum: ['crypto', 'stock', 'etf', 'commodity', 'metal', 'forex', 'index'],
     default: 'crypto',
   },
+  // Canonical/curated-listing flag for the pair-picker "Canonical only" toggle.
+  // Set only for Hyperliquid spot (HL-canonical or Unit-bridged); absent for
+  // every other exchange => treated as canonical.
+  isCanonical: Boolean,
   ...CreatedUpdated,
 })
 

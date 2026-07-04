@@ -52,6 +52,7 @@ export const BasicSchema = /* GraphQL */ `
     priceAssetPrecision: Float
     crossAvailable: Boolean
     assetCategory: String
+    isCanonical: Boolean
     source: String
   }
   type getPairResponse implements BasicResponse {
@@ -86,6 +87,7 @@ export const BasicSchema = /* GraphQL */ `
     priceAssetPrecision: Float
     crossAvailable: Boolean
     assetCategory: String
+    isCanonical: Boolean
     source: String
   }
   type allPairInfo {
