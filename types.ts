@@ -2281,6 +2281,13 @@ export interface PairsSchema extends SchemaI {
   code?: string
   pair: string
   exchange: ExchangeEnum
+  /**
+   * OKX account-origin that owns this pair. Set to `my` for the OKX Europe
+   * (eea.okx.com) authoritative universe (USDC/EUR spot), which differs from the
+   * global public feed. Unset for the global list and every other exchange. The
+   * bot form serves an account its pairs by matching (exchange, source=okxSource).
+   */
+  source?: OKXSource
   baseAsset: {
     minAmount: number
     maxAmount: number

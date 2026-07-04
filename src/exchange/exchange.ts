@@ -141,6 +141,28 @@ class Exchange extends AbstractExchange {
     return result.data
   }
 
+  /**
+   * Authoritative, account-scoped SPOT instruments (OKX Europe `okxSource=my`).
+   * Private call: keys + `okxsource` travel as headers (via `isPrivate`), so the
+   * connector hits the authenticated `/exchange/account` endpoint on eea.okx.com
+   * and returns the account's real USDC/EUR spot universe (not the public USDT
+   * feed). Non-OKX exchanges resolve to the abstract "not supported" default.
+   */
+  async getAccountSpotExchangeInfo(
+    timeProfile = this.getEmptyTimeProfile('getAccountSpotExchangeInfo'),
+  ): Promise<BaseReturn<(ExchangeInfo & { pair: string })[]>> {
+    const result = await this.apiCall<(ExchangeInfo & { pair: string })[]>(
+      {
+        endpoint: 'exchange/account',
+        method: 'get',
+        isPrivate: true,
+      },
+      timeProfile,
+    ).catch(this.handleError(this.getAccountSpotExchangeInfo, timeProfile))
+    this.saveTimeProfile(result.timeProfile)
+    return result.data
+  }
+
   async getAllOpenOrders(
     symbol?: string,
     returnOrders?: false,

@@ -10,6 +10,7 @@ import {
   type ClearPairsSchema,
   type AssetClass,
   StatusEnum,
+  OKXSource,
 } from '../../../types'
 import { classifyAssetClass } from '../assetClass'
 import { Kraken } from 'node-kraken-api'
@@ -256,6 +257,118 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
       )
     }
   }
+}
+
+/**
+ * Refresh the OKX Europe (`okxSource=my`) authoritative SPOT pair universe.
+ *
+ * OKX Europe (eea.okx.com) accounts can only trade USDC/EUR spot, but the public
+ * instruments feed the global pairs cron uses advertises the USDT set they cannot
+ * touch. So we fetch the *account-scoped* list (authenticated) and reconcile it
+ * into the shared `pairs` collection tagged `source: 'my'`, distinct from the
+ * global OKX docs (which carry no `source`). The EU universe is account-agnostic
+ * — identical for every EU user — so the first account to connect refreshes it
+ * for all of them. Unauthenticated / non-OKX callers can't reach this path.
+ *
+ * Phase 1 = spot only; X-Perp futures (instType FUTURES) are handled separately.
+ */
+export async function updateOkxEuPairs(auth: {
+  key: string
+  secret: string
+  passphrase?: string
+}): Promise<void> {
+  const factory = ExchangeChooser.chooseExchangeFactory(ExchangeEnum.okx)
+  if (!factory) return
+  const exchange = factory(
+    auth.key,
+    auth.secret,
+    auth.passphrase,
+    undefined,
+    undefined,
+    OKXSource.my,
+  )
+  const info = await exchange.getAccountSpotExchangeInfo()
+  if (info.status !== StatusEnum.ok) {
+    logger.error(`OKX-EU pairs | fetch failed: ${info.reason}`)
+    return
+  }
+  if (!info.data.length) {
+    // Never wipe the shared list off an empty/error response.
+    logger.error('OKX-EU pairs | empty instrument list; skipping reconcile')
+    return
+  }
+  const existing = await pairDb.readData<ClearPairsSchema>(
+    { exchange: ExchangeEnum.okx, source: OKXSource.my },
+    undefined,
+    {},
+    true,
+    true,
+  )
+  if (existing.status !== StatusEnum.ok) {
+    logger.error(`OKX-EU pairs | read failed: ${existing.reason}`)
+    return
+  }
+  const dbByPair = new Map(existing.data.result.map((p) => [p.pair, p]))
+  const seen = new Set<string>()
+  let created = 0
+  let updated = 0
+  for (const item of info.data) {
+    seen.add(item.pair)
+    const assetCategory = classifyAssetClass({
+      exchange: ExchangeEnum.okx,
+      pair: item.pair,
+      baseAsset: item.baseAsset.name,
+      quoteAsset: item.quoteAsset.name,
+      connectorAssetClass: item.assetClass,
+    })
+    const doc = {
+      ...item,
+      exchange: ExchangeEnum.okx,
+      source: OKXSource.my,
+      assetCategory,
+    }
+    const found = dbByPair.get(item.pair)
+    if (!found) {
+      await pairDb.createData({ ...doc })
+      created++
+      continue
+    }
+    // Only write when a tracked field actually changed — the EU set is stable,
+    // so most reconciles are no-ops.
+    const changed =
+      found.wsCode !== item.wsCode ||
+      found.code !== item.code ||
+      found.assetCategory !== assetCategory ||
+      found.baseAsset.name !== item.baseAsset.name ||
+      found.baseAsset.minAmount !== item.baseAsset.minAmount ||
+      found.baseAsset.step !== item.baseAsset.step ||
+      found.baseAsset.maxAmount !== item.baseAsset.maxAmount ||
+      found.quoteAsset.name !== item.quoteAsset.name ||
+      found.quoteAsset.minAmount !== item.quoteAsset.minAmount ||
+      found.priceAssetPrecision !== item.priceAssetPrecision
+    if (changed) {
+      const _id = found._id.toString()
+      await pairDb.updateData({ _id }, { $set: { ...doc, _id } })
+      updated++
+    }
+  }
+  const stale = existing.data.result
+    .filter((p) => !seen.has(p.pair))
+    .map((p) => p._id.toString())
+  if (stale.length) {
+    await pairDb.deleteManyData({ _id: { $in: stale } })
+  }
+  const redis = await RedisClient.getInstance()
+  redis?.publish(
+    'updateexchangeInfo',
+    JSON.stringify({
+      exchange: ExchangeEnum.okx,
+      pairs: info.data.map((p) => p.pair),
+    }),
+  )
+  logger.debug(
+    `OKX-EU pairs | reconciled ${info.data.length} (${created} new, ${updated} changed, ${stale.length} removed)`,
+  )
 }
 
 const getRate = async () => {

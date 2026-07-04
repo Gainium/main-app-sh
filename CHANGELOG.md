@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.26.0] - 2026-07-04
+
+### Added
+- OKX Europe (`okxSource=my`) authoritative spot pairs. Pairs now carry an optional `source` field (`my` = OKX Europe / eea.okx.com USDC/EUR spot universe; unset = global feed + all other exchanges), exposed on `getAllPairs`. New `updateOkxEuPairs()` fetches an EU account's account-scoped instruments (via the connector's `/exchange/account`) and reconciles them into the shared `pairs` collection tagged `source: my` — the set is account-agnostic, so the first EU account to connect refreshes it for every EU user. The exchange client gains `getAccountSpotExchangeInfo()` (private call; non-OKX exchanges get a not-supported default).
+
 ## [1.25.2] - 2026-07-03
 
 ### Changed

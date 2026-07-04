@@ -839,6 +839,10 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
   code: String,
   pair: RequiredString,
   exchange: { ...RequiredString, enum: ExchangeEnum },
+  // OKX account-origin owning this pair (`my` = OKX Europe / eea.okx.com
+  // authoritative USDC/EUR spot universe). Unset for the global feed + all other
+  // exchanges. Bot form matches (exchange, source) to the account's okxSource.
+  source: { type: String, enum: OKXSource },
   baseAsset: {
     minAmount: RequiredNumber,
     maxAmount: RequiredNumber,
