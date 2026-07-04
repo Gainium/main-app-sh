@@ -67,6 +67,20 @@ import axios from 'axios'
 
 const { getTimezoneOffset, findUSDRate } = utils
 
+/**
+ * `locked` on a balance doc means "amount reserved by open orders/positions" and
+ * must never be negative. Some authoritative sources can nonetheless emit a
+ * negative value: Binance futures `ACCOUNT_UPDATE` computes
+ * `walletBalance - crossWalletBalance` (negative when unrealized PnL is positive),
+ * and the exchange-connector's Hyperliquid futures balance returns
+ * `accountValue - withdrawable` (negative on margin-deficit / total-vs-per-asset
+ * mismatch). Writing those verbatim leaves a garbage negative `locked` in the
+ * `balances` collection, so the displayed "available" reads wrong. Clamp at the
+ * write boundary so the collection can never store a negative locked amount.
+ */
+const normalizeLocked = (locked: number): number =>
+  Number.isFinite(locked) && locked > 0 ? locked : 0
+
 const streams: { stream: Socket; uuid: string }[] = []
 
 const streamsSet: Set<string> = new Set()
@@ -172,7 +186,7 @@ const processBalanceUpdate = async () => {
                 {
                   ...d,
                   free: parseFloat(d.free),
-                  locked: parseFloat(d.locked),
+                  locked: normalizeLocked(parseFloat(d.locked)),
                   userId,
                   exchange: e.provider,
                   exchangeUUID: e.uuid,
@@ -195,7 +209,7 @@ const processBalanceUpdate = async () => {
                   $set: {
                     ...d,
                     free: parseFloat(d.free),
-                    locked: parseFloat(d.locked),
+                    locked: normalizeLocked(parseFloat(d.locked)),
                   },
                 },
                 false,
@@ -255,8 +269,9 @@ const processBalanceUpdate = async () => {
           const balances = msg.balances
           for (const b of balances) {
             const free = parseFloat(b.crossWalletBalance)
-            const locked =
-              parseFloat(b.walletBalance) - parseFloat(b.crossWalletBalance)
+            const locked = normalizeLocked(
+              parseFloat(b.walletBalance) - parseFloat(b.crossWalletBalance),
+            )
             const getPair = await balanceDb.countData({
               asset: b.asset,
               userId,
@@ -370,7 +385,10 @@ const updateUserBalance = async (
         if (balances.status === 'OK' && userBalances.status === StatusEnum.ok) {
           const balancesMap: Map<string, FreeAsset[0]> = new Map()
           for (const b of balances.data) {
-            balancesMap.set(b.asset, b)
+            balancesMap.set(b.asset, {
+              ...b,
+              locked: normalizeLocked(b.locked),
+            })
           }
           for (const b of balancesMap.values()) {
             const getPair = userBalances.data.result.find(

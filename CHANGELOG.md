@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.26.1] - 2026-07-04
+
+### Fixed
+- Never store a negative `locked` in the `balances` collection. `locked` (funds reserved by open orders/positions) is written verbatim from authoritative sources that can go negative — Binance futures `ACCOUNT_UPDATE` (`walletBalance - crossWalletBalance`, negative on positive unrealized PnL) and the connector's Hyperliquid futures balance (`accountValue - withdrawable`) — which made "available" balance display wrong/negative on heavy-churn accounts. Clamp `locked` to `≥ 0` at every write boundary in the balance-update path (`utils/user.ts`).
+
 ## [1.26.0] - 2026-07-04
 
 ### Added
