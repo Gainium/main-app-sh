@@ -21,22 +21,10 @@ import {
   paperTradesDb,
   paperUserDb,
   paperWalletsDb,
-  rateDb,
-  snapshotDb,
   userDb as _userDb,
   userProfitByHourDb,
 } from '../dbInit'
 import DB from '../'
-
-const removeOldRates = async () => {
-  await rateDb
-    .deleteManyData({
-      created: {
-        $lt: new Date(+new Date() - 30 * 24 * 60 * 60 * 1000),
-      },
-    })
-    .then((res) => logger.debug(`Delete old rates ${res.reason}`))
-}
 
 const removeOldBotWarnings = async () => {
   await botEventDb
@@ -245,34 +233,6 @@ const cleanNotUsedUserFee = async (_getUserExchanges = getUserExchanges) => {
   logger.debug('Clean not used fee end')
 }
 
-const clearOldSnapshots = async () => {
-  logger.debug('Clean old snapshots ')
-
-  await snapshotDb
-    .deleteManyData({
-      created: { $lt: new Date(+new Date() - 90 * 24 * 60 * 60 * 1000) },
-    })
-    .then((res) => {
-      logger.debug(`Clean old snapshots ${res.reason}`)
-    })
-
-  logger.debug('Clean old snapshots end')
-}
-
-const clearBotEvents = async () => {
-  logger.debug('Clean old bot events ')
-
-  await botEventDb
-    .deleteManyData({
-      created: { $lt: new Date(+new Date() - 30 * 24 * 60 * 60 * 1000) },
-    })
-    .then((res) => {
-      logger.debug(`Clean old bot events ${res.reason}`)
-    })
-
-  logger.debug('Clean old bot events end')
-}
-
 const utils = {
   clearNotUsedPaperData,
   clearPaperOldOrders,
@@ -280,10 +240,7 @@ const utils = {
   clearBalances,
   clearOldUserPaperData,
   cleanNotUsedUserFee,
-  clearOldSnapshots,
   removeOldBotWarnings,
-  removeOldRates,
-  clearBotEvents,
   getUserExchanges,
 }
 

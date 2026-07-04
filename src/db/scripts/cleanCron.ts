@@ -11,11 +11,11 @@ const cleanJob = async () => {
   await utils.clearRealOldCanceledOrders()
   await utils.clearBalances()
   await utils.cleanNotUsedUserFee()
-  await utils.clearOldSnapshots()
   await bot.premanenetlyDeleteBots(false)
+  // snapshots (90d), rates (30d) and bot events (30d) now expire via TTL
+  // indexes (see registerIndexes) — the age-based deletes were removed here.
+  // Bot *warnings* keep their own 14d code-delete (a subset the 30d TTL can't cover).
   await utils.removeOldBotWarnings()
-  await utils.removeOldRates()
-  await utils.clearBotEvents()
   logger.debug('Clean job finished')
 }
 

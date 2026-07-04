@@ -2856,6 +2856,12 @@ export const registerIndexes = () => {
 
   botEventSchema.index({ botId: 1 })
 
+  // TTL indexes (created on prod 2026-07-03; replace the weekly cleanDb
+  // age-deletes). Expiry now runs continuously instead of a weekly bulk delete.
+  botEventSchema.index({ created: 1 }, { expireAfterSeconds: 2592000 }) // 30d
+  rateSchema.index({ created: 1 }, { expireAfterSeconds: 2592000 }) // 30d
+  snapshotsSchema.index({ created: 1 }, { expireAfterSeconds: 7776000 }) // 90d
+
   balancesSchema.index({ userId: 1 })
 
   dcaBacktestingResult.index({ userId: 1 })
