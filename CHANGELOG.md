@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.28.0] - 2026-07-05
+
+### Added
+- Missed-fill failsafe escalation (spec §3.4) in the stream watchdog: a second, independent signal source alongside staleness. On each tick it groups recent `reconcilesweepcatches` by `exchangeUUID` over `FF_ESCALATE_WINDOW_MS` (default 24h, excludes paper) and, for chronic offenders, triggers a stream self-heal once (`FF_ESCALATE_SELFHEAL_N`, default 3) then INFORM USERS once (`FF_ESCALATE_INFORM_N`, default 3 more after the self-heal). Escalation state rides in the existing `watchdogState` hash via two new optional fields (`ffSelfHealAt`, `ffInformAt`); the decision is a pure function (`catchRateTick`) and never touches the staleness `failureCount`/backoff or emits a reconcile.
+
+### Changed
+- INFORM USERS bot error now links a troubleshooting article (`STREAM_TROUBLESHOOTING_URL`, default `https://docs.gainium.io/troubleshooting/exchange-connection-updates`) covering outdated API key formats and missing exchange IP whitelists.
+
+### Removed
+- Hyperliquid blunt order poller (`startHyperliquidOrderPoll` / `pollHyperliquidOrdersFn` / `maybeEmitHyperliquidPolledOrder` and the `HYPERLIQUID_POLL_ORDERS` gate) — superseded by the price-gated fill-failsafe detector.
+
 ## [1.27.0] - 2026-07-04
 
 ### Added

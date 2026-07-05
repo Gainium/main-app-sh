@@ -15543,7 +15543,6 @@ function createDCABotHelper<
           this.emit('bot settings update', data)
         }
         this.startPriceTimer()
-        this.startHyperliquidOrderPoll()
         this.startConsumerHeartbeat()
         this.finishLoad = true
       } catch (e) {
@@ -15567,7 +15566,6 @@ function createDCABotHelper<
 
     async afterBotStop() {
       this.stopPriceTimer()
-      this.stopHyperliquidOrderPoll()
       this.stopConsumerHeartbeat()
       this.stopQuantRulesRetries()
       return
