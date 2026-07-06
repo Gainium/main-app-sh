@@ -3381,6 +3381,34 @@ class MainBot<T extends IMainBot> {
         )
       }
     }
+    if (!find && this.krakenSpot && msg.orderId) {
+      // Kraken spot has no cl_ord_id: the user-stream execution report carries
+      // the Kraken txid as its clientOrderId, so the lookups above (keyed by our
+      // "D-…"/"GRID-…" client id) never match and the fill was silently dropped
+      // (forum #4890). Fall back to the exchange orderId (txid) — which we DO
+      // store on the local order — so resting-limit fills register in real time.
+      const byOrderId =
+        this.allOrders.find((o) => o.orderId && o.orderId === msg.orderId) ||
+        undefined
+      if (byOrderId) {
+        find = byOrderId
+      } else {
+        const findByOrderId = await this.ordersDb.readData({
+          orderId: msg.orderId,
+          botId: this.botId,
+          userId: this.userId,
+        })
+        if (
+          findByOrderId.status === StatusEnum.ok &&
+          findByOrderId.data.result
+        ) {
+          find = {
+            ...findByOrderId.data.result,
+            _id: `${findByOrderId.data.result._id}`,
+          }
+        }
+      }
+    }
     if (!find) {
       return null
     }
@@ -3465,6 +3493,13 @@ class MainBot<T extends IMainBot> {
     return {
       ...co,
       _id: o._id,
+      // Our local order id is authoritative — never let the exchange's echoed
+      // clientOrderId win. For most exchanges co.clientOrderId === o.clientOrderId
+      // so this is a no-op, but on Kraken spot the connector resolves orders by
+      // txid (there's no cl_ord_id), so co.clientOrderId is the txid; keeping it
+      // would rekey/duplicate the order in the map and corrupt the DB row on the
+      // reconcile path (forum #4890).
+      clientOrderId: o.clientOrderId,
       exchange: o.exchange,
       exchangeUUID: o.exchangeUUID,
       typeOrder: o.typeOrder,
@@ -5634,6 +5669,10 @@ class MainBot<T extends IMainBot> {
 
   get kucoinSpot() {
     return this.data?.exchange === ExchangeEnum.kucoin
+  }
+
+  get krakenSpot() {
+    return this.data?.exchange === ExchangeEnum.kraken
   }
 
   /**
