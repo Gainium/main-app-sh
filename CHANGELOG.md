@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.29.1] - 2026-07-06
+
+### Changed
+
+- Pairs dedup in indicator service
+
 ## [1.29.0] - 2026-07-06
 
 ### Added

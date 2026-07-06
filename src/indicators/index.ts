@@ -540,7 +540,6 @@ class InternalIndicatorsFactory {
         )
         return true
       } else {
-        this.pairsSize = (pairs.data?.result ?? []).length
         logger.debug(
           `${this.loggerPrefix} Loaded ${this.pairsSize} pairs from db`,
         )
@@ -549,6 +548,7 @@ class InternalIndicatorsFactory {
             code: p.code || '',
           })
         }
+        this.pairsSize = this.pairs.size
       }
     }
     return !!this.pairs.get(`${pair}-${exchange}`)
