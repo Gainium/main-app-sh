@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.3] - 2026-07-06
+
+### Fixed
+
+- Tokenized-stock (xStocks) icons: `normalizeStockTicker` now strips the `x`/`X` wrapper from dotted tickers (`BRK.Bx` → `BRK.B`) so the `/icons/stock/:ticker` route resolves the real brand logo instead of a monogram. Kept in lock-step with the main-dash-sh frontend copy.
+
+
 ## [1.28.2] - 2026-07-06
 
 ### Fixed

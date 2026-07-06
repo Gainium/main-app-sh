@@ -81,7 +81,7 @@ export function normalizeStockTicker(
   if (m) return m[1].toUpperCase()
   m = s.match(/^([A-Z0-9]+)on$/) // AAPLon → AAPL
   if (m) return m[1].toUpperCase()
-  m = s.match(/^([A-Z0-9]+)x$/) // Kraken AAPLx → AAPL
+  m = s.match(/^([A-Z0-9.]+)x$/) // Kraken AAPLx → AAPL, BRK.Bx → BRK.B
   if (m) return m[1].toUpperCase()
 
   // Upper-case wrappers — venue-gated so we don't mangle a clean ticker.
@@ -97,7 +97,7 @@ export function normalizeStockTicker(
   //     (futures `category`); it has no clean equity perps, and spot carries no
   //     stock signal. So any Kraken stock base is an xStock (`…x`/`…X`).
   if (exchange === 'bybit' || exchange.startsWith('kraken')) {
-    m = s.match(/^([A-Z0-9]+)X$/) // xstock AAPLX → AAPL
+    m = s.match(/^([A-Z0-9.]+)X$/) // xstock AAPLX → AAPL
     if (m) return m[1].toUpperCase()
   }
 
