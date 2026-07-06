@@ -35,6 +35,7 @@ export const BasicSchema = /* GraphQL */ `
     maxAmount: Float
     step: Float
     name: String
+    displayName: String
     maxMarketAmount: Float
   }
   type quoteAssetPair {
@@ -70,6 +71,7 @@ export const BasicSchema = /* GraphQL */ `
     step: Float
     maxAmount: Float
     name: String
+    displayName: String
     maxMarketAmount: Float
   }
   type quoteAssetInPair {

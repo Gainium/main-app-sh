@@ -2298,6 +2298,13 @@ export interface PairsSchema extends SchemaI {
     maxAmount: number
     step: number
     name: string
+    /**
+     * Human-readable asset name (e.g. "Apple Inc.", "Bitcoin"), resolved from a
+     * reference source by the `saveAssetNames` cron — exchanges don't return
+     * names. Optional/additive: absent until resolved; the UI falls back to the
+     * ticker (`name`) when unset.
+     */
+    displayName?: string
     maxMarketAmount: number
     multiplier?: number
   }

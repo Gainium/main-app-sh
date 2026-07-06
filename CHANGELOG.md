@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.29.0] - 2026-07-06
+
+### Added
+
+- Pairs now carry an optional `baseAsset.displayName` (human-readable asset name, e.g. "Apple Inc." / "Bitcoin") — added to the `pairs` schema/type and exposed on the `baseAssetPair`/`baseAssetInPair` GraphQL types. Additive & optional: absent until the main-app `saveAssetNames` cron resolves it; consumers fall back to the ticker (`name`). Exchanges don't return names, so they're resolved from a reference source (coins collection for crypto, curated ticker→name map for stocks), mirroring the icon pipeline.
+
 ## [1.28.3] - 2026-07-06
 
 ### Fixed

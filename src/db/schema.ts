@@ -848,6 +848,11 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
     maxAmount: RequiredNumber,
     step: RequiredNumber,
     name: RequiredString,
+    // Human-readable asset name (e.g. "Apple Inc.", "Bitcoin") resolved from a
+    // reference source (coins collection for crypto, logo.dev/curated map for
+    // stocks) by the `saveAssetNames` cron — exchanges don't return names.
+    // Optional & additive: absent until resolved, UI falls back to the ticker.
+    displayName: String,
     maxMarketAmount: Number,
     multiplier: Number,
   },
