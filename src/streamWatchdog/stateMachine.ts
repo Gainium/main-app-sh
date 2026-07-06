@@ -22,9 +22,14 @@ export const EMPTY_STATE: WatchdogState = {
 }
 
 export type WatchdogAction =
-  | { type: 'triggerSelfHeal'; accountId: string }
-  | { type: 'signalReconcile'; accountId: string }
-  | { type: 'signalShowError'; accountId: string }
+  | { type: 'triggerSelfHeal'; accountId: string; reason?: ActionReason }
+  | { type: 'signalReconcile'; accountId: string; reason?: ActionReason }
+  | { type: 'signalShowError'; accountId: string; reason?: ActionReason }
+
+/** Which detector produced the action: whole-stream staleness, or the
+ *  missed-fill catch-rate escalation (spec §3.4). Consumers may surface this
+ *  to ops (admin watchdog notifications feed). */
+export type ActionReason = 'stale' | 'catchRate'
 
 interface TickInput {
   accountId: string
@@ -153,7 +158,7 @@ export function catchRateTick(input: CatchRateTickInput): CatchRateTickResult {
 
   // 1. Enough catches in the window and no self-heal yet → self-heal once.
   if (catchCountWindow >= thresholds.selfHealN && !selfHealInWindow) {
-    actions.push({ type: 'triggerSelfHeal', accountId })
+    actions.push({ type: 'triggerSelfHeal', accountId, reason: 'catchRate' })
     result.ffSelfHealAt = now
     return result
   }
@@ -164,7 +169,7 @@ export function catchRateTick(input: CatchRateTickInput): CatchRateTickResult {
     !informInWindow &&
     catchCountSinceSelfHeal >= thresholds.informN
   ) {
-    actions.push({ type: 'signalShowError', accountId })
+    actions.push({ type: 'signalShowError', accountId, reason: 'catchRate' })
     result.ffInformAt = now
   }
 

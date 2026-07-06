@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.28.1] - 2026-07-06
+
+### Added
+
+- streamWatchdog: actions carry a reason tag (stale vs catchRate) and main() accepts an onAction ops-visibility hook (fire-and-forget) so escalations can surface in the admin watchdog notifications feed
+
 ## [1.28.0] - 2026-07-05
 
 ### Added

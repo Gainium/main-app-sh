@@ -7,7 +7,10 @@ import { log } from '../streamWatchdog/utils'
 import RedisClient from '../db/redis'
 import RabbitClient from '../db/rabbit'
 
-export const main = (isDispatchAvailable?: () => Promise<boolean>) => {
+export const main = (
+  isDispatchAvailable?: () => Promise<boolean>,
+  onAction?: (action: Parameters<ActionDispatcher>[0]) => Promise<void>,
+) => {
   let timer: NodeJS.Timeout | null = null
   const dispatch: ActionDispatcher = async (action) => {
     if (isDispatchAvailable && !isDispatchAvailable()) {
@@ -35,6 +38,13 @@ export const main = (isDispatchAvailable?: () => Promise<boolean>) => {
         log('info', `Signaling show error for account ${action.accountId}`)
         await redis.publish(`userStreamInfo${action.accountId}`, 'INFORM USERS')
         break
+    }
+    if (onAction) {
+      // Ops-visibility hook (e.g. admin watchdog-notifications feed).
+      // Fire-and-forget: a failing hook must never break dispatch.
+      void onAction(action).catch((err) =>
+        log('warn', 'onAction hook failed', err),
+      )
     }
   }
 
