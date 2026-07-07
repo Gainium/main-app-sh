@@ -57,7 +57,10 @@ import {
   botDb,
   dcaBotDb,
   snapshotPerExchangeDb,
+  pairDb,
 } from '../db/dbInit'
+import { balanceAssetToPairBase } from './assetClass'
+import type { PairsSchema } from '../../types'
 import RedisClient from '../db/redis'
 import Rabbit from '../db/rabbit'
 import type { ErrorResponse, MessageResponse } from '../db/crud'
@@ -894,6 +897,75 @@ const userSnapshots = async (
       )
     }
     logger.debug(`Snapshot | Found ${users.data.result.length} users`)
+
+    // Tokenized-stock holdings (Kraken xStocks, Bybit spot xstocks, Hyperliquid
+    // spot RWA) are NOT in the bulk `getAllPrices` rate table, so `findUSDRate`
+    // returns 0 and they'd be dropped from the snapshot → $0.00 in the portfolio
+    // UI. Price them venue-agnostically off the `pairs` collection: a holding
+    // whose (exchange, pair-base) matches a stock/etf pair is valued via that
+    // exchange's live `latestPrice` ticker (same source deal P&L uses). Preload
+    // the stock/etf pairs once and cache each pair's price for the whole run.
+    const stockPairMap = new Map<string, string>() // `${exchange}:${BASE}` → pair
+    const stockPairs = await pairDb.readData<
+      Pick<PairsSchema, 'exchange' | 'pair'> & { baseAsset: { name: string } }
+    >(
+      { assetCategory: { $in: ['stock', 'etf'] } },
+      { exchange: 1, pair: 1, 'baseAsset.name': 1 },
+      {},
+      true,
+    )
+    if (stockPairs.status === StatusEnum.ok) {
+      for (const p of stockPairs.data.result) {
+        if (p.exchange && p.pair && p.baseAsset?.name) {
+          stockPairMap.set(
+            `${p.exchange}:${p.baseAsset.name.toUpperCase()}`,
+            p.pair,
+          )
+        }
+      }
+    } else {
+      logger.error(`Snapshot | Cannot read stock pairs ${stockPairs.reason}`)
+    }
+    const stockPriceCache = new Map<string, number>() // `${exchange}:${pair}` → usd
+    const stockPriceProviders = new Map<
+      string,
+      ReturnType<ReturnType<typeof ec.chooseExchangeFactory>>
+    >()
+    const stockUsdRate = async (
+      asset: string,
+      exchange: string,
+    ): Promise<number> => {
+      const base = balanceAssetToPairBase(asset, exchange).toUpperCase()
+      const pair = stockPairMap.get(`${exchange}:${base}`)
+      if (!pair) return 0
+      const cacheKey = `${exchange}:${pair}`
+      const cached = stockPriceCache.get(cacheKey)
+      if (cached !== undefined) return cached
+      let provider = stockPriceProviders.get(exchange)
+      if (!provider) {
+        const factory = ec.chooseExchangeFactory(exchange as ExchangeEnum)
+        if (!factory) {
+          stockPriceCache.set(cacheKey, 0)
+          return 0
+        }
+        provider = factory('', '')
+        stockPriceProviders.set(exchange, provider)
+      }
+      try {
+        const res = await provider.latestPrice(pair, true)
+        const price =
+          res.status === StatusEnum.ok && typeof res.data === 'number'
+            ? res.data
+            : 0
+        stockPriceCache.set(cacheKey, price)
+        return price
+      } catch (e) {
+        logger.error(`Snapshot | stock price ${exchange} ${pair} failed: ${e}`)
+        stockPriceCache.set(cacheKey, 0)
+        return 0
+      }
+    }
+
     for (const u of users.data.result) {
       let totalUsd = 0
       let assets: SnapshotSchema['assets'] = []
@@ -918,7 +990,12 @@ const userSnapshots = async (
           const { free, locked } = b
           const amount = free + locked
           if (amount !== 0) {
-            const usdRate = findUSDRate(asset, rates, b.exchange)
+            let usdRate = findUSDRate(asset, rates, b.exchange)
+            // Tokenized stocks aren't in the bulk rate table — fall back to the
+            // exchange's live ticker keyed by the holding's tradeable pair.
+            if (!usdRate) {
+              usdRate = await stockUsdRate(asset, b.exchange)
+            }
             const amountUsd = amount * usdRate
             if (amountUsd) {
               const find = assets.find((a) => a.name === asset)

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.30.1] - 2026-07-07
+
+### Fixed
+
+- Portfolio snapshot now values tokenized-stock holdings (Kraken xStocks, Bybit spot xstocks, Hyperliquid spot RWA) instead of dropping them at $0. The snapshot builder priced every balance off the bulk `getAllPrices` rate table, which carries no xStock; unpriceable holdings were skipped entirely, so they vanished from the portfolio. Now a holding whose (exchange, pair-base) matches a `stock`/`etf` pair is priced via that exchange's live `latestPrice` ticker (cached per pair per run). `normalizeStockTicker` also strips Kraken's tokenized-ledger `.T` suffix (`PGx.T` → `PG`), and a new `balanceAssetToPairBase` maps a ledger code to its tradeable pair base (`PGx.T` → `PGx`).
+
 ## [1.30.0] - 2026-07-07
 
 ### Added

@@ -76,17 +76,24 @@ export function normalizeStockTicker(
   // like their real counterparts — the local/paper stack lists these RWAs too.
   const exchange = (opts?.exchange ?? '').toLowerCase().replace(/^paper/, '')
 
+  // Kraken decorates a tokenized-equity BALANCE/ledger code with a trailing
+  // `.T` (`PGx.T`, `AAPLx.T`) that never appears on the tradeable pair base
+  // (`PGx`, `AAPLx`). Strip it first so the remaining wrapper rules below see
+  // the clean display base. Gated to Kraken — the only venue that mints it —
+  // so a crypto base can't be mangled. Case-insensitive (`.T`/`.t`).
+  const noLedger = exchange.startsWith('kraken') ? s.replace(/\.T$/i, '') : s
+
   // Unambiguous lower-case wrappers — safe to strip on any venue.
-  let m = s.match(/^r([A-Z][A-Z0-9]+)$/) // reality rTSLA → TSLA
+  let m = noLedger.match(/^r([A-Z][A-Z0-9]+)$/) // reality rTSLA → TSLA
   if (m) return m[1].toUpperCase()
-  m = s.match(/^([A-Z0-9]+)on$/) // AAPLon → AAPL
+  m = noLedger.match(/^([A-Z0-9]+)on$/) // AAPLon → AAPL
   if (m) return m[1].toUpperCase()
-  m = s.match(/^([A-Z0-9.]+)x$/) // Kraken AAPLx → AAPL, BRK.Bx → BRK.B
+  m = noLedger.match(/^([A-Z0-9.]+)x$/) // Kraken AAPLx → AAPL, BRK.Bx → BRK.B
   if (m) return m[1].toUpperCase()
 
   // Upper-case wrappers — venue-gated so we don't mangle a clean ticker.
   if (exchange.startsWith('bitget')) {
-    m = s.match(/^R([A-Z][A-Z0-9]+)$/) // Bitget reality RAAPL → AAPL
+    m = noLedger.match(/^R([A-Z][A-Z0-9]+)$/) // Bitget reality RAAPL → AAPL
     if (m) return m[1].toUpperCase()
   }
   // Upper-case `X` suffix = an xstock wrapper. Strip it only where the venue's
@@ -97,11 +104,33 @@ export function normalizeStockTicker(
   //     (futures `category`); it has no clean equity perps, and spot carries no
   //     stock signal. So any Kraken stock base is an xStock (`…x`/`…X`).
   if (exchange === 'bybit' || exchange.startsWith('kraken')) {
-    m = s.match(/^([A-Z0-9.]+)X$/) // xstock AAPLX → AAPL
+    m = noLedger.match(/^([A-Z0-9.]+)X$/) // xstock AAPLX → AAPL
     if (m) return m[1].toUpperCase()
   }
 
-  return s.toUpperCase()
+  return noLedger.toUpperCase()
+}
+
+/**
+ * Map an exchange **balance/ledger** asset code to its tradeable **pair base**
+ * (`pairs.baseAsset.name`), undoing venue-specific ledger decorations that don't
+ * appear on the pair. Unlike `normalizeStockTicker` (which goes all the way to
+ * the clean logo ticker, e.g. `PGx.T` → `PG`), this stops at the pair base
+ * (`PGx.T` → `PGx`), so callers can look the holding up in `pairDb` / price it
+ * via the exchange ticker.
+ *
+ * Only Kraken decorates the ledger code (trailing `.T` on tokenized equities);
+ * every other venue's balance asset already equals its pair base — Bybit spot
+ * (`AAPLX`), Hyperliquid spot (already `aliasToken`-normalized by the connector).
+ * The `.T` strip is unambiguous on a balance code, so it's safe to apply even
+ * when the venue is unknown (aggregate rows). Keep the trailing `x` — it's part
+ * of Kraken's tokenized display base, not a wrapper.
+ */
+export function balanceAssetToPairBase(
+  asset: string,
+  _exchange?: string,
+): string {
+  return (asset || '').replace(/\.T$/i, '')
 }
 
 /**
