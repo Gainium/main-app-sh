@@ -25,6 +25,79 @@ const sendWithCallbackMutex = new IdMutex(1000)
 
 const retryTimeout = 30 * 1000
 
+// --- RPC-latency counters (Phase 4b) ------------------------------------------
+// Module-level (NOT per-instance) so every Rabbit instance in a process
+// accumulates into the same table — the main-app publisher reads a snapshot of
+// this and computes deltas. Purely additive, zero-dep, and every mutation is
+// wrapped so a counter bug can never affect an RPC. Cumulative — never reset
+// here; the publisher diffs against its own last snapshot.
+interface RpcQueueStat {
+  count: number
+  sumMs: number
+  maxMs: number
+  breaches: number
+  timeouts: number
+}
+
+// A completed sendWithCallback slower than this counts as a latency breach.
+const RPC_BREACH_MS = Number(process.env.RPC_LATENCY_BREACH_MS) || 10000
+
+const rpcLatencyStats = new Map<string, RpcQueueStat>()
+
+const rpcStatFor = (queue: string): RpcQueueStat => {
+  let s = rpcLatencyStats.get(queue)
+  if (!s) {
+    s = { count: 0, sumMs: 0, maxMs: 0, breaches: 0, timeouts: 0 }
+    rpcLatencyStats.set(queue, s)
+  }
+  return s
+}
+
+/** Record a successfully-completed RPC's round-trip time. Never throws. */
+const recordRpcSuccess = (queue: string, totalMs: number): void => {
+  try {
+    const s = rpcStatFor(queue)
+    s.count += 1
+    s.sumMs += totalMs
+    if (totalMs > s.maxMs) s.maxMs = totalMs
+    if (totalMs > RPC_BREACH_MS) s.breaches += 1
+  } catch {
+    // counters must never affect the RPC
+  }
+}
+
+/** Record a hard-timeout rejection (a failed RPC → also a breach). Never throws. */
+const recordRpcTimeout = (queue: string): void => {
+  try {
+    const s = rpcStatFor(queue)
+    s.count += 1
+    s.timeouts += 1
+    s.breaches += 1
+  } catch {
+    // counters must never affect the RPC
+  }
+}
+
+/**
+ * Cumulative RPC-latency counters keyed by queue name, aggregated across every
+ * Rabbit instance in this process. Returns a shallow snapshot (copies) so the
+ * caller can't mutate the live table. Cumulative — the caller computes deltas.
+ */
+export const getRpcLatencyStats = (): Record<string, RpcQueueStat> => {
+  const out: Record<string, RpcQueueStat> = {}
+  for (const [queue, s] of rpcLatencyStats.entries()) {
+    out[queue] = {
+      count: s.count,
+      sumMs: s.sumMs,
+      maxMs: s.maxMs,
+      breaches: s.breaches,
+      timeouts: s.timeouts,
+    }
+  }
+  return out
+}
+// ------------------------------------------------------------------------------
+
 class ChannelPool {
   private channels: Channel[] = []
   private dedicatedChannels: Channel[] = []
@@ -344,6 +417,7 @@ class Rabbit {
                   payload,
                 )} ${correlationId}`,
               )
+              recordRpcTimeout(queue)
               await cleanUp()
               reject(null)
             }, timeout)
@@ -369,6 +443,7 @@ class Rabbit {
                 }
 
                 const totalTime = performance.now() - startTime
+                recordRpcSuccess(queue, totalTime)
                 if (totalTime > this.logTimeout) {
                   logger.warn(
                     `${prefix} sendWithCallback operation took ${totalTime.toFixed(

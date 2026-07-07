@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.30.0] - 2026-07-07
+
+### Added
+
+- In-memory RPC-latency counters in `Rabbit` (`getRpcLatencyStats()`): `sendWithCallback` tallies per-queue `{count,sumMs,maxMs,breaches,timeouts}` on completion (breach when round-trip > `RPC_LATENCY_BREACH_MS`, default 10000) and on hard-timeout rejection. Module-level (all instances aggregate), additive, never-throw; consumed by main-app's RPC-latency monitor. No existing method signature changed.
+
 ## [1.29.1] - 2026-07-06
 
 ### Changed
