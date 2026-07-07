@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.30.2] - 2026-07-04
+
+### Changed
+
+- Bot events (30d), rates (30d) and snapshots (90d) now expire via TTL indexes (declared in `registerIndexes()`, matching the indexes created on prod) instead of weekly bulk `deleteMany` age-scans in `cleanJob`. Expiry runs continuously in the background rather than as a weekly spike. The conditional cleanup steps (paper/balances/fees/orphaned-bot data) and the bot-*warning* 14d delete (a subset the 30d TTL can't express) are unchanged.
+
 ## [1.30.1] - 2026-07-07
 
 ### Fixed
