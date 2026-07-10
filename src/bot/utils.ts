@@ -1,4 +1,5 @@
 import { botDb, comboBotDb, dcaBotDb, globalVarsDb, pairDb } from '../db/dbInit'
+import { matchErrorRuleSubType } from './errorRulesCache'
 import {
   BotType,
   BotVars,
@@ -640,6 +641,14 @@ export const errorDict = {
 }
 
 export const getErrorSubType = (string: string): string => {
+  // DB-backed rules (boterrorrules, seeded by admin-app; extendable by admins /
+  // the Claus reclassifier with no deploy) take precedence over the static
+  // dict, so a mislabel can be corrected without shipping code. Falls through
+  // to errorDict until the cache first loads. See errorRulesCache.
+  const fromRules = matchErrorRuleSubType(string)
+  if (fromRules) {
+    return fromRules
+  }
   for (const [key, value] of Object.entries(errorDict)) {
     if (string.toLowerCase().indexOf(key.toLowerCase()) !== -1) {
       return value
