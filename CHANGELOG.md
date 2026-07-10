@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.30.3] - 2026-07-10
+
+### Fixed
+
+- Kraken Futures rate-limit `apiLimitExceeded` is now categorized (`Exchange rate limit`) instead of falling through to `Uncategorized`. `handleErrors` treats it as a transient, non-erroring warning ("Exchange temporarily rate-limited our requests… retried automatically") so the bot no longer hard-errors/stops the deal on a rate-limit that the connector already retries.
+
 ## [1.30.2] - 2026-07-04
 
 ### Changed

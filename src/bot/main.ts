@@ -67,6 +67,7 @@ import {
   convertDCABotToObject,
   exchangeOrdersLimits,
   exchangeProblems,
+  exchangeRateLimit,
   exchangeRules,
   futuresLiquidation,
   futuresPosition,
@@ -1585,6 +1586,14 @@ class MainBot<T extends IMainBot> {
       messageToSet = `Unable to place limit order due to exchange price rules, will retry again when price changes.`
       setError = false
       sendError = false
+    }
+    if (subType === exchangeRateLimit) {
+      // Exchange rate-limited us (e.g. Kraken Futures 429 `apiLimitExceeded`).
+      // Transient — the connector backs off and retries automatically. Don't
+      // hard-error/stop the bot or fail the deal; keep it a user-visible warning
+      // so they understand orders were briefly throttled.
+      messageToSet = `Exchange temporarily rate-limited our requests. Orders are retried automatically and will resume shortly.`
+      setError = false
     }
     if (subType === exchangeRules) {
       // Binance Futures Quantitative Rules (-4400): the account/symbol is in a

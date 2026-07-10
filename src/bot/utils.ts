@@ -463,6 +463,8 @@ export const apiError = 'API keys error'
 
 export const exchangeRules = 'Exchange rules'
 
+export const exchangeRateLimit = 'Exchange rate limit'
+
 const orderParams = 'Order params'
 
 export const indicatorsError = 'Indicators error'
@@ -606,6 +608,10 @@ export const errorDict = {
   'Your api key has expired.': apiError,
   'user or api wallet': apiError,
   'EAPI:Rate limit exceeded': 'Kraken ban',
+  // Kraken Futures rate-limit (HTTP 429). Distinct string from spot's EAPI above.
+  // The connector now backs off + retries it; if it still bubbles up, treat it as
+  // a transient warning (see handleErrors) rather than an uncategorized hard error.
+  apiLimitExceeded: exchangeRateLimit,
   'EService:Timeout': exchangeProblems,
   'EService:Unavailable': exchangeProblems,
   'EService:Busy': exchangeProblems,
