@@ -421,6 +421,12 @@ const botCommon = {
     enum: BotStatusEnum,
   },
   statusReason: String,
+  // Cold-store (archived-bot → ClickHouse). Set true ONLY once a bot's
+  // orders/transactions have been copy-verify-deleted to CH (design phase 3).
+  // When true the bot is READ-ONLY / one-way (cannot be un-archived — clone to
+  // reuse) and its order/transaction drill-down reads route to CH, not Mongo.
+  // Absent/false = grandfathered (stays in Mongo, old reversible semantics).
+  coldArchived: Boolean,
   showErrorWarning: String,
   profit,
   funding,

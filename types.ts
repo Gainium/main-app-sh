@@ -1796,6 +1796,10 @@ export interface MainBot<T = BaseSettings> extends SchemaI {
   status: BotStatusEnum
   previousStatus?: BotStatusEnum
   statusReason?: string
+  /** Cold-store flag (design phase 3). True once the bot's orders/transactions
+   *  have been copy-verify-deleted to ClickHouse: the bot is then READ-ONLY /
+   *  one-way and its history reads route to CH. Absent/false = grandfathered. */
+  coldArchived?: boolean
   showErrorWarning?: 'error' | 'warning' | 'none'
   exchange: ExchangeEnum
   exchangeUUID: string

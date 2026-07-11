@@ -106,6 +106,11 @@ import {
   transactionDb,
   userDb as _userDb,
 } from '../db/dbInit'
+import ColdStoreArchiver, {
+  type ColdBotType,
+} from '../archive/coldStoreArchiver'
+import ColdClient, { isColdStoreEnabled } from '../archive/coldClient'
+import { coldReadOrders, coldReadTransactions } from '../archive/coldRead'
 import {
   BOTS_PER_WORKER,
   BotServiceType,
@@ -7249,6 +7254,90 @@ class Bot<T extends UserSchema = UserSchema> {
     archive: boolean,
     paperContext?: boolean,
   ) {
+    // Cold-store one-way guard (design §0.2): a cold-archived bot is READ-ONLY —
+    // it cannot be un-archived (clone to reuse). Its history has been moved to
+    // ClickHouse and deleted from Mongo, so letting it run again would let it
+    // write orders into Mongo while its old history is in CH (a straddle).
+    // Grandfathered archived bots (coldArchived absent/false) keep the old
+    // reversible behaviour and are unaffected.
+    if (!archive && isColdStoreEnabled()) {
+      const dao = (
+        type === BotType.grid
+          ? this.botDb
+          : type === BotType.combo
+            ? this.comboBotDb
+            : type === BotType.dca
+              ? this.dcaBotDb
+              : null
+      ) as { readData: (...args: any[]) => Promise<any> } | null
+      if (dao) {
+        const cold = await dao.readData(
+          { _id: { $in: botIds }, userId, coldArchived: true },
+          { _id: true },
+          undefined,
+          true,
+        )
+        if (
+          cold.status === StatusEnum.ok &&
+          (cold.data?.result?.length ?? 0) > 0
+        ) {
+          return {
+            status: StatusEnum.notok,
+            reason: 'Archived bots are read-only — clone the bot to reuse it.',
+            data: [],
+          }
+        }
+      }
+    }
+
+    const res = await this._setArchiveStatusImpl(
+      userId,
+      type,
+      botIds,
+      archive,
+      paperContext,
+    )
+
+    // On a successful archive, copy each newly-archived bot's order/transaction
+    // history to ClickHouse (fire-and-forget, off the response path). Part 1
+    // covers grid/dca/combo; hedge stays in Mongo. The archiver flips
+    // `coldArchived` only after a verified copy — until then reads stay on Mongo.
+    if (archive && res?.status === StatusEnum.ok && isColdStoreEnabled()) {
+      const coldType: ColdBotType | null =
+        type === BotType.grid
+          ? 'grid'
+          : type === BotType.combo
+            ? 'combo'
+            : type === BotType.dca
+              ? 'dca'
+              : null
+      if (coldType) {
+        const archivedIds = (
+          (res.data as Array<{ _id?: unknown; status?: BotStatusEnum }>) ?? []
+        )
+          .filter((b) => b.status === BotStatusEnum.archive)
+          .map((b) => `${b._id}`)
+        if (archivedIds.length) {
+          void ColdStoreArchiver.getInstance()
+            .enqueueArchive(userId, coldType, archivedIds)
+            .catch((e) =>
+              logger.error(
+                `[ColdStore] archive trigger failed: ${(e as Error).message}`,
+              ),
+            )
+        }
+      }
+    }
+    return res
+  }
+
+  private async _setArchiveStatusImpl(
+    userId: string,
+    type: BotType,
+    botIds: string[],
+    archive: boolean,
+    paperContext?: boolean,
+  ) {
     // Legacy rule: only stopped (`closed`) bots can be archived. Each branch
     // below filters the update on `status: closed`, so archiving a running
     // bot matches 0 docs — but updateMany still reports OK, so the API used
@@ -9515,6 +9604,28 @@ class Bot<T extends UserSchema = UserSchema> {
         sortModel,
         filterModel,
       })
+      // Cold-store read routing: an archived (cold) bot's orders live in
+      // ClickHouse, not Mongo. Hedge bots are never cold-archived (Part 1), so
+      // the child-bot fan-out below only applies to Mongo reads.
+      if (
+        isColdStoreEnabled() &&
+        (bot.data as { coldArchived?: boolean }).coldArchived
+      ) {
+        const cold = await coldReadOrders({
+          userId,
+          botId: id.toString(),
+          statuses: status === 'NEW' ? ['NEW', 'PARTIALLY_FILLED'] : ['FILLED'],
+          limit: rest.limit,
+          skip: rest.skip,
+        })
+        if (cold) {
+          return {
+            status: StatusEnum.ok,
+            data: { orders: cold.result, page, total: cold.count },
+          }
+        }
+        // cold read failed → fall through to Mongo (graceful fallback)
+      }
       const findOrderRequest = await this.orderDb.readData(
         {
           ...filter,
@@ -9567,6 +9678,22 @@ class Bot<T extends UserSchema = UserSchema> {
       shareId,
     )
     if (bot.status === StatusEnum.ok && bot.data) {
+      if (
+        isColdStoreEnabled() &&
+        (bot.data as { coldArchived?: boolean }).coldArchived
+      ) {
+        const cold = await coldReadOrders({
+          userId,
+          botId: id,
+          dealId,
+          statuses: all ? ['NEW', 'FILLED', 'PARTIALLY_FILLED'] : ['FILLED'],
+          typeOrderNotIn: [TypeOrderEnum.br],
+        })
+        if (cold) {
+          return { status: StatusEnum.ok, data: cold.result }
+        }
+        // cold read failed → fall through to Mongo (graceful fallback)
+      }
       const findOrderRequest = await this.orderDb.readData(
         {
           dealId,
@@ -9609,6 +9736,22 @@ class Bot<T extends UserSchema = UserSchema> {
       shareId,
     )
     if (bot.status === StatusEnum.ok && bot.data) {
+      if (
+        isColdStoreEnabled() &&
+        (bot.data as { coldArchived?: boolean }).coldArchived
+      ) {
+        const cold = await coldReadOrders({
+          userId,
+          botId: id,
+          dealId,
+          statuses: all ? ['NEW', 'FILLED', 'PARTIALLY_FILLED'] : ['FILLED'],
+          typeOrderNotIn: [TypeOrderEnum.br],
+        })
+        if (cold) {
+          return { status: StatusEnum.ok, data: cold.result }
+        }
+        // cold read failed → fall through to Mongo (graceful fallback)
+      }
       const findOrderRequest = await this.orderDb.readData(
         {
           dealId,
@@ -9734,6 +9877,29 @@ class Bot<T extends UserSchema = UserSchema> {
       shareId,
     )
     if (bot.status === StatusEnum.ok && bot.data) {
+      if (
+        isColdStoreEnabled() &&
+        (bot.data as { coldArchived?: boolean }).coldArchived
+      ) {
+        const cold = await coldReadTransactions({
+          userId,
+          botId: id.toString(),
+          limit: 100,
+          skip: page * 100,
+          sort: 'desc',
+        })
+        if (cold) {
+          return {
+            status: StatusEnum.ok,
+            data: {
+              transactions: cold.result,
+              page,
+              total: cold.count,
+            },
+          }
+        }
+        // cold read failed → fall through to Mongo (graceful fallback)
+      }
       const findTransactionsRequest = await this.transactionDb.readData(
         {
           botId: id.toString(),
@@ -11927,7 +12093,29 @@ class Bot<T extends UserSchema = UserSchema> {
       ...trading.data.result.map((r) => r._id.toString()),
       ...combo.data.result.map((r) => r._id.toString()),
     ]
+    // Cold-archived bots have their orders/transactions in ClickHouse, not
+    // Mongo, so the Mongo cascade below deletes nothing for them — GC the CH
+    // rows too (design §1b). Batched: ONE DELETE WHERE botId IN(…), idempotent.
+    const coldBotIds = [
+      ...grid.data.result,
+      ...trading.data.result,
+      ...combo.data.result,
+    ]
+      .filter((r) => (r as { coldArchived?: boolean }).coldArchived)
+      .map((r) => `${r._id}`)
     if (grid.data.count > 0 || trading.data.count > 0 || combo.data.count > 0) {
+      if (isColdStoreEnabled() && coldBotIds.length) {
+        const cold = await ColdClient.getInstance().coldDelete(coldBotIds)
+        if (cold?.ok) {
+          result = `${result}ColdStore: removed ${coldBotIds.length} bot(s), `
+        } else {
+          // Non-fatal: the Mongo bot doc is deleted below regardless; orphaned
+          // CH rows linger harmlessly until a follow-up orphan sweep reconciles.
+          logger.error(
+            `[ColdStore] coldDelete failed for ${coldBotIds.length} bot(s); CH rows may linger`,
+          )
+        }
+      }
       const orders = await this.orderDb.deleteManyData({
         botId: {
           $in: botIds,

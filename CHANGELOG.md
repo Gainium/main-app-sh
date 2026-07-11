@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.32.0] - 2026-07-11
+
+### Added
+
+- Cold store (phase 3): archived bots' order/transaction history moves to ClickHouse. On archive, `Bot.setArchiveStatus` fires a per-bot copy-verify-delete pipeline (`ColdStoreArchiver`) that batches rows to market-archive over new `coldStore*` RPC queues, verifies parity, then deletes from Mongo. Drill-down reads (`getBotOrders`/`getDealOrders`/`getComboDealOrders`/`getBotTransactions`) route archived (cold) bots to CH with Mongo fallback; bot-delete GC batches a CH `DELETE WHERE botId IN(…)`. Gated on `COLD_STORE_ENABLED` (default off; self-hosted stays wholly in Mongo). New `coldArchived` bot flag makes newly-archived bots READ-ONLY / one-way (clone to reuse); existing archived bots are grandfathered. Grid/dca/combo only (hedge deferred). Canonical wire contract in `src/archive/coldTypes.ts` (mirrored in market-archive).
+
 ## [1.31.0] - 2026-07-10
 
 ### Added
