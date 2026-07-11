@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.32.2] - 2026-07-11
+
+### Added
+
+- Expose `coldArchived` on the `fullBot`/`fullDCABot`/`fullComboBot` (+ hedge) GraphQL types so the dashboard can render archived cold-store bots as read-only (hide un-archive). Additive nullable field; resolvers return it straight off the bot doc.
+
 ## [1.32.1] - 2026-07-11
 
 ### Fixed

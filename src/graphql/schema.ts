@@ -2702,6 +2702,7 @@ export const BotSchema = /* GraphQL */ `
     userId: String
     status: BotStatus
     statusReason: String
+    coldArchived: Boolean
     showErrorWarning: String
     settings: botSettings
     exchange: Exchange
@@ -3445,6 +3446,7 @@ export const BotSchema = /* GraphQL */ `
     userId: String
     status: BotStatus
     statusReason: String
+    coldArchived: Boolean
     showErrorWarning: String
     settings: DCABotSettings
     exchange: Exchange
@@ -3550,6 +3552,7 @@ export const BotSchema = /* GraphQL */ `
     showErrorWarning: String
     status: BotStatus
     statusReason: String
+    coldArchived: Boolean
     userId: String
     workingShift: [botWorkingShift]
     bots: [fullComboBot]
@@ -3571,6 +3574,7 @@ export const BotSchema = /* GraphQL */ `
     userId: String
     status: BotStatus
     statusReason: String
+    coldArchived: Boolean
     showErrorWarning: String
     settings: ComboBotSettings
     exchange: Exchange
