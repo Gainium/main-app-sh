@@ -3249,6 +3249,19 @@ class Bot<T extends UserSchema = UserSchema> {
     if (!user.data.result) {
       return this.entityNotFound('User')
     }
+    // Resolve base/quote from the authoritative pairs collection rather than trusting the
+    // client-supplied strings. Some clients flatten dash-delimited symbols (e.g. Coinbase
+    // "SOL-EUR") into a malformed baseAsset "SOLEUR" with an empty quoteAsset, which then
+    // fails order validation ("quoteAsset is required") and drops grid orders. The pair doc
+    // is the source of truth (mirrors prepareDCABot/prepareComboBot).
+    const pairDoc = await this.pairsDb.readData(
+      { pair: settings.pair, exchange: settings.exchange },
+      { 'baseAsset.name': 1, 'quoteAsset.name': 1 },
+    )
+    const resolvedPair = pairDoc.data?.result
+    const baseAsset = resolvedPair?.baseAsset?.name || settings.baseAsset || ''
+    const quoteAsset =
+      resolvedPair?.quoteAsset?.name || settings.quoteAsset || ''
     const saveBotRequest = await this.botDb.createData({
       userId,
       status: BotStatusEnum.closed,
@@ -3258,8 +3271,8 @@ class Bot<T extends UserSchema = UserSchema> {
       initialPrice: 0,
       symbol: {
         symbol: settings.pair,
-        baseAsset: settings.baseAsset || '',
-        quoteAsset: settings.quoteAsset || '',
+        baseAsset,
+        quoteAsset,
       },
       levels: {
         active: {

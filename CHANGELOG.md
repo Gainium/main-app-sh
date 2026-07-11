@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.32.1] - 2026-07-11
+
+### Fixed
+
+- Grid bot creation (`createBot`) now resolves `symbol.baseAsset`/`symbol.quoteAsset` from the authoritative `pairs` collection instead of trusting client-supplied strings. Dash-delimited Coinbase symbols (e.g. `SOL-EUR`) were being stored as `baseAsset:"SOLEUR"`/`quoteAsset:""`, causing intermittent "orders validation failed: quoteAsset is required" warnings and dropped grid orders. Falls back to the supplied values when the pair isn't found (mirrors `prepareDCABot`/`prepareComboBot`).
+
 ## [1.32.0] - 2026-07-11
 
 ### Added
