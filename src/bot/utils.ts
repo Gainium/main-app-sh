@@ -470,8 +470,11 @@ const orderParams = 'Order params'
 
 export const indicatorsError = 'Indicators error'
 
+export const orderProcessing = 'Order processing'
+
 export const errorDict = {
   'Leverage cannot exceed': futuresPosition,
+  unknownOid: orderProcessing,
   'Indicators error: ': indicatorsError,
   'Exceeded the maximum allowable position at current leverage':
     'Futures position restriction',

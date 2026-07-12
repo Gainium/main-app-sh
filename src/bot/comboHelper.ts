@@ -5659,6 +5659,17 @@ function createComboBotHelper<
         await this.checkDynamic(this.botId, msg.symbol, +msg.price)
       }
 
+      // Combo bots — unlike DCA — had no path to clear a transient `error`
+      // status on a clean tick, so a benign error (e.g. a since-suppressed
+      // `unknownOid`) left the bot wearing the error badge until a full reload.
+      // Mirror DCA: reaching here means the price update processed fine, so
+      // restore the bot out of error.
+      if (
+        this.data?.status === BotStatusEnum.error &&
+        this.data.previousStatus !== BotStatusEnum.closed
+      ) {
+        this.restoreFromRangeOrError()
+      }
       if (this.data?.status === 'range') {
         if (await this.checkInRange(msg.symbol, msg.price)) {
           this.restoreFromRangeOrError()

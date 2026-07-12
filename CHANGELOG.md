@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.32.3] - 2026-07-12
+
+### Changed
+
+- Benign transient bot errors are no longer shown to users or flipped into an error status — they're kept in `botmessages` (`showUser:false`) for our tracking only. Applies to Hyperliquid `unknownOid` (order status couldn't be read back; self-resolves) and the reduce/close-only rejections where the position is already gone/zero (`futuresPosition` subtype, excluding the still-user-facing "Leverage cannot exceed"). `unknownOid` is now classified as the `Order processing` subtype.
+
+### Fixed
+
+- Combo bots now self-clear a transient `error` status on a clean price tick, mirroring DCA (`restoreFromRangeOrError` on success). Previously the combo engine only restored from `range`, never `error`, so a benign error left the bot stuck wearing the error badge until a full reload even though it kept operating.
+
 ## [1.32.2] - 2026-07-11
 
 ### Added

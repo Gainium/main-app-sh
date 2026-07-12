@@ -74,6 +74,7 @@ import {
   getErrorSubType,
   indicatorsError,
   orderPrice,
+  orderProcessing,
 } from './utils'
 import QuantRulesGuard from './quantRulesGuard'
 import { paperExchanges } from '../exchange/paper/utils'
@@ -1574,7 +1575,27 @@ class MainBot<T extends IMainBot> {
       messageToSet = `Check your API keys and try again.`
     }
     if (subType === futuresPosition) {
-      messageToSet = `Cannot place reduce order. Position doesn't exist or already closed`
+      // 'Leverage cannot exceed' also maps to this subtype and IS user-actionable
+      // (leverage misconfiguration) — keep it a visible error. Every other
+      // futuresPosition case is a benign reduce/close-only rejection (position
+      // already gone or zero): not user-actionable, so hide it from the user and
+      // don't error the bot. Still stored (showUser:false) for our tracking.
+      if (errorString.toLowerCase().indexOf('leverage') === -1) {
+        messageToSet = `Cannot place reduce order. Position doesn't exist or already closed`
+        setError = false
+        sendError = false
+        setEvent = false
+      }
+    }
+    if (subType === orderProcessing) {
+      // Benign order-state races: the order already reached a terminal state
+      // (filled / canceled / gone) or its status couldn't be read back
+      // (e.g. Hyperliquid `unknownOid`). Not user-actionable and self-resolves —
+      // keep it for our tracking (stored, showUser:false) but don't notify the
+      // user or flip the bot into an error state.
+      setError = false
+      sendError = false
+      setEvent = false
     }
     if (subType === exchangeProblems) {
       messageToSet = `We have noticed problems related to exchange connection. If problem persists try to restart the bot.`
