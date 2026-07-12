@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.32.7] - 2026-07-12
+
+### Changed
+
+- Indicator candle warmup now requests Bitget (spot + futures) in 1000-candle chunks instead of the default 200. Bitget's recent `/market/candles` serves up to 1000/call and the connector now pages spot at 1000, so a warmup that falls through to the exchange (archive miss) makes ~5x fewer exchange-balancer round-trips. Reads that hit the market-archive are unaffected (already served from ClickHouse).
+
 ## [1.32.6] - 2026-07-12
 
 ### Fixed

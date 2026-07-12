@@ -768,7 +768,17 @@ class InternalIndicator {
       this.exchange === ExchangeEnum.paperBinance ||
       this.exchange === ExchangeEnum.binanceUS ||
       this.exchange === ExchangeEnum.mexc ||
-      this.exchange === ExchangeEnum.paperMexc
+      this.exchange === ExchangeEnum.paperMexc ||
+      // Bitget recent /market/candles serves up to 1000/call (spot & futures);
+      // pairs with the connector's 1000-candle spot paging so a warmup that
+      // falls through to the exchange (archive miss) makes ~5x fewer balancer
+      // round-trips than the previous default of 200.
+      this.exchange === ExchangeEnum.bitget ||
+      this.exchange === ExchangeEnum.paperBitget ||
+      this.exchange === ExchangeEnum.bitgetUsdm ||
+      this.exchange === ExchangeEnum.paperBitgetUsdm ||
+      this.exchange === ExchangeEnum.bitgetCoinm ||
+      this.exchange === ExchangeEnum.paperBitgetCoinm
         ? 1000
         : this.exchange === ExchangeEnum.bybit ||
             this.exchange === ExchangeEnum.bybitCoinm ||
