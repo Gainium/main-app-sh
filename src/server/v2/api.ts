@@ -61,6 +61,7 @@ import DB from '../../db'
 import { buildProjection, type FieldSelection } from './fieldUtils'
 import { fieldSelectionMiddlewares, paperContextMiddleware } from './middleware'
 import { isFutures, isCoinm, isPaper } from '../../utils'
+import { priceBalancesUsd } from '../../utils/user'
 import {
   DCA_FORM_DEFAULTS,
   COMBO_FORM_DEFAULTS,
@@ -779,15 +780,20 @@ const v2API = <R extends UserSchema = UserSchema>(
         page: _page,
         exchangeId: _exchangeId,
         assets: _assets,
+        withUsd: _withUsd,
       }: {
         page?: string
         exchangeId?: string
         assets?: string
+        withUsd?: string
       } = req.query
 
       const user = req.userData
       const fields = req.fieldSelection
       const paperContext = req.paperContext || false
+      // Opt-in USD valuation. Off by default so the response shape is unchanged
+      // for existing consumers (dashboards, gainium-mcp, n8n, extension).
+      const withUsd = _withUsd === 'true' || _withUsd === '1'
 
       // Parse assets filter
       let assets: string[] = []
@@ -845,7 +851,22 @@ const v2API = <R extends UserSchema = UserSchema>(
           return
         }
 
+        // Opt-in: value each balance in USD via the same authoritative path the
+        // portfolio snapshot cron uses (crypto rate table + tokenized-stock
+        // fallback). Best-effort — a valuation failure must not fail the call.
+        let usdMap = new Map<string, { price: number; usdValue: number }>()
+        if (withUsd) {
+          try {
+            usdMap = await priceBalancesUsd(balances.data?.result ?? [])
+          } catch (e) {
+            console.error('v2 balances usd valuation error:', e)
+          }
+        }
+
         const result = (balances.data?.result ?? []).map((b: any) => {
+          const priced = withUsd
+            ? usdMap.get(`${b.exchangeUUID ?? ''}:${b.asset}`)
+            : undefined
           return {
             ...b,
             exchangeMarket: isFutures(b.exchange) ? 'futures' : 'spot',
@@ -854,6 +875,9 @@ const v2API = <R extends UserSchema = UserSchema>(
                 ? 'inverse'
                 : 'linear'
               : undefined,
+            ...(withUsd
+              ? { price: priced?.price ?? 0, usdValue: priced?.usdValue ?? 0 }
+              : {}),
           }
         })
 

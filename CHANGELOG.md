@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.32.6] - 2026-07-12
+
+### Fixed
+
+- `withUsd` valuation now also applies to the **public** `/api/v2/user/balances` (v2/api.ts) — the prior 1.32.5 change only touched the legacy v1 `/api/user/balances` handler, which api.gainium.io does not serve.
+
 ## [1.32.5] - 2026-07-12
 
 ### Added
