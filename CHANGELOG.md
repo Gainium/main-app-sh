@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.32.5] - 2026-07-12
+
+### Added
+
+- `/api/user/balances` optional `?withUsd=true` — adds `price` + `usdValue` per balance, valued via the same authoritative path the snapshot cron uses (cached `getAllPrices` rate table + tokenized-stock fallback off the `pairs` collection). Default response unchanged. New exported `priceBalancesUsd` in `utils/user`.
+
 ## [1.32.4] - 2026-07-12
 
 ### Fixed

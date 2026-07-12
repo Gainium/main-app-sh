@@ -840,6 +840,138 @@ const exchanges = [
   ExchangeEnum.paperKrakenUsdm,
 ]
 
+export interface PricedBalanceInput {
+  asset: string
+  free: number
+  locked: number
+  /** ExchangeEnum value from the balance doc (`balancesSchema.exchange`). */
+  exchange: string
+  exchangeUUID?: string
+}
+
+/**
+ * Value a set of balances in USD using the SAME authoritative path the portfolio
+ * snapshot cron uses ({@link userSnapshots}): the connector's Redis-cached
+ * `getAllPrices` rate table + the USDT→USD rate, then a per-exchange tokenized-
+ * stock fallback off the `pairs` collection (`assetCategory` = stock/etf) priced
+ * by the venue's live `latestPrice` ticker. Asset class comes from the exchange's
+ * own signal — never from symbol-name heuristics (see `assetClass.ts`), so this
+ * covers Kraken xStocks (`PGx.T`), Bybit-spot xstocks (`AAPLX`), etc. uniformly.
+ *
+ * Returns a map keyed by `${exchangeUUID}:${asset}` → `{ price, usdValue }`.
+ * `getAllPrices` is a Redis read on a warm cache, so this is cheap enough to call
+ * per request. Kept standalone (not wired into the cron) to bound blast radius.
+ */
+export const priceBalancesUsd = async (
+  balances: PricedBalanceInput[],
+  ec = ExchangeChooser,
+): Promise<Map<string, { price: number; usdValue: number }>> => {
+  const out = new Map<string, { price: number; usdValue: number }>()
+  if (!balances.length) return out
+
+  // 1) Crypto rate table — cached `getAllPrices` for the exchanges present here.
+  let rates: Prices = []
+  const exchangesPresent = [
+    ...new Set(balances.map((b) => b.exchange).filter(Boolean)),
+  ]
+  for (const e of exchangesPresent) {
+    const factory = ec.chooseExchangeFactory(e as ExchangeEnum)
+    if (!factory) continue
+    try {
+      const prices = await factory('', '').getAllPrices()
+      if (prices.status === StatusEnum.ok) {
+        rates = [...rates, ...prices.data.map((p) => ({ ...p, exchange: e }))]
+      } else {
+        logger.error(`priceBalancesUsd | getAllPrices ${e}: ${prices.reason}`)
+      }
+    } catch (e2) {
+      logger.error(`priceBalancesUsd | getAllPrices ${e} failed: ${e2}`)
+    }
+  }
+  const usdRequest = await rateDb.readData({}, undefined, {
+    limit: 1,
+    sort: { created: -1 },
+  })
+  if (usdRequest.status === StatusEnum.ok) {
+    const price = usdRequest.data.result?.usdRate ?? 1
+    rates = [...rates, { pair: 'USDTZUSD', price, exchange: 'all' }]
+  }
+
+  // 2) Tokenized-stock fallback map (venue-agnostic; keyed off `pairs`).
+  const stockPairMap = new Map<string, string>() // `${exchange}:${BASE}` → pair
+  const stockPairs = await pairDb.readData<
+    Pick<PairsSchema, 'exchange' | 'pair'> & { baseAsset: { name: string } }
+  >(
+    { assetCategory: { $in: ['stock', 'etf'] } },
+    { exchange: 1, pair: 1, 'baseAsset.name': 1 },
+    {},
+    true,
+  )
+  if (stockPairs.status === StatusEnum.ok) {
+    for (const p of stockPairs.data.result) {
+      if (p.exchange && p.pair && p.baseAsset?.name) {
+        stockPairMap.set(
+          `${p.exchange}:${p.baseAsset.name.toUpperCase()}`,
+          p.pair,
+        )
+      }
+    }
+  }
+  const stockPriceCache = new Map<string, number>()
+  const stockPriceProviders = new Map<
+    string,
+    ReturnType<ReturnType<typeof ec.chooseExchangeFactory>>
+  >()
+  const stockUsdRate = async (
+    asset: string,
+    exchange: string,
+  ): Promise<number> => {
+    const base = balanceAssetToPairBase(asset, exchange).toUpperCase()
+    const pair = stockPairMap.get(`${exchange}:${base}`)
+    if (!pair) return 0
+    const cacheKey = `${exchange}:${pair}`
+    const cached = stockPriceCache.get(cacheKey)
+    if (cached !== undefined) return cached
+    let provider = stockPriceProviders.get(exchange)
+    if (!provider) {
+      const factory = ec.chooseExchangeFactory(exchange as ExchangeEnum)
+      if (!factory) {
+        stockPriceCache.set(cacheKey, 0)
+        return 0
+      }
+      provider = factory('', '')
+      stockPriceProviders.set(exchange, provider)
+    }
+    try {
+      const res = await provider.latestPrice(pair, true)
+      const price =
+        res.status === StatusEnum.ok && typeof res.data === 'number'
+          ? res.data
+          : 0
+      stockPriceCache.set(cacheKey, price)
+      return price
+    } catch (e) {
+      logger.error(`priceBalancesUsd | stock price ${exchange} ${pair}: ${e}`)
+      stockPriceCache.set(cacheKey, 0)
+      return 0
+    }
+  }
+
+  // 3) Value each balance: crypto rate first, tokenized-stock fallback second.
+  for (const b of balances) {
+    const amount = (b.free || 0) + (b.locked || 0)
+    if (!amount) continue
+    let usdRate = findUSDRate(b.asset, rates, b.exchange)
+    if (!usdRate) usdRate = await stockUsdRate(b.asset, b.exchange)
+    const price = usdRate || 0
+    out.set(`${b.exchangeUUID ?? ''}:${b.asset}`, {
+      price,
+      usdValue: amount * price,
+    })
+  }
+  return out
+}
+
 const userSnapshots = async (
   id?: string,
   paperContext?: boolean,

@@ -35,6 +35,7 @@ import {
   checkPairs,
 } from '../bot/utils'
 import { isCoinm, isFutures, isPaper } from '../utils'
+import { priceBalancesUsd } from '../utils/user'
 
 type ChangeBotPairsInputType = {
   botId?: string
@@ -354,13 +355,18 @@ const allAPI = <R extends UserSchema = UserSchema>(
       page: _page,
       exchangeId: _exchangeId,
       assets: _assets,
+      withUsd: _withUsd,
     }: {
       paperContext?: string
       page?: number
       exchangeId?: string
       assets?: string
+      withUsd?: string
     } = req.query
-    const start = `User balances paperContext: ${_paperContext}, page: ${_page}, exchangeId: ${_exchangeId}, assets: ${_assets}`
+    // Opt-in USD valuation. Off by default so the public response shape is
+    // unchanged for existing consumers (dashboards, gainium-mcp, n8n, extension).
+    const withUsd = _withUsd === 'true' || _withUsd === '1'
+    const start = `User balances paperContext: ${_paperContext}, page: ${_page}, exchangeId: ${_exchangeId}, assets: ${_assets}, withUsd: ${withUsd}`
     debug(start)
     let assets: string[] = []
     if (typeof _assets !== 'undefined' && _assets) {
@@ -434,7 +440,21 @@ const allAPI = <R extends UserSchema = UserSchema>(
       })
       return
     }
+    // Opt-in: value each balance in USD via the same authoritative path the
+    // portfolio snapshot cron uses (crypto rate table + tokenized-stock fallback).
+    // Best-effort — a valuation failure must not fail the balances response.
+    let usdMap = new Map<string, { price: number; usdValue: number }>()
+    if (withUsd) {
+      try {
+        usdMap = await priceBalancesUsd(balances.data?.result ?? [])
+      } catch (e) {
+        error(`${start} usd valuation error: ${e}`)
+      }
+    }
     const result = (balances.data?.result ?? []).map((b) => {
+      const priced = withUsd
+        ? usdMap.get(`${b.exchangeUUID ?? ''}:${b.asset}`)
+        : undefined
       return {
         asset: b.asset,
         free: b.free,
@@ -447,6 +467,9 @@ const allAPI = <R extends UserSchema = UserSchema>(
             : 'linear'
           : undefined,
         exchangeId: b.exchangeUUID,
+        ...(withUsd
+          ? { price: priced?.price ?? 0, usdValue: priced?.usdValue ?? 0 }
+          : {}),
       }
     })
     const meta = {
