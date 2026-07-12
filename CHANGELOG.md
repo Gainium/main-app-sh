@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.32.4] - 2026-07-12
+
+### Fixed
+
+- Kraken spot order reconcile (`_handleUnknownOrder`) now resolves by the stored exchange txid instead of the Gainium client id, matching the central `getOrder` wrapper. Kraken has no native client-id lookup, so the connector resolves spot orders by `userref = parseInt(clientId.slice(0,8),16)`, which collapses every combo/grid/dca id to one shared userref (all `CMB-*` → 12) — a status/cancel poll by client id could then "not find" a live order or return a *different* order's fill data (ledger drift). `byId` now includes `ExchangeEnum.kraken` (spot only) so the reconcile path swaps the client id for the txid and routes through the connector's exact `isKrakenSpotTxid` lookup.
+
 ## [1.32.3] - 2026-07-12
 
 ### Changed

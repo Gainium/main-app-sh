@@ -3125,7 +3125,9 @@ class MainBot<T extends IMainBot> {
       const getCount = this.canceledMap.get(id) ?? 0
       this.canceledMap.set(id, getCount + 1)
       const byId =
-        this.data?.exchange === ExchangeEnum.coinbase || this.kucoinFullFutures
+        this.data?.exchange === ExchangeEnum.coinbase ||
+        this.data?.exchange === ExchangeEnum.kraken ||
+        this.kucoinFullFutures
       if ((this.canceledMap.get(id) ?? 0) > 5) {
         this.canceledMap.delete(id)
         const get = this.getOrderFromMap(id)
