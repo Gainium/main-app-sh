@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.33.0] - 2026-07-13
+
+### Changed
+
+- Bot-error BEHAVIOUR is now data-driven. `handleErrors` no longer hardcodes per-subType branches for visibility / error-state / message; it consults the admin-managed `boterrorsubtypes` collection (via `errorRulesCache`) for `{showUser, errorsBot, userMessage}`. `errorsBot:false` keeps the bot running (warning, no error state), `showUser:false` suppresses the user message + bot event, `userMessage` rewrites the shown text. FAIL-SAFE: an unclassified subType keeps today's defaults (shown, errors bot, raw message); a static fallback mirrors the migrated hardcoded behaviours until the DB cache loads, so a restart never briefly flips a benign error into a hard error. The leverage-misconfig `Futures position` case stays a visible hard error (excluded from the suppression path); the `Indicators error:` prefix-strip stays a code transform.
+- `errorRulesCache` now also loads the `boterrorsubtypes` behaviour table and counts rule HITS at the write path (once per real error occurrence, batched + flushed on the TTL) so the admin page shows a meaningful fire count instead of always 0.
+
 ## [1.32.7] - 2026-07-12
 
 ### Changed

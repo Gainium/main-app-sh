@@ -62,20 +62,15 @@ import logger from '../utils/logger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import * as crypto from 'crypto'
 import {
-  apiError,
   convertComboBotToObject,
   convertDCABotToObject,
-  exchangeOrdersLimits,
-  exchangeProblems,
-  exchangeRateLimit,
   exchangeRules,
   futuresLiquidation,
   futuresPosition,
   getErrorSubType,
   indicatorsError,
-  orderPrice,
-  orderProcessing,
 } from './utils'
+import { getSubTypeBehavior, noteErrorRuleHit } from './errorRulesCache'
 import QuantRulesGuard from './quantRulesGuard'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
@@ -1565,66 +1560,48 @@ class MainBot<T extends IMainBot> {
     if (message.indexOf('PERCENT_PRICE') !== -1) {
       return
     }
-    if (subType === exchangeOrdersLimits) {
-      messageToSet = 'Maximum number of orders for pair exceeded'
-    }
+
+    // Count this occurrence against its classification rule (once per real
+    // error) so the admin page shows a meaningful fire count. No-op when the
+    // subType came from the static errorDict rather than a DB rule.
+    noteErrorRuleHit(errorString)
+
+    // Dynamic message normalisation that cannot be expressed as a static
+    // userMessage: strip our internal "Indicators error: " prefix so the user
+    // sees the underlying indicator message.
     if (subType === indicatorsError) {
       messageToSet = messageToSet.replace('Indicators error: ', '')
     }
-    if (subType === apiError) {
-      messageToSet = `Check your API keys and try again.`
-    }
-    if (subType === futuresPosition) {
-      // 'Leverage cannot exceed' also maps to this subtype and IS user-actionable
-      // (leverage misconfiguration) — keep it a visible error. Every other
-      // futuresPosition case is a benign reduce/close-only rejection (position
-      // already gone or zero): not user-actionable, so hide it from the user and
-      // don't error the bot. Still stored (showUser:false) for our tracking.
-      if (errorString.toLowerCase().indexOf('leverage') === -1) {
-        messageToSet = `Cannot place reduce order. Position doesn't exist or already closed`
+
+    // Data-driven per-subType behaviour (boterrorsubtypes, admin-managed):
+    // whether the error is shown to the user, whether it flips the bot into an
+    // error state, and an optional user-facing message rewrite. This replaces
+    // the previously-hardcoded per-subType branches (exchangeProblems /
+    // orderPrice / orderProcessing / futuresPosition / exchangeRateLimit /
+    // exchangeRules / exchangeOrdersLimits / apiError …). FAIL-SAFE: an
+    // unclassified subType keeps today's defaults (shown, errors bot, raw
+    // message) — only explicitly-classified subTypes deviate.
+    //
+    // Leverage-misconfig surfaces as the benign 'Futures position' subType but
+    // IS user-actionable, so it must stay a visible hard error. Exclude it from
+    // the data-driven path (treat as unclassified) so it keeps the defaults.
+    const isLeverageFuturesPos =
+      subType === futuresPosition &&
+      errorString.toLowerCase().indexOf('leverage') !== -1
+    const behavior = isLeverageFuturesPos ? null : getSubTypeBehavior(subType)
+    if (behavior) {
+      if (behavior.errorsBot === false) {
         setError = false
+      }
+      if (behavior.showUser === false) {
         sendError = false
         setEvent = false
       }
+      if (behavior.userMessage) {
+        messageToSet = behavior.userMessage
+      }
     }
-    if (subType === orderProcessing) {
-      // Benign order-state races: the order already reached a terminal state
-      // (filled / canceled / gone) or its status couldn't be read back
-      // (e.g. Hyperliquid `unknownOid`). Not user-actionable and self-resolves —
-      // keep it for our tracking (stored, showUser:false) but don't notify the
-      // user or flip the bot into an error state.
-      setError = false
-      sendError = false
-      setEvent = false
-    }
-    if (subType === exchangeProblems) {
-      messageToSet = `We have noticed problems related to exchange connection. If problem persists try to restart the bot.`
-      setError = false
-      sendError = false
-      setEvent = false
-    }
-    if (subType === orderPrice) {
-      messageToSet = `Unable to place limit order due to exchange price rules, will retry again when price changes.`
-      setError = false
-      sendError = false
-    }
-    if (subType === exchangeRateLimit) {
-      // Exchange rate-limited us (e.g. Kraken Futures 429 `apiLimitExceeded`).
-      // Transient — the connector backs off and retries automatically. Don't
-      // hard-error/stop the bot or fail the deal; keep it a user-visible warning
-      // so they understand orders were briefly throttled.
-      messageToSet = `Exchange temporarily rate-limited our requests. Orders are retried automatically and will resume shortly.`
-      setError = false
-    }
-    if (subType === exchangeRules) {
-      // Binance Futures Quantitative Rules (-4400): the account/symbol is in a
-      // temporary reduce-only cooldown. Don't error the bot or fail the deal —
-      // the guard delays new orders and retries after the cooldown expires.
-      // Keep it a user-visible warning so they know why orders paused; closing
-      // positions still works throughout.
-      messageToSet = `Binance temporarily restricted new orders on this account (Futures Quantitative Rules). New orders are paused and will resume automatically once the cooldown ends. Closing positions still works.`
-      setError = false
-    }
+
     const type = setError ? MessageTypeEnum.error : MessageTypeEnum.warning
     if (setEvent) {
       this.botEventDb
