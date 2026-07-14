@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.33.1] - 2026-07-14
+
+### Fixed
+
+- Transient "Exchange info not found" ("Cannot find exchange for bot") no longer silently stops/closes live bots. `getExchangeInfo` can momentarily return undefined for a valid, listed pair during a resume herd (worker restart → many concurrent `pairs` reads, cold cache), and the `pairsNotFound` paths treated that as "pair gone" → dropped it from settings and stopped the bot. New `MainBot.confirmPairMissing()` re-verifies with forced reads + an active re-fill + backoff before a pair is declared missing; only genuinely-absent pairs are dropped. Wired into DCA `checkSettingsPairs`, the DCA deal-load loop, and the combo minigrid load. Fast per-tick skip paths (placeOrders/fee) are unchanged so they stay cheap.
+
 ## [1.33.0] - 2026-07-13
 
 ### Changed

@@ -1254,6 +1254,40 @@ class MainBot<T extends IMainBot> {
     )
   }
 
+  /**
+   * Authoritative "is this pair genuinely missing?" check.
+   *
+   * {@link MainBot#getExchangeInfo} can transiently return undefined even for a
+   * valid, listed pair: the exchangeInfo store falls back to a `pairs` DB read
+   * on a cache miss, and on a worker restart / resume herd many bots hit that
+   * collection at once (cold cache) so an individual read can time out. Callers
+   * that feed {@link MainBot#pairsNotFound} treat a miss as "pair no longer
+   * exists" and then drop it from settings and silently stop/close the bot — so
+   * a transient blip closes live bots. Re-verify with forced reads (bypassing
+   * the cold/stale cache), an active re-fill, and a short backoff before
+   * concluding the pair is really gone. Only genuinely-absent pairs return true.
+   */
+  async confirmPairMissing(
+    symbol: string,
+    attempts = 3,
+    delayMs = 500,
+  ): Promise<boolean> {
+    for (let i = 0; i < attempts; i++) {
+      // force only on retries: the first read reuses whatever is already
+      // loaded; retries bypass the cache to re-read the authoritative record.
+      if (await this.getExchangeInfo(symbol, i > 0)) {
+        return false
+      }
+      if (i < attempts - 1) {
+        // Actively repopulate exchange info for this pair, then back off so a
+        // resume-herd DB blip has a chance to recover before the next read.
+        await this.fillExchangeInfo(symbol)
+        await utils.sleep(delayMs)
+      }
+    }
+    return true
+  }
+
   public async unsubscribeFromExchangeInfo(symbol: string) {
     return await this.sharedData.unsubscribeFromExchange(
       removePaperFormExchangeName(this.data?.exchange ?? ExchangeEnum.binance),

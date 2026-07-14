@@ -658,7 +658,7 @@ function createComboBotHelper<
                 `Cannot find exchange info for ${m.schema.symbol.symbol}`,
               )
               this.fillExchangeInfo(m.schema.symbol.symbol)
-              if (!(await this.getExchangeInfo(m.schema.symbol.symbol))) {
+              if (await this.confirmPairMissing(m.schema.symbol.symbol)) {
                 this.handleDebug(`Push ${m.schema.symbol.symbol} to not found`)
                 this.pairsNotFound.add(m.schema.symbol.symbol)
               }

@@ -1158,7 +1158,7 @@ function createDCABotHelper<
             await this.fillExchangeInfo([...toSearch])
             await this.getUserFees([...toSearch])
             for (const s of toSearch) {
-              if (!(await this.getExchangeInfo(s))) {
+              if (await this.confirmPairMissing(s)) {
                 this.handleDebug(`Push ${s} to not found`)
                 this.pairsNotFound.add(s)
               }
@@ -15320,7 +15320,7 @@ function createDCABotHelper<
       let first = false
       let i = 0
       for (const pair of this.data.settings.pair) {
-        if (!(await this.getExchangeInfo(pair))) {
+        if (await this.confirmPairMissing(pair)) {
           first = i === 0
           this.handleLog(`Pair ${pair} not found in exchange info`)
           notFound.push(pair)
