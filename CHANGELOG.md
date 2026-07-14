@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.34.1] - 2026-07-14
+
+### Fixed
+
+- Cold-store un-archive (rehydrate) no longer re-validates restored docs against the Mongoose schema. `MongoCrud.bulkUpsertById` now passes `skipValidation: true` — a rehydrate is a FAITHFUL RESTORE of docs that were already valid when archived, not new data; re-validating would reject a legitimately-restored order/transaction if the schema had tightened (a required field added) after it was archived, breaking un-archive (and the retroactive backfill of older archived bots). Casting (`_id` string→ObjectId, ISO→Date) still runs. Caught by the full archive↔un-archive E2E against real Mongo+ClickHouse.
+
 ## [1.34.0] - 2026-07-14
 
 ### Added

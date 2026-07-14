@@ -297,8 +297,14 @@ class MongoCrud<T = any> {
               upsert: true,
             },
           }))
+          // skipValidation: this is a FAITHFUL RESTORE of docs that were already
+          // valid when archived — not new data. Re-validating would reject a
+          // legitimately-restored doc if the schema tightened (a required field
+          // added) after it was archived, which would break un-archive. Casting
+          // (_id string→ObjectId, ISO→Date) still runs.
           const res = await this.model.bulkWrite(
             ops as unknown as Parameters<Model<T>['bulkWrite']>[0],
+            { skipValidation: true } as Parameters<Model<T>['bulkWrite']>[1],
           )
           return this.returnData({
             upserted: res.upsertedCount ?? 0,
