@@ -29,6 +29,8 @@ import {
   type ColdReadMessage,
   type ColdReadResponse,
   type ColdDeleteResponse,
+  type ColdListBotsMessage,
+  type ColdListBotsResponse,
 } from './coldTypes'
 
 const logPrefix = '[ColdClient]'
@@ -177,6 +179,52 @@ export class ColdClient {
       return res.response
     } catch (e) {
       logger.error(`${logPrefix} coldDelete failed: ${(e as Error).message}`)
+      return null
+    }
+  }
+
+  /** Whole-account CH purge (GDPR / account deletion). DELETE WHERE userId=…
+   *  across both cold tables — robust when the bot docs are already gone and
+   *  botIds can't be enumerated. Idempotent; null on failure. */
+  async coldDeleteByUser(userId: string): Promise<ColdDeleteResponse | null> {
+    if (!userId) return { ok: true }
+    try {
+      const res = await this.client().sendWithCallback<
+        { userId: string },
+        ColdDeleteResponse
+      >(COLD_QUEUES.coldDeleteByUser, { userId }, COLD_RPC_TIMEOUT_MS)
+      if (!res?.response) {
+        logger.warn(`${logPrefix} coldDeleteByUser: no response`)
+        return null
+      }
+      return res.response
+    } catch (e) {
+      logger.error(
+        `${logPrefix} coldDeleteByUser failed: ${(e as Error).message}`,
+      )
+      return null
+    }
+  }
+
+  /** List every distinct (userId, botId) present in CH — the orphan-sweep source
+   *  (main-app can't query CH directly). Null on failure so the sweep no-ops. */
+  async coldListBots(
+    msg: ColdListBotsMessage = {},
+  ): Promise<ColdListBotsResponse | null> {
+    try {
+      const res = await this.client().sendWithCallback<
+        ColdListBotsMessage,
+        ColdListBotsResponse
+      >(COLD_QUEUES.coldListBots, msg, COLD_RPC_TIMEOUT_MS)
+      if (!res?.response || !res.response.ok) {
+        logger.warn(
+          `${logPrefix} coldListBots: ${res?.response?.error ?? 'no response'}`,
+        )
+        return null
+      }
+      return res.response
+    } catch (e) {
+      logger.error(`${logPrefix} coldListBots failed: ${(e as Error).message}`)
       return null
     }
   }

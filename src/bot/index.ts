@@ -109,6 +109,7 @@ import {
 import ColdStoreArchiver, {
   type ColdBotType,
 } from '../archive/coldStoreArchiver'
+import ColdStoreRehydrator from '../archive/coldStoreRehydrator'
 import ColdClient, { isColdStoreEnabled } from '../archive/coldClient'
 import { coldReadOrders, coldReadTransactions } from '../archive/coldRead'
 import {
@@ -7267,37 +7268,56 @@ class Bot<T extends UserSchema = UserSchema> {
     archive: boolean,
     paperContext?: boolean,
   ) {
-    // Cold-store one-way guard (design §0.2): a cold-archived bot is READ-ONLY —
-    // it cannot be un-archived (clone to reuse). Its history has been moved to
-    // ClickHouse and deleted from Mongo, so letting it run again would let it
-    // write orders into Mongo while its old history is in CH (a straddle).
-    // Grandfathered archived bots (coldArchived absent/false) keep the old
-    // reversible behaviour and are unaffected.
+    // Cold-store un-archive (design §1, PART 2 — archive is REVERSIBLE): a
+    // cold-archived bot's history lives in ClickHouse and was deleted from Mongo.
+    // Before it can go live again we REHYDRATE it (CH→Mongo copy-verify) and clear
+    // its `coldArchived` flag. This runs synchronously here, BEFORE the status
+    // flip, so a subsequently-started bot rebuilds its state from Mongo. If the
+    // restore fails, reject the un-archive (the bot stays fully in CH, still
+    // read-routed there — the user just retries). Grandfathered / non-cold
+    // archived bots (coldArchived absent/false) skip this and un-archive as before.
     if (!archive && isColdStoreEnabled()) {
-      const dao = (
+      const coldType: ColdBotType | null =
         type === BotType.grid
-          ? this.botDb
+          ? 'grid'
           : type === BotType.combo
-            ? this.comboBotDb
+            ? 'combo'
             : type === BotType.dca
+              ? 'dca'
+              : null
+      const dao = (
+        coldType === 'grid'
+          ? this.botDb
+          : coldType === 'combo'
+            ? this.comboBotDb
+            : coldType === 'dca'
               ? this.dcaBotDb
               : null
       ) as { readData: (...args: any[]) => Promise<any> } | null
-      if (dao) {
+      if (coldType && dao) {
         const cold = await dao.readData(
           { _id: { $in: botIds }, userId, coldArchived: true },
           { _id: true },
           undefined,
           true,
         )
-        if (
-          cold.status === StatusEnum.ok &&
-          (cold.data?.result?.length ?? 0) > 0
-        ) {
-          return {
-            status: StatusEnum.notok,
-            reason: 'Archived bots are read-only — clone the bot to reuse it.',
-            data: [],
+        const coldIds: string[] =
+          cold.status === StatusEnum.ok
+            ? (cold.data?.result ?? []).map((b: { _id: unknown }) => `${b._id}`)
+            : []
+        for (const botId of coldIds) {
+          const ok = await ColdStoreRehydrator.getInstance().rehydrateBot(
+            userId,
+            coldType,
+            botId,
+          )
+          if (!ok) {
+            return {
+              status: StatusEnum.notok,
+              reason:
+                'Could not restore this bot’s history from cold storage. Please try again.',
+              data: [],
+            }
           }
         }
       }

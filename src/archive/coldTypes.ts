@@ -27,6 +27,12 @@ export const COLD_QUEUES = {
   coldRead: 'coldStoreRead',
   /** Batched DELETE WHERE botId IN(…) on archived-bot delete GC (§1b). */
   coldDelete: 'coldStoreDelete',
+  /** DELETE WHERE userId=… — whole-account purge (GDPR / account deletion).
+   *  Robust when the bot docs are already gone and botIds can't be enumerated. */
+  coldDeleteByUser: 'coldStoreDeleteByUser',
+  /** Distinct (userId, botId) present in CH — drives the orphan-sweep
+   *  reconciliation (GC rows whose Mongo bot is gone / no longer coldArchived). */
+  coldListBots: 'coldStoreListBots',
 } as const
 
 /** The two CH cold tables. `transactions` unifies Mongo `transactions` (dca) and
@@ -136,5 +142,25 @@ export interface ColdDeleteMessage {
 }
 export interface ColdDeleteResponse {
   ok: boolean
+  error?: string
+}
+
+// ─── coldDeleteByUser — whole-account CH purge (GDPR / account deletion) ──────
+
+export interface ColdDeleteByUserMessage {
+  userId: string
+}
+// Reuses ColdDeleteResponse ({ ok, error? }).
+
+// ─── coldListBots — distinct (userId, botId) in CH (orphan-sweep source) ──────
+
+export interface ColdListBotsMessage {
+  /** Optional cap on returned pairs (0/undefined = all). */
+  limit?: number
+}
+export interface ColdListBotsResponse {
+  ok: boolean
+  /** Every distinct (userId, botId) present across the cold tables. */
+  bots: Array<{ userId: string; botId: string }>
   error?: string
 }

@@ -269,6 +269,50 @@ class MongoCrud<T = any> {
     }
   }
   /**
+   * Bulk upsert documents by their original `_id`. Used by the cold-store
+   * rehydrate (CH→Mongo restore): each doc carries its original `_id`, and
+   * `replaceOne … upsert` makes a retried run OVERWRITE rather than
+   * duplicate-key — so the restore stays idempotent. Mongoose casts both the
+   * filter and the replacement, so the string `_id`s parsed from the CH `raw`
+   * column cast back to ObjectId (and Date-ISO strings back to Date).
+   * @param {Array<Record<string, any>>} docs documents (each MUST carry `_id`)
+   * @returns {Promise<ErrorResponse | DataResponse<{ upserted: number; modified: number }>>}
+   */
+  async bulkUpsertById(
+    docs: Array<Record<string, any>>,
+    count = 0,
+  ): Promise<
+    ErrorResponse | DataResponse<{ upserted: number; modified: number }>
+  > {
+    if (!docs.length) {
+      return this.returnData({ upserted: 0, modified: 0 })
+    }
+    try {
+      const result = await this.getClient()
+        .then(async () => {
+          const ops = docs.map((d) => ({
+            replaceOne: {
+              filter: { _id: d._id },
+              replacement: d,
+              upsert: true,
+            },
+          }))
+          const res = await this.model.bulkWrite(
+            ops as unknown as Parameters<Model<T>['bulkWrite']>[0],
+          )
+          return this.returnData({
+            upserted: res.upsertedCount ?? 0,
+            modified: res.modifiedCount ?? 0,
+          })
+        })
+        .catch(this.handleError(this.bulkUpsertById, docs, count))
+      return result
+    } catch (e) {
+      logger.error(`MongoCrud bulk upsert | ${(e as Error)?.message ?? e}`)
+      return this.handleError(this.bulkUpsertById, docs, count)(e as Error)
+    }
+  }
+  /**
    * Read and returns data
    * @param {object | undefined} [search] search object. Default = {}
    * @param {string | undefined} [fields] fields to return. Default = undefined

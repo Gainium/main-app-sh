@@ -22,7 +22,7 @@
  * this (flag off, design §0.6).
  */
 
-import { StatusEnum } from '../../types'
+import { StatusEnum, BotStatusEnum } from '../../types'
 import logger from '../utils/logger'
 import {
   botDb,
@@ -104,7 +104,7 @@ export class ColdStoreArchiver {
     userId: string,
     type: ColdBotType,
     botId: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Orders (all bot types), keyed by botId.
     const ordersOk = await this.copyVerifyDelete(
       'orders',
@@ -116,7 +116,7 @@ export class ColdStoreArchiver {
       logger.warn(
         `${logPrefix} bot ${botId} orders copy aborted — left in Mongo`,
       )
-      return
+      return false
     }
 
     // Transactions — combo bots use `comboTransactions` (kind='combo'); grid/dca
@@ -132,7 +132,7 @@ export class ColdStoreArchiver {
       logger.warn(
         `${logPrefix} bot ${botId} transactions copy aborted — left in Mongo`,
       )
-      return
+      return false
     }
 
     // Both targets fully copied + verified + deleted from Mongo → route reads to CH.
@@ -144,9 +144,75 @@ export class ColdStoreArchiver {
       logger.error(
         `${logPrefix} bot ${botId} copy done but coldArchived flag not set — reads stay on (now-empty) Mongo until re-run`,
       )
-      return
+      return false
     }
     logger.info(`${logPrefix} bot ${botId} cold-archived to ClickHouse`)
+    return true
+  }
+
+  /**
+   * One-time retroactive backfill (design §5): cold-archive every already-archived
+   * grid/dca/combo bot not yet in CH. Resumable + idempotent — a bot flips
+   * `coldArchived` on success, so a re-run skips it; FAILED bots keep the flag
+   * false but are stepped over (id-paged) this run and retried on the next run.
+   * Cloud-only (flag). Bounded per call by `limit` so it can be chunked.
+   */
+  async backfillArchivedBots(
+    opts: { limit?: number; batch?: number } = {},
+  ): Promise<{ processed: number; archived: number; failed: number }> {
+    const out = { processed: 0, archived: 0, failed: 0 }
+    if (!isColdStoreEnabled()) {
+      logger.warn(`${logPrefix} backfill skipped — COLD_STORE_ENABLED off`)
+      return out
+    }
+    const batch = Math.max(1, opts.batch ?? 200)
+    const limit = opts.limit ?? 0
+    const targets: Array<{ type: ColdBotType; db: DaoLike }> = [
+      { type: 'grid', db: botDb as unknown as DaoLike },
+      { type: 'dca', db: dcaBotDb as unknown as DaoLike },
+      { type: 'combo', db: comboBotDb as unknown as DaoLike },
+    ]
+    for (const { type, db } of targets) {
+      let lastId = ZERO_ID
+      for (;;) {
+        if (limit && out.processed >= limit) break
+        const remaining = limit ? Math.min(batch, limit - out.processed) : batch
+        const page = await db.readData(
+          {
+            status: BotStatusEnum.archive,
+            coldArchived: { $ne: true },
+            _id: { $gt: lastId },
+          },
+          { _id: true, userId: true },
+          { sort: { _id: 1 }, limit: remaining },
+          true,
+        )
+        if (page?.status !== StatusEnum.ok) {
+          logger.error(`${logPrefix} backfill ${type} read failed`)
+          break
+        }
+        const bots: Array<{ _id: unknown; userId: string }> =
+          page.data?.result ?? []
+        if (!bots.length) break
+        for (const b of bots) {
+          const id = `${b._id}`
+          const ok = await this.archiveBot(b.userId, type, id).catch((e) => {
+            logger.error(
+              `${logPrefix} backfill bot ${id} threw: ${(e as Error).message}`,
+            )
+            return false
+          })
+          out.processed++
+          if (ok) out.archived++
+          else out.failed++
+          lastId = id
+        }
+        logger.info(
+          `${logPrefix} backfill ${type}: processed ${out.processed}, archived ${out.archived}, failed ${out.failed}`,
+        )
+      }
+    }
+    return out
   }
 
   /**

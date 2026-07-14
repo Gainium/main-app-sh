@@ -66,6 +66,7 @@ import Rabbit from '../db/rabbit'
 import type { ErrorResponse, MessageResponse } from '../db/crud'
 import BotService from '../bot'
 import { updateRelatedBotsInVar } from '../bot/utils'
+import ColdClient, { isColdStoreEnabled } from '../archive/coldClient'
 import axios from 'axios'
 
 const { getTimezoneOffset, findUSDRate } = utils
@@ -1719,6 +1720,27 @@ export const resetUser = async (
           }),
         ),
       )
+      // Cold-store mirror: the Mongo deletes above removed this user's bots +
+      // their orders/transactions. Any COLD-archived bot among them keeps its
+      // history in ClickHouse (the Mongo deleteMany hit nothing for it), so purge
+      // those CH rows too. Only for real-data resets (live/whole) — a paper reset
+      // touches no cold data, and softLive deletes nothing. Idempotent + non-fatal
+      // (no-op for non-cold bots; the orphan sweep reconciles any miss). This is
+      // the shared chokepoint for the automatic inactive hard-reset, the
+      // settings-driven live/whole reset, and account deletion.
+      if (isColdStoreEnabled() && (isLive || isAll) && botIds.length) {
+        const purged = await ColdClient.getInstance().coldDelete(botIds)
+        if (!purged?.ok) {
+          logger.warn(
+            `${prefix} | Cold-store purge failed for ${botIds.length} bot(s) — orphan sweep will reconcile`,
+          )
+        }
+        push({
+          step: 'coldStorePurge',
+          status: purged?.ok ? 'ok' : 'error',
+          reason: `${botIds.length} bot(s)`,
+        })
+      }
       const exchangesToDelete = (
         isAll
           ? user.exchanges

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.34.0] - 2026-07-14
+
+### Added
+
+- Cold store PART 2 — archive is now **reversible**. New `ColdStoreRehydrator` (`archive/coldStoreRehydrator.ts`) is the inverse of the archiver: on un-archive of a cold bot it pages the bot's rows back from ClickHouse, upserts them into Mongo by original `_id` (new idempotent `MongoCrud.bulkUpsertById`), verifies the Mongo copy, clears `coldArchived`, then GCs the CH copies — fail-safe ordering (flag cleared before the CH delete, so a crash only ever leaves harmless CH orphans). `Bot.setArchiveStatus` no longer rejects un-archiving a cold bot; it rehydrates synchronously first (rejects only if the restore fails).
+- `ColdStoreArchiver.backfillArchivedBots()` — one-time, resumable/idempotent retroactive backfill over every already-archived grid/dca/combo bot not yet in CH (id-paged; failed bots retried next run).
+- `ColdStoreReconciler` (`archive/coldStoreReconciler.ts`) — periodic CH↔Mongo orphan sweep: GCs CH rows whose Mongo bot is gone or no longer `coldArchived`, and logs Mongo bots flagged `coldArchived` with no CH rows. Wired into the daily clean cron (flag-gated).
+- Cold RPC surface: `coldDeleteByUser` (whole-account CH purge, GDPR) and `coldListBots` (distinct (userId,botId) for the sweep), mirrored byte-identically in `market-archive/src/types.ts` (Danger List §6).
+
+### Changed
+
+- Every real-data delete path now purges CH too. `resetUser` (the shared chokepoint for the automatic inactive hard-reset, the settings-driven live/whole reset, and account deletion) `coldDelete`s the user's just-deleted botIds on live/whole resets — mirroring the Mongo delete (idempotent, non-fatal, no-op for paper/non-cold bots).
+
 ## [1.33.1] - 2026-07-14
 
 ### Fixed
