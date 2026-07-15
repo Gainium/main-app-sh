@@ -40,7 +40,14 @@ import ColdClient, {
 import type { ColdRow, ColdTable } from './coldTypes'
 
 const logPrefix = '[ColdStoreArchiver]'
-const PAGE = Number(process.env.COLD_STORE_PAGE ?? 20_000)
+// Per-page copy size for the CH insert RPC. Kept conservative: a page is
+// serialized into ONE RabbitMQ message, so a large page for a big-history bot
+// (tens of thousands of orders) becomes a multi-MB message that can exceed the
+// channel's comfort and kill the RPC ("Channel closed" / "no response") — which
+// silently leaves that bot's history in Mongo. 3k orders ≈ ~2MB/message, well
+// within limits and proven on the prod backfill of bots up to ~92k orders.
+// Override with COLD_STORE_PAGE when the deployment's RabbitMQ frame max allows.
+const PAGE = Number(process.env.COLD_STORE_PAGE ?? 3_000)
 const ZERO_ID = '0'.repeat(24)
 
 /** Bot types Part 1 cold-archives. Hedge excluded (child-bot fan-out). */

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.34.5] - 2026-07-15
+
+### Fixed
+
+- Archiving a bot with a very large order history (tens of thousands of orders) no longer silently fails to move that history to cold storage. The cold-store copy sent each page of up to 20,000 orders as a single RabbitMQ message (~14 MB for a big bot), which could close the RPC channel ("no response") and leave the bot's history in Mongo. The default page size is now 3,000 (≈2 MB/message); override with `COLD_STORE_PAGE`.
+
 ## [1.34.4] - 2026-07-15
 
 ### Fixed
