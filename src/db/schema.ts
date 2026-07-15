@@ -2904,8 +2904,15 @@ export const registerIndexes = () => {
   botMessageSchema.index({ botId: 1, isDeleted: 1 })
 
   botSchema.index({ userId: 1 })
+  // Bot-list resolvers filter by userId (+optional status) and default-sort by
+  // {created:-1}; compound indexes let Mongo serve the sort from the index
+  // instead of an in-memory sort over all of a user's bots.
+  botSchema.index({ userId: 1, status: 1, created: -1 })
+  botSchema.index({ userId: 1, created: -1 })
 
   comboBotSchema.index({ userId: 1 })
+  comboBotSchema.index({ userId: 1, status: 1, created: -1 })
+  comboBotSchema.index({ userId: 1, created: -1 })
 
   comboDealSchema.index({ userId: 1 })
   comboDealSchema.index({ botId: 1 })
@@ -2915,11 +2922,17 @@ export const registerIndexes = () => {
   comboProfitSchema.index({ userId: 1 })
 
   dcaBotSchema.index({ userId: 1 })
+  dcaBotSchema.index({ userId: 1, status: 1, created: -1 })
+  dcaBotSchema.index({ userId: 1, created: -1 })
   // Webhook path looks bots up by uuid (write-once/static) — was a COLLSCAN.
   dcaBotSchema.index({ uuid: 1 })
 
   hedgeComboBotSchema.index({ userId: 1 })
+  hedgeComboBotSchema.index({ userId: 1, status: 1, created: -1 })
+  hedgeComboBotSchema.index({ userId: 1, created: -1 })
   hedgeDcaBotSchema.index({ userId: 1 })
+  hedgeDcaBotSchema.index({ userId: 1, status: 1, created: -1 })
+  hedgeDcaBotSchema.index({ userId: 1, created: -1 })
 
   dcaDealSchema.index({ userId: 1 })
   dcaDealSchema.index({ botId: 1 })

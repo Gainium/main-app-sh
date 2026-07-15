@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.2] - 2026-07-15
+
+### Changed
+
+- Bot collections (grid/DCA/combo/hedge) gained compound indexes `{userId, status, created}` and `{userId, created}` so the bot-list queries serve their default `created` sort from an index instead of an in-memory sort over all of a user's bots. Indexes build automatically on next connect via the existing `syncIndexes` boot path.
+- The bot-list functions skip the redundant per-request `countDocuments` when the caller isn't paginating and the result fits under the limit (`total` = result length); paginated calls and limit-hitting results still get a real count (now via a count-only query instead of a second full fetch).
+
 ## [1.34.1] - 2026-07-14
 
 ### Fixed

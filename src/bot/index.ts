@@ -11252,24 +11252,40 @@ class Bot<T extends UserSchema = UserSchema> {
       skip = dataGridSkip
       sort = dataGridSort
     }
-    const request = await this.botDb.readData(
-      {
-        ...filter,
-        paperContext: paperContext ? { $eq: true } : { $ne: true },
-        isDeleted: { $ne: true },
-      },
-      undefined,
-      { sort, limit: limit ?? 500, skip },
-      true,
-      true,
-    )
+    const effectiveLimit = limit ?? 500
+    const search = {
+      ...filter,
+      paperContext: paperContext ? { $eq: true } : { $ne: true },
+      isDeleted: { $ne: true },
+    }
+    const options = { sort, limit: effectiveLimit, skip }
+    // When the caller isn't paginating (no dataGridInput, no skip) the total is
+    // just the returned length, unless we hit the limit exactly (can't infer).
+    // Skipping the extra countDocuments avoids a second full scan per request.
+    const skipCount =
+      Object.keys(dataGridInput).length === 0 &&
+      !(typeof skip === 'number' && skip > 0)
+    const request = skipCount
+      ? await this.botDb.readData(search, undefined, options, true, false)
+      : await this.botDb.readData(search, undefined, options, true, true)
     if (request.status === StatusEnum.notok) {
       return request
+    }
+    const result = request.data.result
+    let total: number
+    if (!skipCount) {
+      total = (request.data as unknown as { count: number }).count
+    } else if (result.length < effectiveLimit) {
+      total = result.length
+    } else {
+      const counted = await this.botDb.countData(search)
+      total =
+        counted.status === StatusEnum.ok ? counted.data.result : result.length
     }
     return {
       status: StatusEnum.ok,
       reason: null,
-      data: request.data.result.map((r) => ({
+      data: result.map((r) => ({
         ...r,
         workingTimeTotal:
           r.workingShift && r.workingShift.length > 0
@@ -11283,7 +11299,7 @@ class Bot<T extends UserSchema = UserSchema> {
               }, 0)
             : 0,
       })),
-      total: request.data.count,
+      total,
     }
   }
 
@@ -11325,20 +11341,37 @@ class Bot<T extends UserSchema = UserSchema> {
       skip = dataGridSkip
       sort = dataGridSort
     }
-    const request = await this.comboBotDb.readData(
-      { ...filter, isDeleted: { $ne: true }, parentBotId: { $exists: false } },
-      undefined,
-      { sort, limit: limit ?? 500, skip },
-      true,
-      true,
-    )
+    const effectiveLimit = limit ?? 500
+    const search = {
+      ...filter,
+      isDeleted: { $ne: true },
+      parentBotId: { $exists: false },
+    }
+    const options = { sort, limit: effectiveLimit, skip }
+    const skipCount =
+      Object.keys(dataGridInput).length === 0 &&
+      !(typeof skip === 'number' && skip > 0)
+    const request = skipCount
+      ? await this.comboBotDb.readData(search, undefined, options, true, false)
+      : await this.comboBotDb.readData(search, undefined, options, true, true)
     if (request.status === StatusEnum.notok) {
       return request
+    }
+    const result = request.data.result
+    let total: number
+    if (!skipCount) {
+      total = (request.data as unknown as { count: number }).count
+    } else if (result.length < effectiveLimit) {
+      total = result.length
+    } else {
+      const counted = await this.comboBotDb.countData(search)
+      total =
+        counted.status === StatusEnum.ok ? counted.data.result : result.length
     }
     return {
       status: StatusEnum.ok,
       reason: null,
-      data: request.data.result.map((d) => ({
+      data: result.map((d) => ({
         ...d,
         ...convertComboBotToArray(d),
         dealsInBot: d.deals,
@@ -11354,7 +11387,7 @@ class Bot<T extends UserSchema = UserSchema> {
               }, 0)
             : 0,
       })),
-      total: request.data.count,
+      total,
     }
   }
 
@@ -11407,20 +11440,32 @@ class Bot<T extends UserSchema = UserSchema> {
         sort = { status: -1 }
       }
     }
-    const request = await hedgeComboBotDb.readData(
-      { ...filter, isDeleted: { $ne: true } },
-      undefined,
-      { sort, limit: _limit, skip, populate: 'bots' },
-      true,
-      true,
-    )
+    const search = { ...filter, isDeleted: { $ne: true } }
+    const options = { sort, limit: _limit, skip, populate: 'bots' }
+    const skipCount =
+      Object.keys(dataGridInput).length === 0 &&
+      !(typeof skip === 'number' && skip > 0)
+    const request = skipCount
+      ? await hedgeComboBotDb.readData(search, undefined, options, true, false)
+      : await hedgeComboBotDb.readData(search, undefined, options, true, true)
     if (request.status === StatusEnum.notok) {
       return request
+    }
+    const result = request.data.result
+    let total: number
+    if (!skipCount) {
+      total = (request.data as unknown as { count: number }).count
+    } else if (result.length < _limit) {
+      total = result.length
+    } else {
+      const counted = await hedgeComboBotDb.countData(search)
+      total =
+        counted.status === StatusEnum.ok ? counted.data.result : result.length
     }
     return {
       status: StatusEnum.ok,
       reason: null,
-      data: request.data.result.map((d) => {
+      data: result.map((d) => {
         const longBot = d.bots.find(
           (b) => b.settings.strategy === StrategyEnum.long,
         )
@@ -11442,7 +11487,7 @@ class Bot<T extends UserSchema = UserSchema> {
         }
         return { ...d, ...convertHedgeComboBotToArray(d), bots: [long, short] }
       }),
-      total: request.data.count,
+      total,
     }
   }
 
@@ -11495,20 +11540,32 @@ class Bot<T extends UserSchema = UserSchema> {
         sort = { status: -1 }
       }
     }
-    const request = await hedgeDCABotDb.readData(
-      { ...filter, isDeleted: { $ne: true } },
-      undefined,
-      { sort, limit: _limit, skip, populate: 'bots' },
-      true,
-      true,
-    )
+    const search = { ...filter, isDeleted: { $ne: true } }
+    const options = { sort, limit: _limit, skip, populate: 'bots' }
+    const skipCount =
+      Object.keys(dataGridInput).length === 0 &&
+      !(typeof skip === 'number' && skip > 0)
+    const request = skipCount
+      ? await hedgeDCABotDb.readData(search, undefined, options, true, false)
+      : await hedgeDCABotDb.readData(search, undefined, options, true, true)
     if (request.status === StatusEnum.notok) {
       return request
+    }
+    const result = request.data.result
+    let total: number
+    if (!skipCount) {
+      total = (request.data as unknown as { count: number }).count
+    } else if (result.length < _limit) {
+      total = result.length
+    } else {
+      const counted = await hedgeDCABotDb.countData(search)
+      total =
+        counted.status === StatusEnum.ok ? counted.data.result : result.length
     }
     return {
       status: StatusEnum.ok,
       reason: null,
-      data: request.data.result.map((d) => {
+      data: result.map((d) => {
         const longBot = d.bots.find(
           (b) => b.settings.strategy === StrategyEnum.long,
         )
@@ -11530,7 +11587,7 @@ class Bot<T extends UserSchema = UserSchema> {
         }
         return { ...d, ...convertHedgeComboBotToArray(d), bots: [long, short] }
       }),
-      total: request.data.count,
+      total,
     }
   }
 
@@ -11574,20 +11631,37 @@ class Bot<T extends UserSchema = UserSchema> {
       skip = dataGridSkip
       sort = dataGridSort
     }
-    const request = await this.dcaBotDb.readData(
-      { ...filter, isDeleted: { $ne: true }, parentBotId: { $exists: false } },
-      undefined,
-      { sort, limit: limit ?? 500, skip },
-      true,
-      true,
-    )
+    const effectiveLimit = limit ?? 500
+    const search = {
+      ...filter,
+      isDeleted: { $ne: true },
+      parentBotId: { $exists: false },
+    }
+    const options = { sort, limit: effectiveLimit, skip }
+    const skipCount =
+      Object.keys(dataGridInput).length === 0 &&
+      !(typeof skip === 'number' && skip > 0)
+    const request = skipCount
+      ? await this.dcaBotDb.readData(search, undefined, options, true, false)
+      : await this.dcaBotDb.readData(search, undefined, options, true, true)
     if (request.status === StatusEnum.notok) {
       return request
+    }
+    const result = request.data.result
+    let total: number
+    if (!skipCount) {
+      total = (request.data as unknown as { count: number }).count
+    } else if (result.length < effectiveLimit) {
+      total = result.length
+    } else {
+      const counted = await this.dcaBotDb.countData(search)
+      total =
+        counted.status === StatusEnum.ok ? counted.data.result : result.length
     }
     return {
       status: StatusEnum.ok,
       reason: null,
-      data: request.data.result.map((d) => ({
+      data: result.map((d) => ({
         ...d,
         ...convertDCABotToArray(d),
         dealsInBot: d.deals,
@@ -11603,7 +11677,7 @@ class Bot<T extends UserSchema = UserSchema> {
               }, 0)
             : 0,
       })),
-      total: request.data.count,
+      total,
     }
   }
 
