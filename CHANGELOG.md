@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.34.4] - 2026-07-15
+
+### Fixed
+
+- Hedge archive hardening (defense-in-depth over v1.34.3). The `changeStatus` fallback that writes `closed` for a hedge bot not found in the orchestrator's in-memory list (`Bot.changeStatus`, hedgeCombo/hedgeDca branches) now filters on `status: { $ne: archive }`, so a stray close signal for an archived hedge bot can never silently un-archive it. Complements the worker-side `MetaBot.updateBotData` guard.
+
 ## [1.34.3] - 2026-07-15
 
 ### Fixed

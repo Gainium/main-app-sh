@@ -5620,8 +5620,11 @@ class Bot<T extends UserSchema = UserSchema> {
           })
         } else {
           this.handleLog(`Hedge combo bot ${id} not found in changeStatus`)
+          // Never demote a user-set `archive` status: a stray close signal for
+          // an archived hedge bot (not in orchestrator memory) must be a no-op,
+          // not silently un-archive it. Guard the direct fallback write.
           await hedgeComboBotDb.updateData(
-            { _id: id, userId },
+            { _id: id, userId, status: { $ne: BotStatusEnum.archive } },
             { $set: { status: BotStatusEnum.closed } },
           )
         }
@@ -5639,8 +5642,11 @@ class Bot<T extends UserSchema = UserSchema> {
           })
         } else {
           this.handleLog(`Hedge dca bot ${id} not found in changeStatus`)
+          // Never demote a user-set `archive` status: a stray close signal for
+          // an archived hedge bot (not in orchestrator memory) must be a no-op,
+          // not silently un-archive it. Guard the direct fallback write.
           await hedgeDCABotDb.updateData(
-            { _id: id, userId },
+            { _id: id, userId, status: { $ne: BotStatusEnum.archive } },
             { $set: { status: BotStatusEnum.closed } },
           )
         }
