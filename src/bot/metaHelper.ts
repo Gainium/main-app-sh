@@ -256,7 +256,18 @@ class MetaBot<Schema extends HedgeBotSchema, T extends CleanMainBot> {
   }
 
   protected updateBotData(data: Record<string, unknown>) {
-    this.db.updateData({ _id: this.options.id } as any, { $set: data })
+    // A hedge bot's engine must never demote a user-set `archive` status back
+    // to a runtime status. Archiving a just-stopped hedge bot races with the
+    // post-stop child-bot stop signals (`stopFromChildBot`/`setStatus` →
+    // updateBotData({ status: closed | open })): those writes land AFTER the
+    // main process persisted `archive` and would silently un-archive the bot
+    // (its status reverts to `closed` and it reappears in the active list).
+    // Guard any non-archive status write so it can't overwrite `archive`.
+    const filter: Record<string, unknown> = { _id: this.options.id }
+    if ('status' in data && data.status !== BotStatusEnum.archive) {
+      filter.status = { $ne: BotStatusEnum.archive }
+    }
+    this.db.updateData(filter as any, { $set: data })
     this.emit('bot settings update', data)
   }
 

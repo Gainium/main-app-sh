@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.34.3] - 2026-07-15
+
+### Fixed
+
+- Hedge bots can now be archived reliably. The hedge parent engine (`MetaBot.updateBotData`) no longer demotes a user-set `archive` status back to a runtime status: archiving a just-stopped hedge bot raced with the post-stop child-bot stop signals (`stopFromChildBot`/`setStatus` persisting `closed`/`open`), which landed after the archive write and silently un-archived the bot (it reverted to `closed` and reappeared in the active list). Any non-archive status write from the worker is now guarded with `status: { $ne: archive }` so it can't overwrite `archive`. (Worker-path change — takes effect after a hedge bot-worker restart.)
+
 ## [1.34.2] - 2026-07-15
 
 ### Changed
