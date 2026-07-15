@@ -12,6 +12,7 @@ import { resetPaperData } from '../../graphql/handlers/paper'
 import {
   balanceDb,
   botEventDb,
+  botProfitChartDb,
   feeDb,
   orderDb,
   paperHedgeDb,
@@ -233,6 +234,35 @@ const cleanNotUsedUserFee = async (_getUserExchanges = getUserExchanges) => {
   logger.debug('Clean not used fee end')
 }
 
+// botprofitcharts stores a numeric epoch-ms `time` (no Date field), so a Mongo
+// TTL index is impossible — retention has to be an explicit code-delete. The
+// collection is trimmed nowhere else (not on archive, not on orphan cleanup), so
+// it grows unbounded; keep only the last 12 months. Drain in batches so a first
+// run on a never-pruned collection can't become one lock-holding deleteMany.
+const clearOldBotProfitCharts = async () => {
+  logger.debug('Clear bot profit charts older than 12mo')
+  const cutoff = +new Date() - 365 * 24 * 60 * 60 * 1000
+  const BATCH = 5000
+  let deleted = 0
+  for (let i = 0; i < 5000; i++) {
+    const page = await botProfitChartDb.readData(
+      { time: { $lt: cutoff } },
+      { _id: true },
+      { limit: BATCH },
+      true,
+    )
+    const ids =
+      page.status === StatusEnum.ok
+        ? (page.data?.result ?? []).map((d: { _id: string }) => d._id)
+        : []
+    if (!ids.length) break
+    await botProfitChartDb.deleteManyData({ _id: { $in: ids } })
+    deleted += ids.length
+    if (ids.length < BATCH) break
+  }
+  logger.debug(`Clear old bot profit charts done, deleted ${deleted}`)
+}
+
 const utils = {
   clearNotUsedPaperData,
   clearPaperOldOrders,
@@ -241,6 +271,7 @@ const utils = {
   clearOldUserPaperData,
   cleanNotUsedUserFee,
   removeOldBotWarnings,
+  clearOldBotProfitCharts,
   getUserExchanges,
 }
 

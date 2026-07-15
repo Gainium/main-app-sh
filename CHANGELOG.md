@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.34.6] - 2026-07-15
+
+### Added
+
+- Weekly clean job now trims `botprofitcharts` older than 12 months. The collection stores a numeric epoch-ms `time` (no Date field), so a TTL index is impossible and it was never pruned anywhere — it grew unbounded for every bot (open, stopped, and archived alike, since archiving does not move it to cold storage). The delete drains in 5,000-doc batches so the first run on a never-pruned collection can't become one lock-holding `deleteMany`.
+
 ## [1.34.5] - 2026-07-15
 
 ### Fixed

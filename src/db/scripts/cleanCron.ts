@@ -29,6 +29,7 @@ const cleanJob = async () => {
   // indexes (see registerIndexes) — the age-based deletes were removed here.
   // Bot *warnings* keep their own 14d code-delete (a subset the 30d TTL can't cover).
   await utils.removeOldBotWarnings()
+  await utils.clearOldBotProfitCharts()
   logger.debug('Clean job finished')
 }
 
