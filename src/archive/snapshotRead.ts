@@ -27,14 +27,14 @@ interface SeriesParams {
 /**
  * Portfolio chart series (getPortfolioByUser). Returns the `snapshotDb.aggregate`
  * envelope — `{ status, reason, data: { result } }`, oldest-first — or `null` to
- * fall back to Mongo. Each point carries `updateTime`+`totalUsd`; the other
- * `getPortfolioData` fields (assets/exchangesTotal/updated) are nullable and not
- * used by the chart.
+ * fall back to Mongo. Rows are the FULL original Mongo docs (from CH's lossless
+ * `raw` column), so the shape is identical to the Mongo aggregate — the widget
+ * reads `assets[]` (per-coin / per-exchange breakdown), not just the total.
  */
 export async function snapshotReadSeries(p: SeriesParams): Promise<{
   status: StatusEnum.ok
   reason: null
-  data: { result: Array<{ updateTime: number; totalUsd: number }> }
+  data: { result: Array<Record<string, unknown>> }
 } | null> {
   if (!isSnapshotChReadEnabled()) return null
   const res = await SnapshotClient.getInstance().snapshotRead({
@@ -48,12 +48,7 @@ export async function snapshotReadSeries(p: SeriesParams): Promise<{
   return {
     status: StatusEnum.ok,
     reason: null,
-    data: {
-      result: res.rows.map((r) => ({
-        updateTime: r.updateTime,
-        totalUsd: r.totalUsd,
-      })),
-    },
+    data: { result: res.rows },
   }
 }
 
@@ -85,9 +80,9 @@ export async function snapshotReadPerExchange(
   })
   if (!res) return null
   return res.rows.map((r) => ({
-    updateTime: r.updateTime,
-    totalUsd: r.totalUsd,
-    uuid: r.uuid ?? '',
+    updateTime: Number(r.updateTime ?? 0),
+    totalUsd: Number(r.totalUsd ?? 0),
+    uuid: String(r.uuid ?? ''),
     paperContext: p.paperContext,
   }))
 }

@@ -85,17 +85,21 @@ export interface SnapshotReadMessage {
   to?: number
 }
 
-/** One deduped point (per (userId, day, paperContext[, uuid])), oldest-first —
- *  the same shape the Mongo aggregate returns for the chart. */
-export interface SnapshotReadPoint {
-  updateTime: number
-  totalUsd: number
+/** One deduped point (per (userId, day, paperContext[, uuid])), oldest-first.
+ *  The `snapshots` table returns the FULL original Mongo doc (from the lossless
+ *  `raw` column) so the shape matches a Mongo read — the chart needs `assets[]`,
+ *  not just the total. `snapshots_per_exchange` returns these flat fields. */
+export type SnapshotReadRow = {
+  updateTime?: number
+  totalUsd?: number
   uuid?: string
+  [key: string]: unknown
 }
 
 export interface SnapshotReadResponse {
   ok: boolean
-  rows: SnapshotReadPoint[]
+  /** Full original Mongo docs (snapshots) or flat per-exchange rows. */
+  rows: SnapshotReadRow[]
   error?: string
 }
 

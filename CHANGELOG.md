@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.35.1] - 2026-07-15
+
+### Fixed
+
+- Snapshot ClickHouse read now returns the FULL snapshot doc (incl. `assets[]`) from the lossless `raw` column instead of only `updateTime`+`totalUsd`. The portfolio widget needs `assets` for per-coin/per-exchange filtering; the trimmed shape crashed it (`Cannot read properties of null (reading 'map')`).
+
 ## [1.35.0] - 2026-07-15
 
 ### Added
