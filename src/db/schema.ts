@@ -826,6 +826,9 @@ const botMessageSchema: Schema<BotMessageSchema> = new Schema({
     default: false,
   },
   subType: String,
+  // Aggregate count for digest-style notices (e.g. one daily "auto-archived"
+  // notice summarising N bots) — the message text carries the human wording.
+  count: Number,
   paperContext: Boolean,
   terminal: Boolean,
   showUser: Boolean,

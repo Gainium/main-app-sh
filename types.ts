@@ -2269,6 +2269,7 @@ export interface BotMessageSchema extends SchemaI {
   time: number
   isDeleted?: boolean
   subType: string
+  count?: number
   terminal?: boolean
   paperContext?: boolean
   showUser?: boolean

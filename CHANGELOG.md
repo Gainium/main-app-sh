@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.35.2] - 2026-07-16
+
+### Added
+
+- `botMessage` gains an optional `count` field for digest-style notices (the message text carries the wording; count is bookkeeping so a daily aggregate can be incremented).
+
 ## [1.35.1] - 2026-07-15
 
 ### Fixed
