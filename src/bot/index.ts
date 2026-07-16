@@ -12277,6 +12277,42 @@ class Bot<T extends UserSchema = UserSchema> {
         return logger.error(botMessages.reason)
       }
       result = `${result}Bot messages: ${botMessages.reason}, `
+      // Deal/transaction ledgers are keyed by the executing bot's `_id`. Unlike
+      // orders/events/messages above, they were NEVER purged here — the only
+      // other cleaner is the weekly `!skip` orphan-sweep below, which fails at
+      // production scale (its unbatched `deleteMany({_id:{$in:[…]}})` exceeds
+      // Mongo's 16 MB command limit once orphans reach the millions, so it
+      // throws and returns before finishing). Result: `dcadeals`,
+      // `transactions` and `combotransactions` accumulated ~52–64% orphans on
+      // prod. Purge them per-bot here, bounded to the (few-thousand) botIds
+      // being GC'd this run, so the $in stays tiny and this never leaks again.
+      const dcaDeals = await this.dcaDealsDb.deleteManyData({
+        botId: {
+          $in: botIds,
+        },
+      })
+      if (dcaDeals.status !== StatusEnum.ok) {
+        return logger.error(dcaDeals.reason)
+      }
+      result = `${result}DCA deals: ${dcaDeals.reason}, `
+      const transactions = await this.transactionDb.deleteManyData({
+        botId: {
+          $in: botIds,
+        },
+      })
+      if (transactions.status !== StatusEnum.ok) {
+        return logger.error(transactions.reason)
+      }
+      result = `${result}Transactions: ${transactions.reason}, `
+      const comboTransactions = await this.comboTransactionDb.deleteManyData({
+        botId: {
+          $in: botIds,
+        },
+      })
+      if (comboTransactions.status !== StatusEnum.ok) {
+        return logger.error(comboTransactions.reason)
+      }
+      result = `${result}Combo transactions: ${comboTransactions.reason}, `
       if (trading.data.count > 0) {
         const tradingDelete = await this.dcaBotDb.deleteManyData(filter)
         if (tradingDelete.status !== StatusEnum.ok) {
@@ -12378,7 +12414,7 @@ class Bot<T extends UserSchema = UserSchema> {
           },
           {
             $match: {
-              bot: {
+              combobot: {
                 //@ts-ignore
                 $size: 0,
               },
@@ -12429,7 +12465,7 @@ class Bot<T extends UserSchema = UserSchema> {
         },
         {
           $match: {
-            bot: {
+            combobot: {
               //@ts-ignore
               $size: 0,
             },
@@ -12479,7 +12515,7 @@ class Bot<T extends UserSchema = UserSchema> {
         },
         {
           $match: {
-            bot: {
+            combobot: {
               //@ts-ignore
               $size: 0,
             },
