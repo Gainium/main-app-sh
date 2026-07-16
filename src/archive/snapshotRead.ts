@@ -15,21 +15,58 @@
  */
 
 import SnapshotClient, { isSnapshotChReadEnabled } from './snapshotClient'
+import RedisClient from '../db/redis'
+import logger from '../utils/logger'
 import { StatusEnum } from '../../types'
+import type { SnapshotReadRow } from './snapshotTypes'
 
 interface SeriesParams {
   userId: string
   paperContext: boolean
   from?: number
   to?: number
+  /** When true, request only `{updateTime,totalUsd}` (the all-coins/all-exchanges
+   *  line case) — smaller payload + cheaper CH read. */
+  lean?: boolean
+}
+
+/** Per-user snapshot-read cache TTL (seconds). The series is daily-immutable
+ *  (one new point/day; today's point refreshes on updateBalance), so a short TTL
+ *  is safe and cheap. 0 disables the cache. */
+const CACHE_TTL = Number(process.env.SNAPSHOT_CH_CACHE_TTL ?? 300)
+
+async function cachedSnapshotRead(
+  msg: Parameters<SnapshotClient['snapshotRead']>[0],
+): Promise<SnapshotReadRow[] | null> {
+  if (CACHE_TTL <= 0) {
+    const res = await SnapshotClient.getInstance().snapshotRead(msg)
+    return res ? res.rows : null
+  }
+  const key = `snapchart:v1:${msg.table}:${msg.userId}:${
+    msg.paperContext ? 1 : 0
+  }:${msg.uuid ?? ''}:${msg.from ?? ''}:${msg.to ?? ''}:${msg.lean ? 'L' : 'F'}`
+  try {
+    const redis = await RedisClient.getInstance()
+    const hit = await redis.get(key)
+    if (hit) return JSON.parse(hit) as SnapshotReadRow[]
+    const res = await SnapshotClient.getInstance().snapshotRead(msg)
+    if (!res) return null // don't cache a failure — let it fall back to Mongo
+    await redis.set(key, JSON.stringify(res.rows), CACHE_TTL)
+    return res.rows
+  } catch (e) {
+    // Cache path must never break the read — go direct on any Redis error.
+    logger.warn(`[snapshotRead] cache bypass: ${(e as Error).message}`)
+    const res = await SnapshotClient.getInstance().snapshotRead(msg)
+    return res ? res.rows : null
+  }
 }
 
 /**
  * Portfolio chart series (getPortfolioByUser). Returns the `snapshotDb.aggregate`
  * envelope — `{ status, reason, data: { result } }`, oldest-first — or `null` to
- * fall back to Mongo. Rows are the FULL original Mongo docs (from CH's lossless
- * `raw` column), so the shape is identical to the Mongo aggregate — the widget
- * reads `assets[]` (per-coin / per-exchange breakdown), not just the total.
+ * fall back to Mongo. In `lean` mode rows are `{updateTime,totalUsd}`; otherwise
+ * the FULL Mongo doc (from CH's lossless `raw`) so `assets[]` is available for
+ * per-coin/per-exchange filtering. Result is cached per user for `CACHE_TTL`.
  */
 export async function snapshotReadSeries(p: SeriesParams): Promise<{
   status: StatusEnum.ok
@@ -37,19 +74,16 @@ export async function snapshotReadSeries(p: SeriesParams): Promise<{
   data: { result: Array<Record<string, unknown>> }
 } | null> {
   if (!isSnapshotChReadEnabled()) return null
-  const res = await SnapshotClient.getInstance().snapshotRead({
+  const rows = await cachedSnapshotRead({
     table: 'snapshots',
     userId: p.userId,
     paperContext: p.paperContext,
     from: p.from,
     to: p.to,
+    lean: p.lean,
   })
-  if (!res) return null
-  return {
-    status: StatusEnum.ok,
-    reason: null,
-    data: { result: res.rows },
-  }
+  if (!rows) return null
+  return { status: StatusEnum.ok, reason: null, data: { result: rows } }
 }
 
 interface PerExchangeParams extends SeriesParams {
@@ -70,7 +104,7 @@ export async function snapshotReadPerExchange(
   paperContext: boolean
 }> | null> {
   if (!isSnapshotChReadEnabled()) return null
-  const res = await SnapshotClient.getInstance().snapshotRead({
+  const rows = await cachedSnapshotRead({
     table: 'snapshots_per_exchange',
     userId: p.userId,
     paperContext: p.paperContext,
@@ -78,8 +112,8 @@ export async function snapshotReadPerExchange(
     from: p.from,
     to: p.to,
   })
-  if (!res) return null
-  return res.rows.map((r) => ({
+  if (!rows) return null
+  return rows.map((r) => ({
     updateTime: Number(r.updateTime ?? 0),
     totalUsd: Number(r.totalUsd ?? 0),
     uuid: String(r.uuid ?? ''),

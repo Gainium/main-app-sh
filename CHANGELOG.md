@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.35.4] - 2026-07-16
+
+### Added
+
+- `getPortfolioByUser` gains `includeAssets` (default true). When false, the CH read returns just `{updateTime,totalUsd}` from the `total_usd` column (no `raw` parse) — a much smaller payload for the common all-coins/all-exchanges chart line. The dashboard omits assets for the unfiltered line and requests them only when a coin/exchange filter is active.
+- Per-user cache on the snapshot CH read (`snapshotReadSeries`/`snapshotReadPerExchange`), Redis-backed, TTL `SNAPSHOT_CH_CACHE_TTL` (default 300s; 0 disables). The series is daily-immutable so a short TTL is safe; cache/RPC failures fall through to a direct read then Mongo.
+
 ## [1.35.3] - 2026-07-16
 
 ### Changed

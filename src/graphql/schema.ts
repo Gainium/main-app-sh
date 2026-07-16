@@ -5438,6 +5438,7 @@ export const BotSchema = /* GraphQL */ `
     timezone: String
     from: Float
     to: Float
+    includeAssets: Boolean
   }
   type getProfitData {
     quote: Float

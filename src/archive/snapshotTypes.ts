@@ -83,6 +83,11 @@ export interface SnapshotReadMessage {
   /** Inclusive `updateTime` range (ms epoch). */
   from?: number
   to?: number
+  /** `snapshots` table only: when true, return just `{updateTime,totalUsd}`
+   *  (from the `total_usd` column, no `raw` parse) — the chart's line needs
+   *  nothing more unless a coin/exchange filter is active. Much smaller payload
+   *  + cheaper read for the common all-coins/all-exchanges case. */
+  lean?: boolean
 }
 
 /** One deduped point (per (userId, day, paperContext[, uuid])), oldest-first.

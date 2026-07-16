@@ -2352,7 +2352,16 @@ const resolvers = <
     },
     getPortfolioByUser: async (
       _parent: any,
-      { input }: { input?: { timezone?: string; from?: number; to?: number } },
+      {
+        input,
+      }: {
+        input?: {
+          timezone?: string
+          from?: number
+          to?: number
+          includeAssets?: boolean
+        }
+      },
       { token, paperContext }: InputRequest,
     ) => {
       const user = await findUser(token)
@@ -2373,6 +2382,10 @@ const resolvers = <
         typeof input?.to === 'number' && isFinite(input.to)
           ? input.to
           : undefined
+      // `includeAssets` (default true) — the client omits per-day assets[] for
+      // the all-coins/all-exchanges line, which lets the CH read return just
+      // {updateTime,totalUsd} (no `raw` parse, tiny payload).
+      const includeAssets = input?.includeAssets !== false
       // Cloud: read the series from the ClickHouse mirror (12mo retention).
       // Returns null when the flag is off / CH is unreachable → Mongo fallback.
       const ch = await snapshotReadSeries({
@@ -2380,6 +2393,7 @@ const resolvers = <
         paperContext: !!paperContext,
         from,
         to,
+        lean: !includeAssets,
       })
       if (ch) return ch
       const agg: PipelineStage[] = [
