@@ -7425,6 +7425,10 @@ class Bot<T extends UserSchema = UserSchema> {
         {
           $set: {
             status: archive ? BotStatusEnum.archive : BotStatusEnum.closed,
+            // Un-archive resets `updated` so the bot gets a fresh stopped-age
+            // window — auto-archive keys off `updated`, so without this a
+            // long-idle bot would be re-archived on the next cron. No-op on archive.
+            ...(archive ? {} : { updated: new Date() }),
           },
         },
       )
@@ -7459,6 +7463,10 @@ class Bot<T extends UserSchema = UserSchema> {
         {
           $set: {
             status: archive ? BotStatusEnum.archive : BotStatusEnum.closed,
+            // Un-archive resets `updated` so the bot gets a fresh stopped-age
+            // window — auto-archive keys off `updated`, so without this a
+            // long-idle bot would be re-archived on the next cron. No-op on archive.
+            ...(archive ? {} : { updated: new Date() }),
           },
         },
       )
@@ -7503,6 +7511,10 @@ class Bot<T extends UserSchema = UserSchema> {
         {
           $set: {
             status: archive ? BotStatusEnum.archive : BotStatusEnum.closed,
+            // Un-archive resets `updated` so the bot gets a fresh stopped-age
+            // window — auto-archive keys off `updated`, so without this a
+            // long-idle bot would be re-archived on the next cron. No-op on archive.
+            ...(archive ? {} : { updated: new Date() }),
           },
         },
       )
@@ -7547,6 +7559,10 @@ class Bot<T extends UserSchema = UserSchema> {
         {
           $set: {
             status: archive ? BotStatusEnum.archive : BotStatusEnum.closed,
+            // Un-archive resets `updated` so the bot gets a fresh stopped-age
+            // window — auto-archive keys off `updated`, so without this a
+            // long-idle bot would be re-archived on the next cron. No-op on archive.
+            ...(archive ? {} : { updated: new Date() }),
           },
         },
       )
@@ -7590,6 +7606,10 @@ class Bot<T extends UserSchema = UserSchema> {
       {
         $set: {
           status: archive ? BotStatusEnum.archive : BotStatusEnum.closed,
+          // Un-archive resets `updated` so the bot gets a fresh stopped-age
+          // window — auto-archive keys off `updated`, so without this a
+          // long-idle bot would be re-archived on the next cron. No-op on archive.
+          ...(archive ? {} : { updated: new Date() }),
         },
       },
     )

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.35.3] - 2026-07-16
+
+### Changed
+
+- Un-archiving a bot now resets its `updated` timestamp, giving it a fresh stopped-age window. Auto-archive keys off `updated` (the last-activity proxy), so without this a bot that had been long-stopped would be re-archived on the next hourly cron immediately after un-archiving. `setArchiveStatus` sets `updated` only on un-archive (no-op on archive), across all bot types.
+
 ## [1.35.2] - 2026-07-16
 
 ### Added
