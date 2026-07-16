@@ -67,6 +67,7 @@ import type { ErrorResponse, MessageResponse } from '../db/crud'
 import BotService from '../bot'
 import { updateRelatedBotsInVar } from '../bot/utils'
 import ColdClient, { isColdStoreEnabled } from '../archive/coldClient'
+import SnapshotClient from '../archive/snapshotClient'
 import axios from 'axios'
 
 const { getTimezoneOffset, findUSDRate } = utils
@@ -1233,6 +1234,17 @@ const userSnapshots = async (
             )
           }
         }
+        // Dual-write the per-exchange point to the cloud ClickHouse mirror
+        // (fire-and-forget, no-op unless SNAPSHOT_CH_ENABLED). Mongo above is
+        // the source of truth; a dropped mirror write is only a long-history gap.
+        SnapshotClient.getInstance().pushSnapshotPerExchange({
+          userId,
+          updateTime,
+          uuid: e.uuid,
+          totalUsd: e.totalUsd,
+          paperContext: !!paperContext,
+          updated: +new Date(),
+        })
       }
       if (currentSnapshot.status === 'OK' && currentSnapshot.data.result) {
         const data = await snapshotDb.updateData(
@@ -1264,6 +1276,17 @@ const userSnapshots = async (
           )
         }
       }
+      // Dual-write the portfolio point to the cloud ClickHouse mirror
+      // (fire-and-forget, no-op unless SNAPSHOT_CH_ENABLED). `raw` keeps the
+      // full doc losslessly for future use; the chart reads only updateTime+totalUsd.
+      SnapshotClient.getInstance().pushSnapshot({
+        userId,
+        updateTime,
+        totalUsd,
+        paperContext: !!paperContext,
+        updated: +new Date(),
+        raw: JSON.stringify({ ...document, paperContext }),
+      })
     }
   } else {
     logger.error(`Snapshot | Cannot get users ${users.reason}`)
@@ -1558,6 +1581,25 @@ export const resetUser = async (
       requests.push({
         fn: snapshotDb.deleteManyData(userWithPaperFilter),
         name: 'snapshotDb',
+      })
+      // Purge the cloud ClickHouse snapshot mirror for the same scope (no-op
+      // unless SNAPSHOT_CH_ENABLED). Scoped by paperContext for paper/live-only
+      // resets; a whole-account reset (isAll) purges every context.
+      requests.push({
+        fn: SnapshotClient.getInstance()
+          .snapshotDeleteByUser(
+            userId,
+            isPaper ? true : isLive || isSoftLive ? false : undefined,
+          )
+          .then(
+            (r) =>
+              ({
+                status: StatusEnum.ok,
+                reason: r?.ok ? 'purged' : (r?.error ?? 'skipped'),
+                data: null,
+              }) as MessageResponse,
+          ),
+        name: 'snapshotCh',
       })
       requests.push({
         fn: botEventDb.deleteManyData({ botId: { $in: botIds } }),

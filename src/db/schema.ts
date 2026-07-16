@@ -2841,6 +2841,15 @@ const streamWatchdogConfig = new Schema<StreamWatchdogConfigSchema>({
   ...CreatedUpdated,
 })
 
+/** Portfolio-snapshot Mongo TTL in seconds. Env-driven (SNAPSHOT_MONGO_TTL_DAYS,
+ *  default 365d): cloud sets a thin buffer (e.g. 7) once the ClickHouse mirror
+ *  serves long history; self-hosted / unset keeps the full 12 months in Mongo. */
+export const snapshotMongoTtlSeconds = (): number => {
+  const days = Number(process.env.SNAPSHOT_MONGO_TTL_DAYS)
+  const safe = Number.isFinite(days) && days > 0 ? days : 365
+  return Math.round(safe * 24 * 3600)
+}
+
 export const registerIndexes = () => {
   brokerCodes.index({ exchange: 1, zone: 1 }, { unique: true })
 
@@ -2866,7 +2875,16 @@ export const registerIndexes = () => {
   // age-deletes). Expiry now runs continuously instead of a weekly bulk delete.
   botEventSchema.index({ created: 1 }, { expireAfterSeconds: 2592000 }) // 30d
   rateSchema.index({ created: 1 }, { expireAfterSeconds: 2592000 }) // 30d
-  snapshotsSchema.index({ created: 1 }, { expireAfterSeconds: 7776000 }) // 90d
+  // Portfolio snapshots. Retention is env-driven (SNAPSHOT_MONGO_TTL_DAYS,
+  // default 365) so cloud — which mirrors the long history to ClickHouse — can
+  // set a thin 7-day hot buffer, while self-hosted (flag unset) keeps the full
+  // 12 months in Mongo. NOTE: mongoose does NOT alter an existing TTL index's
+  // expireAfterSeconds; a change here needs the collMod migration to converge a
+  // deployed collection (phase4-snapshots-clickhouse.md §8).
+  snapshotsSchema.index(
+    { created: 1 },
+    { expireAfterSeconds: snapshotMongoTtlSeconds() },
+  )
 
   balancesSchema.index({ userId: 1 })
 

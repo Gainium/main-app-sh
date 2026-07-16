@@ -65,6 +65,10 @@ import { getQuantRulesStatus } from './handlers/quantRules.handler'
 import verify, { bybitAccountType } from '../exchange/verify'
 import { getExchangeTradeType } from '../exchange/helpers'
 import {
+  snapshotReadSeries,
+  snapshotReadPerExchange,
+} from '../archive/snapshotRead'
+import {
   backtestDb,
   balanceDb,
   botDb,
@@ -539,6 +543,16 @@ const resolvers = <
       const { uuid, from, to } = input ?? {}
       const useFrom = typeof from === 'number' && isFinite(from) && !isNaN(from)
       const useTo = typeof to === 'number' && isFinite(to) && !isNaN(to)
+      // Cloud: read the per-exchange series from the ClickHouse mirror; null when
+      // the flag is off / CH is unreachable → Mongo fallback below.
+      const ch = await snapshotReadPerExchange({
+        userId: user.data._id.toString(),
+        paperContext: !!paperContext,
+        uuid,
+        from: useFrom ? from : undefined,
+        to: useTo ? to : undefined,
+      })
+      if (ch) return ch
       const result = await snapshotPerExchangeDb.readData(
         {
           userId: user.data._id,
@@ -2338,7 +2352,7 @@ const resolvers = <
     },
     getPortfolioByUser: async (
       _parent: any,
-      { input }: { input?: { timezone?: string } },
+      { input }: { input?: { timezone?: string; from?: number; to?: number } },
       { token, paperContext }: InputRequest,
     ) => {
       const user = await findUser(token)
@@ -2349,11 +2363,30 @@ const resolvers = <
       const currentDay =
         new Date(new Date().setUTCHours(0, 0, 0, 0)).getTime() -
         getTimezoneOffset(timezone)
+      // Default window = the historical 30 days; `from`/`to` let the client ask
+      // for a longer range (up to CH's 12-month retention on cloud).
+      const from =
+        typeof input?.from === 'number' && isFinite(input.from)
+          ? input.from
+          : currentDay - 3600 * 24 * 30 * 1000
+      const to =
+        typeof input?.to === 'number' && isFinite(input.to)
+          ? input.to
+          : undefined
+      // Cloud: read the series from the ClickHouse mirror (12mo retention).
+      // Returns null when the flag is off / CH is unreachable → Mongo fallback.
+      const ch = await snapshotReadSeries({
+        userId: user.data._id.toString(),
+        paperContext: !!paperContext,
+        from,
+        to,
+      })
+      if (ch) return ch
       const agg: PipelineStage[] = [
         {
           $match: {
             userId: user.data._id.toString(),
-            updateTime: { $gte: currentDay - 3600 * 24 * 30 * 1000 },
+            updateTime: { $gte: from, ...(to != null && { $lte: to }) },
             // @ts-ignore
             paperContext: paperContext ? { $eq: true } : { $ne: true },
           },

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.35.0] - 2026-07-15
+
+### Added
+
+- Portfolio-snapshot cloud ClickHouse mirror (dual-write). `userSnapshots` now also ships each snapshot + per-exchange point to a buffered, fire-and-forget `SnapshotClient` (no-op unless `SNAPSHOT_CH_ENABLED`); Mongo stays source-of-truth on both editions. New `snapshotTypes`/`snapshotClient`/`snapshotRead`/`snapshotBackfill` under `src/archive`. `getPortfolioByUser` + `getSnapshotPerExchange` read the series from the CH mirror when enabled (12-month retention) and fall back to Mongo on any failure; `getPortfolioByUser` gains optional `from`/`to` to reach beyond the default 30-day window. Account reset/GDPR purges the mirror (scoped by paperContext).
+
+### Changed
+
+- Snapshots Mongo TTL is now env-driven (`SNAPSHOT_MONGO_TTL_DAYS`, default 365d) instead of hardcoded 90d — cloud sets a thin 7-day hot buffer once the CH mirror serves history; self-hosted keeps the full 12 months in Mongo.
+
 ## [1.34.6] - 2026-07-15
 
 ### Added

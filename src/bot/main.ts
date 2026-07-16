@@ -4684,7 +4684,27 @@ class MainBot<T extends IMainBot> {
       order.status === 'FILLED' &&
       (+executedQty === 0 || isNaN(+executedQty) || !isFinite(+executedQty))
     ) {
-      executedQty = order.origQty
+      // A FILLED order whose executedQty is 0/NaN usually just means the exchange
+      // didn't echo the filled size, so historically we trusted origQty. But
+      // Hyperliquid can return a genuinely (near-)empty fill as FILLED — e.g. an
+      // IOC market buy that barely fills due to insufficient balance comes back
+      // status FILLED with executedQty 0 and fills []. Promoting that to origQty
+      // books a PHANTOM fill and silently inflates the deal's tracked position.
+      // So derive the REAL filled size from the actual fills first, and only fall
+      // back to origQty for other exchanges where FILLED reliably means filled.
+      const fillsQty = (order.fills ?? []).reduce(
+        (acc, f) => acc + (+f.qty || 0),
+        0,
+      )
+      if (fillsQty > 0) {
+        executedQty = `${fillsQty}`
+      } else if (!this.hyperliquid) {
+        executedQty = order.origQty
+      } else {
+        this.handleLog(
+          `HL ${order.type} order ${order.clientOrderId} came back FILLED with no real fill (executedQty 0, empty fills) — keeping real qty instead of booking origQty ${order.origQty} to avoid a phantom fill`,
+        )
+      }
     }
     return executedQty
   }

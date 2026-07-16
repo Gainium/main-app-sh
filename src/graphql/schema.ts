@@ -5436,6 +5436,8 @@ export const BotSchema = /* GraphQL */ `
   }
   input getPortfolioByUser {
     timezone: String
+    from: Float
+    to: Float
   }
   type getProfitData {
     quote: Float
