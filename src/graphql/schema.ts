@@ -189,6 +189,7 @@ export const UserSchema = /* GraphQL */ `
     getSnapshotPerExchange(
       input: getSnapshotPerExchangeInput
     ): getSnapshotPerExchangeResponse
+    activeSessions: activeSessionsResponse
   }
   type Mutation {
     resetAccount(input: resetAccountInput!): resetAccountResponse
@@ -200,6 +201,8 @@ export const UserSchema = /* GraphQL */ `
     deleteExchange(input: deleteExchangeInput!): deleteExchangeResponse
     userSettings(input: userSettingsInput!): userSettingsResponse
     deleteToken: deleteTokenResponse
+    revokeSession(input: revokeSessionInput!): deleteTokenResponse
+    logoutOtherSessions: deleteTokenResponse
     updateProfilePicture(
       input: updateProfilePictureInput!
     ): updateProfilePictureResponse
@@ -585,6 +588,24 @@ export const UserSchema = /* GraphQL */ `
   type deleteTokenResponse implements BasicResponse {
     status: Status
     reason: String
+  }
+  type userSession {
+    id: String
+    source: String
+    device: String
+    ip: String
+    location: String
+    createdAt: String
+    expiredAt: String
+    current: Boolean
+  }
+  type activeSessionsResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: [userSession]
+  }
+  input revokeSessionInput {
+    id: String!
   }
   input userFeeInput {
     uuid: String!

@@ -1524,6 +1524,15 @@ export type UserToken = {
   token: string
   expiredAt: number
   createdAt: number
+  // Login method that minted this token ('web' | 'email' | OAuth type | 'admin'
+  // for admin impersonation | 'demo'). Absent on very old rows.
+  source?: string
+  // Device context captured at login, for the user's session list.
+  ip?: string
+  userAgent?: string
+  // Mongoose stamps an ObjectId on each array sub-document at runtime; used as
+  // the stable id when listing / revoking an individual session.
+  _id?: { toString(): string }
 }
 export type UserData = {
   id: string

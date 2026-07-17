@@ -291,6 +291,9 @@ const userSchema: Schema<UserSchema> = new Schema({
         default: null,
       },
       source: String,
+      // Device context captured at login, for the user's session list.
+      ip: String,
+      userAgent: String,
     },
   ],
   exchanges: [

@@ -58,6 +58,7 @@ import {
 import BotInstance from '../bot'
 import utils, { isFutures } from '../utils'
 import { isExchangeEnabled } from '../utils/adminConfig'
+import { describeUserAgent } from '../utils/userAgent'
 import userUtils, { checkLicenseKey, updateUserSteps } from '../utils/user'
 import { getBalances } from './handlers/balance.handler'
 import { deleteBotMessage, getBotMessage } from './handlers/botMessage.handler'
@@ -391,6 +392,53 @@ const resolvers = <
         status: StatusEnum.ok,
         data: periods.data.result,
         reason: null,
+      }
+    },
+    // List the user's currently-valid login sessions (one per live tokens[]
+    // row). Admin-impersonation and demo rows are filtered out so a support
+    // agent checking the account never appears in the user's own session list.
+    // Expired rows (dead JWTs awaiting the GC cron) are excluded too.
+    activeSessions: async (_parent: any, {}, { token, req }: InputRequest) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const now = Date.now()
+      // Per-IP location the user doc already caches (country/city), so we can
+      // label a session's location without any extra lookup.
+      const ipList = user.data.ips ?? []
+      const locationForIp = (ip?: string): string | null => {
+        if (!ip) return null
+        const loc = ipList.find((i) => i.ip === ip)?.location
+        if (!loc) return null
+        const parts = [loc.city, loc.country].filter(Boolean)
+        return parts.length ? parts.join(', ') : null
+      }
+      const sessions = (user.data.tokens || [])
+        .filter((t) => t.source !== 'admin' && t.source !== 'demo')
+        .filter((t) => !t.expiredAt || new Date(t.expiredAt).getTime() > now)
+        .map((t) => ({
+          id: t._id?.toString() ?? '',
+          source: t.source ?? null,
+          device: describeUserAgent(t.userAgent),
+          ip: t.ip ?? null,
+          location: locationForIp(t.ip),
+          createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : null,
+          expiredAt: t.expiredAt ? new Date(t.expiredAt).toISOString() : null,
+          current: t.token === token,
+        }))
+        .sort((a, b) => {
+          // Current session first, then most-recently created.
+          if (a.current !== b.current) return a.current ? -1 : 1
+          return (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
+        })
+      return {
+        status: StatusEnum.ok,
+        reason: null,
+        data: sessions,
       }
     },
     user: async (
@@ -6178,6 +6226,76 @@ const resolvers = <
       return {
         status: StatusEnum.ok,
         reason: 'Token deleted',
+      }
+    },
+    // Revoke ONE other session (a single tokens[] row) by its sub-document _id.
+    // Admin-impersonation / demo rows are never revocable here — they're hidden
+    // from the session list to begin with, and this guards against a client
+    // passing an id it shouldn't have.
+    revokeSession: async (
+      _parent: any,
+      { input }: { input: { id: string } },
+      { token, req }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const target = (user.data.tokens || []).find(
+        (t) => t._id?.toString() === input.id,
+      )
+      if (!target || target.source === 'admin' || target.source === 'demo') {
+        return { status: StatusEnum.notok, reason: 'Session not found' }
+      }
+      const saveDataRequest = await userDb.updateData(
+        { _id: user.data._id },
+        {
+          $pull: { tokens: { _id: target._id } },
+        },
+        true,
+      )
+      if (saveDataRequest.status === StatusEnum.notok) {
+        return saveDataRequest
+      }
+      return {
+        status: StatusEnum.ok,
+        reason: 'Session revoked',
+      }
+    },
+    // "Log out all other sessions" — drop every tokens[] row except the current
+    // one. Admin-impersonation rows are preserved so an active admin session
+    // checking the account isn't kicked, and so the user can't use this to hide
+    // that they were being monitored.
+    logoutOtherSessions: async (
+      _parent: any,
+      {},
+      { token, req }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const saveDataRequest = await userDb.updateData(
+        { _id: user.data._id },
+        {
+          $pull: {
+            tokens: { token: { $ne: token }, source: { $ne: 'admin' } },
+          },
+        },
+        true,
+      )
+      if (saveDataRequest.status === StatusEnum.notok) {
+        return saveDataRequest
+      }
+      return {
+        status: StatusEnum.ok,
+        reason: 'Other sessions logged out',
       }
     },
     createBot: async (

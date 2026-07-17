@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.36.0] - 2026-07-17
+
+### Added
+
+- Active-sessions API: `activeSessions` query lists a user's live login sessions (device, approx location, IP, login method, sign-in time), plus `revokeSession` and `logoutOtherSessions` mutations to sign out one or all other sessions. Admin-impersonation and demo sessions are filtered out of the list, and `logoutOtherSessions` preserves them. Each `tokens[]` entry now records `ip` + `userAgent` at login; device labels reuse a shared `describeUserAgent` helper and location reuses the per-IP cache already on the user doc.
+
 ## [1.35.5] - 2026-07-16
 
 ### Fixed
