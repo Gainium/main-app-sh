@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.36.1] - 2026-07-17
+
+### Fixed
+
+- Fill-failsafe resting-order lookup no longer scans the whole `orders` collection: added a partial index on the resting LIMIT statuses. The query ran every 30s at ~6.5s, examining 18.5M documents to return ~101, and accounted for 66% of all slow-query time on production Mongo.
+
 ## [1.36.0] - 2026-07-17
 
 ### Added

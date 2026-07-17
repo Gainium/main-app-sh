@@ -2977,6 +2977,30 @@ export const registerIndexes = () => {
   orderSchema.index({ userId: 1 })
   orderSchema.index({ botId: 1 })
 
+  // Fill-failsafe resting-order lookup (src/fillFailsafe/registry.ts getOrdersFromDb).
+  // Without this the query COLLSCANs all ~16M orders every FF_ORDERS_REFRESH_MS (30s):
+  // measured on prod 2026-07-17 at p50 6.5s, 18.5M docsExamined -> 101 returned, and
+  // 66% of ALL slow-query time on the database.
+  //
+  // PARTIAL on purpose. `status` is MUTABLE, and indexing mutable order fields
+  // regressed writes badly once before (2026-07 audit), because the entry MOVES on
+  // every change. Here `status` is only in the partialFilterExpression, never in the
+  // key: it decides MEMBERSHIP of a tiny index (~101 resting orders) rather than
+  // POSITION in a 16M-entry one, and an entry simply leaves when the order fills.
+  // Validated on a throwaway mongod 8.0.26 (matching prod) before shipping:
+  // $in IS supported in partialFilterExpression on 8.0 and the planner selects this
+  // index; 50 entries / 20KB vs 20,050 / 242KB for a plain {status,type,created}.
+  orderSchema.index(
+    { created: 1 },
+    {
+      name: 'fillFailsafe_resting',
+      partialFilterExpression: {
+        status: { $in: ['NEW', 'PARTIALLY_FILLED'] },
+        type: 'LIMIT',
+      },
+    },
+  )
+
   pairsSchema.index({ exchange: 1 })
 
   paperTrades.index({ order: 1 })
