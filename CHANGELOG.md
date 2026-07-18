@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.36.2] - 2026-07-18
+
+### Fixed
+
+- Indicator `checkCandle` no longer floods the log with per-candle `<symbol>@<tf>@<exchange> error: parameter … does not exist` for delisted / no-archive-data symbols (e.g. ESUSDT@bitget). It now logs the first few consecutive failures then falls silent, and backs the retry cadence off to ~15m; any successful candle (live stream or archive) re-arms logging and normal cadence. Tunable via `INDICATOR_CHECK_FAIL_LOG_LIMIT` / `INDICATOR_CHECK_FAIL_BACKOFF_AFTER` / `INDICATOR_CHECK_FAIL_BACKOFF_MS`.
+
 ## [1.36.1] - 2026-07-17
 
 ### Fixed

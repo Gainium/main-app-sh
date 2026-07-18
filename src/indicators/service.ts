@@ -232,6 +232,23 @@ const mutexConcurrently = new IdMutex(500)
 
 const loggerPrefix = `${isMainThread ? 'Main thread' : `Worker ${threadId}`} |`
 
+// A delisted / no-archive-data symbol (e.g. an ESUSDT that left the exchange
+// but is still subscribed for indicators) makes checkCandle's archive query
+// fail on every candle, once per timeframe — a per-minute "parameter … does
+// not exist" flood that buries every other error in the indicator worker.
+// Track consecutive check-candle failures per service so we log the first few,
+// then fall silent, and slow the retry cadence until data (live or archived)
+// comes back. Any successful candle resets both (see updateCandle).
+const CHECK_CANDLE_FAIL_LOG_LIMIT = Number(
+  process.env.INDICATOR_CHECK_FAIL_LOG_LIMIT ?? 3,
+)
+const CHECK_CANDLE_FAIL_BACKOFF_AFTER = Number(
+  process.env.INDICATOR_CHECK_FAIL_BACKOFF_AFTER ?? 5,
+)
+const CHECK_CANDLE_FAIL_BACKOFF_MS = Number(
+  process.env.INDICATOR_CHECK_FAIL_BACKOFF_MS ?? 15 * 60 * 1000,
+)
+
 class InternalIndicator {
   protected candlesProvider = CandlesProvider
   private loaded = false
@@ -306,6 +323,7 @@ class InternalIndicator {
   private to = 0
   private updateCandlesHistory: Set<number> = new Set()
   private checkCandleTimer: NodeJS.Timeout | null = null
+  private consecutiveCandleFailures = 0
   private waitCandlePeriod = 8000
   private lastCandle = {
     open: '0',
@@ -530,18 +548,39 @@ class InternalIndicator {
           )
         }
       } else {
-        this.handleError(
-          `${this.symbol}@${this.interval}@${this.exchange} error: ${candle.reason} `,
-          new Date(start),
-        )
+        this.consecutiveCandleFailures += 1
+        // Log the first few failures, then fall silent: a delisted / no-archive
+        // symbol would otherwise re-log this every candle, per timeframe, and
+        // drown out real errors. A successful candle re-arms logging + cadence.
+        if (this.consecutiveCandleFailures <= CHECK_CANDLE_FAIL_LOG_LIMIT) {
+          this.handleError(
+            `${this.symbol}@${this.interval}@${this.exchange} error: ${candle.reason} `,
+            new Date(start),
+          )
+          if (this.consecutiveCandleFailures === CHECK_CANDLE_FAIL_LOG_LIMIT) {
+            this.handleError(
+              `${this.symbol}@${this.interval}@${this.exchange} check-candle failing persistently (likely delisted / no archive data) — suppressing further errors and backing off until data returns`,
+            )
+          }
+        }
       }
     }
     if (this.checkCandleTimer) {
       clearTimeout(this.checkCandleTimer)
     }
     try {
+      // Once a symbol has failed persistently, stretch the retry cadence so a
+      // dead symbol re-probes every ~15m instead of every candle.
+      const backoff =
+        this.consecutiveCandleFailures >= CHECK_CANDLE_FAIL_BACKOFF_AFTER
+          ? CHECK_CANDLE_FAIL_BACKOFF_MS
+          : 0
       const timeout =
-        +start + +this.period * 2 + +this.waitCandlePeriod - +new Date()
+        +start +
+        +this.period * 2 +
+        +this.waitCandlePeriod -
+        +new Date() +
+        backoff
       this.checkCandleTimer = setTimeout(
         () => this.checkCandle(this.id, +start + +this.period),
         timeout,
@@ -563,6 +602,9 @@ class InternalIndicator {
     if (this.closed) {
       return
     }
+    // A candle came through (live stream or archive) — clear any delisted /
+    // no-data failure streak so checkCandle logging + cadence return to normal.
+    this.consecutiveCandleFailures = 0
     const { open: o, close: c, high: h, low: l, volume: v } = msg
     const start = +msg.start
     this.lastCandleTime = start
