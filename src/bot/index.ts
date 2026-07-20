@@ -307,6 +307,7 @@ class Bot<T extends UserSchema = UserSchema> {
     this.hedgeComboBots = []
     this.hedgeDcaBots = []
     this.closeDCADeal = this.closeDCADeal.bind(this)
+    this.restoreDeal = this.restoreDeal.bind(this)
     this.processWorkerMessage = this.processWorkerMessage.bind(this)
     this.handleWorkerTerminate = this.handleWorkerTerminate.bind(this)
     this.processBotClosedMessage = this.processBotClosedMessage.bind(this)
@@ -7929,6 +7930,140 @@ class Bot<T extends UserSchema = UserSchema> {
         reason: null,
         data: 'Deal scheduled to be closed',
       }
+    }
+  }
+
+  /**
+   * Restore a canceled DCA or terminal deal IN PLACE — bring it back as an
+   * active bare position inside its own bot (no DCA, take profit or stop loss).
+   *
+   * Canceling a deal only cancels its open orders and marks it `canceled`; the
+   * filled base position and the deal document survive. So we flip the deal
+   * back to `open`, strip DCA/TP/SL at the deal level (deal settings override
+   * bot settings in getAggregatedSettings), clear the close markers, and reload
+   * the bot so its worker re-adopts the deal from the DB (the load path only
+   * pulls `open`/`error`/`start` deals, so a canceled deal is invisible until
+   * flipped). No new bot is created — the deal returns to the bot it lived in
+   * (a terminal deal's bot is a terminal bot, so terminal deals restore in the
+   * terminal).
+   */
+  public async restoreDeal(
+    userId: string,
+    _botId: string,
+    dealId: string,
+    paperContext?: boolean,
+  ) {
+    if (!this.useBots) {
+      return await this.callExternalBotService<BaseReturn<string>>(
+        BotType.dca,
+        'restoreDeal',
+        false,
+        userId,
+        _botId,
+        dealId,
+        paperContext,
+      )
+    }
+    const findDeal = await this.dcaDealsDb.readData({
+      _id: dealId,
+      status: DCADealStatusEnum.canceled,
+      userId,
+    })
+    if (findDeal.status === StatusEnum.notok) {
+      return findDeal
+    }
+    if (!findDeal.data.result) {
+      return this.entityNotFound('Deal')
+    }
+    const botId = findDeal.data.result.botId
+
+    // Reactivate the deal as a bare position: no DCA/TP/SL, close markers
+    // cleared, status back to open.
+    const restore = await this.dcaDealsDb.updateData({ _id: dealId, botId }, {
+      $set: {
+        status: DCADealStatusEnum.open,
+        'settings.useDca': false,
+        'settings.useTp': false,
+        'settings.useSl': false,
+        closeBySl: false,
+        closeByTp: false,
+        notCheckSl: false,
+        blockSl: false,
+      },
+      $unset: { closeTrigger: '', closeTime: '' },
+    } as any)
+    if (restore.status === StatusEnum.notok) {
+      return restore
+    }
+    await this.dcaBotDb.updateData(
+      { _id: botId },
+      { $inc: { 'deals.active': 1 } },
+    )
+    this.botEventDb.createData({
+      userId,
+      botId,
+      botType: BotType.dca,
+      event: 'Restore DCA deal',
+      description: `DCA deal restored as a bare active position (no DCA/TP/SL), id: ${dealId}`,
+      paperContext: !!paperContext,
+      deal: dealId,
+      symbol: findDeal.data.result.symbol.symbol,
+    })
+
+    const findLocal = this.dcaBots.find(
+      (d) => d.id === botId && d.userId === userId,
+    )
+    if (findLocal) {
+      // Bot worker is running — reload it so it re-adopts the now-open deal.
+      this.getWorkerById(findLocal.worker)?.postMessage({
+        do: 'method',
+        botType: BotType.dca,
+        botId: findLocal.id,
+        method: 'reloadBot',
+        args: [botId, false],
+      })
+      return {
+        status: StatusEnum.ok as StatusEnum.ok,
+        reason: null,
+        data: 'Deal scheduled to restore',
+      }
+    }
+
+    // Bot worker isn't running — start it so the load path picks up the deal.
+    const botData = await this.dcaBotDb.readData({
+      _id: botId,
+      userId,
+      isDeleted: { $ne: true },
+    })
+    if (botData.status === StatusEnum.notok) {
+      return botData
+    }
+    if (!botData.data.result) {
+      return this.entityNotFound('Bot')
+    }
+    await this.createNewBot(
+      botId,
+      BotType.dca,
+      userId,
+      botData.data.result.exchange,
+      botData.data?.result?.uuid || '',
+      [botId, botData.data.result.exchange, true, true],
+      (worker) => {
+        worker.postMessage({
+          do: 'method',
+          botType: BotType.dca,
+          botId,
+          method: 'start',
+          args: [true, undefined, BotStatusEnum.open],
+        })
+      },
+      !!paperContext,
+      botData.data.result.settings.type ?? DCATypeEnum.regular,
+    )
+    return {
+      status: StatusEnum.ok as StatusEnum.ok,
+      reason: null,
+      data: 'Deal scheduled to restore',
     }
   }
 

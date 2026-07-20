@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.37.1] - 2026-07-20
+
+### Changed
+
+- `restoreDeal` now reactivates a canceled deal **in place**, inside its own bot, instead of spawning a new terminal bot. It flips the canceled deal back to `open` as a bare position (no DCA/TP/SL, close markers cleared) and reloads the bot so its worker re-adopts the existing position. A deal that lived in a bot is restored in that bot; a terminal deal is restored in the terminal.
+
 ## [1.37.0] - 2026-07-20
 
 ### Added
