@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.37.0] - 2026-07-20
+
+### Added
+
+- `restoreDeal` mutation: re-activates a canceled DCA or terminal deal by re-adopting its existing (still on-exchange) position as a fresh bare terminal deal — no DCA, take profit or stop loss. Reuses the proven terminal-import path (`terminalDealType: import`) that `moveDealToTerminal` uses, minus the source-cancel step (the deal is already canceled). Rejects non-canceled deals.
+
 ## [1.36.2] - 2026-07-18
 
 ### Fixed

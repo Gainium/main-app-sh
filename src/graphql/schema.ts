@@ -788,6 +788,7 @@ export const BotSchema = /* GraphQL */ `
     moveDealToTerminal(
       input: moveDealToTerminalInput!
     ): moveDealToTerminalResponse
+    restoreDeal(input: restoreDealInput!): moveDealToTerminalResponse
     moveGridToTerminal(
       input: moveGridToTerminalInput!
     ): moveGridToTerminalResponse
@@ -921,6 +922,10 @@ export const BotSchema = /* GraphQL */ `
     botId: ID!
     dealId: ID!
     combo: Boolean!
+  }
+  input restoreDealInput {
+    botId: ID!
+    dealId: ID!
   }
   input moveGridToTerminalInput {
     gridId: ID!

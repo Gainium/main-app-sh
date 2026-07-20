@@ -4236,6 +4236,170 @@ const resolvers = <
         data: 'Successfully created deal with terminal type',
       }
     },
+    restoreDeal: async (
+      _parents: any,
+      {
+        input,
+      }: {
+        input: {
+          botId: string
+          dealId: string
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      // Restore a canceled DCA or terminal deal: re-adopt its existing
+      // on-exchange position as a bare active terminal deal (no DCA, TP or SL).
+      // Canceling a deal cancels its open orders and marks it canceled but does
+      // NOT sell the base position, so the deal doc still carries the position
+      // (usage.current / avgPrice) we import from. This reuses the exact
+      // terminal-import path as `moveDealToTerminal`, minus the source-cancel
+      // callback (the deal is already canceled).
+      const { botId, dealId } = input
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const bot = await dcaBotDb.readData({
+        userId: user.data._id.toString(),
+        _id: botId,
+      })
+      if (
+        bot.status === StatusEnum.notok ||
+        !bot.data ||
+        !('result' in bot.data)
+      ) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Bot not found',
+          data: null,
+        }
+      }
+      const deal = await dcaDealsDb.readData({ _id: dealId, botId })
+      if (
+        deal.status === StatusEnum.notok ||
+        !deal.data ||
+        !('result' in deal.data)
+      ) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Deal not found',
+          data: null,
+        }
+      }
+
+      const dcaBot = bot.data.result
+      const dcaDeal = deal.data.result
+
+      // Only canceled deals can be restored.
+      if (dcaDeal.status !== DCADealStatusEnum.canceled) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Only canceled deals can be restored',
+          data: null,
+        }
+      }
+
+      const exchange = dcaBot.exchange
+      const exchangeUUID = dcaBot.exchangeUUID
+      const leverage = dcaBot.settings.futures
+        ? dcaBot.settings.marginType !== BotMarginTypeEnum.inherit
+          ? dcaBot.settings.leverage || 1
+          : 1
+        : 1
+
+      const isLong = dcaBot.settings.strategy === 'LONG'
+      const isSpot = !isFutures(exchange)
+      const isCoinmFutures = isCoinm(exchange)
+      const baseOrderSize = isSpot
+        ? isLong
+          ? dcaDeal.usage.current.quote
+          : dcaDeal.usage.current.base
+        : isCoinmFutures
+          ? dcaDeal.usage.current.base / leverage
+          : dcaDeal.usage.current.quote / leverage
+      const orderSize = `${Math.abs(baseOrderSize)}`
+
+      const ref = (
+        isSpot ? (isLong ? 'quote' : 'base') : isCoinmFutures ? 'base' : 'quote'
+      ) as Currency
+
+      // Bare terminal deal: no DCA, no take-profit, no stop-loss.
+      const newBotData = {
+        pair: [dcaDeal.symbol.symbol],
+        name: '',
+        strategy: dcaBot.settings.strategy,
+        profitCurrency: dcaDeal.settings.profitCurrency,
+        baseOrderSize: orderSize,
+        startOrderType: OrderTypeEnum.limit,
+        startCondition: StartConditionEnum.asap,
+        tpPerc: '1',
+        orderFixedIn: ref,
+        orderSize,
+        step: '1',
+        ordersCount: 5,
+        activeOrdersCount: 1,
+        volumeScale: '1',
+        stepScale: '1',
+        useTp: false,
+        useSl: false,
+        slPerc: '-10',
+        useSmartOrders: false,
+        minOpenDeal: '',
+        maxOpenDeal: '',
+        useDca: false,
+        hodlDay: '7',
+        hodlAt: '15:00:00',
+        hodlNextBuy: new Date().getTime(),
+        maxNumberOfOpenDeals: '',
+        indicators: [],
+        indicatorGroups: [],
+        baseOrderPrice: dcaDeal.avgPrice.toString(),
+        orderSizeType:
+          ref === 'quote' ? OrderSizeTypeEnum.quote : OrderSizeTypeEnum.base,
+        limitTimeout: '20',
+        useLimitTimeout: false,
+        type: DCATypeEnum.terminal,
+        moveSL: false,
+        moveSLTrigger: '0.5',
+        moveSLValue: '0.2',
+        dealCloseCondition: CloseConditionEnum.tp,
+        dealCloseConditionSL: CloseConditionEnum.tp,
+        terminalDealType: TerminalDealTypeEnum.import,
+        trailingTpPerc: '0.3',
+        useMultiTp: false,
+        multiTp: [],
+        useMultiSl: false,
+        multiSl: [],
+        marginType: dcaBot.settings.marginType,
+        leverage,
+        futures: isFutures(exchange),
+        coinm: isCoinmFutures,
+        useLimitPrice: true,
+        baseAsset: [dcaDeal.symbol.baseAsset],
+        quoteAsset: [dcaDeal.symbol.quoteAsset],
+        exchange,
+        exchangeUUID,
+        importFrom: dealId,
+        skipBalanceCheck: true,
+      }
+      const newBot = await Bot.createDCABot(
+        user.data._id.toString(),
+        { ...newBotData, vars: { list: [], paths: [] } },
+        paperContext,
+      )
+      if (newBot.status === StatusEnum.notok) {
+        return newBot
+      }
+      return {
+        status: StatusEnum.ok,
+        reason: null,
+        data: 'Successfully restored deal as active',
+      }
+    },
     moveGridToTerminal: async (
       _parent: any,
       {
