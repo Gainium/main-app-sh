@@ -15321,9 +15321,21 @@ function createDCABotHelper<
       let i = 0
       for (const pair of this.data.settings.pair) {
         if (await this.confirmPairMissing(pair)) {
-          first = i === 0
-          this.handleLog(`Pair ${pair} not found in exchange info`)
-          notFound.push(pair)
+          // Never strip a pair that still has an open deal. Exchange info can go
+          // missing transiently (resume-herd DB blip) or permanently (delist);
+          // either way a live position must keep its pair — orphaning it drops
+          // the deal's fee/price display in the UI and desyncs settings.pair
+          // from reality. A user may delete a pair and leave its deal running,
+          // and the engine must respect the same invariant, not do it silently.
+          if (this.getOpenDeals(false, pair).length) {
+            this.handleWarn(
+              `Pair ${pair} missing from exchange info but has an open deal — keeping it in settings`,
+            )
+          } else {
+            first = i === 0
+            this.handleLog(`Pair ${pair} not found in exchange info`)
+            notFound.push(pair)
+          }
         }
         i++
       }
@@ -15465,50 +15477,68 @@ function createDCABotHelper<
         await this.checkAllowedMethods()
         await this.checkSettingsPairs()
         if (this.pairsNotFound.size) {
-          if (
-            this.data?.settings.useMulti &&
-            this.data.settings.pair.length > 1 &&
-            this.pairsNotFound.size < this.data.settings.pair.length
-          ) {
-            for (const p of this.pairsNotFound) {
+          // A pair with an open deal must never be auto-removed or have its
+          // deals force-closed here — a live position keeps its pair even when
+          // the exchange info is missing (transient blip or genuine delist). A
+          // delisted pair with an open deal simply won't have a live price,
+          // which is inherent; orphaning or cancelling it is the worse outcome.
+          // Only pairs with no open deal are eligible for removal / bot-stop.
+          const removablePairs = [...this.pairsNotFound].filter(
+            (p) => this.getOpenDeals(false, p).length === 0,
+          )
+          for (const p of this.pairsNotFound) {
+            if (!removablePairs.includes(p)) {
               this.handleWarn(
-                `Exchange info not found for ${p}. Will close all deals`,
+                `Exchange info missing for ${p} but it has an open deal — keeping pair and deal`,
               )
-              this.data.settings.pair = this.data.settings.pair.filter(
-                (d) => d !== p,
-              )
-              this.ignoreErrors = true
-              this.loadingComplete = true
-              await this.updateData({ settings: this.data.settings })
-              await this.closeAllDeals(
-                CloseDCATypeEnum.cancel,
-                p,
-                undefined,
-                undefined,
-                true,
-                undefined,
-                undefined,
-                DCACloseTriggerEnum.auto,
-              )
-              this.pairs.delete(p)
-              this.loadingComplete = false
-              this.ignoreErrors = false
             }
-          } else {
-            this.handleWarn(`Exchange info not found. Bot will stop`)
-            this.loadingComplete = true
-            await this.stop(CloseDCATypeEnum.cancel)
-            this.loadingComplete = false
-            this.serviceRestart = false
-            if (this.data) {
-              this.data.status = BotStatusEnum.closed
-              this.ignoreErrors = true
-              await this.updateData({ status: this.data.status })
-              this.emit('bot settings update', { status: this.data.status })
-              this.ignoreErrors = false
-              this.finishLoad = true
-              this.endMethod(_id)
-              return
+          }
+          if (removablePairs.length) {
+            if (
+              this.data?.settings.useMulti &&
+              this.data.settings.pair.length > 1 &&
+              removablePairs.length < this.data.settings.pair.length
+            ) {
+              for (const p of removablePairs) {
+                this.handleWarn(
+                  `Exchange info not found for ${p}. Will close all deals`,
+                )
+                this.data.settings.pair = this.data.settings.pair.filter(
+                  (d) => d !== p,
+                )
+                this.ignoreErrors = true
+                this.loadingComplete = true
+                await this.updateData({ settings: this.data.settings })
+                await this.closeAllDeals(
+                  CloseDCATypeEnum.cancel,
+                  p,
+                  undefined,
+                  undefined,
+                  true,
+                  undefined,
+                  undefined,
+                  DCACloseTriggerEnum.auto,
+                )
+                this.pairs.delete(p)
+                this.loadingComplete = false
+                this.ignoreErrors = false
+              }
+            } else {
+              this.handleWarn(`Exchange info not found. Bot will stop`)
+              this.loadingComplete = true
+              await this.stop(CloseDCATypeEnum.cancel)
+              this.loadingComplete = false
+              this.serviceRestart = false
+              if (this.data) {
+                this.data.status = BotStatusEnum.closed
+                this.ignoreErrors = true
+                await this.updateData({ status: this.data.status })
+                this.emit('bot settings update', { status: this.data.status })
+                this.ignoreErrors = false
+                this.finishLoad = true
+                this.endMethod(_id)
+                return
+              }
             }
           }
         }

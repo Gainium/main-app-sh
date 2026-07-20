@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.37.2] - 2026-07-20
+
+### Fixed
+
+- A DCA/Combo bot no longer auto-removes a pair from `settings.pair` (or force-closes/stops on it) while that pair still has an open deal. A transient `getExchangeInfo` miss (or a genuine delist) used to strip the pair and orphan the live position — desyncing settings from reality and breaking the deal's fee/price display. Open-deal pairs are now always kept; a delisted pair with an open deal simply has no live price (inherent), rather than being cancelled or dropped.
+
 ## [1.37.1] - 2026-07-20
 
 ### Changed
