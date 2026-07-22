@@ -306,6 +306,15 @@ function createComboBotHelper<
           ? (settings.baseGridLevels ?? settings.gridLevel)
           : settings.gridLevel),
       )
+      if (!Number.isFinite(levels) || levels < 1) {
+        this.handleErrors(
+          `Cannot create minigrid: number of grid levels is not set for this bot. Please set grid levels in the bot settings and try again.`,
+          'createMinigrid()',
+          'create minigrid',
+        )
+        this.endMethod(_id)
+        return
+      }
       const fee =
         order.type === OrderTypeEnum.market
           ? ((await this.getUserFee(pair))?.taker ?? 0)
