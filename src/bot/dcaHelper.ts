@@ -1498,9 +1498,10 @@ function createDCABotHelper<
         })
         this.resetPending(this.botId, symbol)
         if (this.futures) {
-          await this.subscribeFunding(
-            await this.toFundingSymbol(symbolData.symbol),
-          )
+          const fundingSym = await this.toFundingSymbol(symbolData.symbol)
+          if (fundingSym) {
+            await this.subscribeFunding(fundingSym)
+          }
         }
         this.emit('bot deal update', record.data)
         this.updateBotDeals(this.botId, true)
@@ -1532,6 +1533,9 @@ function createDCABotHelper<
       }
       for (const pair of pairs) {
         const fundingSym = await this.toFundingSymbol(pair)
+        if (!fundingSym) {
+          continue
+        }
         await this.subscribeFunding(fundingSym)
         await this.onFundingNotify(this.fundingChannelFor(fundingSym))
       }
@@ -1569,6 +1573,9 @@ function createDCABotHelper<
         return
       }
       const fundingSym = await this.toFundingSymbol(pair)
+      if (!fundingSym) {
+        return
+      }
       const offset = deal.funding?.offset ?? deal.createTime
       // Deals keep all their orders in RAM — derive the position from those
       // in-memory fills (no DB round-trip), folding fills up to each settlement.
@@ -1665,7 +1672,10 @@ function createDCABotHelper<
         symbol: pair,
       }).filter((fd) => fd.deal._id !== dealId)
       if (!others.length) {
-        await this.unsubscribeFunding(await this.toFundingSymbol(pair))
+        const fundingSym = await this.toFundingSymbol(pair)
+        if (fundingSym) {
+          await this.unsubscribeFunding(fundingSym)
+        }
       }
     }
 

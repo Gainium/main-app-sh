@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.37.3] - 2026-07-25
+
+### Fixed
+
+- A transient `getExchangeInfo` miss no longer poisons the funding registry for the life of the bot. On Kraken and Hyperliquid `toFundingSymbol` fell back to the raw pair when the exchange code couldn't be resolved, and the subscription heartbeat then re-wrote that member every 60s so it never aged out of the cron's stale window — the hourly funding poll rejected it on every run, forever (4 Hyperliquid + 1 Kraken symbol on prod, ~5 guaranteed failures/hour). The lookup now retries forced before giving up, and an unresolved code skips the funding subscription instead of registering a symbol the exchange can't answer. Same transient-miss hazard as 1.37.2, different consumer.
+
+### Changed
+
+- The funding cron's provider-error log now carries the symbol and the reason. `[Funding] Provider X response error NOTOK` named neither, so a single poisoned symbol failing identically every hour was indistinguishable from provider-wide degradation, and log triage re-raised it every run with no way to converge.
+
 ## [1.37.2] - 2026-07-20
 
 ### Fixed

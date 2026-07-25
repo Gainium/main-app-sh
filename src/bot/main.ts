@@ -2029,11 +2029,27 @@ class MainBot<T extends IMainBot> {
    * Symbol used on the funding channel/registry/store. Kraken & Hyperliquid
    * pass the exchange code through their connectors, so we subscribe by code
    * (cheap lookup from shared exchange info); everyone else uses the pair.
+   *
+   * Returns `null` when the code can't be resolved. Falling back to the raw
+   * pair looks harmless but poisons the registry permanently: the subscription
+   * heartbeat re-writes that member every 60s, so it never ages out of the
+   * cron's stale window, and the connector rejects it on every hourly poll
+   * (Kraken `Argument invalid: symbol`, Hyperliquid unknown coin). Because
+   * {@link MainBot#getExchangeInfo} can miss transiently on a cold cache /
+   * resume herd, retry once forced before giving up.
    */
-  protected async toFundingSymbol(pair: string): Promise<string> {
+  protected async toFundingSymbol(pair: string): Promise<string | null> {
     if (this.isKraken || this.hyperliquid) {
-      const ed = await this.getExchangeInfo(pair)
-      return ed?.code ?? pair
+      const ed =
+        (await this.getExchangeInfo(pair)) ??
+        (await this.getExchangeInfo(pair, true))
+      if (!ed?.code) {
+        this.handleWarn(
+          `[funding] no exchange code for ${pair}; skipping funding subscription`,
+        )
+        return null
+      }
+      return ed.code
     }
     return pair
   }

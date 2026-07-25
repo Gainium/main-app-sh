@@ -2008,6 +2008,9 @@ function createBotHelper<
         await this.updateData({ funding: this.data?.funding })
       }
       const fundingSym = await this.toFundingSymbol(pair)
+      if (!fundingSym) {
+        return
+      }
       await this.subscribeFunding(fundingSym)
       await this.onFundingNotify(this.fundingChannelFor(fundingSym))
     }

@@ -152,8 +152,12 @@ export const publishFunding = async (
           const from = head || now - LOOKBACK_MS
           const res = await exchange.getFundingRateHistory(symbol, from, now)
           if (res.status !== StatusEnum.ok) {
+            // Symbol + reason are what make this triageable: a bad registry
+            // member fails identically every hour, and without them the log
+            // looks like generic provider degradation instead of one poisoned
+            // symbol.
             logger.error(
-              `[Funding] Provider ${provider} response error ${res.status}`,
+              `[Funding] Provider ${provider} response error ${res.status} symbol ${symbol}: ${res.reason}`,
             )
             continue
           }
