@@ -236,9 +236,9 @@ const loggerPrefix = `${isMainThread ? 'Main thread' : `Worker ${threadId}`} |`
 // but is still subscribed for indicators) makes checkCandle's archive query
 // fail on every candle, once per timeframe — a per-minute "parameter … does
 // not exist" flood that buries every other error in the indicator worker.
-// Track consecutive check-candle failures per service so we log the first few,
-// then fall silent, and slow the retry cadence until data (live or archived)
-// comes back. Any successful candle resets both (see updateCandle).
+// Track consecutive check-candle failures so we log the first few, then fall
+// silent, and slow the retry cadence until data (live or archived) comes back.
+// Any successful candle resets both (see updateCandle).
 const CHECK_CANDLE_FAIL_LOG_LIMIT = Number(
   process.env.INDICATOR_CHECK_FAIL_LOG_LIMIT ?? 3,
 )
@@ -248,6 +248,24 @@ const CHECK_CANDLE_FAIL_BACKOFF_AFTER = Number(
 const CHECK_CANDLE_FAIL_BACKOFF_MS = Number(
   process.env.INDICATOR_CHECK_FAIL_BACKOFF_MS ?? 15 * 60 * 1000,
 )
+
+// …and track it per SYMBOL, not per Service. `getId` keys a Service by
+// type+config+exchange+symbol+interval, so one pair carries as many Services as
+// there are distinct indicator settings subscribed on it. checkCandle's failure
+// is a property of the candle fetch (exchange+symbol+interval) and is identical
+// for every one of them, so a per-instance counter multiplied the "first few"
+// allowance by the instance count: AERGOUSDT@binanceUsdm (~86 stale bot docs,
+// ~160 Services) burned 160 x (3 errors + 1 mute line) and was 97.5% of the
+// indicator worker's error log, hiding every other error. Sharing the streak
+// means the pair costs a fixed 3 errors + 1 mute line no matter how many
+// Services ride it — and a new Service for an already-muted pair inherits the
+// mute and the backoff instead of re-arming both.
+const candleFailuresBySymbol = new Map<string, number>()
+const candleFailureKey = (
+  symbol: string,
+  interval: ExchangeIntervals,
+  exchange: ExchangeEnum,
+) => `${symbol}@${interval}@${exchange}`
 
 class InternalIndicator {
   protected candlesProvider = CandlesProvider
@@ -323,7 +341,6 @@ class InternalIndicator {
   private to = 0
   private updateCandlesHistory: Set<number> = new Set()
   private checkCandleTimer: NodeJS.Timeout | null = null
-  private consecutiveCandleFailures = 0
   private waitCandlePeriod = 8000
   private lastCandle = {
     open: '0',
@@ -419,6 +436,24 @@ class InternalIndicator {
 
   private handleDebug(...msg: unknown[]) {
     logger.debug(`${loggerPrefix}`, ...msg)
+  }
+  // Shared across every Service on this exchange+symbol+interval — see
+  // candleFailuresBySymbol. Backed by a Map so the entry disappears on reset,
+  // leaving only currently-failing pairs resident.
+  private get consecutiveCandleFailures() {
+    return (
+      candleFailuresBySymbol.get(
+        candleFailureKey(this.symbol, this.interval, this.exchange),
+      ) ?? 0
+    )
+  }
+  private set consecutiveCandleFailures(value: number) {
+    const key = candleFailureKey(this.symbol, this.interval, this.exchange)
+    if (value <= 0) {
+      candleFailuresBySymbol.delete(key)
+    } else {
+      candleFailuresBySymbol.set(key, value)
+    }
   }
   private addSplitPhrase(text: string) {
     return `${text}${this.splitPhrase}${this.id}`
