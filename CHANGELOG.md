@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.37.4] - 2026-07-26
+
+### Fixed
+
+- The delisted-symbol check-candle mute now actually holds. `updateCandle` cleared `consecutiveCandleFailures` unconditionally, and both "serve last candle" fallbacks call it with a fabricated flat candle (`lastCandle.close`, volume 0) — no new data arrived, but the streak reset anyway. For a delisted symbol those alternate with real failures, so the mute *and* the 15min backoff re-armed forever: `AERGOUSDT@binanceUsdm` re-logged "suppressing further errors" 1,930 times in 50h and accounted for 100% of the indicator worker's error output. Synthetic fills no longer clear the streak. Same bug class as the 1.36.2 ESUSDT fix, which only half-closed it.
+
+### Added
+
+- `InternalIndicatorsFactory.closeDeletedPairs()` tears down the indicator Services of a delisted pair. The `deletePairs` signal on `updateexchangeInfo` was consumed only by bot workers, so Services outlived their pair: they probed a dead symbol forever and — worse — kept publishing fabricated flat indicator values (volume 0 → VO -100, frozen ADX) to live subscribers as if they were real output. Wired up in main-app's indicators process.
+
 ## [1.37.3] - 2026-07-25
 
 ### Fixed

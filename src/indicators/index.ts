@@ -344,6 +344,55 @@ class InternalIndicatorsFactory {
     this.indicators.delete(id)
   }
 
+  /**
+   * A pair vanished from the exchange: the `updateExchangeInfo` cron pruned it
+   * from `pairs` and published `deletePairs` on the `updateexchangeInfo` Redis
+   * channel (`core/src/utils/cron/exchange.ts`). That signal used to be consumed
+   * only by bot workers, so nothing tore down the indicator Services already
+   * running for the pair — they outlived it. Their self-rescheduling
+   * `checkCandle` kept probing a dead symbol forever, and the "serve last
+   * candle" fallback kept publishing FABRICATED flat values (volume 0 → VO -100,
+   * frozen ADX) to live subscribers as if they were real indicator output.
+   * Seen with ESUSDT@bitget and AERGOUSDT@binanceUsdm. Close them explicitly.
+   */
+  public async closeDeletedPairs(exchange: ExchangeEnum, pairs: string[]) {
+    if (!isMainThread || !pairs.length) {
+      return 0
+    }
+    const dead = new Set(pairs)
+    // Snapshot the ids first — deleteIndicator mutates this.indicators.
+    const ids = [...this.indicators.values()]
+      .filter(
+        (i) =>
+          i.config.exchange === exchange &&
+          (dead.has(i.config.symbol) ||
+            (!!i.config.symbolCode && dead.has(i.config.symbolCode))),
+      )
+      .map((i) => i.id)
+    // Drop the pair from the local cache too, so checkPair rejects any new
+    // subscription for it without waiting on the 10min expiry. Keep pairsSize in
+    // step or checkPair would treat the shrink as "stale" and reload from db.
+    for (const pair of dead) {
+      this.pairs.delete(`${pair}-${exchange}`)
+    }
+    this.pairsSize = this.pairs.size
+    for (const id of ids) {
+      try {
+        await this.deleteIndicator(id)
+      } catch (e) {
+        logger.error(
+          `${this.loggerPrefix} Failed to close indicator ${id} for delisted pair: ${e}`,
+        )
+      }
+    }
+    if (ids.length) {
+      logger.info(
+        `${this.loggerPrefix} Closed ${ids.length} indicator service(s) for ${dead.size} delisted pair(s) on ${exchange}`,
+      )
+    }
+    return ids.length
+  }
+
   private async subscribeIndicator(idi: string, id?: string, load1d?: boolean) {
     const indicator = this.indicators.get(idi)
     if (!indicator) {

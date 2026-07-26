@@ -545,6 +545,7 @@ class InternalIndicator {
               volume: '0',
             },
             true,
+            true,
           )
         }
       } else {
@@ -598,13 +599,26 @@ class InternalIndicator {
     }
   }
   @IdMute(mutex, (id: string, msg: TradeMessage) => `${id}${msg.start}`)
-  private async updateCandle(_id: string, msg: TradeMessage, forceOld = false) {
+  private async updateCandle(
+    _id: string,
+    msg: TradeMessage,
+    forceOld = false,
+    synthetic = false,
+  ) {
     if (this.closed) {
       return
     }
-    // A candle came through (live stream or archive) — clear any delisted /
+    // A REAL candle came through (live stream or archive) — clear any delisted /
     // no-data failure streak so checkCandle logging + cadence return to normal.
-    this.consecutiveCandleFailures = 0
+    // `synthetic` fills must NOT clear it: the "serve last candle" branches
+    // re-serve lastCandle.close with volume 0, so no new data actually arrived.
+    // For a delisted symbol those alternate with real failures, and clearing the
+    // streak on one re-arms both the mute and the backoff — which is how
+    // AERGOUSDT@binanceUsdm re-logged "suppressing further errors" 1,930 times
+    // in 50h despite the ESUSDT fix.
+    if (!synthetic) {
+      this.consecutiveCandleFailures = 0
+    }
     const { open: o, close: c, high: h, low: l, volume: v } = msg
     const start = +msg.start
     this.lastCandleTime = start
@@ -695,6 +709,7 @@ class InternalIndicator {
                 low: this.lastCandle.close,
                 volume: '0',
               },
+              true,
               true,
             )
           }
