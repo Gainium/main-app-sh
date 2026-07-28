@@ -431,9 +431,19 @@ const updateUserBalance = async (
               )
             }
           }
+          // Zero out only THIS exchange's stored balances whose asset the
+          // exchange no longer reports. userBalances is read once for the
+          // whole user (all exchanges, both contexts) when no uuid filter is
+          // given, so without the exchangeUUID check every other exchange's
+          // nonzero doc triggered an updateOne here that could never match
+          // (the write filter carries this exchange's uuid) — ~11k wasted
+          // sequential round trips per snapshot for a 35-exchange user, the
+          // whole cost of the 30-40s portfolio "refresh balances".
+          const reportedAssets = new Set(balances.data.map((b) => b.asset))
           for (const ub of userBalances.data.result) {
             if (
-              !balances.data.map((b) => b.asset).includes(ub.asset) &&
+              ub.exchangeUUID === e.uuid &&
+              !reportedAssets.has(ub.asset) &&
               (ub.free > 0 || ub.locked > 0)
             ) {
               await balanceDb.updateData(
@@ -980,6 +990,10 @@ const userSnapshots = async (
   onlyOneCycle?: boolean,
   skipBalance?: boolean,
   ec = ExchangeChooser,
+  // When set, only this exchange's balances are re-fetched from the venue;
+  // the snapshot totals are still recomputed from the stored balances of all
+  // exchanges. Used by the dashboard's per-exchange refresh / paper top-up.
+  uuid?: string,
 ) => {
   let rates: Prices = []
   const users = await userDb.readData(
@@ -1026,7 +1040,7 @@ const userSnapshots = async (
     if (!skipBalance) {
       await Promise.all(
         users.data.result.map((u) =>
-          updateUserBalance(u, undefined, !!paperContext, ec),
+          updateUserBalance(u, uuid, !!paperContext, ec),
         ),
       )
     }
@@ -1292,7 +1306,7 @@ const userSnapshots = async (
     logger.error(`Snapshot | Cannot get users ${users.reason}`)
   }
   if (!paperContext && !onlyOneCycle) {
-    userSnapshots(id, true, undefined, undefined, ec)
+    userSnapshots(id, true, undefined, undefined, ec, uuid)
   }
 }
 

@@ -316,6 +316,9 @@ export const UserSchema = /* GraphQL */ `
   }
   input updateBalanceInput {
     skipSnapshot: Boolean
+    # Refresh only this exchange's balances from the venue (snapshot totals
+    # are still recomputed). Omit to re-fetch every exchange.
+    uuid: String
   }
   input userPeriodInput {
     name: String

@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.37.6] - 2026-07-28
+
+### Fixed
+
+- Portfolio "refresh balances" / paper top-up no longer takes 30-40s. The snapshot's per-exchange zero-out loop iterated every balance doc the user owns (all exchanges, both contexts) and issued a sequential no-op `updateOne` for each nonzero doc belonging to a *different* exchange — ~11k wasted round trips for a 35-exchange account. The loop now only considers the current exchange's docs, and the reported-asset lookup is a Set instead of a per-doc array scan.
+
+### Added
+
+- `updateBalance` GraphQL query accepts an optional `uuid` to re-fetch only one exchange's balances from the venue (snapshot totals still recompute from stored balances). Used by the dashboard's per-exchange refresh and the paper top-up dialog.
+- Compound index `{userId, exchangeUUID, asset}` on `balances` — every balance write filters on exactly these keys and previously scanned all of a user's docs via the bare `userId` index.
+
 ## [1.37.5] - 2026-07-26
 
 ### Fixed

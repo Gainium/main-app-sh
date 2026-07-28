@@ -548,7 +548,7 @@ const resolvers = <
     },
     updateBalance: async (
       _parent: any,
-      { input }: { input?: { skipSnapshot?: boolean } },
+      { input }: { input?: { skipSnapshot?: boolean; uuid?: string } },
       { token, req, paperContext }: InputRequest,
     ) => {
       if (token === 'demo' || !req.user?.authorized) {
@@ -563,6 +563,9 @@ const resolvers = <
           user.data._id.toString(),
           paperContext,
           true,
+          undefined,
+          undefined,
+          input?.uuid,
         )
       }
       const result = await snapshotDb.readData(

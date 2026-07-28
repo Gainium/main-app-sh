@@ -2893,6 +2893,10 @@ export const registerIndexes = () => {
   )
 
   balancesSchema.index({ userId: 1 })
+  // Every balance write (bot fills, snapshot refresh, zero-out) filters on
+  // {userId, exchangeUUID, asset}; with only the userId index each such op
+  // scans every doc the user owns (1.5k+ for dust-heavy accounts).
+  balancesSchema.index({ userId: 1, exchangeUUID: 1, asset: 1 })
 
   dcaBacktestingResult.index({ userId: 1 })
   dcaBacktestingResult.index({ shareId: 1 })
