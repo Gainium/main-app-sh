@@ -1100,7 +1100,13 @@ class InternalIndicator {
   private getRedisChannelName() {
     const exchange = removePaperFormExchangeName(this.exchange)
     const interval = getIntervalByExchange(this.exchange, this.interval)
-    return `${this.symbolCode || this.symbol}@${exchange}@${interval}Candle`
+    // Always the display pair, never symbolCode: websocket-connector keys its
+    // candle subscriptions AND its Redis publications by display pair (it
+    // translates to Hyperliquid wire codes internally since Jul 2026).
+    // Subscribing by wire code ("BTC@hyperliquidLinear@…") points at a channel
+    // nobody publishes to, and the matching candlesRequests payload fails
+    // translation in the connector — the indicator silently never gets data.
+    return `${this.symbol}@${exchange}@${interval}Candle`
   }
 
   private redisCb(msg: string) {
@@ -1126,8 +1132,10 @@ class InternalIndicator {
       this.redisClient.subscribe(this.getRedisChannelName(), this.redisCb)
       this.redisClient.subscribe(serviceLogRedis, this.processServiceLog)
     }
+    // Display pair, not symbolCode — must match getRedisChannelName() above
+    // and the connector's display-pair keyed subscription maps.
     this.rabbitClient.send('candlesRequests', {
-      symbol: this.symbolCode || this.symbol,
+      symbol: this.symbol,
       exchange,
       interval,
     })

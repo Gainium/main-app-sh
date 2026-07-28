@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.37.8] - 2026-07-28
+
+### Fixed
+
+- **Hyperliquid indicators on live bots silently received no candle data.** For HL exchanges the indicator service subscribed to Redis — and asked websocket-connector — by the pair's *wire code* (`BTC@hyperliquidLinear@1hCandle`), a dialect the connector stopped speaking in Jul 2026 when it normalized candle channels to display pairs: the `candlesRequests` payload failed symbol translation and was dropped, and nothing publishes on wire-code channels (on prod, 11 of 14 live HL candle channels had subscribers and no publisher). Paper HL bots were unaffected — the pairs-map lookup misses on the paper exchange key, so they always fell back to the display pair, which works. Indicators now always subscribe and request by display pair; `symbolCode` is kept for delisted-pair matching and state dumps only.
+
 ## [1.37.7] - 2026-07-28
 
 ### Changed
