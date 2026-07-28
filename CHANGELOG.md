@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.7] - 2026-07-28
+
+### Changed
+
+- On-demand balance refresh now fetches a user's exchanges through a bounded worker pool instead of one at a time. Sequentially, a 15-exchange live account paid the sum of every venue round trip (~590ms each, ~9.8s total); the pool collapses that to roughly the slowest venue per wave. Concurrency is `BALANCE_FETCH_CONCURRENCY` (default 8, set to 1 to restore the old sequential behaviour). The all-users snapshot cron deliberately stays sequential per user — it already runs every user in parallel, so fanning out there would multiply peak load on exchange-balancer.
+- A venue that throws mid-refresh no longer aborts the remaining exchanges; the failure is logged per exchange and the rest still update.
+
 ## [1.37.6] - 2026-07-28
 
 ### Fixed

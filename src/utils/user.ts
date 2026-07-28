@@ -346,11 +346,25 @@ const processBalanceUpdate = async () => {
   }
 }
 
+/**
+ * How many of one user's exchanges to refresh concurrently on the on-demand
+ * path. Set `BALANCE_FETCH_CONCURRENCY=1` to fall back to the old fully
+ * sequential behaviour without a code change.
+ */
+const balanceFetchConcurrency = () =>
+  Math.max(1, parseInt(process.env.BALANCE_FETCH_CONCURRENCY ?? '', 10) || 8)
+
 const updateUserBalance = async (
   user: ClearUserSchema,
   uuid?: string,
   paperContext?: boolean,
   ec = ExchangeChooser,
+  // How many of the user's exchanges to refresh at once. 1 = the historical
+  // sequential behaviour, and the kill switch. Only raised when ONE user is
+  // being refreshed on demand: the snapshot cron already runs every user
+  // through Promise.all, so fanning out per-exchange there would multiply
+  // peak concurrency against exchange-balancer (users x concurrency).
+  concurrency = 1,
 ) => {
   const userId = user._id.toString()
   const filter: Record<string, unknown> = { userId }
@@ -364,7 +378,7 @@ const updateUserBalance = async (
     true,
     true,
   )
-  for (const e of user.exchanges
+  const targets = user.exchanges
     .filter((ue) =>
       paperContext === undefined
         ? true
@@ -372,98 +386,127 @@ const updateUserBalance = async (
           ? paperExchanges.includes(ue.provider)
           : !paperExchanges.includes(ue.provider),
     )
-    .filter((ue) => !ue.linkedTo)) {
-    if ((uuid && uuid === e.uuid) || !uuid) {
-      const exchange = ec.chooseExchangeFactory(e.provider)
+    .filter((ue) => !ue.linkedTo)
+    .filter((ue) => (uuid ? uuid === ue.uuid : true))
 
-      if (exchange) {
-        const provider = exchange(
-          e.key,
-          e.secret,
-          e.passphrase,
-          undefined,
-          e.keysType,
-          e.okxSource,
-          e.bybitHost,
-        )
-        const balances = await provider.getBalance()
-        if (balances.status === 'OK' && userBalances.status === StatusEnum.ok) {
-          const balancesMap: Map<string, FreeAsset[0]> = new Map()
-          for (const b of balances.data) {
-            balancesMap.set(b.asset, {
-              ...b,
-              locked: normalizeLocked(b.locked),
-            })
-          }
-          for (const b of balancesMap.values()) {
-            const getPair = userBalances.data.result.find(
-              (rb) => rb.asset === b.asset && rb.exchangeUUID === e.uuid,
+  const refreshExchange = async (e: (typeof targets)[number]) => {
+    const exchange = ec.chooseExchangeFactory(e.provider)
+
+    if (exchange) {
+      const provider = exchange(
+        e.key,
+        e.secret,
+        e.passphrase,
+        undefined,
+        e.keysType,
+        e.okxSource,
+        e.bybitHost,
+      )
+      const balances = await provider.getBalance()
+      if (balances.status === 'OK' && userBalances.status === StatusEnum.ok) {
+        const balancesMap: Map<string, FreeAsset[0]> = new Map()
+        for (const b of balances.data) {
+          balancesMap.set(b.asset, {
+            ...b,
+            locked: normalizeLocked(b.locked),
+          })
+        }
+        for (const b of balancesMap.values()) {
+          const getPair = userBalances.data.result.find(
+            (rb) => rb.asset === b.asset && rb.exchangeUUID === e.uuid,
+          )
+          if (!getPair) {
+            await balanceDb.updateData(
+              { exchangeUUID: e.uuid, asset: b.asset, userId },
+              {
+                ...b,
+                userId,
+                exchange: e.provider,
+                exchangeUUID: e.uuid,
+                paperContext: paperExchanges.includes(e.provider),
+              },
+              false,
+              true,
+              true,
             )
-            if (!getPair) {
-              await balanceDb.updateData(
-                { exchangeUUID: e.uuid, asset: b.asset, userId },
-                {
-                  ...b,
-                  userId,
-                  exchange: e.provider,
-                  exchangeUUID: e.uuid,
-                  paperContext: paperExchanges.includes(e.provider),
-                },
-                false,
-                true,
-                true,
-              )
-            } else if (
-              getPair &&
-              (getPair.free !== b.free || getPair.locked !== b.locked)
-            ) {
-              await balanceDb.updateData(
-                {
-                  asset: b.asset,
-                  userId,
-                  exchange: e.provider,
-                  exchangeUUID: e.uuid,
-                  paperContext: paperExchanges.includes(e.provider),
-                },
-                { $set: { free: b.free, locked: b.locked } },
-                false,
-                true,
-              )
-            }
+          } else if (
+            getPair &&
+            (getPair.free !== b.free || getPair.locked !== b.locked)
+          ) {
+            await balanceDb.updateData(
+              {
+                asset: b.asset,
+                userId,
+                exchange: e.provider,
+                exchangeUUID: e.uuid,
+                paperContext: paperExchanges.includes(e.provider),
+              },
+              { $set: { free: b.free, locked: b.locked } },
+              false,
+              true,
+            )
           }
-          // Zero out only THIS exchange's stored balances whose asset the
-          // exchange no longer reports. userBalances is read once for the
-          // whole user (all exchanges, both contexts) when no uuid filter is
-          // given, so without the exchangeUUID check every other exchange's
-          // nonzero doc triggered an updateOne here that could never match
-          // (the write filter carries this exchange's uuid) — ~11k wasted
-          // sequential round trips per snapshot for a 35-exchange user, the
-          // whole cost of the 30-40s portfolio "refresh balances".
-          const reportedAssets = new Set(balances.data.map((b) => b.asset))
-          for (const ub of userBalances.data.result) {
-            if (
-              ub.exchangeUUID === e.uuid &&
-              !reportedAssets.has(ub.asset) &&
-              (ub.free > 0 || ub.locked > 0)
-            ) {
-              await balanceDb.updateData(
-                {
-                  asset: ub.asset,
-                  userId,
-                  exchange: e.provider,
-                  exchangeUUID: e.uuid,
-                  paperContext: paperExchanges.includes(e.provider),
-                },
-                { $set: { free: 0, locked: 0 } },
-                false,
-                true,
-              )
-            }
+        }
+        // Zero out only THIS exchange's stored balances whose asset the
+        // exchange no longer reports. userBalances is read once for the
+        // whole user (all exchanges, both contexts) when no uuid filter is
+        // given, so without the exchangeUUID check every other exchange's
+        // nonzero doc triggered an updateOne here that could never match
+        // (the write filter carries this exchange's uuid) — ~11k wasted
+        // sequential round trips per snapshot for a 35-exchange user, the
+        // whole cost of the 30-40s portfolio "refresh balances".
+        const reportedAssets = new Set(balances.data.map((b) => b.asset))
+        for (const ub of userBalances.data.result) {
+          if (
+            ub.exchangeUUID === e.uuid &&
+            !reportedAssets.has(ub.asset) &&
+            (ub.free > 0 || ub.locked > 0)
+          ) {
+            await balanceDb.updateData(
+              {
+                asset: ub.asset,
+                userId,
+                exchange: e.provider,
+                exchangeUUID: e.uuid,
+                paperContext: paperExchanges.includes(e.provider),
+              },
+              { $set: { free: 0, locked: 0 } },
+              false,
+              true,
+            )
           }
         }
       }
     }
   }
+
+  const limit = Math.max(1, Math.min(concurrency, targets.length))
+  if (limit <= 1) {
+    for (const e of targets) {
+      await refreshExchange(e)
+    }
+    return
+  }
+  // Bounded worker pool: `limit` workers pulling from a shared cursor. Each
+  // exchange is isolated — one venue erroring must not abort the refresh of
+  // the others (the sequential loop used to throw out of the whole function).
+  let next = 0
+  await Promise.all(
+    Array.from({ length: limit }, async () => {
+      while (next < targets.length) {
+        const e = targets[next++]
+        try {
+          await refreshExchange(e)
+        } catch (err) {
+          logger.error(
+            `updateUserBalance | ${userId} ${e.provider} ${e.uuid} failed: ${
+              (err as Error)?.message ?? err
+            }`,
+          )
+        }
+      }
+    }),
+  )
 }
 
 const setCoinbaseTimer = async (
@@ -1038,9 +1081,13 @@ const userSnapshots = async (
       logger.error(`Snapshot | Cannot get user rates ${usdRequest.reason}`)
     }
     if (!skipBalance) {
+      // Fetch a single user's exchanges in parallel (a human is waiting on the
+      // portfolio refresh); keep the all-users cron sweep sequential per user,
+      // since it already runs every user concurrently.
+      const perUserConcurrency = id ? balanceFetchConcurrency() : 1
       await Promise.all(
         users.data.result.map((u) =>
-          updateUserBalance(u, uuid, !!paperContext, ec),
+          updateUserBalance(u, uuid, !!paperContext, ec, perUserConcurrency),
         ),
       )
     }
