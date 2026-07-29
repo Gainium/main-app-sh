@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.9] - 2026-07-29
+
+### Fixed
+
+- **The notifications feed took seconds to load for accounts with a lot of bot messages.** `getMessageBot` filters bot messages by `{userId, showUser}` and always sorts newest-first, but the only usable index was `userId` alone — so Mongo fetched every message the account had ever received and sorted them in memory. On a 914k-document collection with a 45.7k-message account that is a 643ms blocking sort for the default feed, and 531ms to return a single 20-row page (all 45.7k documents are read to produce 20 rows). A `{userId, showUser, created:-1}` index lets the sort come straight from the index: the default feed drops to 153ms and a 20-row page to ~1ms / 25 documents examined. `paperContext` is intentionally not part of the key — the live-context filter is `{$ne: true}`, a range rather than an equality, which would stop `created` from supplying the sort order.
+- Searching the notifications feed with "unread only" active also returned already-deleted messages: the search filter overwrote the `$or` holding the unread clause instead of being combined with it. Both clauses are now `$and`-ed together.
+
 ## [1.37.8] - 2026-07-28
 
 ### Fixed

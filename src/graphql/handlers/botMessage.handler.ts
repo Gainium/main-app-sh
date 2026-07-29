@@ -14,18 +14,29 @@ export const getBotMessage = async (
     showUser: true,
     paperContext: paperContext ? { $eq: true } : { $ne: true },
   }
+  // Both clauses are $or's, so they have to be $and'ed together — assigning
+  // filter.$or twice made a search silently drop the unreadOnly (isDeleted)
+  // clause and return already-deleted messages.
+  const clauses: Record<string, unknown>[] = []
   if (unreadOnly) {
-    filter.$or = [{ isDeleted: { $exists: false } }, { isDeleted: false }]
+    clauses.push({
+      $or: [{ isDeleted: { $exists: false } }, { isDeleted: false }],
+    })
   }
   if (search) {
-    filter.$or = [
-      { message: { $regex: search, $options: 'i' } },
-      { botName: { $regex: search, $options: 'i' } },
-      { botId: { $regex: search, $options: 'i' } },
-      { symbol: { $regex: search, $options: 'i' } },
-      { exchange: { $regex: search, $options: 'i' } },
-      { subType: { $regex: search, $options: 'i' } },
-    ]
+    clauses.push({
+      $or: [
+        { message: { $regex: search, $options: 'i' } },
+        { botName: { $regex: search, $options: 'i' } },
+        { botId: { $regex: search, $options: 'i' } },
+        { symbol: { $regex: search, $options: 'i' } },
+        { exchange: { $regex: search, $options: 'i' } },
+        { subType: { $regex: search, $options: 'i' } },
+      ],
+    })
+  }
+  if (clauses.length) {
+    filter.$and = clauses
   }
   const result = await botMessageDb.readData(
     filter,

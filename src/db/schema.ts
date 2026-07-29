@@ -2920,6 +2920,16 @@ export const registerIndexes = () => {
   botMessageSchema.index({
     userId: 1,
   })
+  // Notifications feed (`getMessageBot` → getBotMessage): filters by
+  // {userId, showUser} and always sorts by {created:-1}. The userId-only index
+  // above forces a blocking in-memory SORT over every message the user has ever
+  // had (45k+ docs for heavy users), which is what made the resolver take
+  // seconds. Both leading fields are equality predicates, so `created` supplies
+  // the sort order straight from the index and a paginated page-1 read stops
+  // after ~pageSize keys. `paperContext` is deliberately NOT in the key: the
+  // live-context filter is `{$ne: true}` (a range, not equality), which would
+  // stop `created` from providing the sort — it stays a residual FETCH filter.
+  botMessageSchema.index({ userId: 1, showUser: 1, created: -1 })
 
   botMessageSchema.index({
     userId: 1,
