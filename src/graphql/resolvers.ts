@@ -3082,21 +3082,27 @@ const resolvers = <
         const res = await userDb.aggregate(agg)
         return res
       }
-      const orders = await orderDb.readData(
-        {
-          userId: user.data._id,
-          status: 'FILLED',
-          paperContext: paperContext ? { $eq: true } : { $ne: true },
-        },
-        undefined,
-        {
-          limit: 10,
-          sort: { updateTime: -1 },
-          skip: (input?.page ?? 0) * 10,
-        },
-        true,
-        true,
-      )
+      const ordersSearch = {
+        userId: user.data._id,
+        status: 'FILLED',
+        paperContext: paperContext ? { $eq: true } : { $ne: true },
+      }
+      // `total` below is clamped to 100, so counting every FILLED order the user has
+      // (millions for an active account) only to throw the number away cost seconds.
+      // Bound the count to the ceiling we actually report and run it alongside the page.
+      const [orders, ordersCount] = await Promise.all([
+        orderDb.readData(
+          ordersSearch,
+          undefined,
+          {
+            limit: 10,
+            sort: { updateTime: -1 },
+            skip: (input?.page ?? 0) * 10,
+          },
+          true,
+        ),
+        orderDb.countData(ordersSearch, 100),
+      ])
       const bots: Types.ObjectId[] = []
       ;(orders.data?.result ?? []).map((o: ExcludeDoc<OrderSchema>) => {
         bots.push(new Types.ObjectId(o.botId))
@@ -3171,9 +3177,10 @@ const resolvers = <
               : null,
         },
         total:
-          orders.status === StatusEnum.notok
+          orders.status === StatusEnum.notok ||
+          ordersCount.status === StatusEnum.notok
             ? 0
-            : Math.min(100, orders.data.count),
+            : Math.min(100, ordersCount.data.result),
       }
     },
     getAllOpenOrders: async (

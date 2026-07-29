@@ -430,25 +430,36 @@ class MongoCrud<T = any> {
       )(e as Error)
     }
   }
-  /** Count documents */
-
+  /**
+   * Count documents
+   * @param {object | undefined} [search] search object. Default = {}
+   * @param {number | undefined} [limit] stop counting once this many matches are found
+   * (0 = count them all). Use it when the caller only needs the count up to a ceiling —
+   * counting every match of a broad filter walks the whole matching set, which costs
+   * seconds on the big collections (orders). Default = 0
+   * @returns {Promise<ErrorResponse | DataResponse>} count or error
+   */
   async countData(
     search: QueryFilter<ExcludeDoc<T>> = {},
+    limit = 0,
     count = 0,
   ): Promise<ErrorResponse | DataResponse<{ result: number }>> {
     try {
       const data = await this.getClient()
         .then(async () => {
-          const result = await this.model.countDocuments(search)
+          const result = await this.model.countDocuments(
+            search,
+            limit > 0 ? { limit } : undefined,
+          )
           return this.returnData({
             result,
           })
         })
-        .catch(this.handleError(this.countData, search, count))
+        .catch(this.handleError(this.countData, search, limit, count))
       return data
     } catch (e) {
       logger.error(`MongoCrud count data | ${(e as Error)?.message ?? e}`)
-      return this.handleError(this.countData, search, count)(e as Error)
+      return this.handleError(this.countData, search, limit, count)(e as Error)
     }
   }
   /**

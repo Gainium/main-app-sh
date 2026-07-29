@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.10] - 2026-07-29
+
+### Fixed
+
+- **The "latest orders" list took seconds to load for accounts with a long trading history.** `getLatestOrders` asks for the 10 newest filled orders — `{userId, status:'FILLED', paperContext}` sorted newest-first — but the only usable index was `userId` alone, so Mongo read every order the account had ever filled (up to 4.2M on prod) and sorted them in memory to hand back 10 rows. On a seeded 1.38M-document collection that is a 3.6s blocking sort examining 1,140,000 documents; on prod it produced 8 slow-query warnings in 4 hours, worst 9.6s. A `{userId, updateTime:-1}` index restricted to `status:'FILLED'` lets the sort come straight from the index: 12 documents examined and ~15ms. The index is deliberately partial — `updateTime` moves while an order is still working, but an order is frozen once it fills, so entries are written once and never shuffle, and the busy `NEW`/`PARTIALLY_FILLED` writes never touch the index at all (measured no write cost versus having no index at all). `paperContext` is intentionally not part of the key — the live-context filter is `{$ne: true}`, a range rather than an equality, which would stop `updateTime` from supplying the sort order.
+- The same list also counted **every** filled order on the account just to show a total that is capped at 100 — on its own a 3-8s query, and the larger half of the delay. `countData` now takes an optional ceiling, and the count runs alongside the page fetch rather than after it.
+
 ## [1.37.9] - 2026-07-29
 
 ### Fixed

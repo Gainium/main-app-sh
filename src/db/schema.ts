@@ -2991,6 +2991,36 @@ export const registerIndexes = () => {
   orderSchema.index({ userId: 1 })
   orderSchema.index({ botId: 1 })
 
+  // Latest-orders list (getLatestOrders resolver: find({userId,status:'FILLED',
+  // paperContext}).sort({updateTime:-1}).limit(10)). With only {userId:1} the planner
+  // does SORT <- FETCH <- IXSCAN(userId_1): it pulls EVERY order the user ever filled
+  // (up to 4.2M on prod) and blocking-sorts them to return 10. Measured on a seeded
+  // 1.38M-doc collection: 1,140,000 docsExamined, 3.6s (prod: 8 SlowGraphQL hits in 4h,
+  // worst 9.6s). With this index: 12 docsExamined, ~15ms.
+  //
+  // PARTIAL on purpose, same reasoning as fillFailsafe_resting below. `updateTime` IS
+  // mutable while an order is working (NEW -> PARTIALLY_FILLED bumps it on every fill
+  // event), and indexing mutable order fields regressed writes badly once before
+  // (2026-07 audit) because the entry MOVES in the btree on every change. Restricting
+  // membership to status:'FILLED' makes that impossible: updateOrderOnDb
+  // (core/src/bot/main.ts) refuses to update an order once it is FILLED or CANCELED, so
+  // an entry is inserted ONCE at the terminal transition and never moves again, and the
+  // churny NEW/PARTIALLY_FILLED writes never touch this index at all. Measured over
+  // 20k full order lifecycles: partial 2567ms vs 3141ms with NO index at all, vs 3321ms
+  // for a plain {userId,updateTime} — i.e. no write cost, unlike the plain variant.
+  //
+  // paperContext is deliberately NOT in the key: it is queried as {$ne:true} for real
+  // money, and putting it in the key made the planner abandon this index and fall back
+  // to the blocking SORT (verified). Left as a residual filter it costs 2 extra doc
+  // fetches (12 examined -> 10 returned).
+  orderSchema.index(
+    { userId: 1, updateTime: -1 },
+    {
+      name: 'latestOrders_filled',
+      partialFilterExpression: { status: 'FILLED' },
+    },
+  )
+
   // Fill-failsafe resting-order lookup (src/fillFailsafe/registry.ts getOrdersFromDb).
   // Without this the query COLLSCANs all ~16M orders every FF_ORDERS_REFRESH_MS (30s):
   // measured on prod 2026-07-17 at p50 6.5s, 18.5M docsExamined -> 101 returned, and
