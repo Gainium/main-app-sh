@@ -2989,6 +2989,21 @@ function createDCABotHelper<
                   )
                 : true),
       )
+      // `allForSymbol` is built from the indicators currently held in
+      // `this.indicators`, so a leg that is not loaded for this symbol (failed
+      // `sendIndicatorSubscribeEvent`, or not warmed up yet after a re-arm)
+      // silently disappears from its group. An `and` group is checked as
+      // "every leg present is true", so the surviving legs alone can satisfy it
+      // — e.g. `MA cross AND RSI < 100` collapses to the always-true RSI leg and
+      // opens a deal whose real conditions were never met. Treat a group with a
+      // configured-but-missing leg as unevaluable instead.
+      const groupsWithMissingLeg = new Set<string>(
+        (settings.indicators ?? [])
+          .filter(
+            (i) => !!i.groupId && !this.indicators.get(`${i.uuid}@${symbol}`),
+          )
+          .map((i) => i.groupId as string),
+      )
       const allForSymbolCloseSl =
         action === IndicatorAction.closeDeal && section === IndicatorSection.sl
           ? allForSymbol.filter(
@@ -3224,7 +3239,9 @@ function createDCABotHelper<
               )
               return !!(ig.logic === IndicatorsLogicEnum.or
                 ? findAllStatus.length > 0
-                : findAll.length && findAll.length === findAllStatus.length)
+                : findAll.length &&
+                  findAll.length === findAllStatus.length &&
+                  !groupsWithMissingLeg.has(ig.id))
             })
       if (
         (settings.startBotLogic === IndicatorsLogicEnum.and ||
@@ -3268,7 +3285,9 @@ function createDCABotHelper<
               const findAllStatus = allOpen.filter((i) => i.groupId === ig.id)
               return !!(ig.logic === IndicatorsLogicEnum.or
                 ? findAllStatus.length > 0
-                : findAll.length && findAll.length === findAllStatus.length)
+                : findAll.length &&
+                  findAll.length === findAllStatus.length &&
+                  !groupsWithMissingLeg.has(ig.id))
             })
       if (
         (settings.startDealLogic === IndicatorsLogicEnum.and ||
