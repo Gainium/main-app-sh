@@ -2926,10 +2926,30 @@ export const registerIndexes = () => {
   // had (45k+ docs for heavy users), which is what made the resolver take
   // seconds. Both leading fields are equality predicates, so `created` supplies
   // the sort order straight from the index and a paginated page-1 read stops
-  // after ~pageSize keys. `paperContext` is deliberately NOT in the key: the
-  // live-context filter is `{$ne: true}` (a range, not equality), which would
-  // stop `created` from providing the sort — it stays a residual FETCH filter.
+  // after ~pageSize keys.
   botMessageSchema.index({ userId: 1, showUser: 1, created: -1 })
+  // …but {userId, showUser} alone leaves paperContext and isDeleted as residual
+  // FETCH filters, so the index only removed the blocking SORT — every one of the
+  // account's messages was still fetched to produce the page, then fetched again
+  // for the unbounded `total` count. The comment above deliberately kept
+  // paperContext out of the key because the live filter was `{$ne: true}`, a
+  // range; getBotMessage now expresses paperContext AND isDeleted as point-sets
+  // ($in over the only values a Boolean-or-absent field can hold), which is what
+  // makes them indexable here. Mongo explodes the point intervals into a
+  // SORT_MERGE that still yields {created:-1} from the index, so there is no
+  // blocking sort. Measured on a seeded 801,949-message account in the reporter's
+  // shape: the live feed went from 801,949 keys + 801,949 docs examined (11.0s)
+  // to 2 keys + 2 docs (~10ms).
+  // NOTE: the {userId, showUser, created:-1} index above is NOT redundant — the
+  // two extra equality fields sit between showUser and created, so it is still
+  // the only index that can sort a {userId, showUser}-only query.
+  botMessageSchema.index({
+    userId: 1,
+    showUser: 1,
+    paperContext: 1,
+    isDeleted: 1,
+    created: -1,
+  })
 
   botMessageSchema.index({
     userId: 1,

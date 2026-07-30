@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.37.12] - 2026-07-30
+
+### Fixed
+
+- **The notifications feed still took up to 18 seconds for accounts with a very large message history, even after the index added in 1.37.9.** That index removed the in-memory sort but left `paperContext` and `isDeleted` as filters Mongo could only apply after loading each document, so the feed still read every message the account had ever received — and then read them all a second time to produce the total. On a seeded 801,949-message account the live feed examined all 801,949 documents to return 2 rows (11.0s), and the paper feed returned 793,679 rows / 308MB of JSON in 22.7s to fill a panel that shows 20. Both filters are now written as exact value lists rather than "not equal" / "does not exist" tests, which lets a new index cover them while still supplying the newest-first order: the live feed drops to 2 documents examined and about 10ms, the paper feed to ~250ms.
+- The feed's default load, which the dashboard sends with no paging parameters at all (including the navbar mount that only wants unread counts), was **unbounded** — it fetched and serialised the account's entire message history. It is now capped well above what the panel can display, so smaller accounts are byte-for-byte unchanged.
+- The accompanying total is capped the same way instead of counting every matching message, which was on its own about a third of the delay. Accounts above the cap now report the cap rather than an exact figure; the current dashboard does not display this value, and the legacy notifications page uses it only to size its pager.
+
 ## [1.37.11] - 2026-07-30
 
 ### Fixed

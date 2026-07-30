@@ -1,6 +1,18 @@
 import { DEFAULT_DB_LIMIT, StatusEnum } from '../../../types'
 import { botMessageDb } from '../../db/dbInit'
 
+// The notifications panel asks for its default page-1 load with NO input at all
+// (main-dash-redesign `useNotifications` sends no `input` when
+// page === 1 && !search && !unreadOnly, which is also what the Navbar's
+// count-only mount does), so `pageSize` arrives undefined here. That used to
+// mean "no limit", which made the resolver fetch AND serialise every message the
+// account had ever received. Measured on a seeded 801,949-message account in the
+// reporter's shape: the paper feed returned 793,679 rows / 308MB of JSON in 22.7s
+// to render a 20-row panel. Bound the unpaginated feed instead: it is far deeper
+// than the panel can display, and the rows and `total` stay byte-identical for
+// every account below the bound.
+const UNPAGINATED_FEED_LIMIT = 5000
+
 export const getBotMessage = async (
   userId: string,
   paperContext: boolean,
@@ -9,52 +21,65 @@ export const getBotMessage = async (
   pageSize?: number,
   search?: string,
 ) => {
+  // Point-set (equality) predicates only. `{$ne: true}` and `$exists` are
+  // RANGES, which Mongo can only apply as residual FETCH filters — that is what
+  // forced a fetch of all 801,949 of the account's docs to return the 2 rows its
+  // live feed actually holds. `$in`
+  // over the actual values yields exact index bounds that the
+  // {userId, showUser, paperContext, isDeleted, created} index can serve, and
+  // SORT_MERGE still supplies {created: -1} straight from the index, so there is
+  // no blocking in-memory sort. `$in: [false, null]` also matches docs where the
+  // field is absent, so it is equivalent to the old `$exists`/`$ne` forms.
+  // isDeleted is ALWAYS constrained (to every value when !unreadOnly) — leaving
+  // a hole in the middle of the index key would cost the index-provided sort.
   const filter: Record<string, unknown> = {
     userId,
     showUser: true,
-    paperContext: paperContext ? { $eq: true } : { $ne: true },
-  }
-  // Both clauses are $or's, so they have to be $and'ed together — assigning
-  // filter.$or twice made a search silently drop the unreadOnly (isDeleted)
-  // clause and return already-deleted messages.
-  const clauses: Record<string, unknown>[] = []
-  if (unreadOnly) {
-    clauses.push({
-      $or: [{ isDeleted: { $exists: false } }, { isDeleted: false }],
-    })
+    paperContext: paperContext ? true : { $in: [false, null] },
+    isDeleted: unreadOnly
+      ? { $in: [false, null] }
+      : { $in: [true, false, null] },
   }
   if (search) {
-    clauses.push({
-      $or: [
-        { message: { $regex: search, $options: 'i' } },
-        { botName: { $regex: search, $options: 'i' } },
-        { botId: { $regex: search, $options: 'i' } },
-        { symbol: { $regex: search, $options: 'i' } },
-        { exchange: { $regex: search, $options: 'i' } },
-        { subType: { $regex: search, $options: 'i' } },
-      ],
-    })
+    filter.$or = [
+      { message: { $regex: search, $options: 'i' } },
+      { botName: { $regex: search, $options: 'i' } },
+      { botId: { $regex: search, $options: 'i' } },
+      { symbol: { $regex: search, $options: 'i' } },
+      { exchange: { $regex: search, $options: 'i' } },
+      { subType: { $regex: search, $options: 'i' } },
+    ]
   }
-  if (clauses.length) {
-    filter.$and = clauses
-  }
+  const cappedPageSize = pageSize
+    ? Math.min(pageSize, DEFAULT_DB_LIMIT)
+    : undefined
   const result = await botMessageDb.readData(
     filter,
     undefined,
     {
-      limit: pageSize ? Math.min(pageSize, DEFAULT_DB_LIMIT) : undefined,
-      skip: ((page ?? 1) - 1) * (pageSize ?? 0),
+      limit: cappedPageSize ?? UNPAGINATED_FEED_LIMIT,
+      skip: ((page ?? 1) - 1) * (cappedPageSize ?? 0),
       sort: { created: -1 },
     },
     true,
-    true,
+    false,
   )
-  return result.status === StatusEnum.notok
-    ? result
-    : {
-        ...result,
-        total: result.data.count,
-      }
+  if (result.status === StatusEnum.notok) {
+    return result
+  }
+  // Bound the count the same way. `readData`'s own `countNeed` runs an unbounded
+  // countDocuments, which repeated the identical full scan a second time —
+  // measured at 3.5s of the live feed's 11.0s on the seeded account. countData's
+  // `limit` arg caps it, so the worst case is UNPAGINATED_FEED_LIMIT keys instead
+  // of the whole collection.
+  const count = await botMessageDb.countData(filter, UNPAGINATED_FEED_LIMIT)
+  return {
+    ...result,
+    total:
+      count.status === StatusEnum.notok
+        ? result.data.result.length
+        : count.data.result,
+  }
 }
 
 export const deleteBotMessage = async (userId: string, messageId?: string) => {
