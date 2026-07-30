@@ -351,6 +351,11 @@ class InternalIndicator {
   }
   private closed = false
   private allowedToProcessPriceUpdate = false
+  /**
+   * Boot id of the price connector this indicator last armed its candle
+   * subscription against. See `processServiceLog`.
+   */
+  private priceConnectorBootId: string | null = null
   private redisClient: RedisWrapper | null = null
   private redisPublisher: RedisWrapper | null = null
   private test = false
@@ -1115,9 +1120,48 @@ class InternalIndicator {
     }
   }
 
+  /**
+   * Candle subscriptions live only in the price connector's memory, so every
+   * connector restart drops ours and we have to re-request it.
+   *
+   * The one-shot `{restart:'priceConnector'}` broadcast is not enough on its
+   * own: Redis pub/sub has no delivery guarantee, and the connector's boot
+   * publish used to no-op entirely (it ran before its Redis client was ready).
+   * When that message is lost this indicator stays subscribed to a channel
+   * nobody publishes to, and only recovers when the whole indicators process
+   * restarts — silently, because `checkCandle` keeps back-filling each close
+   * from the archive, so the values look plausible while realtime candle
+   * updates are gone.
+   *
+   * So we also track the connector's boot id — carried on both the broadcast
+   * and its repeating `priceConnectorAlive` beacon — and re-request whenever it
+   * changes. A *first* beacon only adopts the id: whatever armed this
+   * subscription (construction, `loadData`, or a broadcast) already sent the
+   * request, and `candlesRequests` is a durable queue, so a request made while
+   * the connector was down is delivered when it comes back.
+   */
   private processServiceLog(msg: string) {
-    const restart = JSON.parse(msg)?.restart
-    if (restart === 'priceConnector') {
+    const parsed = JSON.parse(msg)
+    const isBroadcast = parsed?.restart === 'priceConnector'
+    const bootId = isBroadcast
+      ? parsed?.bootId
+      : parsed?.priceConnectorAlive?.bootId
+    if (typeof bootId !== 'string') {
+      // Connector predates the beacon: nothing to compare, honour the
+      // broadcast on its own as before.
+      if (isBroadcast) {
+        this.connectCandle()
+      }
+      return
+    }
+    if (bootId === this.priceConnectorBootId) {
+      return
+    }
+    const known = this.priceConnectorBootId !== null
+    this.priceConnectorBootId = bootId
+    // A broadcast is a definite "your subscription is gone". A first beacon is
+    // not — we may have just armed it ourselves.
+    if (known || isBroadcast) {
       this.connectCandle()
     }
   }

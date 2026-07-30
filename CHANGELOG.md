@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.37.11] - 2026-07-30
+
+### Fixed
+
+- **Live indicators stopped receiving realtime candles after every price-connector restart and only recovered when the indicators process itself restarted.** Candle subscriptions live only in the connector's memory, so it broadcasts `{restart:'priceConnector'}` on `serviceLog` to make consumers re-request them — but that publish never actually went out (fixed connector-side in websocket-connector-sh 1.13.7), and even when it does, Redis pub/sub gives no delivery guarantee. A consumer that misses it stays subscribed to a channel nobody publishes to, invisibly: `checkCandle` keeps back-filling each close from the archive, so indicator values still look plausible while realtime intra-candle updates are gone. `processServiceLog` now also tracks the connector's boot id from its repeating `priceConnectorAlive` beacon and re-requests when the id changes, so a lost broadcast self-heals within a beacon interval. A first-seen beacon only adopts the id — the subscription was just armed, and `candlesRequests` is a durable queue, so a request sent while the connector was down is delivered on its return. The boot id also rides on the broadcast itself so the broadcast and the beacon that follows it don't both re-request.
+
 ## [1.37.10] - 2026-07-29
 
 ### Fixed
