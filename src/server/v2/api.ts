@@ -44,6 +44,7 @@ import {
   checkDCADealSettings,
   checkDCABotSettings,
   checkPairs,
+  isXperpPair,
 } from '../../bot/utils'
 import {
   dcaBotDb,
@@ -3953,6 +3954,13 @@ const v2API = <R extends UserSchema = UserSchema>(
       const foundPairs = [payload.data.settings.pair]
         .flat()
         .map((pp) => {
+          // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the
+          // canonical exchange-native pair string; splitting on `_` would
+          // tear the `_UM_XPERP` contract-type suffix apart instead of
+          // base/quote.
+          if (isXperpPair(pp)) {
+            return pairs.data.result?.find((p) => p.pair === pp)
+          }
           const [base, quote] = pp.split('_')
           return pairs.data.result?.find(
             (p) => p.baseAsset.name === base && p.quoteAsset.name === quote,

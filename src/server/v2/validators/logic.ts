@@ -20,6 +20,7 @@ import { ValidationResult } from './bots/config'
 import { CreateDCABotInputRaw } from '../api'
 import { DCA_FORM_DEFAULTS } from '../botDefaults'
 import { Types } from 'mongoose'
+import { isXperpPair } from '../../../bot/utils'
 
 const indicatorsCheck: {
   condition: (input: CreateDCABotInput) => boolean
@@ -167,6 +168,12 @@ export const validateCreateDCABotInputLogic = async <
 
   const foundPairs = input.pair
     .map((p) => {
+      // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the canonical
+      // exchange-native pair string; splitting on `_` would tear the
+      // `_UM_XPERP` contract-type suffix apart instead of base/quote.
+      if (isXperpPair(p)) {
+        return readPairsForExchange.data.result.find((pair) => pair.pair === p)
+      }
       const [base, quote] = p.split('_')
       return readPairsForExchange.data.result.find(
         (pair) =>
@@ -184,7 +191,9 @@ export const validateCreateDCABotInputLogic = async <
     const invalidPairs = input.pair.filter(
       (p) =>
         !foundPairs.find(
-          (fp) => `${fp.baseAsset.name}_${fp.quoteAsset.name}` === p,
+          (fp) =>
+            fp.pair === p ||
+            `${fp.baseAsset.name}_${fp.quoteAsset.name}` === p,
         ),
     )
     response.errors.push([
@@ -601,13 +610,21 @@ export const validateCreateGridBotInputLogic = async (
       `Orders in advance must be less than or equal to levels`,
     ])
   }
-  const [base, quote] = input.pair.split('_')
+  // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the canonical
+  // exchange-native pair string; splitting on `_` would tear the
+  // `_UM_XPERP` contract-type suffix apart instead of base/quote.
+  const pairFilter = isXperpPair(input.pair)
+    ? { exchange: input.exchange, pair: input.pair }
+    : (() => {
+        const [base, quote] = input.pair.split('_')
+        return {
+          exchange: input.exchange,
+          'baseAsset.name': base.trim(),
+          'quoteAsset.name': quote.trim(),
+        }
+      })()
   const readPairForExchange = await pairDb.readData<{ pair: string }>(
-    {
-      exchange: input.exchange,
-      'baseAsset.name': base.trim(),
-      'quoteAsset.name': quote.trim(),
-    },
+    pairFilter,
     { pair: 1 },
   )
 

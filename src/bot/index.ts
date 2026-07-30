@@ -82,6 +82,7 @@ import {
   getObjectsDiff,
   combineMaps,
   convertHedgeComboBotToArray,
+  isXperpPair,
   updateRelatedBotsInVar,
 } from './utils'
 import DCAUtils from './dca/utils'
@@ -2878,6 +2879,14 @@ class Bot<T extends UserSchema = UserSchema> {
       reason: null,
       data: pairs
         .map((p) => {
+          // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the
+          // canonical exchange-native pair string - splitting them on `_`
+          // would tear the `_UM_XPERP` contract-type suffix apart instead
+          // of separating base/quote, so match those directly first.
+          if (isXperpPair(p)) {
+            const direct = pairsFromDb?.data?.result.find((f) => f.pair === p)
+            return direct ?? null
+          }
           const split = p.split('_')
           const find = pairsFromDb?.data?.result.find(
             (f) =>

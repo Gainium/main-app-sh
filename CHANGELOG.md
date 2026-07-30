@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.38.0] - 2026-07-30
+
+### Added
+
+- OKX Europe X-Perp futures (Phase 2 of the OKX-EU work): `getAccountFuturesExchangeInfo()` exchange-client counterpart, `updateOkxEuPerpPairs()` keyless cron refresh of the X-Perp universe into `pairs` as `source: 'my'` (real + paper ids), and `updateOkxEuSpotApproxPairs()` — a keyless EUR/USDC spot approximation that seeds EU spot until a real my.okx.com account connects (tracked via the new `approx` pair flag, never overwrites real data). EU futures adds now create only the Linear leg (the EU venue has no inverse product). Contributed by community member discord2020 (forum topic 4925).
+
+### Fixed
+
+- X-Perp pair symbols (`BASE-QUOTE_UM_XPERP`) no longer get torn apart by legacy `BASE_QUOTE` split parsing in deal-start pair validation, bot pair checks, the v2 create-bot validators, and server-side backtest pair resolution (fix by discord2020).
+- `updateOkxEuPairs()` now takes plaintext keys and encrypts internally — passing already-encrypted keys corrupted the passphrase on decrypt (fix by discord2020).
+
 ## [1.37.12] - 2026-07-30
 
 ### Fixed

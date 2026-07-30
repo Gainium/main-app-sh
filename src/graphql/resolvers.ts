@@ -121,6 +121,8 @@ import { resetUser } from '../utils/user'
 import { mapDataGridOptionsToMongoOptions } from '../db/utils'
 import Exchange from '../exchange/exchange'
 import ExchangeChooser from '../exchange/exchangeChooser'
+import { updateOkxEuPairs } from '../utils/cron/exchange'
+import { OKXSource } from '../../types'
 import {
   cancelOrderOnExchange,
   getAllOpenOrders,
@@ -3780,6 +3782,9 @@ const resolvers = <
         find.key,
         find.secret,
         find.passphrase,
+        undefined,
+        undefined,
+        find.okxSource,
       ).futures_leverageBracket()
     },
     getBacktestByShareId: async (
@@ -5466,13 +5471,21 @@ const resolvers = <
                   ? [ExchangeEnum.kucoinInverse, ExchangeEnum.kucoinLinear]
                   : tt === TradeTypeEnum.futures &&
                       provider === ExchangeEnum.okx
-                    ? [ExchangeEnum.okxInverse, ExchangeEnum.okxLinear]
+                    ? // OKX Europe (my.okx.com) only offers linear X-Perps, no
+                      // inverse/COIN-M product — splitting off an Inverse leg
+                      // for it left users with an unrequested, untradeable
+                      // sub-account defaulted to 0.5 BTC (see isAllCoinm below).
+                      okxSource === OKXSource.my
+                      ? [ExchangeEnum.okxLinear]
+                      : [ExchangeEnum.okxInverse, ExchangeEnum.okxLinear]
                     : tt === TradeTypeEnum.futures &&
                         provider === ExchangeEnum.paperOkx
-                      ? [
-                          ExchangeEnum.paperOkxInverse,
-                          ExchangeEnum.paperOkxLinear,
-                        ]
+                      ? okxSource === OKXSource.my
+                        ? [ExchangeEnum.paperOkxLinear]
+                        : [
+                            ExchangeEnum.paperOkxInverse,
+                            ExchangeEnum.paperOkxLinear,
+                          ]
                       : tt === TradeTypeEnum.futures &&
                           provider === ExchangeEnum.binance
                         ? [ExchangeEnum.binanceCoinm, ExchangeEnum.binanceUsdm]
@@ -5881,6 +5894,24 @@ const resolvers = <
                 true,
               ),
             )
+        }
+        // OKX Europe (my.okx.com) accounts: refresh the account-scoped SPOT
+        // universe (USDC/EUR — the public feed advertises USDT the account can't
+        // trade) so this EU account and every paper OKX-EU user see the real
+        // pairs. X-Perps come from the keyless global cron. Fire-and-forget; keys
+        // are the plaintext input (real accounts only — paper keys are random).
+        if (
+          okxSource === OKXSource.my &&
+          provider.toLowerCase().includes('okx') &&
+          !paperExchanges.includes(provider) &&
+          key &&
+          secret
+        ) {
+          void updateOkxEuPairs({ key, secret, passphrase }).catch((e) =>
+            logger.error(
+              `OKX-EU pairs | spot refresh on addExchange failed: ${e}`,
+            ),
+          )
         }
         return {
           status: StatusEnum.ok,

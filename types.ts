@@ -2307,6 +2307,17 @@ export interface PairsSchema extends SchemaI {
    * bot form serves an account its pairs by matching (exchange, source=okxSource).
    */
   source?: OKXSource
+  /**
+   * True when this `source: 'my'` row came from the keyless spot approximation
+   * (`updateOkxEuSpotApproxPairs`: public global instruments filtered to
+   * quoteCcy ∈ {EUR, USDC} and baseCcy ≠ USDT — verified 2026-07 to match the
+   * real, authenticated `/account/instruments` list exactly) rather than a
+   * real connected my.okx.com account. Lets the approximation cron detect
+   * genuine authoritative data (any row with `approx` absent/false) and skip
+   * itself so it never overwrites a real account's data. Absent/false for
+   * every non-approximated row (including every non-OKX-EU pair).
+   */
+  approx?: boolean
   baseAsset: {
     minAmount: number
     maxAmount: number

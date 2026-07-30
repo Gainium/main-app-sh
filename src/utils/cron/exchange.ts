@@ -1,5 +1,6 @@
 import ExchangeChooser from '../../exchange/exchangeChooser'
 import logger from '../../utils/logger'
+import { encrypt } from '../crypto'
 import { brokerCodesDb, pairDb, rateDb } from '../../db/dbInit'
 import RedisClient from '../../db/redis'
 import { isPaper } from '../../exchange/paper/utils'
@@ -9,6 +10,7 @@ import {
   ExchangeEnum,
   type ClearPairsSchema,
   type AssetClass,
+  type ExchangeInfo,
   StatusEnum,
   OKXSource,
 } from '../../../types'
@@ -290,50 +292,43 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
  *
  * Phase 1 = spot only; X-Perp futures (instType FUTURES) are handled separately.
  */
-export async function updateOkxEuPairs(auth: {
-  key: string
-  secret: string
-  passphrase?: string
-}): Promise<void> {
-  const factory = ExchangeChooser.chooseExchangeFactory(ExchangeEnum.okx)
-  if (!factory) return
-  const exchange = factory(
-    auth.key,
-    auth.secret,
-    auth.passphrase,
-    undefined,
-    undefined,
-    OKXSource.my,
-  )
-  const info = await exchange.getAccountSpotExchangeInfo()
-  if (info.status !== StatusEnum.ok) {
-    logger.error(`OKX-EU pairs | fetch failed: ${info.reason}`)
-    return
-  }
-  if (!info.data.length) {
-    // Never wipe the shared list off an empty/error response.
-    logger.error('OKX-EU pairs | empty instrument list; skipping reconcile')
+/**
+ * Reconcile an OKX Europe (`source: 'my'`) instrument list into the shared `pairs`
+ * collection under `exchange`, writing only changed rows and pruning stale ones.
+ * Shared by the SPOT and X-Perp refreshers, and used for both the real exchange id
+ * (okx / okxLinear) and its paper twin (paperOkx / paperOkxLinear) so EU accounts
+ * see their real universe in live and paper alike. Never wipes on an empty list.
+ */
+async function reconcileEuPairs(
+  exchange: ExchangeEnum,
+  data: (ExchangeInfo & { pair: string })[],
+  approx = false,
+): Promise<void> {
+  if (!data.length) {
+    logger.error(
+      `OKX-EU pairs | ${exchange} empty instrument list; skipping reconcile`,
+    )
     return
   }
   const existing = await pairDb.readData<ClearPairsSchema>(
-    { exchange: ExchangeEnum.okx, source: OKXSource.my },
+    { exchange, source: OKXSource.my },
     undefined,
     {},
     true,
     true,
   )
   if (existing.status !== StatusEnum.ok) {
-    logger.error(`OKX-EU pairs | read failed: ${existing.reason}`)
+    logger.error(`OKX-EU pairs | ${exchange} read failed: ${existing.reason}`)
     return
   }
   const dbByPair = new Map(existing.data.result.map((p) => [p.pair, p]))
   const seen = new Set<string>()
   let created = 0
   let updated = 0
-  for (const item of info.data) {
+  for (const item of data) {
     seen.add(item.pair)
     const assetCategory = classifyAssetClass({
-      exchange: ExchangeEnum.okx,
+      exchange,
       pair: item.pair,
       baseAsset: item.baseAsset.name,
       quoteAsset: item.quoteAsset.name,
@@ -341,9 +336,10 @@ export async function updateOkxEuPairs(auth: {
     })
     const doc = {
       ...item,
-      exchange: ExchangeEnum.okx,
+      exchange,
       source: OKXSource.my,
       assetCategory,
+      approx,
     }
     const found = dbByPair.get(item.pair)
     if (!found) {
@@ -352,15 +348,18 @@ export async function updateOkxEuPairs(auth: {
       continue
     }
     // Only write when a tracked field actually changed — the EU set is stable,
-    // so most reconciles are no-ops.
+    // so most reconciles are no-ops. `multiplier` matters for X-Perps (contract
+    // size); it's undefined for spot so this stays a no-op there.
     const changed =
       found.wsCode !== item.wsCode ||
       found.code !== item.code ||
       found.assetCategory !== assetCategory ||
+      Boolean(found.approx) !== approx ||
       found.baseAsset.name !== item.baseAsset.name ||
       found.baseAsset.minAmount !== item.baseAsset.minAmount ||
       found.baseAsset.step !== item.baseAsset.step ||
       found.baseAsset.maxAmount !== item.baseAsset.maxAmount ||
+      found.baseAsset.multiplier !== item.baseAsset.multiplier ||
       found.quoteAsset.name !== item.quoteAsset.name ||
       found.quoteAsset.minAmount !== item.quoteAsset.minAmount ||
       found.priceAssetPrecision !== item.priceAssetPrecision
@@ -376,17 +375,129 @@ export async function updateOkxEuPairs(auth: {
   if (stale.length) {
     await pairDb.deleteManyData({ _id: { $in: stale } })
   }
-  const redis = await RedisClient.getInstance()
-  redis?.publish(
-    'updateexchangeInfo',
-    JSON.stringify({
-      exchange: ExchangeEnum.okx,
-      pairs: info.data.map((p) => p.pair),
-    }),
-  )
+  // Live bots subscribe on the real ids only; paper twins need no broadcast.
+  if (!isPaper(exchange)) {
+    const redis = await RedisClient.getInstance()
+    redis?.publish(
+      'updateexchangeInfo',
+      JSON.stringify({ exchange, pairs: data.map((p) => p.pair) }),
+    )
+  }
   logger.debug(
-    `OKX-EU pairs | reconciled ${info.data.length} (${created} new, ${updated} changed, ${stale.length} removed)`,
+    `OKX-EU pairs | ${exchange} reconciled ${data.length} (${created} new, ${updated} changed, ${stale.length} removed)`,
   )
+}
+
+/**
+ * Refresh the OKX Europe (`okxSource=my`) authoritative SPOT pair universe
+ * (USDC/EUR) for both the real (`okx`) and paper (`paperOkx`) ids. Account-scoped
+ * and account-agnostic — any connected EU account refreshes it for every EU user.
+ */
+export async function updateOkxEuPairs(auth: {
+  key: string
+  secret: string
+  passphrase?: string
+}): Promise<void> {
+  const factory = ExchangeChooser.chooseExchangeFactory(ExchangeEnum.okx)
+  if (!factory) return
+  // `Exchange`'s constructor (via AbstractExchange) unconditionally decrypts
+  // key/secret/passphrase, since every other caller passes them straight out
+  // of the DB (encrypted at rest). `auth` here is the raw plaintext addExchange
+  // input, never encrypted — decrypting it as-if it were ciphertext silently
+  // corrupts it (CryptoJS decrypt of a non-ciphertext string), most visibly
+  // emptying the passphrase, which the connector then rejects with
+  // "Private endpoints require api and secret ... in the REST client
+  // constructor". Encrypt here first so the constructor's decrypt round-trips
+  // correctly — mirrors what the real-account creation path above already
+  // does (`encrypt(key), encrypt(secret), passphrase ? encrypt(passphrase) : ''`).
+  const exchange = factory(
+    encrypt(auth.key),
+    encrypt(auth.secret),
+    auth.passphrase ? encrypt(auth.passphrase) : '',
+    undefined,
+    undefined,
+    OKXSource.my,
+  )
+  const info = await exchange.getAccountSpotExchangeInfo()
+  if (info.status !== StatusEnum.ok) {
+    logger.error(`OKX-EU pairs | spot fetch failed: ${info.reason}`)
+    return
+  }
+  await reconcileEuPairs(ExchangeEnum.okx, info.data)
+  await reconcileEuPairs(ExchangeEnum.paperOkx, info.data)
+}
+
+/**
+ * Keyless best-effort stand-in for `updateOkxEuPairs`, for instances where no
+ * real my.okx.com account has ever connected (paper-only self-hosters). OKX's
+ * public spot instrument list is identical globally and via eea.okx.com (no
+ * region filtering in public market data — verified 2026-07), so the true
+ * EU-tradeable set can't be read off it directly. But filtering that public
+ * list to `quoteCcy ∈ {EUR, USDC}` and `baseCcy !== 'USDT'` (USDT itself isn't
+ * offered on the EU venue, so e.g. `USDT-EUR` must also be excluded) was
+ * verified 2026-07 against a real connected EU account's authoritative
+ * `/account/instruments` response: **exact match, all 528 pairs, zero
+ * discrepancies either direction**. Never overwrites real data — skips
+ * entirely if any non-approximated (`approx` absent/false) row already exists
+ * for `okx`, so a real account connecting later always wins and stays won.
+ */
+export async function updateOkxEuSpotApproxPairs(): Promise<void> {
+  const existingReal = await pairDb.readData<ClearPairsSchema>(
+    { exchange: ExchangeEnum.okx, source: OKXSource.my, approx: { $ne: true } },
+    undefined,
+    {},
+    true,
+    true,
+  )
+  if (existingReal.status === StatusEnum.ok && existingReal.data.result.length) {
+    logger.debug(
+      'OKX-EU pairs | spot approximation skipped — real account data already present',
+    )
+    return
+  }
+  const factory = ExchangeChooser.chooseExchangeFactory(ExchangeEnum.okx)
+  if (!factory) return
+  const exchange = factory('', '', undefined, undefined, undefined, undefined)
+  const info = await exchange.getAllExchangeInfo()
+  if (info.status !== StatusEnum.ok) {
+    logger.error(`OKX-EU pairs | spot approximation fetch failed: ${info.reason}`)
+    return
+  }
+  const filtered = info.data.filter(
+    (p) =>
+      (p.quoteAsset.name === 'EUR' || p.quoteAsset.name === 'USDC') &&
+      p.baseAsset.name !== 'USDT',
+  )
+  if (!filtered.length) {
+    logger.error(
+      'OKX-EU pairs | spot approximation empty after EUR/USDC filter; skipping',
+    )
+    return
+  }
+  await reconcileEuPairs(ExchangeEnum.okx, filtered, true)
+  await reconcileEuPairs(ExchangeEnum.paperOkx, filtered, true)
+}
+
+/**
+ * Refresh the OKX Europe (`okxSource=my`) authoritative X-Perp universe
+ * (instType=FUTURES, ruleType=xperp; e.g. `BTC-USD_UM_XPERP`) for both the real
+ * (`okxLinear`) and paper (`paperOkxLinear`) ids. Unlike EU spot (whose tradeable
+ * set is account-restricted), X-Perps are identical for everyone and fully visible
+ * on the *public* eea.okx.com feed — so this needs no account keys and runs from
+ * the global cron, making EU perps available to paper-only users too. The connector
+ * routes okxSource=my → eea.okx.com and keeps only ruleType=xperp rows.
+ */
+export async function updateOkxEuPerpPairs(): Promise<void> {
+  const factory = ExchangeChooser.chooseExchangeFactory(ExchangeEnum.okxLinear)
+  if (!factory) return
+  const exchange = factory('', '', undefined, undefined, undefined, OKXSource.my)
+  const info = await exchange.getAllExchangeInfo()
+  if (info.status !== StatusEnum.ok) {
+    logger.error(`OKX-EU pairs | perp fetch failed: ${info.reason}`)
+    return
+  }
+  await reconcileEuPairs(ExchangeEnum.okxLinear, info.data)
+  await reconcileEuPairs(ExchangeEnum.paperOkxLinear, info.data)
 }
 
 const getRate = async () => {
@@ -466,4 +577,6 @@ const updateBrokerCodes = async () => {
 export const exchangeFullUpdate = () =>
   updateBrokerCodes()
     .then(() => updateExchangeInfo())
+    .then(() => updateOkxEuPerpPairs())
+    .then(() => updateOkxEuSpotApproxPairs())
     .then(() => utils.updateUserFee())

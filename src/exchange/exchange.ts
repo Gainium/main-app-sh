@@ -133,6 +133,10 @@ class Exchange extends AbstractExchange {
         method: 'get',
         params: {
           exchange: this.exchange,
+          // Forward the OKX origin so an okxSource=my client gets the OKX Europe
+          // universe (okxLinear → X-Perps). Undefined for non-OKX / global and
+          // simply omitted from the query — no behaviour change there.
+          okxsource: this.okxSource,
         },
       },
       timeProfile,
@@ -159,6 +163,28 @@ class Exchange extends AbstractExchange {
       },
       timeProfile,
     ).catch(this.handleError(this.getAccountSpotExchangeInfo, timeProfile))
+    this.saveTimeProfile(result.timeProfile)
+    return result.data
+  }
+
+  /**
+   * Authoritative, account-scoped FUTURES instruments (OKX Europe X-Perps,
+   * `okxSource=my`). Private call: keys + `okxsource` travel as headers, so the
+   * connector hits the authenticated `/exchange/account/futures` endpoint on
+   * eea.okx.com and returns the account's real X-Perp universe. Non-OKX / non-EU
+   * exchanges resolve to the abstract "not supported" default.
+   */
+  async getAccountFuturesExchangeInfo(
+    timeProfile = this.getEmptyTimeProfile('getAccountFuturesExchangeInfo'),
+  ): Promise<BaseReturn<(ExchangeInfo & { pair: string })[]>> {
+    const result = await this.apiCall<(ExchangeInfo & { pair: string })[]>(
+      {
+        endpoint: 'exchange/account/futures',
+        method: 'get',
+        isPrivate: true,
+      },
+      timeProfile,
+    ).catch(this.handleError(this.getAccountFuturesExchangeInfo, timeProfile))
     this.saveTimeProfile(result.timeProfile)
     return result.data
   }

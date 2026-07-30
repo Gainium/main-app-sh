@@ -254,6 +254,17 @@ abstract class AbsctractExchange implements Exchange {
   > {
     return this.returnBad()(new Error('Method not supported'))
   }
+  /**
+   * Authoritative, account-scoped FUTURES instruments for an authenticated
+   * account. Only OKX Europe (`okxSource=my`) has X-Perps that diverge from the
+   * public feed; the real exchange client overrides this. Default (paper + every
+   * other exchange): not supported.
+   */
+  async getAccountFuturesExchangeInfo(): Promise<
+    BaseReturn<(ExchangeInfo & { pair: string })[]>
+  > {
+    return this.returnBad()(new Error('Method not supported'))
+  }
   /** Get all open orders for given pair
    * @param {string} symbol symbol to look for
    * @param {boolean} returnOrders return orders or orders count

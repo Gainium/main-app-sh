@@ -1419,14 +1419,21 @@ export const checkDCABotSettings = (
   return { status: StatusEnum.ok }
 }
 
+// OKX Europe X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) already use the
+// canonical dash-separated `base-quote` pair format with a `_UM_XPERP`
+// contract-type suffix appended - the `_` in that suffix is not a
+// legacy `base_quote` delimiter and must not be split on below.
+export const isXperpPair = (pair: string) => /_UM_XPERP$/i.test(pair)
+
 export const convertPairs = async (pairs: string[], exchange: ExchangeEnum) => {
   if (!pairs.length) {
     return []
   }
   const baseAssets: string[] = []
   const quoteAssets: string[] = []
-  const pairsOldFormat = pairs.filter((p) => !p.includes('_'))
+  const pairsOldFormat = pairs.filter((p) => !p.includes('_') || isXperpPair(p))
   pairs.forEach((pair) => {
+    if (isXperpPair(pair)) return
     try {
       const [base, quote] = pair.split('_')
       if (base && quote) {
@@ -1450,6 +1457,7 @@ export const convertPairs = async (pairs: string[], exchange: ExchangeEnum) => {
   }
   const exchangePairs: string[] = []
   pairs.forEach((pair) => {
+    if (isXperpPair(pair)) return
     try {
       const [base, quote] = pair.split('_')
       if (base && quote) {

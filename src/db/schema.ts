@@ -855,6 +855,11 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
   // authoritative USDC/EUR spot universe). Unset for the global feed + all other
   // exchanges. Bot form matches (exchange, source) to the account's okxSource.
   source: { type: String, enum: OKXSource },
+  // True when a `source: 'my'` row came from the keyless OKX-EU spot
+  // approximation (public list filtered to EUR/USDC) rather than a real
+  // connected my.okx.com account. Lets the approximation cron detect genuine
+  // authoritative data and never overwrite it. Absent for every other row.
+  approx: Boolean,
   baseAsset: {
     minAmount: RequiredNumber,
     maxAmount: RequiredNumber,
