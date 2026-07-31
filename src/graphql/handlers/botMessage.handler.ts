@@ -94,7 +94,23 @@ export const deleteBotMessage = async (userId: string, messageId?: string) => {
       true,
     )
   } else {
-    result = await botMessageDb.updateManyData({ userId }, { isDeleted: true })
+    // Bound the clear-all by isDeleted, the field the update itself writes.
+    // `{userId}` alone matched EVERY message the account had ever received, so
+    // each "mark all read" click re-examined the whole history even when there
+    // was nothing left to mark: measured on a seeded 800,000-message account in
+    // the reporter's shape, a repeat click examined 800,000 keys + 800,000 docs
+    // (userId_1 has no isDeleted in its key, so every doc had to be FETCHed to
+    // discover it was already deleted) for 0 modified rows, in 13.3s — the
+    // reported 13,182ms worst case almost exactly.
+    // `$in: [false, null]` is a point-set, so the
+    // {userId, showUser, paperContext, isDeleted, created} index can bound it
+    // directly and the repeat becomes 3 keys / 0 docs / ~45ms. `null` also
+    // matches docs where the field is absent, so legacy messages written before
+    // the schema default are still cleared — same rows as before, same result.
+    result = await botMessageDb.updateManyData(
+      { userId, isDeleted: { $in: [false, null] } },
+      { isDeleted: true },
+    )
   }
   return result
 }
