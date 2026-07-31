@@ -317,6 +317,19 @@ const userSchema: Schema<UserSchema> = new Schema({
       affiliate: Boolean,
       waitingForConfirmation: Boolean,
       bybitHost: { type: String, enum: BybitHost },
+      // Last observed API-key permissions — above all, whether the key can
+      // withdraw (Gainium only ever needs read + trade). Written at add time
+      // and refreshed by the periodic re-check. Without this declaration
+      // Mongoose would silently drop the field on every write. Absent = never
+      // checked, which is NOT the same as "safe".
+      keyPermissions: {
+        withdraw: String,
+        transfer: String,
+        ipRestricted: String,
+        ips: [String],
+        detail: String,
+        checkedAt: Number,
+      },
     },
   ],
   timezone: RequiredString,

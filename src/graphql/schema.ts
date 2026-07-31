@@ -549,6 +549,30 @@ export const UserSchema = /* GraphQL */ `
     status: Status
     reason: String
   }
+  """
+  What the exchange last told us this API key is allowed to do. Gainium only
+  ever needs read + trade; withdrawal is never required. Every field is
+  tri-state — "unknown" means we could not read it, which is NOT "no".
+  """
+  type exchangeKeyPermissions {
+    """
+    yes | no | unknown
+    """
+    withdraw: String
+    """
+    Internal same-exchange transfers. yes | no | unknown
+    """
+    transfer: String
+    """
+    Whether the key is bound to an IP allowlist. yes | no | unknown
+    """
+    ipRestricted: String
+    ips: [String]
+    """
+    ms epoch of the observation; null when never checked.
+    """
+    checkedAt: Float
+  }
   type exchangeResponseData {
     key: String
     provider: Exchange
@@ -567,6 +591,12 @@ export const UserSchema = /* GraphQL */ `
     updateTime: Float
     lastUpdated: Float
     waitingForConfirmation: Boolean
+    """
+    Null when this connection has never been checked. The raw permission
+    detail string is deliberately not exposed here — it is admin-forensics
+    text, not user-facing copy.
+    """
+    keyPermissions: exchangeKeyPermissions
   }
   type deleteExchangeResponse implements BasicResponse {
     status: Status

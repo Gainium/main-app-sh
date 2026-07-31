@@ -64,6 +64,11 @@ import { getBalances } from './handlers/balance.handler'
 import { deleteBotMessage, getBotMessage } from './handlers/botMessage.handler'
 import { getQuantRulesStatus } from './handlers/quantRules.handler'
 import verify, { bybitAccountType } from '../exchange/verify'
+import {
+  recordOnly,
+  shouldRejectNewConnection,
+  withdrawalRejectionReason,
+} from '../exchange/keyPermissionPolicy'
 import { getExchangeTradeType } from '../exchange/helpers'
 import {
   snapshotReadSeries,
@@ -122,7 +127,7 @@ import { mapDataGridOptionsToMongoOptions } from '../db/utils'
 import Exchange from '../exchange/exchange'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import { updateOkxEuPairs } from '../utils/cron/exchange'
-import { OKXSource } from '../../types'
+import { ExchangeKeyPermissions, OKXSource } from '../../types'
 import {
   cancelOrderOnExchange,
   getAllOpenOrders,
@@ -686,6 +691,13 @@ const resolvers = <
             e.status = status.status
             e.hedge = hedge
             e.lastUpdated = +new Date()
+            // Existing connection: RECORD ONLY. A withdrawal-enabled key found
+            // here must never flip `status` — these users connected before the
+            // rule existed and their bots are live. Flag it for admin, warn the
+            // user elsewhere, but do not break trading retroactively.
+            e.keyPermissions =
+              recordOnly(status.permissions, e.keyPermissions) ??
+              e.keyPermissions
             exchanges.push({
               ...e,
               key,
@@ -693,6 +705,7 @@ const resolvers = <
               passphrase,
               status: e.status,
               hedge: e.hedge,
+              keyPermissions: e.keyPermissions,
               balance:
                 resultSnapshots.data?.result?.exchangesTotal.find((s) =>
                   e.linkedTo ? s.uuid === e.linkedTo : s.uuid === e.uuid,
@@ -711,6 +724,7 @@ const resolvers = <
                 e.status = find.status
                 e.hedge = find.hedge
                 e.lastUpdated = find.lastUpdated
+                e.keyPermissions = find.keyPermissions
               }
               return e
             }),
@@ -5415,6 +5429,11 @@ const resolvers = <
         const uuids: string[] = []
         const returnExchanges: ExchangeInUser[] = []
         for (const tt of tradeTypesToUse) {
+          // Captured from verification so every leg created for this trade type
+          // is stored with the permissions we just observed — the periodic
+          // re-check then has a baseline to compare against instead of having
+          // to treat every pre-existing connection as never-checked.
+          let observedPermissions: ExchangeKeyPermissions | undefined
           if (!paperExchanges.includes(provider)) {
             const verifyResult = await verify.verifyExchange(
               tt,
@@ -5427,6 +5446,30 @@ const resolvers = <
               bybitHost,
               subaccount,
             )
+            observedPermissions = verifyResult.permissions
+            // Fund-movement permission is refused outright on a NEW
+            // connection. Safe to hard-fail here (unlike re-verification): the
+            // user is at the form and has nothing running yet. Checked before
+            // the `!verifyResult.status` branch so such a key gets the
+            // actionable message rather than a generic "not valid".
+            //
+            // `permissions` must be passed through: without it the message
+            // cannot name which capability was found and silently falls back
+            // to the transfer wording (plus a Bybit-specific hint) even for a
+            // genuine withdrawal key on another exchange.
+            if (shouldRejectNewConnection(verifyResult.permissions)) {
+              logger.warn(
+                `Add exchange rejected: fund-movement permission enabled (withdraw=${verifyResult.permissions?.withdraw} transfer=${verifyResult.permissions?.transfer}), user ${user.data._id} (${user.data.username}), exchange: "${provider}", detail: ${verifyResult.permissions?.detail}`,
+              )
+              return {
+                status: StatusEnum.notok,
+                reason: withdrawalRejectionReason(
+                  provider,
+                  verifyResult.permissions,
+                ),
+                data: null,
+              }
+            }
             if (!verifyResult.status) {
               logger.error(
                 `Add exchange verify response ${verifyResult.reason}, user ${user.data._id} (${user.data.username}), key: "${key}", exchange: "${provider}" `,
@@ -5770,6 +5813,7 @@ const resolvers = <
                             return !!(await exchangeInstance.getHedge()).data
                           })()
                         : false,
+                      keyPermissions: observedPermissions,
                       subaccount,
                     },
                   ],
@@ -5980,6 +6024,16 @@ const resolvers = <
             const keyToUse = key || oldKey
             const secretToUse = secret || oldSecret
             const passphraseToUse = passphrase || oldPassphrase
+            // Unlike the cloud resolver, the condition above ALSO fires for
+            // metadata-only edits and merely stale connections (`lastUpdated`
+            // older than 24h). So "we are re-verifying" does not imply "the
+            // user supplied a new key" here, and the withdrawal rejection must
+            // be gated on an actual credential change — otherwise renaming a
+            // connection could hard-fail a user whose key already works.
+            const credentialsChanged =
+              (!!key && key !== oldKey) ||
+              (!!secret && secret !== oldSecret) ||
+              (!!passphrase && passphrase !== oldPassphrase)
             const status = await verify.verifyExchange(
               getExchangeTradeType(find.provider),
               find.provider,
@@ -5991,6 +6045,22 @@ const resolvers = <
               bybitHost,
               subaccount,
             )
+            if (
+              credentialsChanged &&
+              shouldRejectNewConnection(status.permissions)
+            ) {
+              logger.warn(
+                `Edit exchange rejected: fund-movement permission enabled (withdraw=${status.permissions?.withdraw} transfer=${status.permissions?.transfer}), user ${user.data._id} (${user.data.username}), exchange: "${find.provider}", uuid ${find.uuid}, detail: ${status.permissions?.detail}`,
+              )
+              return {
+                status: StatusEnum.notok,
+                reason: withdrawalRejectionReason(
+                  find.provider,
+                  status.permissions,
+                ),
+                data: null,
+              }
+            }
             if (!status) {
               return {
                 status: StatusEnum.notok,
@@ -6016,6 +6086,9 @@ const resolvers = <
             find.status = status.status
             find.hedge = hedge
             find.lastUpdated = +new Date()
+            find.keyPermissions =
+              recordOnly(status.permissions, find.keyPermissions) ??
+              find.keyPermissions
           }
           key = key ? encrypt(key) : key
           secret = secret ? encrypt(secret) : secret
@@ -6036,6 +6109,7 @@ const resolvers = <
                     ue.keysType = keysType || find.keysType
                     ue.okxSource = okxSource || find.okxSource
                     ue.bybitHost = bybitHost || find.bybitHost
+                    ue.keyPermissions = find.keyPermissions
                   }
                   return ue
                 }),

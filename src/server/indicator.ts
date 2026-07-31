@@ -64,9 +64,19 @@ class IndicatorsService {
 
   private redisServiceLogListener(msg: string) {
     try {
-      const parse = JSON.parse(msg) as { restart: string }
-      if (parse.restart.startsWith('botService')) {
-        const type = parse.restart.replace('botService', '')
+      const parse = JSON.parse(msg) as { restart?: unknown }
+      // `serviceLog` is a shared bus: it also carries priceConnectorAlive
+      // beacons, userStreamFlap and userStreamAuthReject, none of which have a
+      // `.restart`. Only the restart beacons matter here, so guard before
+      // calling string methods — otherwise every such message throws and is
+      // logged as an error. Mirrors the safe pattern in the other consumers
+      // (src/indicators/service.ts:processServiceLog, src/bot/main.ts).
+      const restart = parse?.restart
+      if (typeof restart !== 'string') {
+        return
+      }
+      if (restart.startsWith('botService')) {
+        const type = restart.replace('botService', '')
         this.handleDebug(
           `Bot service restarted, remove indicator callbacks for ${type}`,
         )

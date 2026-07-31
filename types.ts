@@ -1595,6 +1595,37 @@ export enum OKXSource {
   com = 'com',
 }
 
+/** Tri-state: "we could not find out" must never be read as "no". */
+export type KeyPermissionState = 'yes' | 'no' | 'unknown'
+
+/**
+ * What the exchange says a connection's API key is allowed to do, as last
+ * observed. Mirrors `KeyPermissions` in exchange-connector's core — the
+ * connector reports, main-app decides and stores.
+ *
+ * Recorded because Gainium only ever needs read + trade and never withdrawal,
+ * yet nothing used to verify that a stored key was actually limited that way.
+ * This is the record that turns that assumption into something we can report
+ * on and act on.
+ */
+export type ExchangeKeyPermissions = {
+  /** Can this key move funds off the exchange? Gainium never needs this. */
+  withdraw: KeyPermissionState
+  /** Internal (same-exchange) transfers. Gainium never calls one. */
+  transfer: KeyPermissionState
+  /** Whether the key is pinned to an IP allowlist. */
+  ipRestricted: KeyPermissionState
+  ips?: string[]
+  /** Raw permission text for admin forensics. Never contains the key. */
+  detail?: string
+  /**
+   * ms epoch of the observation. Load-bearing, not decorative: a user can
+   * enable withdrawal on a key that already passed verification, so a reading
+   * is only meaningful together with its age.
+   */
+  checkedAt: number
+}
+
 export type ExchangeInUser = {
   provider: ExchangeEnum
   name: string
@@ -1613,6 +1644,12 @@ export type ExchangeInUser = {
   subaccount?: boolean
   bybitHost?: BybitHost
   affiliate?: boolean
+  /**
+   * Last observed key permissions. Absent on connections added before this
+   * existed and on any key we could not read — absence means "never checked",
+   * which is NOT the same as "safe".
+   */
+  keyPermissions?: ExchangeKeyPermissions
 }
 
 export interface FavoritePairsSchema extends SchemaI {

@@ -4,13 +4,21 @@ import {
   BybitHost,
   CoinbaseKeysType,
   ExchangeEnum,
+  ExchangeKeyPermissions,
   OKXSource,
   TradeTypeEnum,
 } from '../../types'
 import { paperExchanges } from './paper/utils'
 import { EXCHANGE_SERVICE_API_URL, PAPER_TRADING_API_URL } from '../config'
 
-type VerifyResponse = { status: boolean; reason: string }
+/** Mirrors the connector's VerifyResponse. `permissions` is optional: the
+ *  field is additive on that cross-service contract, and paper verification
+ *  (which has no real key) never carries one. */
+type VerifyResponse = {
+  status: boolean
+  reason: string
+  permissions?: ExchangeKeyPermissions
+}
 
 // These two calls go out with `sendtoall=true`, and the balancer fans a
 // sendtoall request over its connector hosts SERIALLY, each with a 5-minute
@@ -102,6 +110,62 @@ const verifyNormal = async (
         reason: `Error in verifying real trading account ${e}`,
       }
     })
+}
+
+/**
+ * Read a key's current permissions without running a full verification.
+ *
+ * Used by the periodic re-check. Deliberately NOT `/verify`: verification has
+ * side effects on a connection's `status`, and an audit sweep must never be
+ * able to mark a working connection as broken. This endpoint only reports.
+ *
+ * Resolves to `undefined` on any failure — the caller then leaves the stored
+ * reading alone rather than overwriting it with an absence.
+ */
+export const fetchKeyPermissions = async (
+  provider: ExchangeEnum,
+  key: string,
+  secret: string,
+  passphrase?: string,
+  keysType?: CoinbaseKeysType,
+  okxSource?: OKXSource,
+  bybitHost?: BybitHost,
+  subaccount?: boolean,
+): Promise<ExchangeKeyPermissions | undefined> => {
+  if (paperExchanges.includes(provider)) {
+    return undefined
+  }
+  const authHeaders: Record<string, string> = {
+    'Content-type': 'application/json',
+  }
+  authHeaders.key = key
+  authHeaders.secret = secret
+  if (passphrase) {
+    authHeaders.passphrase = passphrase
+  }
+  if (keysType) {
+    authHeaders.keysType = keysType
+  }
+  if (okxSource) {
+    authHeaders.okxSource = okxSource
+  }
+  if (bybitHost) {
+    authHeaders.bybitHost = bybitHost
+  }
+  authHeaders.subaccount = subaccount ? 'true' : 'false'
+  authHeaders.exchange = provider
+  return axios<ExchangeKeyPermissions>(
+    `${EXCHANGE_SERVICE_API_URL}/keyPermissions`,
+    {
+      method: 'get',
+      headers: authHeaders,
+      httpAgent: new http.Agent({ keepAlive: true }),
+      timeout: VERIFY_TIMEOUT_MS,
+      timeoutErrorMessage: 'keyPermissions request timed out',
+    },
+  )
+    .then((res) => (res.status >= 400 ? undefined : res.data))
+    .catch(() => undefined)
 }
 
 export const bybitAccountType = async (

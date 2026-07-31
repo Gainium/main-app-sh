@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.39.3] - 2026-08-01
+
+### Fixed
+
+- The API-key rejection message named the wrong capability. `withdrawalRejectionReason()` infers what to say from the `permissions` it is given, and the self-hosted add/edit-exchange resolvers never passed them — so every rejection read "permission to transfer funds between accounts" and offered a Bybit-specific instruction, even when the key was rejected for withdrawal on Kraken or Hyperliquid. Both resolvers now pass the observed permissions, and the message itself no longer infers one capability from the absence of the other: with no permissions it says only that the key can move funds, and the Bybit hint is offered on Bybit alone. The rejection log lines now record which capability was found.
+
+## [1.39.2] - 2026-07-31
+
+### Security
+
+- Reject new API keys that can move funds between accounts, not just keys that can withdraw. Bybit's Account/Subaccount Transfer can move balances between a user's own accounts with no withdrawal scope; Gainium calls no transfer endpoint on any exchange, so the permission is never needed. Existing connections are still only flagged, never rejected.
+- Rejection message now names the capability found and, for transfer, the exact exchange control to untick.
+
+## [1.39.1] - 2026-07-31
+
+### Fixed
+
+- Indicators service `serviceLog` listener no longer throws on messages without a `.restart` field. `serviceLog` is a shared bus, and `redisServiceLogListener` cast the payload to `{restart: string}` and called `.startsWith()` on it unchecked, so every `priceConnectorAlive` beacon (websocket-connector ≥ 1.13.7, once per beacon interval — deliberately omits `.restart`), `userStreamFlap` and `userStreamAuthReject` produced a "Failed to parse message … TypeError" error line. Now type-guarded before the string call, mirroring the other consumers (`src/indicators/service.ts:processServiceLog`, `src/bot/main.ts`). Behaviour for `botService*` restarts is unchanged; only the throw becomes a no-op. Backport of the cloud-side fix shipped in main-app 2.57.2, which never reached this repo. Noise only — no functionality was lost, but ~1 440 error lines/day/process buried real errors. (issue #222)
+
+## [1.39.0] - 2026-07-31
+
+### Added
+
+- Withdrawal-permission policy for exchange API keys (`src/exchange/keyPermissionPolicy.ts`). Gainium only ever needs read + trade, and withdrawal is never required by any feature; until now nothing verified that a stored key was actually limited that way. A key that can withdraw is now refused when it is newly supplied (add, or edit-with-new-credentials), and merely recorded on every other path — re-verification never rejects, so existing users' live bots are unaffected.
+- `ExchangeInUser.keyPermissions` persists the last observed withdrawal / internal-transfer / IP-allowlist state (plus its timestamp) and is exposed on the `exchangeResponseData` GraphQL type. Declared in the Mongoose user schema — without that, every write would be silently dropped.
+- `fetchKeyPermissions()` calls the connector's read-only `GET /keyPermissions` so a periodic audit can refresh the flags without running a verification that could alter a connection's status.
+
+
 ## [1.38.1] - 2026-07-31
 
 ### Fixed
