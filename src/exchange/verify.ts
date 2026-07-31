@@ -12,6 +12,15 @@ import { EXCHANGE_SERVICE_API_URL, PAPER_TRADING_API_URL } from '../config'
 
 type VerifyResponse = { status: boolean; reason: string }
 
+// These two calls go out with `sendtoall=true`, and the balancer fans a
+// sendtoall request over its connector hosts SERIALLY, each with a 5-minute
+// axios timeout (exchange-balancer/src/index.ts). With no timeout on our side a
+// single wedged connector leg could park an interactive `addExchange` for
+// minutes. 30s matches the dashboard's own apiClient ceiling (main-dash-sh
+// core/src/lib/apiClient.ts), so we now give up exactly when the browser does
+// and can answer with a real reason instead of holding the socket open.
+const VERIFY_TIMEOUT_MS = 30_000
+
 const verifyPaper = async (key: string, secret: string) => {
   const result: VerifyResponse = await axios<{
     verified: boolean
@@ -67,6 +76,8 @@ const verifyNormal = async (
       method: 'get',
       headers: authHeaders,
       httpAgent: new http.Agent({ keepAlive: true }),
+      timeout: VERIFY_TIMEOUT_MS,
+      timeoutErrorMessage: 'Verify request timed out',
     },
   )
     .then((res) => {
@@ -76,6 +87,16 @@ const verifyNormal = async (
       return res.data
     })
     .catch((e) => {
+      // A timeout says nothing about the keys, so don't let the caller fall
+      // through to its generic "API keys not valid" text. This reason is
+      // curated (no braces, no "catch") so addExchange surfaces it verbatim.
+      if (e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT') {
+        return {
+          status: false,
+          reason:
+            'The exchange did not respond in time. Please try again in a moment.',
+        }
+      }
       return {
         status: false,
         reason: `Error in verifying real trading account ${e}`,
@@ -103,6 +124,8 @@ export const bybitAccountType = async (
     method: 'get',
     headers: authHeaders,
     httpAgent: new http.Agent({ keepAlive: true }),
+    timeout: VERIFY_TIMEOUT_MS,
+    timeoutErrorMessage: 'accountType request timed out',
   })
     .then((res) => {
       if (res.status >= 400) {

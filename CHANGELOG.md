@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.38.1] - 2026-07-31
+
+### Fixed
+
+- `verifyNormal` and `bybitAccountType` now carry a 30s axios timeout. Both go out with `sendtoall=true`, and the balancer fans those over its connector hosts serially at 5 minutes each, so with no timeout on our side one wedged connector could park an interactive `addExchange` for minutes. A verify timeout now returns a curated "the exchange did not respond in time" reason rather than falling through to the caller's generic "API keys not valid" text.
+
 ## [1.38.0] - 2026-07-30
 
 ### Added
