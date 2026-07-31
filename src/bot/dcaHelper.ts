@@ -12265,6 +12265,8 @@ function createDCABotHelper<
         ) {
           const indicator = this.data.settings.indicators.find(
             (ind) =>
+              (ind.type === IndicatorEnum.atr ||
+                ind.type === IndicatorEnum.adr) &&
               ind.indicatorAction === IndicatorAction.closeDeal &&
               ind.section !== IndicatorSection.sl,
           )
@@ -12290,6 +12292,8 @@ function createDCABotHelper<
         ) {
           const indicator = this.data.settings.indicators.find(
             (ind) =>
+              (ind.type === IndicatorEnum.atr ||
+                ind.type === IndicatorEnum.adr) &&
               ind.indicatorAction === IndicatorAction.closeDeal &&
               ind.section === IndicatorSection.sl,
           )
@@ -13479,6 +13483,8 @@ function createDCABotHelper<
             ) {
               const indicator = this.data.settings.indicators.find(
                 (ind) =>
+                  (ind.type === IndicatorEnum.atr ||
+                    ind.type === IndicatorEnum.adr) &&
                   ind.indicatorAction === IndicatorAction.closeDeal &&
                   ind.section === IndicatorSection.sl,
               )
@@ -14510,6 +14516,8 @@ function createDCABotHelper<
       ) {
         const indicator = (this.data?.settings.indicators ?? []).find(
           (ind) =>
+            (ind.type === IndicatorEnum.atr ||
+              ind.type === IndicatorEnum.adr) &&
             ind.indicatorAction === IndicatorAction.closeDeal &&
             ind.section === IndicatorSection.sl,
         )
