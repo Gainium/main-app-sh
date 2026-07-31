@@ -132,3 +132,18 @@ export const isRiskyConnection = (
   permissions?.withdraw === 'yes' ||
   permissions?.transfer === 'yes' ||
   permissions?.ipRestricted === 'no'
+
+/**
+ * True while this connection is still on a credential the operator has asked
+ * the user to replace. Drives the rotation notice and the chips on the
+ * Exchanges and Portfolio pages. Set out-of-band; never inferred here.
+ *
+ * Deliberately NOT derived from `keyPermissions.ipRestricted`: that reading is
+ * unreliable — Bybit and Bitget both return an empty `ips` array for keys that
+ * are demonstrably bound — and it answers a different question anyway. Whether
+ * a key should be rotated is an operator decision, not a property of the key.
+ */
+export const needsRotation = (exchange?: {
+  rotationFlag?: { flaggedAt?: number; clearedAt?: number }
+}): boolean =>
+  !!exchange?.rotationFlag?.flaggedAt && !exchange.rotationFlag.clearedAt

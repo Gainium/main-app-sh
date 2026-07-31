@@ -65,6 +65,7 @@ import { deleteBotMessage, getBotMessage } from './handlers/botMessage.handler'
 import { getQuantRulesStatus } from './handlers/quantRules.handler'
 import verify, { bybitAccountType } from '../exchange/verify'
 import {
+  needsRotation,
   recordOnly,
   shouldRejectNewConnection,
   withdrawalRejectionReason,
@@ -375,6 +376,7 @@ const resolvers = <
               key: decrypt(e.key),
               secret: decrypt(e.secret),
               passphrase: e.passphrase ? decrypt(e.passphrase) : e.passphrase,
+              rotationRequired: needsRotation(e),
             }))[0] || null,
       }
     },
@@ -469,6 +471,7 @@ const resolvers = <
       ) {
         const exchanges: (ExchangeInUser & {
           balance?: number
+          rotationRequired?: boolean
           updateTime?: number
         })[] = []
         const resultSnapshots = await snapshotDb.readData(
@@ -508,6 +511,7 @@ const resolvers = <
               updateTime: resultSnapshots.data?.result?.updated
                 ? +new Date(resultSnapshots.data?.result?.updated)
                 : undefined,
+              rotationRequired: needsRotation(e),
             })
           }
         }
@@ -643,6 +647,7 @@ const resolvers = <
       }
       const exchanges: (ExchangeInUser & {
         balance?: number
+        rotationRequired?: boolean
       })[] = []
       const resultSnapshots = await snapshotDb.readData(
         {
@@ -706,6 +711,7 @@ const resolvers = <
               status: e.status,
               hedge: e.hedge,
               keyPermissions: e.keyPermissions,
+              rotationRequired: needsRotation(e),
               balance:
                 resultSnapshots.data?.result?.exchangesTotal.find((s) =>
                   e.linkedTo ? s.uuid === e.linkedTo : s.uuid === e.uuid,
@@ -6089,6 +6095,25 @@ const resolvers = <
             find.keyPermissions =
               recordOnly(status.permissions, find.keyPermissions) ??
               find.keyPermissions
+            // Cloud-only in practice (self-hosted never sets `rotationFlag`),
+            // but the clear lives here too because this resolver is the one
+            // self-hosted actually runs, and the same code path serves cloud
+            // builds of core. Gated on `credentialsChanged`, NOT on "we
+            // re-verified": this resolver re-verifies on metadata edits and on
+            // anything older than 24h, neither of which is a rotation.
+            if (
+              credentialsChanged &&
+              find.rotationFlag?.flaggedAt &&
+              !find.rotationFlag.clearedAt
+            ) {
+              find.rotationFlag = {
+                ...find.rotationFlag,
+                clearedAt: +new Date(),
+              }
+              logger.info(
+                `Rotation nudge cleared: user ${user.data._id} (${user.data.username}) replaced ${find.provider} credential ${find.uuid}`,
+              )
+            }
           }
           key = key ? encrypt(key) : key
           secret = secret ? encrypt(secret) : secret
@@ -6110,6 +6135,7 @@ const resolvers = <
                     ue.okxSource = okxSource || find.okxSource
                     ue.bybitHost = bybitHost || find.bybitHost
                     ue.keyPermissions = find.keyPermissions
+                    ue.rotationFlag = find.rotationFlag
                   }
                   return ue
                 }),

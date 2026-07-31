@@ -1626,6 +1626,38 @@ export type ExchangeKeyPermissions = {
   checkedAt: number
 }
 
+/**
+ * Marks a credential the operator has asked the user to replace, and tracks the
+ * in-app notice that asks for it. Set once by an out-of-band backfill, cleared
+ * the moment the stored key/secret actually changes.
+ *
+ * Deliberately NOT derived at read time: the flag records an operator decision
+ * plus the fact that the user has (or has not) acted on it, and neither is
+ * recoverable from the connection itself. `lastUpdated` cannot stand in for the
+ * latter — `updateStatus` and `setHedge` bump it without touching the
+ * credential.
+ */
+export type ExchangeRotationFlag = {
+  /** ms epoch the backfill flagged this connection. Written once, never again. */
+  flaggedAt: number
+  /**
+   * ms epoch the stored credential actually changed. Absent = still on the
+   * exposed key. Presence, not truthiness of any other field, is what stops
+   * the nudge.
+   */
+  clearedAt?: number
+  /**
+   * How many nudges this user has been shown, 0..5. Kept in lockstep across
+   * every still-flagged connection of the user (the nudge is per USER, not per
+   * connection — one key is commonly stored as up to 6 per-market legs), so the
+   * per-user value is the MAX over them. Writing all of them keeps a partial
+   * write safe.
+   */
+  noticesSent?: number
+  /** ms epoch of the last nudge. Same per-user lockstep as `noticesSent`. */
+  lastNoticeAt?: number
+}
+
 export type ExchangeInUser = {
   provider: ExchangeEnum
   name: string
@@ -1650,6 +1682,12 @@ export type ExchangeInUser = {
    * which is NOT the same as "safe".
    */
   keyPermissions?: ExchangeKeyPermissions
+  /**
+   * Set only on credentials an operator has flagged for replacement and which
+   * have not been replaced since. Absent unless a backfill set it — no
+   * self-hosted install has one.
+   */
+  rotationFlag?: ExchangeRotationFlag
 }
 
 export interface FavoritePairsSchema extends SchemaI {

@@ -330,6 +330,17 @@ const userSchema: Schema<UserSchema> = new Schema({
         detail: String,
         checkedAt: Number,
       },
+      // Credential flagged for replacement, plus the bookkeeping for the
+      // in-app "please replace this key" notice. Declared here for the same
+      // reason keyPermissions is — core writes user docs too, and an undeclared
+      // field is silently dropped on every one of those writes. Set only by an
+      // out-of-band backfill; no self-hosted install has one.
+      rotationFlag: {
+        flaggedAt: Number,
+        clearedAt: Number,
+        noticesSent: Number,
+        lastNoticeAt: Number,
+      },
     },
   ],
   timezone: RequiredString,

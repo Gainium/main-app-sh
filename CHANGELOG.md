@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.40.0] - 2026-08-01
+
+### Added
+
+- `rotationFlag` on a user's exchange connections, marking a credential an operator has asked the user to replace, and `rotationRequired` on the exchange GraphQL type so the dashboard can show it. The flag clears from `editExchange`'s existing `credentialsChanged` signal, so a rename or a re-verify never counts as a rotation. Unused unless an operator sets it.
+
 ## [1.39.3] - 2026-08-01
 
 ### Fixed

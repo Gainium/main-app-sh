@@ -597,6 +597,13 @@ export const UserSchema = /* GraphQL */ `
     text, not user-facing copy.
     """
     keyPermissions: exchangeKeyPermissions
+    """
+    True while this connection is still on a credential the operator has asked
+    the user to replace. Drives the "Replace key" chip on the Exchanges and
+    Portfolio pages. Always false unless an operator has flagged the
+    connection.
+    """
+    rotationRequired: Boolean
   }
   type deleteExchangeResponse implements BasicResponse {
     status: Status
