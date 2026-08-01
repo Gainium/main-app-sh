@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.40.1] - 2026-08-01
+
+### Fixed
+
+- `updateStatus` ran each connection's `verify` and `getHedge` serially and persisted a transport failure as a verdict, so one unreachable venue both stalled the accounts page and wrote `status:false`/`hedge:false` over healthy stored connections. Added `probeConnectionState` (concurrent pair, 30s cap, falls back to the stored reading) and an `unreachable` flag on `VerifyResponse` marking "no answer" as distinct from "bad keys".
+
 ## [1.40.0] - 2026-08-01
 
 ### Added

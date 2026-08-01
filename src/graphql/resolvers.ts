@@ -670,16 +670,6 @@ const resolvers = <
             const passphrase = e.passphrase
               ? decrypt(e.passphrase)
               : e.passphrase
-            const status = await verify.verifyExchange(
-              getExchangeTradeType(e.provider),
-              e.provider,
-              key,
-              secret,
-              passphrase || '',
-              e.keysType,
-              e.okxSource,
-              e.bybitHost,
-            )
             const exchangeInstance = ExchangeChooser.chooseExchangeFactory(
               e.provider,
             )(
@@ -691,18 +681,41 @@ const resolvers = <
               e.okxSource,
               e.bybitHost,
             )
-            const hedge = isFutures(e.provider)
-              ? !!(await exchangeInstance.getHedge()).data
-              : false
-            e.status = status.status
-            e.hedge = hedge
+            // `verify` and `getHedge` used to be awaited one after the other,
+            // so every futures connection cost two serial exchange round
+            // trips — and the `Promise.all` below waits for the slowest
+            // connection, so one wedged venue held the whole accounts page.
+            // Worse, a 502ing connector made both answer "false", which this
+            // resolver then PERSISTED: a Hyperliquid outage marked every
+            // holder's connection broken and flipped their stored `hedge`.
+            // probeConnectionState runs the pair concurrently under a 30s cap
+            // and falls back to the stored reading on any non-answer.
+            const probe = await verify.probeConnectionState(
+              e,
+              () =>
+                verify.verifyExchange(
+                  getExchangeTradeType(e.provider),
+                  e.provider,
+                  key,
+                  secret,
+                  passphrase || '',
+                  e.keysType,
+                  e.okxSource,
+                  e.bybitHost,
+                ),
+              isFutures(e.provider)
+                ? () => exchangeInstance.getHedge()
+                : undefined,
+            )
+            e.status = probe.status
+            e.hedge = probe.hedge
             e.lastUpdated = +new Date()
             // Existing connection: RECORD ONLY. A withdrawal-enabled key found
             // here must never flip `status` — these users connected before the
             // rule existed and their bots are live. Flag it for admin, warn the
             // user elsewhere, but do not break trading retroactively.
             e.keyPermissions =
-              recordOnly(status.permissions, e.keyPermissions) ??
+              recordOnly(probe.permissions, e.keyPermissions) ??
               e.keyPermissions
             exchanges.push({
               ...e,
