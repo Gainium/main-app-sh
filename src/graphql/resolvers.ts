@@ -128,6 +128,7 @@ import { mapDataGridOptionsToMongoOptions } from '../db/utils'
 import Exchange from '../exchange/exchange'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import { updateOkxEuPairs } from '../utils/cron/exchange'
+import { getLeverageBracketsCached } from '../utils/leverageBracketCache'
 import { ExchangeKeyPermissions, OKXSource } from '../../types'
 import {
   cancelOrderOnExchange,
@@ -3797,15 +3798,24 @@ const resolvers = <
           data: null,
         }
       }
-      return await new Exchange(
+      // The table depends on the exchange universe, not on the account, so it
+      // is cached/coalesced per (provider, okxSource) and bounded by a timeout
+      // — an exchange-side queue backlog used to hang the bot form for tens of
+      // seconds. See utils/leverageBracketCache.
+      return await getLeverageBracketsCached(
         find.provider,
-        find.key,
-        find.secret,
-        find.passphrase,
-        undefined,
-        undefined,
         find.okxSource,
-      ).futures_leverageBracket()
+        () =>
+          new Exchange(
+            find.provider,
+            find.key,
+            find.secret,
+            find.passphrase,
+            undefined,
+            undefined,
+            find.okxSource,
+          ).futures_leverageBracket(),
+      )
     },
     getBacktestByShareId: async (
       _parent: any,
