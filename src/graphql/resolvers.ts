@@ -3122,9 +3122,13 @@ const resolvers = <
         const res = await userDb.aggregate(agg)
         return res
       }
+      // Hoisted out of the call so `readData` and `countData` share one filter.
+      // Without a contextual type the literal widens `status` to `string`, which
+      // no longer satisfies `QueryFilter<ExcludeDoc<OrderSchema>>` and breaks
+      // `readData`'s isArray overload resolution — keep the enum type explicit.
       const ordersSearch = {
         userId: user.data._id,
-        status: 'FILLED',
+        status: 'FILLED' as OrderStatusType,
         paperContext: paperContext ? { $eq: true } : { $ne: true },
       }
       // `total` below is clamped to 100, so counting every FILLED order the user has

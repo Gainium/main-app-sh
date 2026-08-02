@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.40.4] - 2026-08-02
+
+### Fixed
+
+- `npm run lint` failed on a clean checkout, so husky's pre-commit hook rejected every commit. `getLatestOrders`' order filter was hoisted into a `const` so the page read and the count could share it, which dropped its contextual type and widened `status: 'FILLED'` to `string`; that broke `readData`'s `isArray` overload resolution and cascaded into 5 `tsc` errors. Annotated the literal with `OrderStatusType`.
+
 ## [1.40.3] - 2026-08-02
 
 ### Fixed
