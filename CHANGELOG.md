@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.40.3] - 2026-08-02
+
+### Fixed
+
+- `probeConnectionState`'s `PROBE_TIMEOUT_MS` was aliased to `VERIFY_TIMEOUT_MS`, so the accounts page's live re-probe of an ALREADY-STORED connection got `addExchange`'s full 30s budget. Every one of its timeouts resolves to the stored reading, so a wedged venue held `updateStatus` (which fans the probes out with `Promise.all`) for 30s to return a value it already had. Decoupled to its own 6s cap, and the timeout warn now names the connection's `provider` and `uuid` so the wedged venue is identifiable.
+
 ## [1.40.2] - 2026-08-02
 
 ### Fixed

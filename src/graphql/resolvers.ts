@@ -691,8 +691,9 @@ const resolvers = <
             // Worse, a 502ing connector made both answer "false", which this
             // resolver then PERSISTED: a Hyperliquid outage marked every
             // holder's connection broken and flipped their stored `hedge`.
-            // probeConnectionState runs the pair concurrently under a 30s cap
-            // and falls back to the stored reading on any non-answer.
+            // probeConnectionState runs the pair concurrently under
+            // PROBE_TIMEOUT_MS and falls back to the stored reading on any
+            // non-answer.
             const probe = await verify.probeConnectionState(
               e,
               () =>

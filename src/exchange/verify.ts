@@ -258,10 +258,17 @@ const verifyExchange = async (
  * exchange.ts's 5-minute axios ceiling and retries up to five times on a 502 —
  * so on its own a single wedged venue can park a probe for tens of minutes.
  * `updateStatus` fans these out with `Promise.all`, which waits for the
- * slowest, so that one venue holds the entire accounts page. Give up at the
- * same 30s the browser does and answer from what we already stored.
+ * slowest, so that one venue holds the entire accounts page.
+ *
+ * Deliberately NOT VERIFY_TIMEOUT_MS. That 30s is the budget for `addExchange`,
+ * where the user typed new keys and the ONLY useful answer is the live one, so
+ * waiting is worth it. Here there is nothing to wait for: every timeout resolves
+ * to the reading already on the connection, so a probe that runs the full 30s
+ * returns exactly what it would have returned at 6s — it just holds the whole
+ * accounts page while it does. Spending the browser's entire ceiling to
+ * reproduce a value we already have is the whole of bug #267.
  */
-const PROBE_TIMEOUT_MS = VERIFY_TIMEOUT_MS
+const PROBE_TIMEOUT_MS = 6_000
 
 /**
  * Live-probe one already-stored exchange connection for the accounts page.
@@ -278,7 +285,14 @@ const PROBE_TIMEOUT_MS = VERIFY_TIMEOUT_MS
  * `fetchKeyPermissions` above already follows for permissions.
  */
 export const probeConnectionState = async (
-  stored: { status?: boolean; hedge?: boolean },
+  // `provider`/`uuid` are read only to name the connection in the timeout warn
+  // — without them a wedged venue is unidentifiable in the logs.
+  stored: {
+    status?: boolean
+    hedge?: boolean
+    provider?: ExchangeEnum
+    uuid?: string
+  },
   runVerify: () => Promise<VerifyResponse>,
   /** Omitted for spot connections, which have no hedge mode to read. */
   runHedge?: () => Promise<BaseReturn<boolean>>,
@@ -317,7 +331,9 @@ export const probeConnectionState = async (
 
   if (!settled) {
     logger.warn(
-      `verify | connection probe exceeded ${PROBE_TIMEOUT_MS}ms, keeping stored status/hedge`,
+      `verify | connection probe exceeded ${PROBE_TIMEOUT_MS}ms for ${
+        stored.provider ?? 'unknown provider'
+      } (${stored.uuid ?? 'no uuid'}), keeping stored status/hedge`,
     )
     return { status: storedStatus, hedge: storedHedge }
   }
