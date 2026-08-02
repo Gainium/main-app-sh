@@ -61,7 +61,7 @@ import {
 import DB from '../../db'
 import { buildProjection, type FieldSelection } from './fieldUtils'
 import { fieldSelectionMiddlewares, paperContextMiddleware } from './middleware'
-import { isFutures, isCoinm, isPaper } from '../../utils'
+import { isFutures, isCoinm, isPaper, isServiceUnreachable } from '../../utils'
 import { priceBalancesUsd } from '../../utils/user'
 import {
   DCA_FORM_DEFAULTS,
@@ -98,7 +98,10 @@ import {
   comboBacktestDb as comboBacktestResultDb,
   gridBacktestDb as gridBacktestResultDb,
 } from '../../db/dbInit'
-import { sendServerSideRequest } from '../../graphql/handlers/backtest'
+import {
+  BACKTEST_SERVICE_TARGET,
+  sendServerSideRequest,
+} from '../../graphql/handlers/backtest'
 import {
   botSchemaDefinitions,
   indicatorDefinitions,
@@ -4034,12 +4037,8 @@ const v2API = <R extends UserSchema = UserSchema>(
 
       let errorMessage = 'Failed to submit backtest request'
       if (error instanceof Error) {
-        if (
-          error.message.includes('ECONNREFUSED') ||
-          error.message.includes('connect')
-        ) {
-          errorMessage =
-            'Backtest service is not available. Please try again later'
+        if (isServiceUnreachable(error, error.message)) {
+          errorMessage = `Backtest service at ${BACKTEST_SERVICE_TARGET} is not available. Please try again later`
         } else {
           errorMessage = error.message
         }
@@ -4238,8 +4237,8 @@ const v2API = <R extends UserSchema = UserSchema>(
       }
     } catch (e: any) {
       let message = `${(e as Error)?.message || e}`
-      if (message.includes('ECONNREFUSED') || message.includes('connect')) {
-        message = 'Server is not available. Please try again later'
+      if (isServiceUnreachable(e, message)) {
+        message = `Backtest service at ${BACKTEST_SERVICE_TARGET} is not available. Please try again later`
       }
       return {
         status: StatusEnum.notok,

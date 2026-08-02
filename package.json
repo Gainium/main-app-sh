@@ -17,7 +17,7 @@
     "bots:hedge:combo": "NODE_ENV=production BotServiceType=hedgeCombo SERVICETYPE=main node --max-old-space-size=3072 -r dotenv/config ./dist/src/server/bot.js",
     "bots:hedge:dca": "NODE_ENV=production BotServiceType=hedgeDca SERVICETYPE=main node --max-old-space-size=3072 -r dotenv/config ./dist/src/server/bot.js",
     "indicators": "NODE_ENV=production node --max-old-space-size=8192 -r dotenv/config ./dist/src/server/indicator.js",
-    "all": "npm run build && concurrently \"npm run server\" \"npm run stream\" \"npm run bots:dca\" \"npm run bots:grid\" \"npm run bots:combo\" \"npm run indicators\" \"npm run bots:hedge:combo\" \"npm run bots:hedge:dca\"",
+    "all": "npm run build && concurrently \"npm run server\" \"npm run stream\" \"npm run bots:dca\" \"npm run bots:grid\" \"npm run bots:combo\" \"npm run indicators\" \"npm run bots:hedge:combo\" \"npm run bots:hedge:dca\" \"npm run cron\" \"npm run backtest\"",
     "cron": "LOG_LEVEL=debug node -r dotenv/config ./dist/src/server/cron.js",
     "stream": "node -r dotenv/config ./dist/src/server/stream.js",
     "lint": "tsc --noEmit --project tsconfig.json && eslint . --cache",

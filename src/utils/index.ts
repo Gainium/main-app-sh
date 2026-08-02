@@ -261,6 +261,40 @@ export const isPaper = (exchange: ExchangeEnum) => {
   ].includes(exchange)
 }
 
+const CONNECTION_ERROR_CODES = [
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ETIMEDOUT',
+]
+
+/**
+ * True when `error` means "the service we dialled is not listening / not reachable".
+ *
+ * Node dials every address family a host resolves to (`::1` *and* `127.0.0.1`), so a
+ * refused connection to localhost throws an `AggregateError` whose `message` is the
+ * **empty string** — the per-attempt codes live on `.code` / `.errors[]`, and once
+ * axios has wrapped it, `.errors[]` sits on `.cause`. A message-only test therefore
+ * misses exactly the case it exists for and the caller reports `AggregateError`.
+ * The message test is kept as a fallback for throwers that only carry text.
+ */
+export const isServiceUnreachable = (error: unknown, message = ''): boolean => {
+  type ErrLike = { code?: string; errors?: unknown; cause?: unknown }
+  const codes: (string | undefined)[] = []
+  let err = error as ErrLike | undefined
+  // Walk the cause chain (depth-capped so a self-referencing cause can't loop).
+  for (let depth = 0; err && depth < 5; depth++) {
+    codes.push(err.code)
+    if (Array.isArray(err.errors)) {
+      codes.push(...err.errors.map((e) => (e as ErrLike)?.code))
+    }
+    err = err.cause as ErrLike | undefined
+  }
+  if (codes.some((c) => c && CONNECTION_ERROR_CODES.includes(c))) return true
+  return message.includes('ECONNREFUSED') || message.includes('connect')
+}
+
 export default {
   sleep,
   getTimezoneOffset,

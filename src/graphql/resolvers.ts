@@ -136,8 +136,11 @@ import {
   getAllOpenPositions,
   placeOrderOnExchange,
 } from './handlers/orders.handler'
-import { isCoinm } from '../utils'
-import { sendServerSideRequest } from './handlers/backtest'
+import { isCoinm, isServiceUnreachable } from '../utils'
+import {
+  BACKTEST_SERVICE_TARGET,
+  sendServerSideRequest,
+} from './handlers/backtest'
 import { MathHelper } from '../utils/math'
 import fs from 'fs'
 import Rabbit from '../db/rabbit'
@@ -4813,8 +4816,8 @@ const resolvers = <
         }
       } catch (e: any) {
         let message = `${(e as Error)?.message || e}`
-        if (message.includes('ECONNREFUSED') || message.includes('connect')) {
-          message = 'Server is not available. Please try again later'
+        if (isServiceUnreachable(e, message)) {
+          message = `Backtest service at ${BACKTEST_SERVICE_TARGET} is not available. Please try again later`
         }
         return {
           status: StatusEnum.notok,
