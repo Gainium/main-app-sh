@@ -151,6 +151,32 @@ const notAvailable = 'Bots service is unavailable, please try again later'
 
 const webhookQueue = 'webhookQueue'
 
+/**
+ * First stage of every orphan sweep in `premanenetlyDeleteBots`.
+ *
+ * `botId` is a plain string on these collections and not every value is a bot
+ * id: platform-level notices are written against the `'system'` sentinel so the
+ * dashboard renders them without a bot link. The `$toObjectId: '$botId'` in the
+ * `$lookup`s below throws on any value that isn't 24 hex chars, which fails the
+ * whole aggregation — and each step of `premanenetlyDeleteBots` returns on its
+ * first error, so a single such document silently aborts every remaining
+ * cleanup step after it (orphan messages, deals, orders, transactions).
+ *
+ * Restricting the pipeline to convertible ids fixes both halves of that: the
+ * aggregation no longer throws, and the sentinel rows stay out of the orphan
+ * set — they have no bot by design, so an unguarded sweep would delete them.
+ */
+const botIdIsObjectId: PipelineStage = {
+  $match: {
+    $expr: {
+      $ne: [
+        { $convert: { input: '$botId', to: 'objectId', onError: null } },
+        null,
+      ],
+    },
+  },
+}
+
 type BotServicePayload = {
   method: string
   params: unknown[]
@@ -12481,6 +12507,7 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     if (!skip) {
       const comboDealWOutBots = await this.comboDealsDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'combobots',
@@ -12531,6 +12558,7 @@ class Bot<T extends UserSchema = UserSchema> {
       }
       const comboTransactionsWOutBots = await this.comboTransactionDb.aggregate(
         [
+          botIdIsObjectId,
           {
             $lookup: {
               from: 'combobots',
@@ -12582,6 +12610,7 @@ class Bot<T extends UserSchema = UserSchema> {
         result = `${result}Combo transactions without bot ${comboTransactionsDeleteResult.reason}, `
       }
       const comboMinigridsWOutBots = await this.comboMinigridDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'combobots',
@@ -12632,6 +12661,7 @@ class Bot<T extends UserSchema = UserSchema> {
         result = `${result}Combo minigrids without bot ${comboMinigridDeleteResult.reason}, `
       }
       const comboProfitWOutBots = await this.comboProfitDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'combobots',
@@ -12681,6 +12711,7 @@ class Bot<T extends UserSchema = UserSchema> {
         result = `${result}Combo profit without bot ${comboProfitDeleteResult.reason}, `
       }
       const eventsWOutBots = await this.botEventDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'bots',
@@ -12788,6 +12819,7 @@ class Bot<T extends UserSchema = UserSchema> {
         result = `${result}Events without bot ${eventsDeleteResult.reason}, `
       }
       const messagesWOutBots = await this.botMessageDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'bots',
@@ -12895,6 +12927,7 @@ class Bot<T extends UserSchema = UserSchema> {
         result = `${result}Messages without bot ${messagesDeleteResult.reason}, `
       }
       const dealWOutBots = await this.dcaDealsDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'dcabots',
@@ -12945,6 +12978,7 @@ class Bot<T extends UserSchema = UserSchema> {
         result = `${result}Deals without bot ${deleteResult.reason}, `
       }
       const ordersWOutBots = await this.orderDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'bots',
@@ -13052,6 +13086,7 @@ class Bot<T extends UserSchema = UserSchema> {
         result = `${result}Orders without bot ${ordersDeleteResult.reason}, `
       }
       const transactionsWOutBots = await this.transactionDb.aggregate([
+        botIdIsObjectId,
         {
           $lookup: {
             from: 'bots',

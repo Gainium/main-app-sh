@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.40.2] - 2026-08-02
+
+### Fixed
+
+- Every orphan sweep in `premanenetlyDeleteBots` converted `botId` with `$toObjectId`, which throws on the `'system'` sentinel platform notices use, so the aggregation failed and — because each step returns on its first error — aborted every remaining cleanup after it. The sweeps now start from a `$convert`/`onError: null` guard that both keeps the aggregation alive and keeps sentinel rows out of the orphan set.
+
 ## [1.40.1] - 2026-08-01
 
 ### Fixed
