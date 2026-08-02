@@ -6896,25 +6896,35 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
-  public async unassignBotByExchange(uuid: string) {
-    const dca = await this.dcaBotDb.updateManyData(
-      { exchangeUUID: uuid },
-      { $set: { exchangeUnassigned: true, status: BotStatusEnum.closed } },
-    )
+  /**
+   * `userId` is optional only so existing callers keep compiling — pass it.
+   * The bot collections are indexed {userId, …}, so a filter on `exchangeUUID`
+   * alone cannot use any of them and this sweep COLLSCANs `dcaBots`, `comboBots`
+   * and `bots` in full. An exchange connection belongs to exactly one user and
+   * `uuid` is a v4, so scoping by owner matches the same docs.
+   */
+  public async unassignBotByExchange(uuid: string, userId?: string) {
+    const filter = userId
+      ? { userId, exchangeUUID: uuid }
+      : { exchangeUUID: uuid }
+    const update = {
+      $set: { exchangeUnassigned: true, status: BotStatusEnum.closed },
+    }
+    // Three different collections, one filter — no sweep needs another's
+    // answer, but each used to wait for the one before it, so disconnecting an
+    // account paid three serial bulk writes back to back. The notok checks below
+    // keep reporting them in the original order.
+    const [dca, combo, grid] = await Promise.all([
+      this.dcaBotDb.updateManyData(filter, update),
+      this.comboBotDb.updateManyData(filter, update),
+      this.botDb.updateManyData(filter, update),
+    ])
     if (dca.status === StatusEnum.notok) {
       return dca
     }
-    const combo = await this.comboBotDb.updateManyData(
-      { exchangeUUID: uuid },
-      { $set: { exchangeUnassigned: true, status: BotStatusEnum.closed } },
-    )
     if (combo.status === StatusEnum.notok) {
       return combo
     }
-    const grid = await this.botDb.updateManyData(
-      { exchangeUUID: uuid },
-      { $set: { exchangeUnassigned: true, status: BotStatusEnum.closed } },
-    )
     if (grid.status === StatusEnum.notok) {
       return grid
     }

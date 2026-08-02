@@ -6336,7 +6336,12 @@ const resolvers = <
             reason: `Error while deleting exchange ${find.provider} ${find.uuid}`,
           }
         }
-        await userDb
+        const userId = `${user.data._id}`
+        // Clearing the now-dangling `linkedTo` pointers needs nothing from the
+        // bot teardown below, and nothing below needs it — but the user waited
+        // for it before any of that even started. Start it here and collect it
+        // at the end.
+        const unlinkRequest = userDb
           .updateManyData(
             { 'exchanges.linkedTo': uuid },
             { $set: { 'exchanges.$.linkedTo': null } },
@@ -6346,45 +6351,60 @@ const resolvers = <
               `Resolver Exchange | Delete ${uuid} Update linkedTo ${res.reason}`,
             ),
           )
+        // These two stay ordered on purpose: the live bots have to be told to
+        // close before their docs are stamped closed/unassigned, or the
+        // workers' own write can overtake the stamp.
         await Bot.stopBotByExchange(uuid)
-        const unassign = await Bot.unassignBotByExchange(uuid)
+        const unassign = await Bot.unassignBotByExchange(uuid, userId)
         if (unassign) {
+          await unlinkRequest
           return unassign
         }
-        const deleteFees = await feeDb
-          .deleteManyData({
-            exchangeUUID: uuid,
-          })
-          .then((res) => {
-            logger.debug(
-              `Delete exchange for ${user.data._id} ${uuid}: fee ${res.reason}`,
-            )
-            return res
-          })
+        // Fees, balances and per-exchange snapshots live in three separate
+        // collections keyed on this one connection, so no leg needs another
+        // leg's answer — yet each was awaited before the next was even issued.
+        // Drain them together, the same shape resetAccount already uses for its
+        // own cleanup (core/src/utils/user.ts).
+        //
+        // The fee and balance filters now also carry `userId`. Those
+        // collections are indexed {userId, exchangeUUID} and
+        // {userId, exchangeUUID, asset}, so a filter on `exchangeUUID` alone
+        // could not use either index and every disconnect COLLSCANned the whole
+        // of `fees` and the whole of `balances` — a cost that grows with the
+        // size of the platform, not with the account being deleted. `uuid` is a
+        // v4 minted per connection, so the rows matched are the same ones.
+        const [deleteFees, deleteBalances, deleteSnapshotsByExchange] =
+          await Promise.all([
+            feeDb.deleteManyData({ userId, exchangeUUID: uuid }).then((res) => {
+              logger.debug(
+                `Delete exchange for ${user.data._id} ${uuid}: fee ${res.reason}`,
+              )
+              return res
+            }),
+            balanceDb
+              .deleteManyData({ userId, exchangeUUID: uuid })
+              .then((res) => {
+                logger.debug(
+                  `Delete Exchange for ${user.data._id} ${uuid}: balances ${res.reason}`,
+                )
+                return res
+              }),
+            snapshotPerExchangeDb
+              .deleteManyData({ userId, uuid })
+              .then((res) => {
+                logger.debug(
+                  `Delete Exchange for ${user.data._id} ${uuid}: snaphost ${res.reason}`,
+                )
+                return res
+              }),
+          ])
+        await unlinkRequest
         if (deleteFees.status !== StatusEnum.ok) {
           return deleteFees
         }
-        const deleteBalances = await balanceDb
-          .deleteManyData({
-            exchangeUUID: uuid,
-          })
-          .then((res) => {
-            logger.debug(
-              `Delete Exchange for ${user.data._id} ${uuid}: balances ${res.reason}`,
-            )
-            return res
-          })
         if (deleteBalances.status !== StatusEnum.ok) {
           return deleteBalances
         }
-        const deleteSnapshotsByExchange = await snapshotPerExchangeDb
-          .deleteManyData({ userId: `${user.data._id}`, uuid })
-          .then((res) => {
-            logger.debug(
-              `Delete Exchange for ${user.data._id} ${uuid}: snaphost ${res.reason}`,
-            )
-            return res
-          })
         if (deleteSnapshotsByExchange.status !== StatusEnum.ok) {
           return deleteSnapshotsByExchange
         }

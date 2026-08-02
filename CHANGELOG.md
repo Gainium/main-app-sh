@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.40.5] - 2026-08-02
+
+### Fixed
+
+- `deleteExchange` awaited seven independent cleanup legs one at a time and filtered three of them so they could not use an index. The `linkedTo` clear, `stopBotByExchange`, `unassignBotByExchange`'s three `updateMany`s and the fee/balance/snapshot `deleteMany`s each waited for the one before it; `feeDb`/`balanceDb`/the bot collections were filtered on `exchangeUUID` alone, but those collections are indexed `{userId, exchangeUUID, …}`, so every disconnect COLLSCANned `fees`, `balances`, `dcaBots`, `comboBots` and `bots` in full — cost scaling with the platform, not the account. The independent legs now run under `Promise.all` (the shape `resetAccount` already uses) and every sweep carries `userId`, which is index-seekable and matches the same rows. Serial depth 7 → 2; `unassignBotByExchange` takes an optional `userId`.
+
 ## [1.40.4] - 2026-08-02
 
 ### Fixed
