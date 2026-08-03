@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.41.4] - 2026-08-03
+
+### Fixed
+
+- Disconnecting an exchange connection could hang the request for minutes, and when it did, the account's fee, balance and per-exchange snapshot records were left behind with no way to clear them. Telling the running bots to close waited for each worker to acknowledge, using a one-shot listener that fired on whatever the worker said next — and a worker runs up to a hundred bots, all reporting on the same channel, so an unrelated bot's event consumed the acknowledgement and the wait never ended; a bot whose worker had already been restarted never returned either. The wait now matches the reply it is actually waiting for, gives up after a bounded time across the whole disconnect instead of stalling on one bot, and the close is still delivered either way. The sweep that finds those bots is also now scoped to the account being disconnected, so it uses an index instead of reading every bot on the platform (measured on 150,000 bots: 150,000 records examined and 264ms became 50 examined and 2ms, same bots matched). Finally, a bot service that fails to answer no longer aborts the rest of the disconnect: the connection's fees, balances and snapshots are cleaned up regardless, and the failure is logged.
+
 ## [1.41.3] - 2026-08-03
 
 ### Fixed

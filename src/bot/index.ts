@@ -184,6 +184,16 @@ type BotServicePayload = {
 
 const bosServiceType = BotServiceType
 
+/**
+ * Total time `stopBotByExchange` will spend waiting for workers to acknowledge
+ * the closes it posted, across ALL the bots on the connection. It is a budget
+ * for the whole sweep, not per bot, so a user with many bots cannot stretch the
+ * disconnect without bound. Well under the 5-minute bot-service RPC timeout in
+ * `callExternalBotService`, which is what the user's `deleteExchange` request
+ * used to sit on when a reply never came.
+ */
+const stopByExchangeReplyBudget = 60 * 1000
+
 class Bot<T extends UserSchema = UserSchema> {
   protected ec = ExchangeChooser
   protected personalLimits = new Map<string, number>()
@@ -6740,16 +6750,75 @@ class Bot<T extends UserSchema = UserSchema> {
     return bots
   }
 
-  public async stopBotByExchange(uuid: string) {
+  /**
+   * Wait for one worker's `{ event: 'response', responseId }` reply, bounded.
+   *
+   * The stop legs below used `worker.once('message', …)`. `once` fires on the
+   * FIRST message the worker sends — whatever it is — and node drops the
+   * listener before running the callback, so an unrelated `createBot` /
+   * `botClosed` / other-request `response` (one worker hosts up to
+   * BOTS_PER_WORKER bots, all reporting on the same port) consumed the listener
+   * and the promise never settled. `worker?.once` on an undefined worker — a
+   * `this.bots` entry left behind by a terminated worker — never settled
+   * either. Both stalls surface as the user's `deleteExchange` hanging until
+   * the bot-service RPC gives up five minutes later.
+   *
+   * Same `on` + `removeListener` + timer idiom as `compareBalances`, except a
+   * lapsed wait resolves rather than rejects: the close has already been posted
+   * to the worker, and the rest of the sweep still has to run.
+   */
+  private waitForWorkerResponse(
+    worker: Worker | undefined,
+    responseId: string,
+    label: string,
+    timeoutMs: number,
+  ): Promise<unknown> {
+    if (!worker) {
+      this.handleWarn(`${loggerPrefix} ${label} | worker gone, not waiting`)
+      return Promise.resolve(null)
+    }
+    const wait = Math.max(0, timeoutMs)
+    return new Promise((resolve) => {
+      let timer: NodeJS.Timeout | null = null
+      const cb = (msg: { responseId?: string }) => {
+        if (msg && msg.responseId === responseId) {
+          worker.removeListener('message', cb)
+          if (timer) {
+            clearTimeout(timer)
+          }
+          resolve(msg)
+        }
+      }
+      timer = setTimeout(() => {
+        worker.removeListener('message', cb)
+        this.handleWarn(
+          `${loggerPrefix} ${label} | no reply within ${wait}ms, moving on`,
+        )
+        resolve(null)
+      }, wait)
+      worker.on('message', cb)
+    })
+  }
+
+  public async stopBotByExchange(uuid: string, userId?: string) {
     if (!this.useBots) {
       return await this.callExternalBotService(
         'allWithHedge',
         'stopBotByExchange',
         false,
         uuid,
+        userId,
       )
     }
-    const filter = { exchangeUUID: uuid }
+    // Same reasoning as `unassignBotByExchange`: every bot collection is
+    // indexed {userId, …}, so a filter on `exchangeUUID` alone can use none of
+    // them and each sweep COLLSCANs the collection twice — once for the find,
+    // once for `readData`'s countDocuments. A connection belongs to exactly one
+    // user, so scoping by owner matches the same bots.
+    const filter = userId
+      ? { userId, exchangeUUID: uuid }
+      : { exchangeUUID: uuid }
+    const replyDeadline = +new Date() + stopByExchangeReplyBudget
     const grid =
       BotServiceType === BotType.grid ? await this.findActiveGrid(filter) : []
     const dca =
@@ -6785,13 +6854,12 @@ class Bot<T extends UserSchema = UserSchema> {
           ],
           responseId,
         })
-        await new Promise((resolve) => {
-          worker?.once('message', (msg) => {
-            if (msg.responseId === responseId) {
-              resolve(msg)
-            }
-          })
-        })
+        await this.waitForWorkerResponse(
+          worker,
+          responseId,
+          `stopBotByExchange ${BotType.grid} ${find.id}`,
+          replyDeadline - +new Date(),
+        )
       }
     }
     for (const d of dca ?? []) {
@@ -6813,13 +6881,12 @@ class Bot<T extends UserSchema = UserSchema> {
           ],
           responseId,
         })
-        await new Promise((resolve) => {
-          worker?.once('message', (msg) => {
-            if (msg.responseId === responseId) {
-              resolve(msg)
-            }
-          })
-        })
+        await this.waitForWorkerResponse(
+          worker,
+          responseId,
+          `stopBotByExchange ${BotType.dca} ${find.id}`,
+          replyDeadline - +new Date(),
+        )
       }
     }
     for (const d of combo ?? []) {
@@ -6841,13 +6908,12 @@ class Bot<T extends UserSchema = UserSchema> {
           ],
           responseId,
         })
-        await new Promise((resolve) => {
-          worker?.once('message', (msg) => {
-            if (msg.responseId === responseId) {
-              resolve(msg)
-            }
-          })
-        })
+        await this.waitForWorkerResponse(
+          worker,
+          responseId,
+          `stopBotByExchange ${BotType.combo} ${find.id}`,
+          replyDeadline - +new Date(),
+        )
       }
     }
     for (const d of hedgeDca ?? []) {
@@ -6863,13 +6929,12 @@ class Bot<T extends UserSchema = UserSchema> {
           args: [find.id, BotStatusEnum.closed, CloseDCATypeEnum.cancel],
           responseId,
         })
-        await new Promise((resolve) => {
-          worker?.once('message', (msg) => {
-            if (msg.responseId === responseId) {
-              resolve(msg)
-            }
-          })
-        })
+        await this.waitForWorkerResponse(
+          worker,
+          responseId,
+          `stopBotByExchange ${BotType.hedgeDca} ${find.id}`,
+          replyDeadline - +new Date(),
+        )
       }
     }
     for (const d of hedgeCombo ?? []) {
@@ -6885,13 +6950,12 @@ class Bot<T extends UserSchema = UserSchema> {
           args: [find.id, BotStatusEnum.closed, CloseDCATypeEnum.cancel],
           responseId,
         })
-        await new Promise((resolve) => {
-          worker?.once('message', (msg) => {
-            if (msg.responseId === responseId) {
-              resolve(msg)
-            }
-          })
-        })
+        await this.waitForWorkerResponse(
+          worker,
+          responseId,
+          `stopBotByExchange ${BotType.hedgeCombo} ${find.id}`,
+          replyDeadline - +new Date(),
+        )
       }
     }
   }

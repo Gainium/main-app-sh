@@ -6375,7 +6375,23 @@ const resolvers = <
         // These two stay ordered on purpose: the live bots have to be told to
         // close before their docs are stamped closed/unassigned, or the
         // workers' own write can overtake the stamp.
-        await Bot.stopBotByExchange(uuid)
+        //
+        // The stop leg is best-effort though. It fans out to the bot services
+        // over RabbitMQ and `sendWithCallback` REJECTS when one of them misses
+        // its 5-minute budget — which threw straight out of this resolver, so a
+        // wedged bot service left the user with the connection already pulled
+        // off their account but its fees, balances and per-exchange snapshots
+        // still there — and no way to retry, the uuid is gone from the user
+        // doc. Log it and finish the cascade.
+        try {
+          await Bot.stopBotByExchange(uuid, userId)
+        } catch (e) {
+          logger.error(
+            `Resolver Exchange | Delete ${uuid} stop bots failed: ${
+              (e as Error)?.message ?? e
+            }`,
+          )
+        }
         const unassign = await Bot.unassignBotByExchange(uuid, userId)
         if (unassign) {
           await unlinkRequest
