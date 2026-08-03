@@ -11,6 +11,7 @@ import {
   type ClearPairsSchema,
   type AssetClass,
   type ExchangeInfo,
+  type RateSchema,
   StatusEnum,
   OKXSource,
 } from '../../../types'
@@ -536,10 +537,68 @@ const updateRate = async (): Promise<number> => {
   }
 }
 
+/**
+ * Fiat currencies that multi-collateral venues (Kraken Futures) accept as
+ * margin, with the Kraken spot pair that prices them. Kraken quotes some fiat
+ * with USD as the BASE (USD/JPY), so `invert` says whether the ticker has to be
+ * flipped to get "1 unit of asset = X USD".
+ *
+ * Fiat holdings are absent from every exchange's `getAllPrices` table (Kraken
+ * Futures only publishes `PF_*` perpetual tickers), so `findUSDRate` returns 0
+ * and the holding shows as $0.00 in the portfolio. These rates are injected
+ * into the rate table under exchange `all` to close that gap.
+ */
+const FIAT_USD_PAIRS = [
+  { asset: 'EUR', pair: 'EURUSD', invert: false },
+  { asset: 'GBP', pair: 'GBPUSD', invert: false },
+  { asset: 'AUD', pair: 'AUDUSD', invert: false },
+  { asset: 'CHF', pair: 'USDCHF', invert: true },
+  { asset: 'JPY', pair: 'USDJPY', invert: true },
+  { asset: 'CAD', pair: 'USDCAD', invert: true },
+]
+
+/**
+ * One ticker call per pair: Kraken answers with its own canonical key
+ * (`EURUSD` → `ZEURZUSD`), so asking for a single pair lets us take the only
+ * entry instead of guessing how to normalize the key. A pair that fails keeps
+ * its previous rate — a transient Kraken hiccup must not zero out everyone's
+ * fiat balances until the next run twelve hours later.
+ */
+const getFiatRates = async (
+  previous: RateSchema['fiatRates'] = [],
+): Promise<RateSchema['fiatRates']> => {
+  const exchangeKraken = new Kraken()
+  const rates: NonNullable<RateSchema['fiatRates']> = []
+  for (const { asset, pair, invert } of FIAT_USD_PAIRS) {
+    const prev = previous?.find((p) => p.asset === asset)
+    try {
+      const ticker = await exchangeKraken.ticker({ pair })
+      const price = parseFloat(Object.values(ticker ?? {})[0]?.c?.[0] ?? '0')
+      if (!price || !isFinite(price)) {
+        throw new Error(`no price in ticker for ${pair}`)
+      }
+      rates.push({ asset, usdRate: invert ? 1 / price : price })
+    } catch (e) {
+      logger.error(`Get fiat rate ${pair} failed: ${e}`)
+      if (prev) rates.push(prev)
+    }
+  }
+  return rates
+}
+
 export const saveRate = async () => {
   const usdRate = await updateRate()
+  const lastRate = await rateDb.readData<RateSchema>({}, undefined, {
+    limit: 1,
+    sort: { created: -1 },
+  })
+  const fiatRates = await getFiatRates(
+    lastRate.status === StatusEnum.ok
+      ? lastRate.data.result?.fiatRates
+      : undefined,
+  )
   rateDb
-    .createData({ usdRate })
+    .createData({ usdRate, fiatRates })
     .then((r) =>
       r.status === StatusEnum.notok
         ? logger.error(`Save USD rate reason: ${r.reason}`)

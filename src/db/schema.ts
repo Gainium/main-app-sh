@@ -867,6 +867,13 @@ const botMessageSchema: Schema<BotMessageSchema> = new Schema({
 
 const rateSchema: Schema<RateSchema> = new Schema({
   usdRate: RequiredNumber,
+  fiatRates: [
+    {
+      _id: false,
+      asset: RequiredString,
+      usdRate: RequiredNumber,
+    },
+  ],
   ...CreatedUpdated,
 })
 

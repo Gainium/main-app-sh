@@ -2,6 +2,7 @@ import ExchangeChooser from '../exchange/exchangeChooser'
 import { paperExchanges } from '../exchange/paper/utils'
 import {
   Prices,
+  RateSchema,
   SnapshotSchema,
   UserDataStreamEvent,
   ExchangeInUser,
@@ -905,6 +906,23 @@ export interface PricedBalanceInput {
 }
 
 /**
+ * Fiat collateral (EUR/GBP/CHF/… posted as margin on a multi-collateral venue
+ * such as Kraken Futures) appears in no exchange's `getAllPrices` table — Kraken
+ * Futures only publishes its `PF_*` perpetual tickers — so `findUSDRate` scores
+ * it 0 and the holding renders as $0.00 across the whole portfolio. Surface the
+ * cron-cached fiat rates under exchange `all`, the same mechanism the USDT→USD
+ * rate already rides on. Rates are stored pre-normalized to "1 unit = X USD".
+ */
+const fiatRateEntries = (fiatRates: RateSchema['fiatRates']): Prices =>
+  (fiatRates ?? [])
+    .filter((f) => f?.asset && f.usdRate > 0)
+    .map((f) => ({
+      pair: `${f.asset}USD`,
+      price: f.usdRate,
+      exchange: 'all',
+    }))
+
+/**
  * Value a set of balances in USD using the SAME authoritative path the portfolio
  * snapshot cron uses ({@link userSnapshots}): the connector's Redis-cached
  * `getAllPrices` rate table + the USDT→USD rate, then a per-exchange tokenized-
@@ -949,7 +967,11 @@ export const priceBalancesUsd = async (
   })
   if (usdRequest.status === StatusEnum.ok) {
     const price = usdRequest.data.result?.usdRate ?? 1
-    rates = [...rates, { pair: 'USDTZUSD', price, exchange: 'all' }]
+    rates = [
+      ...rates,
+      { pair: 'USDTZUSD', price, exchange: 'all' },
+      ...fiatRateEntries(usdRequest.data.result?.fiatRates),
+    ]
   }
 
   // 2) Tokenized-stock fallback map (venue-agnostic; keyed off `pairs`).
@@ -1076,7 +1098,11 @@ const userSnapshots = async (
     })
     if (usdRequest.status === StatusEnum.ok) {
       const price = usdRequest.data.result?.usdRate ?? 1
-      rates = [...rates, { pair: 'USDTZUSD', price, exchange: 'all' }]
+      rates = [
+        ...rates,
+        { pair: 'USDTZUSD', price, exchange: 'all' },
+        ...fiatRateEntries(usdRequest.data.result?.fiatRates),
+      ]
     } else {
       logger.error(`Snapshot | Cannot get user rates ${usdRequest.reason}`)
     }

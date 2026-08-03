@@ -2366,6 +2366,14 @@ export type ClearBotErrorSchema = ExcludeDoc<BotMessageSchema>
 
 export interface RateSchema extends SchemaI {
   usdRate: number
+  /**
+   * Fiat collateral → USD rates (1 unit of `asset` = `usdRate` USD), normalized
+   * so the caller never has to care which way Kraken quotes the pair. Fiat is
+   * held as collateral on multi-collateral venues (e.g. Kraken Futures) but is
+   * absent from every exchange's `getAllPrices` table, so without this the
+   * holding values at $0. See `priceBalancesUsd` / `userSnapshots`.
+   */
+  fiatRates?: { asset: string; usdRate: number }[]
 }
 
 export type ClearRateSchema = ExcludeDoc<RateSchema>

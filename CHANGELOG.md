@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.41.1] - 2026-08-03
+
+### Fixed
+
+- Fiat held as collateral (EUR, GBP, CHF, JPY, CAD, AUD) valued at $0.00 in the portfolio. Balances are priced in USD from the exchange's own ticker table, but a multi-collateral venue such as Kraken Futures publishes only its perpetual contracts (`PF_*`) there — no fiat pair exists to price against, so the lookup scored the holding zero. An account funded entirely in fiat therefore reported a total portfolio value of $0.00 and empty allocation charts, which reads as a broken exchange connection even though the balance itself was fetched correctly. The twice-daily rate job now also caches fiat→USD rates from Kraken's public ticker (the same source already used for USDT→USD) and both valuation paths — the portfolio snapshot cron and the on-request pricing helper — expose them under the `all` exchange, so fiat is valued like any other asset. Rates are stored pre-normalized to "1 unit = X USD", so pairs Kraken quotes with USD as the base (USD/JPY, USD/CHF, USD/CAD) are inverted once at write time rather than at every read; a pair that fails to fetch keeps its previous rate instead of dropping to zero until the next run.
+
 ## [1.41.0] - 2026-08-03
 
 ### Changed
