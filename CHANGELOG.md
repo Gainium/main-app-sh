@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.41.3] - 2026-08-03
+
+### Fixed
+
+- The admin Bot Errors page read every bot message in the database on each load. It is the only fleet-wide reader of that collection — it filters by a date range and sorts newest-first without narrowing to a single user or bot — and no index covered the message timestamp, so the query had no usable plan and fell back to scanning all 2.58M records before joining usernames onto the handful it actually returned. The scan had climbed to roughly 2.5 minutes per load and was the second-heaviest query on the database, slow enough that a wide date range could also exhaust the sort memory limit and leave the page empty. Adding a timestamp index lets the query seek straight to the requested window and read the rows already in sort order: measured on a 2,580,000-record collection in the reported shape, 2,580,000 records examined and 3.4s became 79 examined and 12ms, with an identical result set. The one index serves both the default view and the "include hidden" view, and the results the page shows are unchanged.
+
 ## [1.41.2] - 2026-08-03
 
 ### Fixed

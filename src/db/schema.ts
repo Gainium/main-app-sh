@@ -2996,6 +2996,24 @@ export const registerIndexes = () => {
   // subType:{$ne}; the userId-leading indexes above can't serve a botId-first
   // predicate. botId is write-once (static); isDeleted is one-way/low-cardinality.
   botMessageSchema.index({ botId: 1, isDeleted: 1 })
+  // Admin Bot Errors page (admin-app `getBotErrors` → GET /bot/error/all): the
+  // ONLY fleet-wide reader of this collection — it has no userId/botId predicate
+  // at all, filters on a `time` RANGE (the page's date picker) and sorts by
+  // {time:-1}. Every index above is userId- or botId-leading and none contains
+  // `time`, so that query had no usable plan and COLLSCANned all 2.58M docs on
+  // every load, then blocking-sorted the survivors. `time` is the sole selective
+  // predicate and supplies the sort order straight from the index; leaving it
+  // unindexed is what put this shape at #2 in the slow-query profile at ~153s per
+  // execution. Measured on a seeded 2,580,000-doc collection in the reported
+  // shape: 2,580,000 docs examined / 3.4s -> 79 examined / 12ms, with an
+  // identical (ordered) result set.
+  // NOTE: deliberately NOT {showUser:1, time:-1}. showUser is ~70% true, so as a
+  // leading equality field it buys only ~1.4x fewer fetches on the default view
+  // (7,072 -> 4,946 docs over a 24h window) while making the index useless for the
+  // `includeHidden` view, which drops straight back to a COLLSCAN. A single
+  // {time:-1} serves BOTH views and costs this very high-write collection one
+  // index instead of two.
+  botMessageSchema.index({ time: -1 })
 
   botSchema.index({ userId: 1 })
   // Bot-list resolvers filter by userId (+optional status) and default-sort by
