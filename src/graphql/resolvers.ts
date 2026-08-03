@@ -122,6 +122,17 @@ import {
 import { decrypt, encrypt } from '../utils/crypto'
 import logger from '../utils/logger'
 import { verifyPassword } from './handlers/password'
+// ⚠️ Note the two similarly-named helpers now in scope. `verifyPassword`
+// directly above is the SYNCHRONOUS strength/format validator and takes ONE
+// argument. `verifyPasswordHash` below is the ASYNCHRONOUS bcrypt comparison
+// and takes TWO (plaintext, stored). It is imported under a distinct name so
+// the two can never be swapped at a call site — doing so would be an
+// authentication bypass, not a type error.
+import {
+  hashPassword,
+  isBcryptHash,
+  verifyPassword as verifyPasswordHash,
+} from '../utils/password'
 import { createOrUpdateUser, findUser as _findUser } from './handlers/user'
 import { resetUser } from '../utils/user'
 import { mapDataGridOptionsToMongoOptions } from '../db/utils'
@@ -5162,10 +5173,20 @@ const resolvers = <
         findUser.data &&
         findUser.data.result
       ) {
-        const _password = decrypt(findUser.data.result.password)
-        if (_password === password) {
+        const stored = findUser.data.result.password
+        if (await verifyPasswordHash(password, stored)) {
+          // Transparent migration: if the stored value is still legacy AES
+          // ciphertext, the password just matched via the decrypt fallback —
+          // rehash it with bcrypt and persist, so the account upgrades on this
+          // login and never decrypt-compares again.
+          if (!isBcryptHash(stored)) {
+            await userDb.updateData(
+              { username },
+              { $set: { password: await hashPassword(password) } },
+            )
+          }
           return await createOrUpdateUser(
-            { email: username, password: _password },
+            { email: username, password },
             userAgent,
             ip,
           )
@@ -8518,13 +8539,16 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      if (decrypt(user.data.password) === input.password) {
+      // Async bcrypt comparison (two arguments). It dual-reads, so the guard
+      // works whether the stored value is a bcrypt hash or still legacy AES.
+      if (await verifyPasswordHash(password, user.data.password)) {
         return {
           status: StatusEnum.notok,
           reason: 'Current password is the same as new',
           data: null,
         }
       }
+      // Synchronous strength/format check (one argument) — a different helper.
       if (!verifyPassword(password)) {
         return {
           status: StatusEnum.notok,
@@ -8534,7 +8558,7 @@ const resolvers = <
       }
       const result = await userDb.updateData(
         { _id: user.data._id.toString() },
-        { $set: { password: encrypt(password) } },
+        { $set: { password: await hashPassword(password) } },
       )
       if (result.status === StatusEnum.notok) {
         return result

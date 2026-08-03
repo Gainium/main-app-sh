@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.41.0] - 2026-08-03
+
+### Changed
+
+- User passwords are now stored as bcrypt hashes instead of the reversible AES helper in `utils/crypto`. Previously a password could be decrypted back to plaintext with the shared key, so anyone who obtained a copy of the database obtained every password; a bcrypt hash cannot be reversed. The change is dual-read and needs no flag day: existing accounts still sign in normally and are silently rehashed on their next successful login, while sign-up, password change and the `cli:reset-password` utility write bcrypt from the start. An installation converts itself as its users log in — no downtime, no forced reset. New helper at `utils/password.ts`; adds a `bcryptjs` dependency (pure JavaScript, so it needs no native build step in the container image).
+
+### Fixed
+
+- `changePassword`'s "your new password is the same as your current one" check compared by decrypting the stored value, which cannot work once a password is a one-way hash. It now compares correctly, and does so for both stored formats.
+
 ## [1.40.5] - 2026-08-02
 
 ### Fixed

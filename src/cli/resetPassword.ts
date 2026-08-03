@@ -1,5 +1,5 @@
 import { userDb } from '../db/dbInit'
-import { encrypt } from '../utils/crypto'
+import { hashPassword } from '../utils/password'
 import { verifyPassword } from '../graphql/handlers/password'
 import { StatusEnum } from '../../types'
 import logger from '../utils/logger'
@@ -39,11 +39,12 @@ async function resetPassword() {
       process.exit(1)
     }
 
-    // Update password
-    const encryptedPassword = encrypt(newPassword)
+    // Update password. Stored as a bcrypt hash, matching every other write
+    // path — this must never put a reversible credential back in the database.
+    const hashedPassword = await hashPassword(newPassword)
     const updateResult = await userDb.updateData(
       { _id: findUser.data.result._id.toString() },
-      { $set: { password: encryptedPassword } },
+      { $set: { password: hashedPassword } },
     )
 
     if (updateResult.status === StatusEnum.notok) {

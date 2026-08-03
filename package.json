@@ -1,6 +1,6 @@
 {
   "name": "@gainium/main-app",
-  "version": "1.40.5",
+  "version": "1.41.0",
   "description": "Main app",
   "author": "Maksym Shamko",
   "private": true,
@@ -71,6 +71,7 @@
     "@scalar/express-api-reference": "^0.8.41",
     "amqplib": "^0.10.9",
     "axios": "^1.13.2",
+    "bcryptjs": "^3.0.3",
     "big.js": "^7.0.1",
     "body-parser": "^2.2.1",
     "compression": "^1.8.1",

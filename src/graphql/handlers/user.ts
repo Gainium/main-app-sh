@@ -1,7 +1,7 @@
 import { userDb as _userDb } from '../../db/dbInit'
 import { StatusEnum } from '../../../types'
 import jwt from 'jsonwebtoken'
-import { encrypt } from '../../utils/crypto'
+import { hashPassword } from '../../utils/password'
 import type { ClearUserSchema, UserSchema } from '../../../types'
 import { getFullLocationByIp } from './ip'
 import { JWT_SECRET } from '../../config'
@@ -113,7 +113,7 @@ export const createOrUpdateUser = async (
     const location = await getFullLocationByIp(ip)
     const userToAdd: Omit<ClearUserSchema, '_id'> = {
       username: email,
-      password: encrypt(password),
+      password: await hashPassword(password),
       tokens: [
         {
           token: jwtToken,
