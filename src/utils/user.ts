@@ -906,6 +906,17 @@ export interface PricedBalanceInput {
 }
 
 /**
+ * A rate table entry is only usable if it carries a real price. Exchanges list
+ * inactive markets at 0 — Kraken Futures publishes `EUR-USD` priced 0 — and
+ * because `findUSDRate` takes the FIRST pair matching base/quote, one such
+ * entry shadows every later (working) source for that asset and the balance
+ * silently values at $0.00. Dropping them lets the fiat rates below, the BTC
+ * cross and the tokenized-stock fallback actually be reached.
+ */
+const usablePrice = (p: { price: number }) =>
+  Number.isFinite(p.price) && p.price > 0
+
+/**
  * Fiat collateral (EUR/GBP/CHF/… posted as margin on a multi-collateral venue
  * such as Kraken Futures) appears in no exchange's `getAllPrices` table — Kraken
  * Futures only publishes its `PF_*` perpetual tickers — so `findUSDRate` scores
@@ -953,7 +964,12 @@ export const priceBalancesUsd = async (
     try {
       const prices = await factory('', '').getAllPrices()
       if (prices.status === StatusEnum.ok) {
-        rates = [...rates, ...prices.data.map((p) => ({ ...p, exchange: e }))]
+        rates = [
+          ...rates,
+          ...prices.data
+            .filter(usablePrice)
+            .map((p) => ({ ...p, exchange: e })),
+        ]
       } else {
         logger.error(`priceBalancesUsd | getAllPrices ${e}: ${prices.reason}`)
       }
@@ -1086,7 +1102,12 @@ const userSnapshots = async (
         const exchange = provider('', '')
         const prices = await exchange.getAllPrices()
         if (prices.status === StatusEnum.ok) {
-          rates = [...rates, ...prices.data.map((p) => ({ ...p, exchange: e }))]
+          rates = [
+            ...rates,
+            ...prices.data
+              .filter(usablePrice)
+              .map((p) => ({ ...p, exchange: e })),
+          ]
         } else {
           logger.error(`Snapshot | Cannot get price ${e} ${prices.reason}`)
         }

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.41.2] - 2026-08-03
+
+### Fixed
+
+- Zero-priced markets in an exchange's ticker table silently forced a balance to $0.00, which left 1.41.1's fiat rates unreachable on the venue that motivated them. Exchanges list inactive markets at price 0 — Kraken Futures publishes `EUR-USD` at 0 — and `findUSDRate` takes the first pair matching the base/quote it wants, so that dead entry shadowed every later source: the fiat rate, the BTC cross, and the tokenized-stock fallback all became unreachable, and the holding valued at zero. Both valuation paths now drop non-positive and non-finite prices when building the rate table, so a dead market is treated as absent rather than as an authoritative price of nothing.
+
 ## [1.41.1] - 2026-08-03
 
 ### Fixed
