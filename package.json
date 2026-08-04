@@ -1,6 +1,6 @@
 {
   "name": "@gainium/main-app",
-  "version": "1.41.7",
+  "version": "1.42.0",
   "description": "Main app",
   "author": "Maksym Shamko",
   "private": true,
@@ -26,6 +26,7 @@
     "db:scripts": "ts-node -r dotenv/config --files --project tsconfig.json ./src/db/scripts/index.ts",
     "backtest": "LOG_LEVEL=debug NODE_ENV=production SERVICETYPE=backtest node --max-old-space-size=7168 -r dotenv/config ./dist/src/backtest/index.js",
     "cli:reset-password": "node -r dotenv/config ./dist/src/cli/resetPassword.js",
+    "cli:rotate-encrypt-key": "node -r dotenv/config ./dist/src/cli/rotateEncryptKey.js",
     "generate:schemas": "ts-node src/utils/generate-openapi-schemas.ts",
     "generate:ai-docs": "ts-node src/utils/generate-ai-docs.ts",
     "generate:definitions": "ts-node src/utils/generate-definitions.ts",

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.42.0] - 2026-08-04
+
+### Added
+
+- Self-hosted installations can now use their own encryption key for the exchange API credentials their users store. Setting `ENCRYPT_KEY` makes new credentials encrypt under it; a new `cli:rotate-encrypt-key` command re-encrypts what is already stored, is safe to run while bots trade, and resumes if interrupted. Values written under the previous key stay readable throughout, so an installation can upgrade first and migrate later.
+- The application now says so at startup when no encryption key of its own is configured, and tells the operator how to set one.
+- The API can report whether an encryption key is configured, so the dashboard can recommend setting one. It answers yes or no and nothing else.
+
 ## [1.41.7] - 2026-08-05
 
 ### Fixed

@@ -23,5 +23,10 @@
     "removeComments": true,
   },
   "exclude": ["node_modules"],
-  "include": ["**/*.ts", "**/*.tsx", "src/bot/worker/index.js"]
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "src/bot/worker/index.js",
+    "src/cli/rotateEncryptKey.js"
+  ]
 }

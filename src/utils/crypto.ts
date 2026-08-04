@@ -1,10 +1,11 @@
 import CryptoJs from 'crypto-js'
+import logger from './logger'
 
 /**
  * The key this build falls back to when ENCRYPT_KEY is not set. Every value
  * written before a rotation is under it, so it must stay readable until the
- * backfill (main-app `scripts/rotateEncryptKey.js`) has re-encrypted
- * everything and reported zero remaining.
+ * backfill (`src/cli/rotateEncryptKey.js`) has re-encrypted everything and
+ * reported zero remaining.
  */
 export const FALLBACK_KEY = '4d01d0f4-af0c-4f60-b7f7-6396ad7823f4'
 
@@ -22,6 +23,39 @@ export const FALLBACK_KEY = '4d01d0f4-af0c-4f60-b7f7-6396ad7823f4'
 const KEY_TAG = 'g2:'
 
 const key = process.env.ENCRYPT_KEY || FALLBACK_KEY
+
+/**
+ * Whether this process encrypts under a key belonging to this installation
+ * rather than the one compiled into the build.
+ *
+ * Exposed so the API can tell the dashboard to recommend setting one. It
+ * reports a yes/no only — never the key, its length, or its source.
+ */
+export const isEncryptKeyConfigured = (): boolean => key !== FALLBACK_KEY
+
+// Said once per process at import time, because the alternative — saying
+// nothing — is how an installation runs for months without anyone noticing
+// the setting exists. Says what to do, not just that something is off.
+if (!isEncryptKeyConfigured()) {
+  // "has no key of its own" rather than "is not set": ENCRYPT_KEY may in fact
+  // be set, to the build's own default value. Same posture, and telling an
+  // operator a variable they just set is unset sends them the wrong way.
+  logger.warn(
+    'ENCRYPT_KEY: this installation has no encryption key of its own — ' +
+      'stored exchange API credentials are encrypted with the key that ships ' +
+      'in the build, which is the same for every installation. Setting your ' +
+      'own is recommended.',
+  )
+  logger.warn(
+    'ENCRYPT_KEY: generate one with ./setupEncryptKey.sh in your docker-sh ' +
+      'directory, restart the stack, then re-encrypt what is already stored ' +
+      'with: docker compose run --rm cli-runner npm run cli:rotate-encrypt-key',
+  )
+  logger.warn(
+    'ENCRYPT_KEY: back the key up before you generate data under it — see ' +
+      '"Encryption key" in docker-sh/DEPLOYMENT.md.',
+  )
+}
 
 const raw = (str: string, k: string) => {
   try {

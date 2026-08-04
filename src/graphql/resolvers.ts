@@ -119,7 +119,7 @@ import {
   PaperExchangeType,
   topUpUserBalance,
 } from '../exchange/paper/utils'
-import { decrypt, encrypt } from '../utils/crypto'
+import { decrypt, encrypt, isEncryptKeyConfigured } from '../utils/crypto'
 import logger from '../utils/logger'
 import { verifyPassword } from './handlers/password'
 // ⚠️ Note the two similarly-named helpers now in scope. `verifyPassword`
@@ -226,6 +226,27 @@ const resolvers = <
       return {
         ...user,
         data: !!user.data?.result,
+      }
+    },
+    /**
+     * Whether this deployment is configured the way we recommend. Only
+     * booleans leave this resolver: the dashboard needs to know *that* a
+     * setting is missing to suggest fixing it, and nothing more. Behind auth
+     * so the answer is not readable by anyone who can reach the endpoint.
+     */
+    deploymentSecurity: async (
+      _parent: any,
+      _args: any,
+      { token }: InputRequest,
+    ) => {
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+
+      return {
+        status: StatusEnum.ok,
+        data: { encryptionKeyConfigured: isEncryptKeyConfigured() },
       }
     },
     compareBalances: async (

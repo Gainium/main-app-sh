@@ -143,6 +143,26 @@ const UserResponse = /* GraphQL */ `
   }
 `
 
+/**
+ * Deployment posture the dashboard is allowed to see. Booleans only — never
+ * a value, a length, or anything else about the underlying setting. Requires
+ * a signed-in user.
+ */
+const DeploymentSecurity = /* GraphQL */ `
+  type Query {
+    deploymentSecurity: deploymentSecurityResponse
+  }
+  type deploymentSecurityInfo {
+    "False when this installation still encrypts under the build's default key."
+    encryptionKeyConfigured: Boolean!
+  }
+  type deploymentSecurityResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: deploymentSecurityInfo
+  }
+`
+
 export const AddExchangeInput = /* GraphQL */ `
   # Per-sub-account paper top-up. A "SPOT & Futures" (tradeType: all)
   # create spawns one paper account per market (SPOT, USDⓈ-M, COIN-M);
@@ -5678,6 +5698,7 @@ export default [
   UserSchema,
   UserForm,
   UserResponse,
+  DeploymentSecurity,
   BotSchema,
   GlobalVariablesSchema,
   AddExchangeInput,
