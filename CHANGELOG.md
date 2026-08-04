@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.41.7] - 2026-08-05
+
+### Fixed
+
+- DCA bots could fail to build their deal orders instead of skipping the attempt. Two cases: when the exchange price lookup failed the price arrived as 0, which made the base quantity infinite — the bot logged a "Big number error" and still produced a take-profit order with an unusable quantity. And a bot scaling its safety orders by ATR/ADR with no "start DCA" indicator configured crashed outright while calculating the second safety order. Both now stop cleanly: a missing price is reported as "Latest price is 0" and no orders are generated, and the ATR/ADR case simply produces no safety orders as it already intended.
+
 ## [1.41.6] - 2026-08-04
 
 ### Fixed

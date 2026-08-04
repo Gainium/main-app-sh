@@ -12842,6 +12842,21 @@ function createDCABotHelper<
         const minimumDeviation = +(settings.minimumDeviation ?? '0') / 100
         const volumeScale = +(settings.volumeScale ?? '1')
         const latestPrice = this.math.round(price, symbol.priceAssetPrecision)
+        // getLatestPrice() returns 0 when the exchange call fails, and callers
+        // pass that straight through. Without this bail baseQty becomes
+        // Infinity (baseOrderSize / 0), new Big() throws "Invalid number" and
+        // we still return a bogus TP order with an Infinity qty.
+        if (!latestPrice || !Number.isFinite(latestPrice)) {
+          this.handleErrors(
+            `Latest price is 0`,
+            'createInitialDealOrders',
+            'Get latest price',
+            false,
+            false,
+            false,
+          )
+          return []
+        }
         const useDca = settings.useDca
         const ordersSide = this.isLong ? OrderSideEnum.buy : OrderSideEnum.sell
         const scaleAr = this.scaleAr && settings?.useDca
@@ -12979,7 +12994,7 @@ function createDCABotHelper<
                 ? 1
                 : volumeScale ** (i - 1)
             let price = this.math.round(
-              (i === 1 ? latestPrice : orders[orders.length - 1].price) -
+              (i === 1 ? latestPrice : (orders[orders.length - 1]?.price ?? 0)) -
                 (this.isLong ? 1 : -1) * gridStep * stepVal,
               symbol.priceAssetPrecision,
             )
@@ -12991,7 +13006,9 @@ function createDCABotHelper<
                   )[i - 1]?.minPercFromLast ?? '100'
                 ) / 100
               price = this.math.round(
-                (i === 1 ? latestPrice : orders[orders.length - 1].price) *
+                (i === 1
+                  ? latestPrice
+                  : (orders[orders.length - 1]?.price ?? 0)) *
                   (settings.strategy === StrategyEnum.long
                     ? 1 - indicatorValue
                     : 1 + indicatorValue),
@@ -13002,7 +13019,9 @@ function createDCABotHelper<
               const dcaCustomValue =
                 +((settings.dcaCustom ?? [])[i - 1]?.step ?? '1') / 100
               price = this.math.round(
-                (i === 1 ? latestPrice : orders[orders.length - 1].price) *
+                (i === 1
+                  ? latestPrice
+                  : (orders[orders.length - 1]?.price ?? 0)) *
                   (settings.strategy === StrategyEnum.long
                     ? 1 - dcaCustomValue
                     : 1 + dcaCustomValue),
@@ -13062,9 +13081,9 @@ function createDCABotHelper<
               }
             }
             if (i > 1) {
-              if (price === orders[orders.length - 1].price) {
+              if (price === (orders[orders.length - 1]?.price ?? 0)) {
                 price = this.math.round(
-                  orders[orders.length - 1].price +
+                  (orders[orders.length - 1]?.price ?? 0) +
                     (this.isLong ? -1 : 1) *
                       Number(`${1}e-${symbol.priceAssetPrecision}`),
                   symbol.priceAssetPrecision,
