@@ -12121,8 +12121,15 @@ function createDCABotHelper<
         const filledOrders = [
           ...orders.filter((o) => o.typeOrder === TypeOrderEnum.dealRegular),
         ]
+        // Reduce-funds TP orders are excluded on purpose: their quantity is
+        // already subtracted below via `reduceFundsBase` (deal.reduceFunds is
+        // appended on fill, see updateDeal dealTP/isReduce). Counting them here
+        // too subtracted the same base twice, driving the TP qty negative on
+        // deals that used reduce funds more than once.
         const filledCloseOrders = [
-          ...orders.filter((o) => o.typeOrder === TypeOrderEnum.dealTP),
+          ...orders.filter(
+            (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
+          ),
         ]
         const findDeal = this.getDeal(dealId)
         const pendingReduceFunds = findDeal

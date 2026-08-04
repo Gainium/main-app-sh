@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.41.6] - 2026-08-04
+
+### Fixed
+
+- Using "reduce funds" more than once on the same DCA deal could close the whole deal instead of shrinking it. Each completed reduction is already recorded on the deal, and the take-profit sizing was subtracting it a second time from the filled sell orders it also counted — so the remaining position it calculated shrank twice as fast as the real one and eventually went negative. Once that number fell below the amount being withdrawn, the bot decided the withdrawal was larger than the position and closed the deal at market. On a reported deal of 813 base with 437 already withdrawn, the remaining position was computed as -61 instead of 376. Completed reductions are now counted once, so repeated reductions size correctly and the deal stays open. Deals that never used reduce funds are unaffected.
+
 ## [1.41.5] - 2026-08-04
 
 ### Added
