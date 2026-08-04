@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.41.5] - 2026-08-04
+
+### Added
+
+- Exchange request timing can now record which connector instance served the request
+
 ## [1.41.4] - 2026-08-03
 
 ### Fixed

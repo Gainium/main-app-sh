@@ -4789,6 +4789,20 @@ export type ExchangeRequestTimeProfile = Partial<BalancerTimeProfile> & {
   requestName: string
   exchangeBalancerDiff?: number
   balanacerAppDiff?: number
+  /**
+   * Connector instance that served the request — its `SERVER_ALIAS`
+   * (e.g. `http://10.0.0.1:7507`). Set by the balancer, which is the only
+   * component that knows the routing decision; the connector never sets it.
+   *
+   * Optional because responses that never went through the balancer (paper
+   * trading, cached paths) have no serving instance.
+   *
+   * Exists so request timing can be grouped per instance. Without it every
+   * instance blends into one average, which hides a per-instance difference
+   * entirely — the fleet runs one instance per egress IP, and they need not
+   * be equivalent.
+   */
+  server?: string
 }
 
 export interface ExchangeRequestTimeProfileSchema
