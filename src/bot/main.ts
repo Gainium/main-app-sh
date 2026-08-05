@@ -231,6 +231,11 @@ export const eventMap: { [x: string]: string } = {
 }
 const maxLogs = 30
 const maxMethods = 30
+/** Key-scheme version for `MainBot.getNotEnoughOrdersIdByOrder`. Bump when the
+ *  key shape changes so counters written under the old scheme are discarded.
+ *  Module-level rather than a static member: adding statics to `MainBot`
+ *  changes `typeof MainBot` and breaks the mixin casts in helper.ts/dcaHelper.ts. */
+const notEnoughBalanceKeyVersion = 2
 type LastLog = {
   time: number
   message: string
@@ -249,6 +254,25 @@ class MainBot<T extends IMainBot> {
   brokerCode = ''
   notEnoughBalanceLogPrefix = 'NOB |'
   notEnoughBalanceThreshold = 10
+  /** Backoff bounds for the guard's re-probe. While blocking, the guard lets
+   *  one real attempt through every `interval`, doubling up to the max.
+   *
+   *  Why probe at all: the block decision reads `checkAssets` WITHOUT `direct`,
+   *  i.e. the cached `balances` collection, which can lag badly (two weeks was
+   *  observed on prod for a thinly-traded asset). A cache that under-reports
+   *  would otherwise latch the bot off permanently, because the only path that
+   *  clears the counter is that same stale read. The probe makes the exchange —
+   *  the only authority — break the tie.
+   *
+   *  Why backoff: a transient shortfall recovers within `min`, while a
+   *  chronically unfundable order (the common case: a deal whose base left the
+   *  account months ago) settles at one attempt per `max` instead of ~15/min. */
+  notEnoughBalanceProbeMin = 5 * 60_000
+  notEnoughBalanceProbeMax = 60 * 60_000
+  /** key -> { at: last probe/block start, interval: current backoff }.
+   *  In-memory only; losing it on restart just costs one extra probe. */
+  private notEnoughBalanceProbe: Map<string, { at: number; interval: number }> =
+    new Map()
   botService = new Bot()
   sharedStream = SharedStream.getInstance()
   finishLoad = false
@@ -1725,6 +1749,11 @@ class MainBot<T extends IMainBot> {
       )
       this.data.notEnoughBalance.thresholdPassed = true
       this.data.notEnoughBalance.thresholdPassedTime = +new Date()
+      // Persist + broadcast this transition too. It previously relied on the
+      // caller's earlier `updateData` happening to flush the same mutated
+      // object, so the arming edge was never announced to subscribers the way
+      // the disarming edge was.
+      needUpdate = true
     }
     if (needUpdate) {
       this.updateData({
@@ -1738,11 +1767,28 @@ class MainBot<T extends IMainBot> {
     }
   }
 
+  /**
+   * Counter key for the not-enough-balance guard.
+   *
+   * Keyed on the RESOURCE that is actually exhausted — the (asset, side) pair —
+   * not on the individual order. A spot balance is shared by every deal and
+   * every grid level on that symbol, so if one sell is unfundable they all are.
+   *
+   * The previous scheme included `order.price`, which defeated the guard
+   * entirely: ~88% of spot orders are MARKET and carry the live market price,
+   * so consecutive retries each landed on a fresh counter starting at 0 and
+   * never reached `notEnoughBalanceThreshold`. Measured on prod, that was 3.3
+   * attempts per key against a threshold of 10 — 75% of retries reached the
+   * exchange with the guard permanently disarmed. It also made the map
+   * unbounded (one entry per price tick ever seen; one prod bot held 1,110
+   * keys accumulated over 10 months).
+   *
+   * Blocking is still gated on a real balance check at the call site, so
+   * collapsing distinct orders onto one counter cannot wrongly reject a
+   * fundable order — it only decides when the check is worth doing.
+   */
   private getNotEnoughOrdersIdByOrder(order: Order) {
-    const price = `${order.price}`.replace('.', '')
-    return this.botType === BotType.grid
-      ? `${price}@${order.side}`
-      : `${order.dealId}@${order.side}@${price}`
+    return `${order.symbol}@${order.side}`
   }
 
   @IdMute(mutex, (order: Order) => `notEnoughBalance${order.botId}`)
@@ -1765,12 +1811,36 @@ class MainBot<T extends IMainBot> {
     if (!this.data.notEnoughBalance.orders) {
       this.data.notEnoughBalance.orders = {}
     }
+    // Counters written under an older key scheme can never be matched by the
+    // current one, so they would sit in the doc forever (and keep
+    // `thresholdPassed` latched on evidence that no longer applies). Drop them
+    // the first time a bot writes under the new scheme.
+    if (this.data.notEnoughBalance.keyVersion !== notEnoughBalanceKeyVersion) {
+      this.data.notEnoughBalance.orders = {}
+      this.data.notEnoughBalance.thresholdPassed = false
+      this.data.notEnoughBalance.thresholdPassedTime = 0
+      this.data.notEnoughBalance.keyVersion = notEnoughBalanceKeyVersion
+    }
     if (!this.data.notEnoughBalance.orders[id] && inc > 0) {
       this.data.notEnoughBalance.orders[id] = 0
     }
     this.data.notEnoughBalance.orders[id] += inc
+    // Cap the counter. It is a trip-wire, not a tally: without a ceiling a
+    // stuck order reaches five figures (16,987 was observed on prod), and the
+    // `-1` decrement on a recovered balance would then need thousands of
+    // successes to fall back under the threshold — the guard could never
+    // disarm itself.
+    if (
+      this.data.notEnoughBalance.orders[id] >
+      this.notEnoughBalanceThreshold + 1
+    ) {
+      this.data.notEnoughBalance.orders[id] = this.notEnoughBalanceThreshold + 1
+    }
     if (this.data.notEnoughBalance.orders[id] <= 0 || reset) {
       delete this.data.notEnoughBalance.orders[id]
+      // The key is no longer blocked, so the next block should start a fresh
+      // probe window rather than inherit the old one.
+      this.notEnoughBalanceProbe.delete(id)
     }
     this.updateData({
       notEnoughBalance: this.data.notEnoughBalance,
@@ -5001,13 +5071,38 @@ class MainBot<T extends IMainBot> {
             const { balance, required } =
               await this.getAssetBalanceAndRequiredByOrder(order)
             if ((balance?.free ?? 0) < required) {
-              this.handleDebug(
-                `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${balance?.free}, required: ${required}`,
-              )
-              request = {
-                status: StatusEnum.notok,
-                reason: `Not enough balance`,
-                data: null,
+              const now = +new Date()
+              const probe = this.notEnoughBalanceProbe.get(notEnoughBalanceId)
+              if (!probe) {
+                this.notEnoughBalanceProbe.set(notEnoughBalanceId, {
+                  at: now,
+                  interval: this.notEnoughBalanceProbeMin,
+                })
+              }
+              if (probe && now - probe.at > probe.interval) {
+                // Been blocking on cached data for a while — let one attempt
+                // reach the exchange to re-confirm. If it fails, the counter
+                // re-arms with a longer backoff; if it fills, the success path
+                // clears the key entirely.
+                this.notEnoughBalanceProbe.set(notEnoughBalanceId, {
+                  at: now,
+                  interval: Math.min(
+                    probe.interval * 2,
+                    this.notEnoughBalanceProbeMax,
+                  ),
+                })
+                this.handleDebug(
+                  `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId} after blocking for ${now - probe.at}ms. Cached balance: ${balance?.free}, required: ${required}`,
+                )
+              } else {
+                this.handleDebug(
+                  `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${balance?.free}, required: ${required}`,
+                )
+                request = {
+                  status: StatusEnum.notok,
+                  reason: `Not enough balance`,
+                  data: null,
+                }
               }
             } else {
               this.handleDebug(

@@ -1,6 +1,5 @@
 {
   "name": "@gainium/main-app",
-  "version": "1.45.0",
   "description": "Main app",
   "author": "Maksym Shamko",
   "private": true,
@@ -96,5 +95,6 @@
     "socket.io-client": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0"
-  }
+  },
+  "version": "1.45.1"
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.45.1] - 2026-08-05
+
+### Fixed
+
+- Bots that could not fund an order kept asking the exchange to place it, over and over, instead of backing off. The safeguard meant to stop this counted failures per order price, but most orders are market orders carrying the live price, so consecutive retries were each filed under a new price and the count never built up to the point where the safeguard engaged. Failures are now counted per asset and direction — which is what a balance shortfall actually applies to — so the safeguard arms as intended. Once it does, the bot re-checks with the exchange on a widening interval rather than continuously, so a shortfall that clears is picked up quickly while one that persists stops generating traffic.
+- The failure count is now capped. It previously grew without limit, and since a recovered balance only walks it back one step at a time, a long-running shortfall could leave a bot unable to clear the count and resume on its own.
+- Counters recorded under the previous scheme are discarded the first time a bot records a new one, so stale entries no longer accumulate on the bot indefinitely.
+
 ## [1.45.0] - 2026-08-05
 
 ### Fixed

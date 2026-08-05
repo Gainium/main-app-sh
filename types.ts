@@ -1923,6 +1923,10 @@ export interface MainBot<T = BaseSettings> extends SchemaI {
     orders?: Record<string, number>
     thresholdPassed?: boolean
     thresholdPassedTime?: number
+    /** Key-scheme version of `orders`. Bumped when
+     *  `getNotEnoughOrdersIdByOrder` changes shape so stale counters keyed by
+     *  the old scheme are discarded instead of lingering forever. */
+    keyVersion?: number
   }
   share?: boolean
   shareId?: string
