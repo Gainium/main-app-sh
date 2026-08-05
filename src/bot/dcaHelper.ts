@@ -10930,7 +10930,7 @@ function createDCABotHelper<
           : +base.origQty +
             usedGrids.reduce((acc, g) => acc + g.qty, 0) +
             additionalValue
-      const available =
+      let available =
         (this.futures
           ? this.coinm
             ? (balance?.get(ed.baseAsset.name)?.free ?? 0)
@@ -10938,6 +10938,9 @@ function createDCABotHelper<
           : this.isLong
             ? (balance?.get(ed.quoteAsset.name)?.free ?? 0)
             : balance?.get(ed.baseAsset.name)?.free) ?? 0
+      if (requiredAmount / leverage > available) {
+        available = await this.pooledMarginOrKeep(ed.quoteAsset.name, available)
+      }
       if (requiredAmount / leverage > available) {
         return {
           status: false,

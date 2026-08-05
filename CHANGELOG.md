@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.43.0] - 2026-08-05
+
+### Added
+
+- Bots on pooled-collateral futures accounts can now open deals funded by collateral held in another currency. Kraken Futures pools every collateral currency into one cross-margin account, so a wallet funded in EUR shows no USD balance at all — and since order sizing reads the pair's quote asset, such an account was rejected with "Not enough balance to start new deal ... available: 0 USD" even though the venue would have margined the position off the EUR without complaint. When, and only when, the ordinary quote-asset check has already failed, the balance check now asks the connector for the account's pooled USD margin and sizes off that instead. The common path is unchanged and costs no extra request; a venue reporting no pooled margin — every non-pooled exchange, the paper simulator, and any failed call — keeps the previous behaviour exactly, and the pooled figure is trusted only when USD really is the quote asset. Applies to DCA and combo bots.
+
 ## [1.42.0] - 2026-08-04
 
 ### Added

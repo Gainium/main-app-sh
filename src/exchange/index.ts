@@ -26,6 +26,7 @@ export interface Exchange {
   returnGood<T>(): (r: T) => ReturnGood<T>
   returnBad(): (e: Error) => ReturnBad
   getBalance(): Promise<BaseReturn<FreeAsset>>
+  getMarginAvailableUsd(): Promise<BaseReturn<number | null>>
   openOrder(order: {
     symbol: string
     side: OrderTypes
@@ -181,6 +182,19 @@ abstract class AbsctractExchange implements Exchange {
    * @returns {Promise<BaseReturn>} {asset: string; free: number }[] balances array
    */
   abstract getBalance(): Promise<BaseReturn<FreeAsset>>
+  /**
+   * USD margin available on a pooled-collateral futures account, or `null` when
+   * the venue has no such pool and the quote-asset balance is authoritative.
+   * Concrete default lives on the HTTP exchange; the paper simulator keeps the
+   * `null` answer, since simulated accounts are already quote-denominated.
+   */
+  async getMarginAvailableUsd(): Promise<BaseReturn<number | null>> {
+    return {
+      status: StatusEnum.ok,
+      data: null,
+      reason: null,
+    }
+  }
   /** Open order abstract function
    * @param {string} options.symbol pair
    * @param {OrderTypes} options.side BUY or SELL

@@ -5700,6 +5700,35 @@ class MainBot<T extends IMainBot> {
     }
   }
 
+  /**
+   * Some venues pool every collateral currency into ONE cross-margin account
+   * (Kraken Futures' flex account), so the quote asset can read 0 while the
+   * account is perfectly able to open the deal — a wallet funded only in EUR
+   * still margins a USD-quoted perpetual off that EUR. Sizing off the quote
+   * balance alone rejects those deals with "available: 0 USD".
+   *
+   * Consulted ONLY after the plain quote-balance check has already failed, so
+   * the common path costs no extra request. Returns `available` unchanged for
+   * every non-pooled venue and on any error: a venue with no opinion must
+   * never widen or block sizing. The pooled figure is USD-denominated, so it
+   * is trusted only when USD actually is the quote asset.
+   */
+  protected async pooledMarginOrKeep(
+    quoteAsset: string,
+    available: number,
+  ): Promise<number> {
+    if (!this.futures || this.coinm || quoteAsset !== 'USD' || !this.exchange) {
+      return available
+    }
+    const res = await this.exchange.getMarginAvailableUsd()
+    if (res.status !== StatusEnum.ok || typeof res.data !== 'number') {
+      return available
+    }
+    // The venue already nets margin committed to open positions, so this is
+    // what can actually be committed now. Never shrink what the caller found.
+    return Math.max(available, res.data)
+  }
+
   get futures() {
     return !!this.data?.settings.futures
   }

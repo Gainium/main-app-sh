@@ -3994,7 +3994,7 @@ function createComboBotHelper<
                     '1'
                   ))
 
-      const available =
+      let available =
         (this.futures
           ? this.coinm
             ? (balance?.get(ed.baseAsset.name)?.free ?? 0)
@@ -4002,6 +4002,9 @@ function createComboBotHelper<
           : this.isLong
             ? (balance?.get(ed.quoteAsset.name)?.free ?? 0)
             : balance?.get(ed.baseAsset.name)?.free) ?? 0
+      if (requiredAmount / leverage > available) {
+        available = await this.pooledMarginOrKeep(ed.quoteAsset.name, available)
+      }
       if (requiredAmount / leverage > available) {
         return {
           status: false,
