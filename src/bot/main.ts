@@ -1443,8 +1443,15 @@ class MainBot<T extends IMainBot> {
       )
     ) {
       const lookAfter = +new Date() - 24 * 60 * 60 * 1000
+      // Must key on the SAME botId the message is written under below
+      // (`parentBotId || botId`). A hedge bot's legs each have their own botId
+      // while every message they raise is stored against the parent, so counting
+      // by `this.botId` always returned 0 and this throttle never engaged for
+      // hedge bots — on ANY subType, not just the one that surfaced it. Any
+      // repeating condition could therefore write one row per occurrence
+      // indefinitely, where a non-hedge bot on the same path is capped at one.
       const notDeleted = await this.messagesDb.countData({
-        botId: this.botId,
+        botId: this.data?.parentBotId || this.botId,
         userId: this.userId,
         subType,
         isDeleted: { $ne: true },

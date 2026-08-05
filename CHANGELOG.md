@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.43.4] - 2026-08-05
+
+### Fixed
+
+- Hedge bots no longer repeat the same warning or error indefinitely. Every message a hedge bot's legs raise is filed under the parent bot, but the check that decides "this one is already showing, don't post it again" looked under the leg instead, so it never found the existing message and posted every occurrence. A single repeating condition could therefore bury a user in identical notifications. Non-hedge bots were unaffected.
+
 ## [1.43.3] - 2026-08-05
 
 ### Fixed
