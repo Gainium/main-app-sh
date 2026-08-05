@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.44.0] - 2026-08-05
+
+### Added
+
+- Optional hook letting the host application supply its own way of reading a stored credential, for value formats this package does not define. Nothing is registered by default, so every existing installation is unaffected.
+- Exchange request telemetry now records how long resolving that request's credentials took, so the cost is attributable instead of showing up as unexplained drift in the total.
+
+### Fixed
+
+- Reading a stored value whose format this package does not recognise now fails loudly instead of returning an empty string. It previously fell through to AES under the fallback key, which does not signal failure — the caller received `''` and used it as the credential, surfacing as an authentication failure at the exchange with no exception anywhere.
+
 ## [1.43.4] - 2026-08-05
 
 ### Fixed

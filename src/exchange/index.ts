@@ -20,7 +20,8 @@ import type {
   OKXSource,
   BybitHost,
 } from '../../types'
-import { decrypt } from '../utils/crypto'
+import { decrypt, decryptAsync } from '../utils/crypto'
+import { isResolverManaged } from '../utils/credentialResolver'
 
 export interface Exchange {
   returnGood<T>(): (r: T) => ReturnGood<T>
@@ -122,6 +123,15 @@ abstract class AbsctractExchange implements Exchange {
   public keysType?: CoinbaseKeysType
   public okxSource?: OKXSource
   public bybitHost?: BybitHost
+  /**
+   * Set when at least one credential is in a format that only the host
+   * application can read, and therefore could not be resolved in the
+   * constructor — resolving it is asynchronous and a constructor is not.
+   * While true, `key`/`secret`/`passphrase` still hold the stored value.
+   */
+  private credentialsPending = false
+  /** Memoises the in-flight resolution so concurrent calls collapse into one. */
+  private credentialsPromise: Promise<void> | null = null
   constructor(
     key?: string,
     secret?: string,
@@ -132,13 +142,63 @@ abstract class AbsctractExchange implements Exchange {
     bybitHost?: BybitHost,
     subaccount?: boolean,
   ) {
-    this.key = key ? decrypt(key) : key
-    this.secret = secret ? decrypt(secret) : secret
-    this.passphrase = passphrase ? decrypt(passphrase) : passphrase
+    this.credentialsPending =
+      isResolverManaged(key) ||
+      isResolverManaged(secret) ||
+      isResolverManaged(passphrase)
+    if (this.credentialsPending) {
+      // Keep the stored values untouched; `ensureCredentials` replaces them
+      // with plaintext before the first request that needs them.
+      this.key = key
+      this.secret = secret
+      this.passphrase = passphrase
+    } else {
+      this.key = key ? decrypt(key) : key
+      this.secret = secret ? decrypt(secret) : secret
+      this.passphrase = passphrase ? decrypt(passphrase) : passphrase
+    }
     this.keysType = keysType
     this.okxSource = okxSource
     this.bybitHost = bybitHost
     this.subaccount = subaccount
+  }
+
+  /**
+   * Resolves any credential the constructor had to defer. A no-op — and not
+   * even a microtask's worth of work — when nothing was deferred, which is
+   * every case where no resolver is registered.
+   *
+   * Call this at the top of any method that reads `key`/`secret`/`passphrase`.
+   * A failure leaves the instance pending rather than half-resolved, so the
+   * next attempt retries instead of sending a stored value as if it were
+   * plaintext.
+   */
+  protected async ensureCredentials(): Promise<void> {
+    if (!this.credentialsPending) {
+      return
+    }
+    if (!this.credentialsPromise) {
+      this.credentialsPromise = (async () => {
+        const [key, secret, passphrase] = await Promise.all([
+          this.key ? decryptAsync(this.key) : Promise.resolve(this.key),
+          this.secret
+            ? decryptAsync(this.secret)
+            : Promise.resolve(this.secret),
+          this.passphrase
+            ? decryptAsync(this.passphrase)
+            : Promise.resolve(this.passphrase),
+        ])
+        this.key = key
+        this.secret = secret
+        this.passphrase = passphrase
+        this.credentialsPending = false
+      })().catch((e) => {
+        // Drop the memo so a later call can retry a transient failure.
+        this.credentialsPromise = null
+        throw e
+      })
+    }
+    await this.credentialsPromise
   }
   /** Function to handle and format success result */
   returnGood<T>() {

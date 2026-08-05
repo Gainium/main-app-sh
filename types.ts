@@ -4780,6 +4780,20 @@ export type BalancerTimeProfile = Partial<ExchangeTimeProfile> & {
 }
 
 export type ExchangeRequestTimeProfile = Partial<BalancerTimeProfile> & {
+  /**
+   * Time spent resolving this request's credentials before it could be sent,
+   * and whether that was served from memory.
+   *
+   * Optional because most builds never populate it.
+   *
+   * Recorded per request as a duration rather than as a hit/miss flag: the flag
+   * would have to come from a process-wide resolver, and under concurrency one
+   * request could read another's result. The duration is unambiguous and the
+   * distribution is sharply bimodal anyway — a cached resolve is sub-millisecond
+   * and an uncached one is a network round trip — so the hit rate falls out of
+   * the data without anything having to assert it.
+   */
+  credentialResolveMs?: number
   appIncomingTime: number
   appOutcomingTime: number
   appRequestStartTime: number

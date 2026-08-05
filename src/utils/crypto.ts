@@ -1,4 +1,5 @@
 import CryptoJs from 'crypto-js'
+import { getCredentialResolver, isResolverManaged } from './credentialResolver'
 import logger from './logger'
 
 /**
@@ -57,6 +58,21 @@ if (!isEncryptKeyConfigured()) {
   )
 }
 
+/**
+ * Prefix of CryptoJS's salted output. Every value this module has ever written
+ * without a tag begins with it, so it identifies "this module wrote it" without
+ * attempting a decryption.
+ */
+const AES_PREFIX = 'U2FsdGVkX1'
+
+/**
+ * Whether this module can read `str` on its own — i.e. it wrote it, under
+ * either key. False for anything else, including formats a host resolver owns.
+ */
+export const isReadableHere = (str: unknown): boolean =>
+  typeof str === 'string' &&
+  (str.startsWith(KEY_TAG) || str.startsWith(AES_PREFIX))
+
 const raw = (str: string, k: string) => {
   try {
     return CryptoJs.AES.decrypt(str, k).toString(CryptoJs.enc.Utf8)
@@ -101,6 +117,48 @@ export const decrypt = (str: string, k?: string) => {
     return raw(str.slice(KEY_TAG.length), key)
   }
   return raw(str, FALLBACK_KEY)
+}
+
+/**
+ * Async form of `decrypt`, for values that may be in a format only the host
+ * application understands (see `credentialResolver.ts`).
+ *
+ * With no resolver registered this is `decrypt` with a promise around it, so
+ * call sites can be migrated to it before — or without ever — a resolver
+ * existing. That is deliberate: it lets the read path ship and be verified on
+ * its own, ahead of anything that writes the new format.
+ *
+ * An explicit `k` never reaches the resolver. Those call sites own both ends of
+ * their own token and are not stored credentials, so they keep the exact
+ * behaviour they have always had.
+ */
+export const decryptAsync = async (
+  str: string,
+  k?: string,
+): Promise<string> => {
+  if (k === undefined) {
+    if (isResolverManaged(str)) {
+      // Non-null: isResolverManaged is false when nothing is registered.
+      return getCredentialResolver()!.resolve(str)
+    }
+    if (typeof str === 'string' && str !== '' && !isReadableHere(str)) {
+      // The value is in neither format this module writes, and no resolver
+      // claims it. Falling through would hand it to AES under the fallback
+      // key, which does not fail: it returns '' or a short run of bytes, and
+      // the caller uses that as if it were the credential. The result is an
+      // authentication failure at the exchange with no exception anywhere —
+      // the single hardest thing to diagnose in this whole path.
+      //
+      // The realistic cause is a process that is missing the configuration its
+      // peers have, so say that rather than describing the bytes.
+      throw new Error(
+        'decryptAsync: stored value is in a format this process cannot read. ' +
+          'It was most likely written by a process configured with a ' +
+          'credential resolver that this one does not have.',
+      )
+    }
+  }
+  return decrypt(str, k)
 }
 
 /** True when `str` was written under the active ENCRYPT_KEY. */
