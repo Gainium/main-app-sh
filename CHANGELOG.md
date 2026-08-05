@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.44.2] - 2026-08-05
+
+### Fixed
+
+- Hedge bots stayed silent after their first warning or error of a given kind. Recovering from an error clears a bot's active messages so the next occurrence can be shown again, but for hedge bots that clean-up looked under the individual leg while the messages are filed under the parent, so it never found them and the bot never spoke up again. Completes the fix in 1.43.4, which stopped the opposite problem — the same message repeating without end. Existing stuck messages clear themselves the next time the bot recovers from an error.
+
 ## [1.44.1] - 2026-08-05
 
 ### Fixed

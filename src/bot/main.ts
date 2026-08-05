@@ -4558,9 +4558,17 @@ class MainBot<T extends IMainBot> {
       }
       this.data.workingShift = this.trimWorkingShift(this.data.workingShift)
       if (this.data.status === BotStatusEnum.error) {
+        // Same key as processError writes and counts under. Clearing by
+        // `this.botId` never matched a hedge bot's rows (they are filed under the
+        // parent), so recovery could not reopen the per-subType throttle and the
+        // bot fell silent on that subType for good. The message stream is
+        // parent-scoped by construction — every leg files into it — so a leg
+        // recovering clears the parent's set; a leg still in error simply
+        // re-raises on its next occurrence, which is the non-hedge behaviour too.
+        // The futuresLiquidation exemption below is deliberate — leave it.
         this.messagesDb.updateManyData(
           {
-            botId: this.botId,
+            botId: this.data?.parentBotId || this.botId,
             isDeleted: false,
             subType: { $ne: futuresLiquidation },
           },
