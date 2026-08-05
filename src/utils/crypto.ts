@@ -48,8 +48,8 @@ if (!isEncryptKeyConfigured()) {
   )
   logger.warn(
     'ENCRYPT_KEY: generate one with ./setupEncryptKey.sh in your docker-sh ' +
-      'directory, restart the stack, then re-encrypt what is already stored ' +
-      'with: docker compose run --rm cli-runner npm run cli:rotate-encrypt-key',
+      'directory and restart the stack. Credentials already stored are ' +
+      're-encrypted for you on the next start — nothing else to run.',
   )
   logger.warn(
     'ENCRYPT_KEY: back the key up before you generate data under it — see ' +

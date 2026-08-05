@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.43.1] - 2026-08-05
+
+### Added
+
+- Once a self-hosted installation has an encryption key of its own, the credentials already stored under the previous key are re-encrypted automatically. The api notices on startup that values are still under the old key and moves them in the background; it serves traffic throughout, does nothing once there is nothing left to move, and only ever runs in the api process. The manual command is unchanged and still available — set `ENCRYPT_KEY_AUTO_BACKFILL=false` to use it instead.
+
 ## [1.43.0] - 2026-08-05
 
 ### Added

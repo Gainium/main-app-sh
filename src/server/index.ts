@@ -28,6 +28,7 @@ import { CORS_ORIGIN, GRAPH_QL_PORT, JWT_SECRET, SERVER_HOST } from '../config'
 import { addHealthEndpoint } from '../utils/healthServer'
 import swaggerDoc from './swagger.json'
 import { startAdminConfigSync } from '../utils/adminConfig'
+import { startEncryptKeyBackfill } from '../utils/encryptKeyBackfill'
 
 swaggerDoc.servers = [{ url: `${SERVER_HOST}` }]
 
@@ -75,6 +76,10 @@ type ApolloContext = {
 async function start() {
   userUtils.connectUserBalance()
   await startAdminConfigSync()
+  // Not awaited: it re-encrypts stored credentials in the background when this
+  // installation has its own ENCRYPT_KEY and values are still under the
+  // build's. Boot does not wait for it.
+  void startEncryptKeyBackfill()
   const port = GRAPH_QL_PORT
 
   const app = express()
