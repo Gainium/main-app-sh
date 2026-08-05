@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.43.3] - 2026-08-05
+
+### Fixed
+
+- Broker-code indexes no longer fail to rebuild when several services start at the same time. Each process dropped the collection's indexes before rebuilding them, so a process starting a moment later wiped an index another one was still building and that build aborted. The drop was a leftover from a one-off migration that has since completed; the index sync that follows it already reconciles any change on its own, so indexes are now left alone unless they actually differ.
+
 ## [1.43.2] - 2026-08-05
 
 ### Changed
