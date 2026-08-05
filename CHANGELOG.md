@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.43.2] - 2026-08-05
+
+### Changed
+
+- Connecting Hyperliquid without an approved builder fee now explains which approval is missing and how to grant it, instead of asking the user to "follow the instructions" without naming them.
+
 ## [1.43.1] - 2026-08-05
 
 ### Added

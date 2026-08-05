@@ -5736,7 +5736,22 @@ const resolvers = <
                 if (!affiliate) {
                   return {
                     status: StatusEnum.notok,
-                    reason: `To use ${e} exchange you need to follow the instructions.`,
+                    // The old text ("you need to follow the instructions")
+                    // named neither the check that failed nor the instructions
+                    // it meant, so a user who had just completed the wallet
+                    // flow had nothing to act on and simply retried forever.
+                    // Say which approval is missing and how to grant it.
+                    reason:
+                      `Hyperliquid builder fee not approved for this wallet. ` +
+                      `On the free plan Gainium is paid through Hyperliquid ` +
+                      `builder fees (0.07% spot / 0.045% perps) instead of ` +
+                      `credits, so your main wallet has to approve Gainium as ` +
+                      `a builder before the account can be connected. ` +
+                      `Reconnect with "Free (approve builder fees)" and ` +
+                      `confirm BOTH wallet prompts — the agent wallet and the ` +
+                      `builder fee. If your wallet only prompted once, the ` +
+                      `builder-fee approval did not go through. On a paid ` +
+                      `plan you can connect with "Regular" instead.`,
                     data: null,
                   }
                 }
