@@ -164,6 +164,18 @@ abstract class AbsctractExchange implements Exchange {
   }
 
   /**
+   * Whether anything still needs resolving. Synchronous on purpose: callers
+   * check this *before* awaiting, so a build with no resolver registered pays
+   * no `await` at all. Awaiting an async function that returns immediately
+   * still yields to the microtask queue, which costs a scheduling delay on
+   * every request and — worse — makes any timing taken around it a measure of
+   * event-loop lag rather than of credential work.
+   */
+  protected hasPendingCredentials(): boolean {
+    return this.credentialsPending
+  }
+
+  /**
    * Resolves any credential the constructor had to defer. A no-op — and not
    * even a microtask's worth of work — when nothing was deferred, which is
    * every case where no resolver is registered.

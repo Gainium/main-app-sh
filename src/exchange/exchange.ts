@@ -896,11 +896,10 @@ class Exchange extends AbstractExchange {
     // Credentials this instance could not resolve in its constructor are
     // resolved here, before anything reads them into the auth headers below.
     // No-op unless a resolver is registered and owns one of the values.
-    const credentialStart = Date.now()
-    await this.ensureCredentials()
-    const credentialMs = Date.now() - credentialStart
-    if (credentialMs > 0) {
-      timeProfile.credentialResolveMs = credentialMs
+    if (this.hasPendingCredentials()) {
+      const credentialStart = Date.now()
+      await this.ensureCredentials()
+      timeProfile.credentialResolveMs = Date.now() - credentialStart
     }
     const { endpoint, params, body, method } = request
     const authHeaders: Record<string, string> = {

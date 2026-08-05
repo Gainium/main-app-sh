@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.44.1] - 2026-08-05
+
+### Fixed
+
+- Exchange requests no longer pay a scheduling delay when no credential resolver is registered. The resolution step was awaited unconditionally, and awaiting a function that returns immediately still yields to the event loop, so every request paid for a step that had nothing to do — and any timing measured around it reported event-loop lag rather than real work.
+
 ## [1.44.0] - 2026-08-05
 
 ### Added
