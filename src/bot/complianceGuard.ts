@@ -1,5 +1,4 @@
-import RedisClient from '../db/redis'
-import logger from '../utils/logger'
+import RetryBackoff from './retryBackoff'
 
 /**
  * Compliance / jurisdiction restriction cooldown guard.
@@ -17,31 +16,23 @@ import logger from '../utils/logger'
  * try. Production logged 82 such `openOrder` calls in 4h from ONE account.
  *
  * This guard caches the venue's own rejection per account (= exchangeUUID) and
- * per symbol for a bounded window, so the bot engine can serve it locally
- * instead of re-hitting the exchange. It deliberately does NOT change bot
- * status, the message the user sees, or the deal — the engine replays the
- * cached rejection through the exact same error path, so the ONLY difference is
- * that we stop hammering the venue.
+ * per symbol, so the bot engine can serve it locally instead of re-hitting the
+ * exchange. It deliberately does NOT change bot status, the message the user
+ * sees, or the deal — the engine replays the cached rejection through the exact
+ * same error path, so the ONLY difference is that we stop hammering the venue.
  *
- * Follows the QuantRulesGuard pattern: a static class with no instance state,
- * flat namespaced Redis keys (Redis is the only state shared across the
- * per-bot-type PM2 workers), and fail-open semantics — on any Redis error we
- * log and behave as if there were no cooldown, so a Redis blip never wedges
- * order placement.
+ * The cooldown mechanism itself lives in {@link RetryBackoff}, shared with the
+ * not-enough-balance gate. Backoff replaced the original fixed 1h window: a
+ * restriction the account holder resolves is now picked up in 5 minutes instead
+ * of up to an hour, while one that is never resolved still settles at the same
+ * 1h ceiling. Strictly better at both ends.
  */
 
-/**
- * How long one observed rejection suppresses further venue calls for that
- * account+symbol. Long enough to collapse the loop (82 calls / 4h becomes 4),
- * short enough that a user who fixes the restriction resumes on their own.
- */
-const COOLDOWN_MS = 60 * 60 * 1000
-
-const logPrefix = '[ComplianceGuard]'
-
-/** JSON {until, reason} for one account+symbol cooldown; TTL = cooldown secs. */
-const cooldownKey = (exchangeUUID: string, symbol: string) =>
-  `cr:cd:${exchangeUUID}:${symbol}`
+const backoff = new RetryBackoff({
+  namespace: 'cr',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+})
 
 export type ComplianceCheckResult = {
   restricted: boolean
@@ -49,12 +40,6 @@ export type ComplianceCheckResult = {
   reason: string | null
   /** Cooldown expiry (ms epoch), or null when not restricted. */
   until: number | null
-}
-
-const NOT_RESTRICTED: ComplianceCheckResult = {
-  restricted: false,
-  reason: null,
-  until: null,
 }
 
 export class ComplianceGuard {
@@ -68,22 +53,11 @@ export class ComplianceGuard {
     symbol: string
     reason: string
   }): Promise<number> {
-    const until = +new Date() + COOLDOWN_MS
-    try {
-      const redis = await RedisClient.getInstance()
-      await redis.set(
-        cooldownKey(input.exchangeUUID, input.symbol),
-        JSON.stringify({ until, reason: input.reason }),
-        Math.ceil(COOLDOWN_MS / 1000),
-      )
-    } catch (e) {
-      logger.error(
-        `${logPrefix} record ${input.exchangeUUID}:${input.symbol} error: ${
-          (e as Error)?.message ?? e
-        }`,
-      )
-    }
-    return until
+    const state = await backoff.record(
+      [input.exchangeUUID, input.symbol],
+      input.reason,
+    )
+    return state.until
   }
 
   /**
@@ -95,40 +69,17 @@ export class ComplianceGuard {
     exchangeUUID: string,
     symbol: string,
   ): Promise<ComplianceCheckResult> {
-    try {
-      const redis = await RedisClient.getInstance()
-      const raw = await redis.get(cooldownKey(exchangeUUID, symbol))
-      if (!raw) {
-        return NOT_RESTRICTED
-      }
-      const parsed = JSON.parse(raw) as { until?: number; reason?: string }
-      const until = Number(parsed.until)
-      if (!Number.isFinite(until) || until <= +new Date() || !parsed.reason) {
-        return NOT_RESTRICTED
-      }
-      return { restricted: true, reason: parsed.reason, until }
-    } catch (e) {
-      logger.error(
-        `${logPrefix} check ${exchangeUUID}:${symbol} error: ${
-          (e as Error)?.message ?? e
-        }`,
-      )
-      return NOT_RESTRICTED
+    const res = await backoff.check([exchangeUUID, symbol])
+    return {
+      restricted: res.suppressed,
+      reason: res.reason,
+      until: res.until,
     }
   }
 
   /** Drop a cooldown (used by tests). */
   static async clear(exchangeUUID: string, symbol: string): Promise<void> {
-    try {
-      const redis = await RedisClient.getInstance()
-      await redis.set(cooldownKey(exchangeUUID, symbol), '', 1)
-    } catch (e) {
-      logger.error(
-        `${logPrefix} clear ${exchangeUUID}:${symbol} error: ${
-          (e as Error)?.message ?? e
-        }`,
-      )
-    }
+    return backoff.clear([exchangeUUID, symbol])
   }
 }
 

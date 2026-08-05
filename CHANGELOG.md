@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.46.0] - 2026-08-05
+
+### Changed
+
+- The two separate cooldowns added for rejections that cannot succeed on retry — a permanent jurisdiction restriction, and an order the account cannot fund — now share one mechanism. Both hold the order back for a spell that widens each time the exchange rejects again, and both reset the moment the order goes through. Previously only one of them backed off, and the other kept its state in memory, so it was lost whenever a bot moved between workers or restarted; the shared version keeps it where every worker can see it.
+- A jurisdiction restriction that the account holder resolves is now picked up within about five minutes instead of up to an hour, while one that is never resolved settles at the same hourly re-check as before.
+
 ## [1.45.1] - 2026-08-05
 
 ### Fixed

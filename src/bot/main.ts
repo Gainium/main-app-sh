@@ -74,6 +74,7 @@ import {
 import { getSubTypeBehavior, noteErrorRuleHit } from './errorRulesCache'
 import QuantRulesGuard from './quantRulesGuard'
 import ComplianceGuard from './complianceGuard'
+import RetryBackoff from './retryBackoff'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
 import { updateUserSteps } from '../utils/user'
@@ -236,6 +237,21 @@ const maxMethods = 30
  *  Module-level rather than a static member: adding statics to `MainBot`
  *  changes `typeof MainBot` and breaks the mixin casts in helper.ts/dcaHelper.ts. */
 const notEnoughBalanceKeyVersion = 2
+/**
+ * Cooldown for orders the account cannot fund. Shares its mechanism with
+ * {@link ComplianceGuard} — same shape of problem: the venue keeps rejecting
+ * for a reason that will not change in the next few seconds, and nothing in the
+ * engine gates the next attempt.
+ *
+ * A transient shortfall recovers within `minMs`; a chronically unfundable order
+ * (the common case — a deal whose base left the account months ago) settles at
+ * one attempt per `maxMs` instead of ~15/min.
+ */
+const notEnoughBalanceBackoff = new RetryBackoff({
+  namespace: 'nb',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+})
 type LastLog = {
   time: number
   message: string
@@ -254,25 +270,6 @@ class MainBot<T extends IMainBot> {
   brokerCode = ''
   notEnoughBalanceLogPrefix = 'NOB |'
   notEnoughBalanceThreshold = 10
-  /** Backoff bounds for the guard's re-probe. While blocking, the guard lets
-   *  one real attempt through every `interval`, doubling up to the max.
-   *
-   *  Why probe at all: the block decision reads `checkAssets` WITHOUT `direct`,
-   *  i.e. the cached `balances` collection, which can lag badly (two weeks was
-   *  observed on prod for a thinly-traded asset). A cache that under-reports
-   *  would otherwise latch the bot off permanently, because the only path that
-   *  clears the counter is that same stale read. The probe makes the exchange —
-   *  the only authority — break the tie.
-   *
-   *  Why backoff: a transient shortfall recovers within `min`, while a
-   *  chronically unfundable order (the common case: a deal whose base left the
-   *  account months ago) settles at one attempt per `max` instead of ~15/min. */
-  notEnoughBalanceProbeMin = 5 * 60_000
-  notEnoughBalanceProbeMax = 60 * 60_000
-  /** key -> { at: last probe/block start, interval: current backoff }.
-   *  In-memory only; losing it on restart just costs one extra probe. */
-  private notEnoughBalanceProbe: Map<string, { at: number; interval: number }> =
-    new Map()
   botService = new Bot()
   sharedStream = SharedStream.getInstance()
   finishLoad = false
@@ -1838,9 +1835,10 @@ class MainBot<T extends IMainBot> {
     }
     if (this.data.notEnoughBalance.orders[id] <= 0 || reset) {
       delete this.data.notEnoughBalance.orders[id]
-      // The key is no longer blocked, so the next block should start a fresh
-      // probe window rather than inherit the old one.
-      this.notEnoughBalanceProbe.delete(id)
+      // The constraint is gone (an order filled, or the balance covered it), so
+      // drop the cooldown too — the next shortfall should start a fresh window
+      // at `minMs` rather than resume a wide one.
+      notEnoughBalanceBackoff.clear([this.botId, id])
     }
     this.updateData({
       notEnoughBalance: this.data.notEnoughBalance,
@@ -5060,6 +5058,17 @@ class MainBot<T extends IMainBot> {
       if (!processedOrder) {
         let request: BaseReturn<CommonOrder> | undefined
         const notEnoughBalanceId = this.getNotEnoughOrdersIdByOrder(order)
+        // Armed = the failure counter has tripped and the balance really is
+        // short, so this order is in the suppression regime. Only rejections
+        // from that regime widen the cooldown: the counter trips within seconds
+        // (the engine retries fast), so escalating on every raw rejection would
+        // reach the ceiling before the guard ever engaged and a shortfall that
+        // clears in a minute would still be held for an hour.
+        let notEnoughBalanceArmed = false
+        // Set when THIS attempt was served from the local cooldown rather than
+        // the venue. A suppressed attempt must never widen the window, or it
+        // would slide forever and the bot could not self-heal.
+        let notEnoughBalanceShortCircuit = false
         if (this.data.notEnoughBalance?.thresholdPassed) {
           if (
             (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) >
@@ -5071,38 +5080,35 @@ class MainBot<T extends IMainBot> {
             const { balance, required } =
               await this.getAssetBalanceAndRequiredByOrder(order)
             if ((balance?.free ?? 0) < required) {
-              const now = +new Date()
-              const probe = this.notEnoughBalanceProbe.get(notEnoughBalanceId)
-              if (!probe) {
-                this.notEnoughBalanceProbe.set(notEnoughBalanceId, {
-                  at: now,
-                  interval: this.notEnoughBalanceProbeMin,
-                })
-              }
-              if (probe && now - probe.at > probe.interval) {
-                // Been blocking on cached data for a while — let one attempt
-                // reach the exchange to re-confirm. If it fails, the counter
-                // re-arms with a longer backoff; if it fills, the success path
-                // clears the key entirely.
-                this.notEnoughBalanceProbe.set(notEnoughBalanceId, {
-                  at: now,
-                  interval: Math.min(
-                    probe.interval * 2,
-                    this.notEnoughBalanceProbeMax,
-                  ),
-                })
+              notEnoughBalanceArmed = true
+              // Suppress on a widening window rather than continuously. The
+              // block decision above reads `checkAssets` WITHOUT `direct`, i.e.
+              // the cached `balances` collection, which can lag badly (two
+              // weeks was observed on prod for a thinly-traded asset). Letting
+              // one attempt through per window makes the exchange — the only
+              // authority — break the tie, so an under-reporting cache can
+              // never latch a bot off permanently.
+              const cooldown = await notEnoughBalanceBackoff.check([
+                this.botId,
+                notEnoughBalanceId,
+              ])
+              if (cooldown.suppressed) {
+                notEnoughBalanceShortCircuit = true
                 this.handleDebug(
-                  `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId} after blocking for ${now - probe.at}ms. Cached balance: ${balance?.free}, required: ${required}`,
-                )
-              } else {
-                this.handleDebug(
-                  `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${balance?.free}, required: ${required}`,
+                  `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${balance?.free}, required: ${required}. Suppressed until ${new Date(cooldown.until).toISOString()} (attempt ${cooldown.attempt})`,
                 )
                 request = {
                   status: StatusEnum.notok,
                   reason: `Not enough balance`,
                   data: null,
                 }
+              } else {
+                // Window elapsed (or never opened): let this one reach the
+                // exchange. If it is rejected, the error path widens the
+                // window; if it fills, the success path clears it.
+                this.handleDebug(
+                  `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId}. Cached balance: ${balance?.free}, required: ${required}`,
+                )
               }
             } else {
               this.handleDebug(
@@ -5196,6 +5202,19 @@ class MainBot<T extends IMainBot> {
           }
         }
         request = request ?? (await this.exchange.openOrder(requestData))
+        if (
+          request.status === StatusEnum.notok &&
+          notEnoughBalanceArmed &&
+          !notEnoughBalanceShortCircuit &&
+          this.isErrorNotEnoughBalance(request.reason)
+        ) {
+          // A REAL rejection of a probe opens/widens the window. Suppressed
+          // attempts are excluded so the window can always expire.
+          await notEnoughBalanceBackoff.record(
+            [this.botId, notEnoughBalanceId],
+            request.reason,
+          )
+        }
         if (
           request.status === StatusEnum.notok &&
           !complianceShortCircuit &&
