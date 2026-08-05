@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.45.0] - 2026-08-05
+
+### Fixed
+
+- A bot whose exchange account is barred from trading a pair for compliance reasons (for example Kraken refusing USDT pairs to residents of certain countries) kept re-sending the same order to the exchange every few minutes — one account produced 82 rejected attempts in four hours. That block is permanent until the account holder resolves it, so the order is now held back for up to an hour after each rejection instead of being retried. Nothing else changes: the bot reports the same error and the same status as before, and orders that close a position are never held back.
+
 ## [1.44.2] - 2026-08-05
 
 ### Fixed

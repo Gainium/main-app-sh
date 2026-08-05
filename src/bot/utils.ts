@@ -472,6 +472,13 @@ export const indicatorsError = 'Indicators error'
 
 export const orderProcessing = 'Order processing'
 
+/**
+ * Permanent jurisdiction / account-eligibility block (e.g. Kraken's
+ * `EAccount:Invalid permissions:USDT trading restricted for DE.`). No retry can
+ * ever succeed — see `complianceGuard.ts`, which gates the re-send loop.
+ */
+export const complianceRestriction = 'Compliance restriction'
+
 export const errorDict = {
   'Leverage cannot exceed': futuresPosition,
   unknownOid: orderProcessing,
@@ -640,6 +647,12 @@ export const errorDict = {
   'EFunding:Unknown withdraw key': 'Withdrawal error',
   'EFunding:Invalid amount': orderParams,
   wouldNotReducePosition: futuresPosition,
+  // Permanent compliance/jurisdiction blocks. Mirrors the admin-owned
+  // `boterrorrules` patterns of the same name so a cold rules cache (and any
+  // self-hosted install with no seeded rules) classifies them identically —
+  // getErrorSubType consults the DB rules first, so prod behaviour is unchanged.
+  'trading restricted for': complianceRestriction,
+  'compliance restrictions': complianceRestriction,
   'less than the minimum amount': orderParams,
 }
 

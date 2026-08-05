@@ -62,6 +62,7 @@ import logger from '../utils/logger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import * as crypto from 'crypto'
 import {
+  complianceRestriction,
   convertComboBotToObject,
   convertDCABotToObject,
   exchangeRules,
@@ -72,6 +73,7 @@ import {
 } from './utils'
 import { getSubTypeBehavior, noteErrorRuleHit } from './errorRulesCache'
 import QuantRulesGuard from './quantRulesGuard'
+import ComplianceGuard from './complianceGuard'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
 import { updateUserSteps } from '../utils/user'
@@ -3880,6 +3882,23 @@ class MainBot<T extends IMainBot> {
     )
   }
   /**
+   * Is this order eligible for the `Compliance restriction` cooldown gate?
+   *
+   * Only orders that OPEN/INCREASE exposure are ever suppressed. Closing orders
+   * (TP, grid stop, liquidation, anything reduceOnly) always go to the exchange
+   * — a jurisdiction block that lifts must never leave a position stranded
+   * behind a cooldown of ours. Same principle as the Quantitative Rules gate.
+   */
+  protected isComplianceGateable(order: Order): boolean {
+    return (
+      this.needToSendOrder(order) &&
+      !order.reduceOnly &&
+      order.typeOrder !== TypeOrderEnum.dealTP &&
+      order.typeOrder !== TypeOrderEnum.stop &&
+      order.typeOrder !== TypeOrderEnum.liquidation
+    )
+  }
+  /**
    * Process order from queue<br />
    *
    * Get first order from queue<br />
@@ -5049,7 +5068,53 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
+        // Compliance / jurisdiction restriction short-circuit. A
+        // `Compliance restriction` rejection (e.g. Kraken
+        // "EAccount:Invalid permissions:USDT trading restricted for DE.") is a
+        // PERMANENT account condition — no retry can ever succeed. The engine
+        // still re-attempts every few minutes because BotStatusEnum.error is a
+        // soft status that placeOrders clears via restoreFromRangeOrError(), so
+        // one account produced 82 openOrder calls in 4h. Replay the exchange's
+        // OWN last rejection from a short Redis cooldown instead of calling the
+        // venue again: everything downstream (bot status, user message, order
+        // cleanup) runs exactly as before — only the pointless REST call is gone.
+        let complianceShortCircuit = false
+        if (!request && this.isComplianceGateable(order)) {
+          const cooldown = await ComplianceGuard.check(
+            `${this.data.exchangeUUID}`,
+            requestData.symbol,
+          )
+          if (cooldown.restricted && cooldown.reason) {
+            complianceShortCircuit = true
+            this.handleLog(
+              `Order ${order.clientOrderId} not sent: ${
+                requestData.symbol
+              } is under a compliance restriction cooldown until ${new Date(
+                cooldown.until ?? 0,
+              ).toISOString()}. Exchange reason: ${cooldown.reason}`,
+            )
+            request = {
+              status: StatusEnum.notok,
+              reason: cooldown.reason,
+              data: null,
+            }
+          }
+        }
         request = request ?? (await this.exchange.openOrder(requestData))
+        if (
+          request.status === StatusEnum.notok &&
+          !complianceShortCircuit &&
+          this.isComplianceGateable(order) &&
+          this.getErrorSubType(request.reason) === complianceRestriction
+        ) {
+          // A REAL rejection from the venue (never a replayed one, or the window
+          // would slide forever and never self-heal) opens/refreshes the window.
+          await ComplianceGuard.record({
+            exchangeUUID: `${this.data.exchangeUUID}`,
+            symbol: requestData.symbol,
+            reason: request.reason,
+          })
+        }
         if (
           request.status === StatusEnum.notok &&
           request.reason === 'Order not found after execution'
