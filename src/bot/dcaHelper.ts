@@ -186,6 +186,10 @@ const positionAlreadyClosedReasons = [
   // OKX 51169 / 51023
   "You don't have any positions in this contract",
   'Position does not exist',
+  // dYdX — camelCase; matched via the normalisation in
+  // isPositionAlreadyClosedReason, not literally
+  'wouldNotReducePosition',
+  'no position to close',
 ]
 
 const maxTimeout = 2 ** 31 - 1
@@ -4918,8 +4922,13 @@ function createDCABotHelper<
     }
 
     private isPositionAlreadyClosedReason(text: string): boolean {
+      // Venues word the same condition as prose or as a camelCase code
+      // ("no position to close" vs "wouldNotReducePosition"), so compare on
+      // letters and digits only — one entry then covers both spellings.
+      const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+      const haystack = normalize(text)
       for (const r of positionAlreadyClosedReasons) {
-        if (text.toLowerCase().indexOf(r.toLowerCase()) !== -1) {
+        if (haystack.indexOf(normalize(r)) !== -1) {
           return true
         }
       }

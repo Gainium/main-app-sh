@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.50.2] - 2026-08-06
+
+### Fixed
+
+- Recognise two more ways an exchange says a position is already closed, so those deals finish instead of being retried on every restart. Rejections are now matched on letters and digits alone, so a venue wording the same condition as a code rather than a sentence is still understood.
+
 ## [1.50.1] - 2026-08-06
 
 ### Fixed
