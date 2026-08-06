@@ -1,5 +1,5 @@
 import logger from '../../utils/logger'
-import { decrypt } from '../../utils/crypto'
+import { resolveConnection } from '../../utils/credentials'
 import {
   ExchangeInUser,
   MessageTypeEnum,
@@ -52,11 +52,11 @@ const getUserExchanges = async <T extends UserSchema = UserSchema>(
   }
   const exchanges: ExchangeInUser[] = []
   for (const u of users.data.result) {
-    u.exchanges.forEach((e) => {
+    for (const e of u.exchanges) {
       if ((paper && isPaper(e.provider)) || !paper) {
-        exchanges.push({ ...e, key: decrypt(e.key) })
+        exchanges.push({ ...e, key: (await resolveConnection(e)).key })
       }
-    })
+    }
   }
   return exchanges
 }

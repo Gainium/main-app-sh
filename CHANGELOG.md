@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.49.0] - 2026-08-06
+
+### Changed
+
+- Stored exchange and API credentials are now recovered through a single asynchronous module rather than at each call site, so an installation can keep them in a format only the host application is able to unwrap.
+
 ## [1.48.2] - 2026-08-06
 
 ### Fixed

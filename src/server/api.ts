@@ -17,7 +17,7 @@ import {
 } from '../../types'
 import BotInstance from '../bot'
 import crypto from 'crypto'
-import { decrypt } from '../utils/crypto'
+import { resolveApiSecret } from '../utils/credentials'
 import logger from '../utils/logger'
 
 import { DCADealsSettings, OrderSizeTypeEnum, ExchangeEnum } from '../../types'
@@ -133,7 +133,7 @@ const getUserByKey = async <R extends UserSchema = UserSchema>(
     )
     return {
       id: user.data?.result?._id.toString(),
-      secret: api ? decrypt(api.secret) : undefined,
+      secret: api ? await resolveApiSecret(api) : undefined,
       permission: api?.permission,
       keyPaperContext: api?.paperContext,
       keyBotId: api?.botId,

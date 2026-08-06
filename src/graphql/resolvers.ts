@@ -119,7 +119,8 @@ import {
   PaperExchangeType,
   topUpUserBalance,
 } from '../exchange/paper/utils'
-import { decrypt, encrypt, isEncryptKeyConfigured } from '../utils/crypto'
+import { encrypt, isEncryptKeyConfigured } from '../utils/crypto'
+import { findMatchingConnection, resolveConnection } from '../utils/credentials'
 import logger from '../utils/logger'
 import { verifyPassword } from './handlers/password'
 // ⚠️ Note the two similarly-named helpers now in scope. `verifyPassword`
@@ -396,24 +397,30 @@ const resolvers = <
         return user
       }
       const { uuid } = input
+      // One connection is asked for by uuid, so find it and unwrap that one.
+      // Mapping over the filtered list would unwrap every connection the
+      // filter let through, which is the thing this path must not do.
+      const found = user.data.exchanges.find(
+        (e) =>
+          e.uuid === uuid &&
+          (paperContext
+            ? paperExchanges.includes(e.provider)
+            : !paperExchanges.includes(e.provider)),
+      )
+      if (!found) {
+        return { status: StatusEnum.ok, data: null }
+      }
+      const resolved = await resolveConnection(found)
       return {
         status: StatusEnum.ok,
-        data:
-          user.data.exchanges
-            .filter(
-              (e) =>
-                e.uuid === uuid &&
-                (paperContext
-                  ? paperExchanges.includes(e.provider)
-                  : !paperExchanges.includes(e.provider)),
-            )
-            .map((e) => ({
-              ...e,
-              key: decrypt(e.key),
-              secret: decrypt(e.secret),
-              passphrase: e.passphrase ? decrypt(e.passphrase) : e.passphrase,
-              rotationRequired: needsRotation(e),
-            }))[0] || null,
+        data: {
+          ...found,
+          key: resolved.key,
+          secret: resolved.secret,
+          // Stored falsy value preserved — see the note in `user` above.
+          passphrase: found.passphrase ? resolved.passphrase : found.passphrase,
+          rotationRequired: needsRotation(found),
+        },
       }
     },
     getUserPeriods: async (_parent: any, {}, { token, req }: InputRequest) => {
@@ -527,11 +534,12 @@ const resolvers = <
               ? paperExchanges.includes(e.provider)
               : !paperExchanges.includes(e.provider)
           ) {
-            const key = decrypt(e.key)
-            const secret = decrypt(e.secret)
-            const passphrase = e.passphrase
-              ? decrypt(e.passphrase)
-              : e.passphrase
+            // `passphrase` keeps its stored falsy value rather than the
+            // normalised '' — this shape is returned to the dashboard, and a
+            // connection with no passphrase must not start reporting one.
+            const resolved = await resolveConnection(e)
+            const { key, secret } = resolved
+            const passphrase = e.passphrase ? resolved.passphrase : e.passphrase
 
             const snapshot = resultSnapshots.data?.result?.exchangesTotal.find(
               (s) => (e.linkedTo ? s.uuid === e.linkedTo : s.uuid === e.uuid),
@@ -700,11 +708,12 @@ const resolvers = <
               ? paperExchanges.includes(e.provider)
               : !paperExchanges.includes(e.provider)
           ) {
-            const key = decrypt(e.key)
-            const secret = decrypt(e.secret)
-            const passphrase = e.passphrase
-              ? decrypt(e.passphrase)
-              : e.passphrase
+            // `passphrase` keeps its stored falsy value rather than the
+            // normalised '' — this shape is returned to the dashboard, and a
+            // connection with no passphrase must not start reporting one.
+            const resolved = await resolveConnection(e)
+            const { key, secret } = resolved
+            const passphrase = e.passphrase ? resolved.passphrase : e.passphrase
             const exchangeInstance = ExchangeChooser.chooseExchangeFactory(
               e.provider,
             )(
@@ -5559,13 +5568,12 @@ const resolvers = <
                 data: null,
               }
             }
-            const find = user.data.exchanges.find(
-              (e) =>
-                decrypt(e.key) === key &&
-                decrypt(e.secret) === secret &&
-                (e.passphrase ? decrypt(e.passphrase) : e.passphrase) ===
-                  passphrase &&
-                e.provider === provider,
+            // Provider is checked first, so connections of another provider
+            // are never unwrapped at all.
+            const find = await findMatchingConnection(
+              user.data.exchanges,
+              { key, secret, passphrase },
+              (e) => e.provider === provider,
             )
             if (find) {
               return {
@@ -5934,22 +5942,23 @@ const resolvers = <
               e.toLowerCase().indexOf('bybit') !== -1 &&
               !paperExchanges.includes(e)
             ) {
-              const findTheSameKeys = saveDataRequest.data.exchanges.find(
+              // No passphrase in the candidate: these leg-linking checks
+              // match on key+secret and let the provider rules decide the
+              // rest, exactly as before.
+              const findTheSameKeys = await findMatchingConnection(
+                saveDataRequest.data.exchanges,
+                { key, secret },
                 (u) =>
-                  decrypt(u.key) === key &&
-                  decrypt(u.secret) === secret &&
-                  ((u.provider === ExchangeEnum.bybit &&
+                  (u.provider === ExchangeEnum.bybit &&
                     [ExchangeEnum.bybitCoinm, ExchangeEnum.bybitUsdm].includes(
                       e,
                     )) ||
-                    (u.provider === ExchangeEnum.bybitUsdm &&
-                      [ExchangeEnum.bybit, ExchangeEnum.bybitCoinm].includes(
-                        e,
-                      )) ||
-                    (u.provider === ExchangeEnum.bybitCoinm &&
-                      [ExchangeEnum.bybit, ExchangeEnum.bybitUsdm].includes(
-                        e,
-                      ))),
+                  (u.provider === ExchangeEnum.bybitUsdm &&
+                    [ExchangeEnum.bybit, ExchangeEnum.bybitCoinm].includes(
+                      e,
+                    )) ||
+                  (u.provider === ExchangeEnum.bybitCoinm &&
+                    [ExchangeEnum.bybit, ExchangeEnum.bybitUsdm].includes(e)),
               )
               if (findTheSameKeys) {
                 const accountType = await bybitAccountType(
@@ -5977,20 +5986,18 @@ const resolvers = <
               e.toLowerCase().indexOf('okx') !== -1 &&
               !paperExchanges.includes(e)
             ) {
-              const findTheSameKeys = saveDataRequest.data.exchanges.find(
+              const findTheSameKeys = await findMatchingConnection(
+                saveDataRequest.data.exchanges,
+                { key, secret },
                 (u) =>
-                  decrypt(u.key) === key &&
-                  decrypt(u.secret) === secret &&
-                  ((u.provider === ExchangeEnum.okx &&
+                  (u.provider === ExchangeEnum.okx &&
                     [ExchangeEnum.okxInverse, ExchangeEnum.okxLinear].includes(
                       e,
                     )) ||
-                    (u.provider === ExchangeEnum.okxLinear &&
-                      [ExchangeEnum.okxInverse, ExchangeEnum.okx].includes(
-                        e,
-                      )) ||
-                    (u.provider === ExchangeEnum.okxInverse &&
-                      [ExchangeEnum.okx, ExchangeEnum.okxLinear].includes(e))),
+                  (u.provider === ExchangeEnum.okxLinear &&
+                    [ExchangeEnum.okxInverse, ExchangeEnum.okx].includes(e)) ||
+                  (u.provider === ExchangeEnum.okxInverse &&
+                    [ExchangeEnum.okx, ExchangeEnum.okxLinear].includes(e)),
               )
               if (findTheSameKeys) {
                 await userDb.updateData(
@@ -6095,9 +6102,11 @@ const resolvers = <
       }
       const find = user.data.exchanges.find((e) => e.uuid === uuid)
       if (find) {
-        const oldKey = decrypt(find.key)
-        const oldSecret = decrypt(find.secret)
-        const oldPassphrase = find.passphrase ? decrypt(find.passphrase) : ''
+        const {
+          key: oldKey,
+          secret: oldSecret,
+          passphrase: oldPassphrase,
+        } = await resolveConnection(find)
         const oldKeysType = find.keysType
         const oldOkxSource = find.okxSource
         const oldBybitHost = find.bybitHost
@@ -6203,6 +6212,14 @@ const resolvers = <
               )
             }
           }
+          // Held on to before re-encryption. The change detection and the
+          // open-stream payload below used to recover these by decrypting what
+          // this block had just encrypted — a round-trip that can only ever
+          // return what is already in hand, and one more stored-credential
+          // read to keep working forever.
+          const plainKey = key
+          const plainSecret = secret
+          const plainPassphrase = passphrase
           key = key ? encrypt(key) : key
           secret = secret ? encrypt(secret) : secret
           passphrase = passphrase ? encrypt(passphrase) : undefined
@@ -6251,9 +6268,9 @@ const resolvers = <
             key &&
             secret &&
             !paperExchanges.includes(find.provider) &&
-            (oldKey !== decrypt(key) ||
-              oldSecret !== decrypt(secret) ||
-              oldPassphrase !== decrypt(passphrase ?? '') ||
+            (oldKey !== plainKey ||
+              oldSecret !== plainSecret ||
+              oldPassphrase !== (plainPassphrase || '') ||
               keysType !== oldKeysType ||
               okxSource !== oldOkxSource ||
               bybitHost !== oldBybitHost ||
@@ -6266,9 +6283,9 @@ const resolvers = <
             rabbitClient?.send(rabbitUsersStreamKey, {
               event: 'open stream',
               data: {
-                key: key ? decrypt(key) : '',
-                secret: secret ? decrypt(secret) : '',
-                passphrase: passphrase ? decrypt(passphrase) : '',
+                key: plainKey || '',
+                secret: plainSecret || '',
+                passphrase: plainPassphrase || '',
                 provider: find.provider,
                 keysType,
                 okxSource,
@@ -6316,9 +6333,10 @@ const resolvers = <
             return saveDataRequest
           }
           if (stablecoinBalance && stablecoinBalance > 0) {
+            const paperCreds = await resolveConnection(find)
             const save = await topUpUserBalance({
-              key: decrypt(find.key),
-              secret: decrypt(find.secret),
+              key: paperCreds.key,
+              secret: paperCreds.secret,
               stablecoinBalance,
               exchange: mapPaperToReal(find.provider as PaperExchangeType),
               coinToTopUp: coinToTopUp || 'USDT',
@@ -8157,7 +8175,11 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const secret = encrypt(v4())
+      // Kept alongside the ciphertext rather than recovered from it below. The
+      // round-trip only ever returned what this line already had, and reading
+      // a stored credential back is what the envelope layer makes expensive.
+      const plaintextSecret = v4()
+      const secret = encrypt(plaintextSecret)
       const saveDataRequest = await userDb.updateData(
         { _id: user.data._id },
         {
@@ -8191,7 +8213,7 @@ const resolvers = <
       return {
         status: StatusEnum.ok,
         reason: null,
-        data: { ...find, secret: decrypt(secret) },
+        data: { ...find, secret: plaintextSecret },
       }
     },
     renewAPIKeys: async (

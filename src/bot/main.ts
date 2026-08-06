@@ -57,7 +57,7 @@ import ExchangeChooser from '../exchange/exchangeChooser'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
 import utils, { isPaper } from '../utils'
-import { decrypt } from '../utils/crypto'
+import { resolveConnection } from '../utils/credentials'
 import logger from '../utils/logger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import * as crypto from 'crypto'
@@ -1003,10 +1003,7 @@ class MainBot<T extends IMainBot> {
     }
     const { uuid, keysType, provider, okxSource, bybitHost, subaccount } =
       exchange
-    let { key, secret, passphrase } = exchange
-    key = decrypt(key)
-    secret = decrypt(secret)
-    passphrase = passphrase ? decrypt(passphrase) : ''
+    const { key, secret, passphrase } = await resolveConnection(exchange)
     return {
       uuid,
       key,

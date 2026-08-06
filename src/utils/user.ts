@@ -26,7 +26,7 @@ import {
 } from '../../types'
 import type { Socket } from 'socket.io-client'
 import utils from '.'
-import { decrypt } from './crypto'
+import { resolveConnection } from './credentials'
 import logger from './logger'
 import {
   botEventDb,
@@ -637,9 +637,7 @@ const connectUserBalance = async (
         }
 
         const data = {
-          key: decrypt(e.key),
-          secret: decrypt(e.secret),
-          passphrase: e.passphrase ? decrypt(e.passphrase) : '',
+          ...(await resolveConnection(e)),
           provider: e.provider,
           keysType: e.keysType,
           okxSource: e.okxSource,
@@ -1790,9 +1788,11 @@ export const resetUser = async (
       })
       /** Paper */
       if (isAll || isPaper) {
-        const userPaperExchanges = user.exchanges
-          .filter((e) => paperExchanges.includes(e.provider))
-          .map((e) => decrypt(e.key))
+        const userPaperExchanges = await Promise.all(
+          user.exchanges
+            .filter((e) => paperExchanges.includes(e.provider))
+            .map(async (e) => (await resolveConnection(e)).key),
+        )
         const paperUsers =
           (
             await paperUserDb.readData(
