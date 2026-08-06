@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.49.3] - 2026-08-06
+
+### Fixed
+
+- Cancelling a Combo deal no longer discards the profit it had already made. A Combo deal banks profit as each minigrid round-trip completes, but cancelling one credited nothing to the bot's total or to the profit history — the amount stayed visible on the deal and was counted nowhere else. Cancelling a deal that never traded is unchanged.
+
 ## [1.49.2] - 2026-08-06
 
 ### Fixed

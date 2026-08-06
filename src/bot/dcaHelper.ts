@@ -5194,8 +5194,35 @@ function createDCABotHelper<
             : DCADealStatusEnum.canceled
         findDeal.deal.status = status
         findDeal.deal.closeTrigger = closeTrigger
+        // A combo deal books realized profit as each minigrid round-trip
+        // completes, so a deal being cancelled can already carry real profit.
+        // `closeDeal()` is what credits the bot aggregate and the profit
+        // history, and this path never reaches it — without this the profit
+        // stays visible on the deal but is counted nowhere. A deal that never
+        // traded has zero here, so the ordinary cancel is unaffected.
+        const realized = findDeal.deal.profit
+        if (this.data && (realized.total || realized.totalUsd)) {
+          const profitBase = await this.profitBase(findDeal.deal)
+          const rate = await this.getUsdRate(findDeal.deal.symbol.symbol)
+          const commDeal = await this.getCommDeal(findDeal.deal)
+          const commUsd =
+            commDeal * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate
+          realized.total -= commDeal
+          realized.totalUsd -= commUsd
+          findDeal.deal.commission = commDeal
+          this.data.profit.total += realized.total
+          this.data.profit.totalUsd += realized.totalUsd
+          this.saveProfitToDb(
+            realized.totalUsd,
+            findDeal.deal.closeTime ?? +new Date(),
+          )
+          this.updateData({ profit: this.data.profit })
+          this.emit('bot settings update', { profit: this.data.profit })
+        }
         this.saveDeal(findDeal, {
           status,
+          profit: findDeal.deal.profit,
+          commission: findDeal.deal.commission,
           closeTrigger: findDeal.deal.closeTrigger,
         })
         stop = await this.processDealClose(
