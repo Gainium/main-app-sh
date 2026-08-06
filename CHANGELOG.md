@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.48.0] - 2026-08-06
+
+### Changed
+
+- A repeating bot error now updates one message and counts the repeats, instead of writing a new message every time it happens. The error list shows how many times a condition fired and when it first did, rather than the same error over and over.
+- How often a given error is allowed to write a new message is now set per error type from the admin Bot Errors page, and takes effect within five minutes without restarting anything.
+- Errors that are suppressed from users were being recorded on every single occurrence — they are now recorded once an hour by default, as they always should have been.
+- Notifications and alerts for a repeating error are sent when it first happens, not on every repeat.
+
+### Fixed
+
+- Bot messages that a user has dismissed are now cleaned up after 30 days instead of being kept forever.
+- Two internal error paths recorded messages under names that the classification system did not know about, so they could not be categorised or configured. They now go through the normal path.
+
 ## [1.47.0] - 2026-08-06
 
 ### Fixed

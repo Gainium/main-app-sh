@@ -2960,15 +2960,18 @@ function createBotHelper<
         true,
       )
       if (orders.status === StatusEnum.notok) {
-        return this.processError(
-          this.botId,
+        // Via handleErrors, not processError directly: calling processError
+        // skips getErrorSubType, so this wrote rows under the ad-hoc subType
+        // `readorders`, which exists in no rule and no behaviour row. The admin
+        // owner filter could not classify it and no log policy could ever apply
+        // to it. Same visibility as before (hidden, non-erroring, no bot event).
+        return this.handleErrors(
+          `Cannot read orders: ${orders.reason}`,
+          'checkBalances',
           'readorders',
           false,
           false,
           false,
-          `Cannot read orders: ${orders.reason}`,
-          +new Date(),
-          orders.reason,
         )
       }
       if (orders.data.count === 0) {
@@ -2996,15 +2999,14 @@ function createBotHelper<
         )
       const last = order
       if (!last) {
-        return this.processError(
-          this.botId,
-          `noelem`,
-          false,
-          false,
-          false,
+        // See the note above — `noelem` was the same unclassifiable bypass.
+        return this.handleErrors(
           `Cannot find last order in Diff`,
-          +new Date(),
-          'Cannot find last order in Diff',
+          'checkBalances',
+          'noelem',
+          false,
+          false,
+          false,
         )
       }
 

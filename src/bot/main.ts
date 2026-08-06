@@ -71,7 +71,12 @@ import {
   getErrorSubType,
   indicatorsError,
 } from './utils'
-import { getSubTypeBehavior, noteErrorRuleHit } from './errorRulesCache'
+import {
+  getSubTypeBehavior,
+  getSubTypeLogPolicy,
+  logPolicyBucket,
+  noteErrorRuleHit,
+} from './errorRulesCache'
 import QuantRulesGuard from './quantRulesGuard'
 import ComplianceGuard from './complianceGuard'
 import RetryBackoff from './retryBackoff'
@@ -1465,94 +1470,148 @@ class MainBot<T extends IMainBot> {
         this.data?.statusReason === subType
       )
     ) {
-      const lookAfter = +new Date() - 24 * 60 * 60 * 1000
-      // Must key on the SAME botId the message is written under below
-      // (`parentBotId || botId`). A hedge bot's legs each have their own botId
-      // while every message they raise is stored against the parent, so counting
-      // by `this.botId` always returned 0 and this throttle never engaged for
-      // hedge bots — on ANY subType, not just the one that surfaced it. Any
-      // repeating condition could therefore write one row per occurrence
-      // indefinitely, where a non-hedge bot on the same path is capped at one.
-      const notDeleted = await this.messagesDb.countData({
-        botId: this.data?.parentBotId || this.botId,
-        userId: this.userId,
-        subType,
-        isDeleted: { $ne: true },
-        showUser: true,
-      })
-      const notDeletedCount = notDeleted.data?.result ?? 0
-      if (!force && notDeletedCount > 0) {
-        return
-      }
-      let save = true
+      // How many rows this occurrence is allowed to occupy — see
+      // `getSubTypeLogPolicy`. This REPLACES the count-then-insert gate that used
+      // to live here. That gate asked "does a live visible row already exist?",
+      // which is the right question asked in a way that cannot hold: the answer
+      // is stale the moment it returns, it read a failed query as "no" and wrote
+      // anyway, and it filtered on `showUser:true` so no hidden row was ever
+      // covered by it. Uniqueness is now the database's job
+      // (`botMessageCoalesceKey`), and repeats become a `count` instead of a row.
+      let policy = getSubTypeLogPolicy(subType, sendError)
       if (
-        !force &&
+        !getSubTypeBehavior(subType)?.logMode &&
         (subType === 'Not enough balance' ||
           (subType === 'Uncategorized' && isMaxDeals))
       ) {
-        const notDeletedBalance = await this.messagesDb.countData({
-          botId: this.data?.parentBotId || this.botId,
-          userId: this.userId,
-          subType,
-          time: { $gt: lookAfter },
-          showUser: true,
-        })
-        const notDeletedBalanceCount = notDeletedBalance.data?.result ?? 0
-        const getLast = this.errorsMap.get(subType)
-        save = notDeletedBalanceCount === 0 || !((getLast ?? 0) >= lookAfter)
+        // These two carried a bespoke "at most one per 24h" branch. Expressed as
+        // a policy it is just a daily coalesce window, and an admin can now
+        // change it without a deploy. The window is calendar-aligned where the
+        // old branch was rolling — one row per UTC day rather than one per 24h
+        // since the last — which is the only behaviour change here.
+        policy = { mode: 'coalesce', windowMs: 24 * 60 * 60 * 1000 }
+      }
+      const bucket = logPolicyBucket(policy, time)
+
+      if (!debug) {
+        if (setError) {
+          this.handleError(errorText)
+        } else {
+          this.handleWarn(errorText)
+        }
+      }
+      this.errorsMap.set(subType, +new Date())
+
+      const messageBotId = this.data?.parentBotId || this.botId
+      const messageType = setError
+        ? MessageTypeEnum.error
+        : MessageTypeEnum.warning
+      const symbol = this.data?.settings.pair[0]
+      const exchange = this.data?.exchange
+      // Immutable identity of the row, applied only when one is created.
+      const onInsert = {
+        userId: this.userId,
+        botId: messageBotId,
+        botType: this.data?.parentBotId
+          ? this.botType === BotType.dca
+            ? BotType.hedgeDca
+            : BotType.hedgeCombo
+          : this.botType,
+        subType,
+        showUser: sendError,
+        // A suppressed message is born dismissed: it is kept only so the admin
+        // Bot Errors page can count it, and the tombstone TTL reaps it on age.
+        isDeleted: !sendError,
+        paperContext: !!this.data?.paperContext,
+        terminal,
+        firstTime: time,
+        created: new Date(),
+      }
+      // Refreshed on every occurrence, so a coalesced row reports the LATEST
+      // state of the condition rather than a snapshot of the first time it fired.
+      const onEvery = {
+        botName,
+        type: messageType,
+        message: messageToSet,
+        fullMessage: message,
+        time,
+        symbol,
+        exchange,
+        updated: new Date(),
       }
 
-      if (save) {
-        if (!debug) {
-          if (setError) {
-            this.handleError(errorText)
-          } else {
-            this.handleWarn(errorText)
+      let firstOccurrence = true
+      let savedId: string | null = null
+
+      if (bucket === null) {
+        const savedMessage = await this.messagesDb.createData({
+          ...onInsert,
+          ...onEvery,
+        })
+        if (savedMessage.status === StatusEnum.ok && savedMessage.data) {
+          savedId = `${savedMessage.data._id}`
+        }
+      } else {
+        const key = {
+          userId: this.userId,
+          botId: messageBotId,
+          subType,
+          showUser: sendError,
+          bucket,
+        }
+        // `$inc` makes "is this the first occurrence in this window?" a property
+        // of the write itself rather than of a separate read: count===1 means
+        // this call created the row. Nothing else can observe a different answer.
+        const upserted = await this.messagesDb.updateData(
+          key,
+          {
+            // `bucket` rides in $setOnInsert rather than the key spread so the
+            // `always` path above can share `onInsert` without carrying a null.
+            $setOnInsert: { ...onInsert, bucket },
+            $set: onEvery,
+            $inc: { count: 1 },
+          },
+          true,
+          false,
+          true,
+        )
+        if (upserted.status === StatusEnum.ok && upserted.data) {
+          savedId = `${upserted.data._id}`
+          firstOccurrence = (upserted.data.count ?? 1) <= 1
+        } else {
+          // Two legs of the same bot can reach an unset key together and one
+          // loses on E11000. The row it wanted now exists, so fold into it —
+          // never re-raise, or a race would become the notification the whole
+          // coalescing exists to prevent.
+          firstOccurrence = false
+          const folded = await this.messagesDb.updateData(key, {
+            $set: onEvery,
+            $inc: { count: 1 },
+          })
+          if (folded.status === StatusEnum.notok) {
+            this.handleWarn(
+              `Cannot record bot message ${subType} | ${upserted.reason}`,
+            )
           }
         }
-        this.errorsMap.set(subType, +new Date())
-        const savedMessage = await this.messagesDb.createData({
-          userId: this.userId,
-          botId: this.data?.parentBotId || this.botId,
+      }
+
+      if (savedId && sendError && firstOccurrence) {
+        _id = savedId
+        this.emit('bot message', {
           botName,
-          botType: this.data?.parentBotId
-            ? this.botType === BotType.dca
-              ? BotType.hedgeDca
-              : BotType.hedgeCombo
-            : this.botType,
-          type: setError ? MessageTypeEnum.error : MessageTypeEnum.warning,
+          _id,
+          type: messageType,
           message: messageToSet,
           time,
-          subType,
-          paperContext: !!this.data?.paperContext,
           terminal,
-          isDeleted: !sendError,
-          showUser: sendError,
-          fullMessage: message,
-          symbol: this.data?.settings.pair[0],
-          exchange: this.data?.exchange,
+          symbol,
+          exchange,
+          // Additive: lets the dashboard recognise e.g. a Quantitative Rules
+          // cooldown warning without parsing the message text. No event rename.
+          subType,
         })
-        if (
-          savedMessage.status === StatusEnum.ok &&
-          savedMessage.data &&
-          sendError
-        ) {
-          _id = `${savedMessage.data._id}`
-          this.emit('bot message', {
-            botName,
-            _id,
-            type: setError ? MessageTypeEnum.error : MessageTypeEnum.warning,
-            message: messageToSet,
-            time,
-            terminal,
-            symbol: this.data?.settings.pair[0],
-            exchange: this.data?.exchange,
-            // Additive: lets the dashboard recognise e.g. a Quantitative Rules
-            // cooldown warning without parsing the message text. No event rename.
-            subType,
-          })
-          this.cbEmit(setError, messageToSet)
-        }
+        this.cbEmit(setError, messageToSet)
       }
     }
 
@@ -4659,7 +4718,13 @@ class MainBot<T extends IMainBot> {
             isDeleted: false,
             subType: { $ne: futuresLiquidation },
           },
-          { $set: { isDeleted: true } },
+          // `$unset bucket` drops these rows out of `botMessageCoalesceKey`, so
+          // the next occurrence inserts a fresh visible row. Without it the
+          // recovery clear would hide the row while leaving it as the coalescing
+          // target, and the error could never be raised again — exactly the
+          // "bot fell silent on that subType for good" failure this clear exists
+          // to prevent.
+          { $set: { isDeleted: true }, $unset: { bucket: '' } },
         )
         const update = { showErrorWarning: 'none' }
         this.updateData(update)

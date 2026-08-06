@@ -33,10 +33,52 @@ import logger from '../utils/logger'
 const logPrefix = 'errorRulesCache |'
 const TTL_MS = 5 * 60 * 1000
 
+/**
+ * How often a subType is allowed to occupy a NEW row in `botMessages`.
+ *
+ *   once     — one row per (bot, subType, visibility) until the user dismisses
+ *              it. Repeats increment its `count` and move its `time`. This is
+ *              what the visible path already did, except that repeats used to be
+ *              thrown away instead of counted.
+ *   coalesce — one row per `logWindowSec`. For conditions that genuinely recur
+ *              and where "it happened again today" is worth a fresh row.
+ *   always   — one row per occurrence, no coalescing. Opt-in only; this is the
+ *              behaviour that produced 519,061 rows for a single bot.
+ */
+export type SubtypeLogMode = 'once' | 'coalesce' | 'always'
+
+export interface SubtypeLogPolicy {
+  mode: SubtypeLogMode
+  windowMs: number
+}
+
 export interface SubtypeBehavior {
   showUser: boolean
   errorsBot: boolean
   userMessage?: string
+  logMode?: SubtypeLogMode
+  logWindowSec?: number
+}
+
+/** `coalesce` with no explicit window. */
+const DEFAULT_COALESCE_WINDOW_MS = 60 * 60 * 1000
+
+/**
+ * Policy for a subType nobody has configured. Deliberately different by
+ * visibility:
+ *
+ *   visible → `once`, which is exactly what the old count-gate enforced, so
+ *             shipping this changes nothing a user can see.
+ *   hidden  → `coalesce` hourly. These rows exist only so the admin page can
+ *             count them; nobody reads them one by one. They had NO throttle at
+ *             all (the old gate filtered on `showUser:true`, which no hidden row
+ *             matches), which is how one suppressed subType came to write 553
+ *             rows a day and 1.10M of the 2.70M rows on prod.
+ */
+function defaultLogPolicy(showUser: boolean): SubtypeLogPolicy {
+  return showUser
+    ? { mode: 'once', windowMs: 0 }
+    : { mode: 'coalesce', windowMs: DEFAULT_COALESCE_WINDOW_MS }
 }
 
 /**
@@ -158,6 +200,9 @@ async function loadSubtypes(): Promise<void> {
         showUser: d.showUser ?? true,
         errorsBot: d.errorsBot ?? true,
         userMessage: d.userMessage || undefined,
+        logMode: d.logMode || undefined,
+        logWindowSec:
+          typeof d.logWindowSec === 'number' ? d.logWindowSec : undefined,
       })
     }
     subtypeMap = next
@@ -235,6 +280,52 @@ export function getSubTypeBehavior(
   }
   if (subtypeLoadedNonEmpty) return subtypeMap.get(subType) ?? null
   return DEFAULT_SUBTYPE_BEHAVIOR[subType] ?? null
+}
+
+/**
+ * Log policy for a subType at a given visibility. Falls back to
+ * {@link defaultLogPolicy} when the subType has no row, or has one that predates
+ * the policy columns — which is every row until an admin sets one, so the
+ * fallback is the behaviour that actually ships.
+ *
+ * `showUser` is a parameter rather than read off the behaviour row because the
+ * caller may already have overridden it (the leverage-`Futures position` case
+ * bypasses the table entirely, and explicit `sendError:false` call sites are not
+ * expressible as a row at all).
+ */
+export function getSubTypeLogPolicy(
+  subType: string | null | undefined,
+  showUser: boolean,
+): SubtypeLogPolicy {
+  const behavior = getSubTypeBehavior(subType)
+  const mode = behavior?.logMode
+  if (mode !== 'once' && mode !== 'coalesce' && mode !== 'always') {
+    return defaultLogPolicy(showUser)
+  }
+  if (mode !== 'coalesce') return { mode, windowMs: 0 }
+  const sec = behavior?.logWindowSec
+  return {
+    mode,
+    windowMs:
+      typeof sec === 'number' && sec > 0
+        ? sec * 1000
+        : DEFAULT_COALESCE_WINDOW_MS,
+  }
+}
+
+/**
+ * The `bucket` a message written at `time` belongs to under `policy`, or null
+ * for `always` (no coalescing — the row stays out of the unique index).
+ */
+export function logPolicyBucket(
+  policy: SubtypeLogPolicy,
+  time: number,
+): number | null {
+  if (policy.mode === 'always') return null
+  // `once` is the degenerate window: everything lands in bucket 0, so the key is
+  // unique per (bot, subType, visibility) for as long as the row is undismissed.
+  if (policy.mode === 'once') return 0
+  return Math.floor(time / policy.windowMs)
 }
 
 /**

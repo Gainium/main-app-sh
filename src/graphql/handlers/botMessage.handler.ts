@@ -85,10 +85,14 @@ export const getBotMessage = async (
 export const deleteBotMessage = async (userId: string, messageId?: string) => {
   let result
   if (messageId) {
+    // `$unset bucket` alongside the tombstone: it takes the row out of
+    // `botMessageCoalesceKey` so a recurrence inserts a new, visible message
+    // instead of incrementing the one the user just dismissed.
     result = await botMessageDb.updateData(
       { userId, _id: messageId },
       {
-        isDeleted: true,
+        $set: { isDeleted: true },
+        $unset: { bucket: '' },
       },
       true,
       true,
@@ -109,7 +113,7 @@ export const deleteBotMessage = async (userId: string, messageId?: string) => {
     // the schema default are still cleared — same rows as before, same result.
     result = await botMessageDb.updateManyData(
       { userId, isDeleted: { $in: [false, null] } },
-      { isDeleted: true },
+      { $set: { isDeleted: true }, $unset: { bucket: '' } },
     )
   }
   return result

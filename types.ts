@@ -2357,6 +2357,7 @@ export interface BotMessageSchema extends SchemaI {
   time: number
   isDeleted?: boolean
   subType: string
+  /** Occurrences folded into this row by the log policy (see `bucket`). */
   count?: number
   terminal?: boolean
   paperContext?: boolean
@@ -2364,6 +2365,14 @@ export interface BotMessageSchema extends SchemaI {
   fullMessage?: string
   symbol?: string
   exchange?: string
+  /** First occurrence in this row's window; `time` tracks the latest. */
+  firstTime?: number
+  /**
+   * Coalescing window index. Absent on `always`-mode rows, on rows written
+   * before the log policy shipped, and on rows the user has dismissed — all of
+   * which are thereby outside `botMessageCoalesceKey`.
+   */
+  bucket?: number
 }
 
 export type ClearBotErrorSchema = ExcludeDoc<BotMessageSchema>

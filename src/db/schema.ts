@@ -855,7 +855,19 @@ const botMessageSchema: Schema<BotMessageSchema> = new Schema({
   subType: String,
   // Aggregate count for digest-style notices (e.g. one daily "auto-archived"
   // notice summarising N bots) — the message text carries the human wording.
+  // ALSO the occurrence counter for coalesced bot errors: `processError` upserts
+  // on the key below and `$inc`s this, so a condition that fires 40,000 times is
+  // one row that says 40,000 instead of 40,000 rows.
   count: Number,
+  // Coalescing key. `time` moves to the LATEST occurrence (the admin page sorts
+  // and filters on it, and "when did this last fire" is the useful question);
+  // this keeps the first, so a row still says how long the condition has run.
+  firstTime: Number,
+  // Window index for the log policy — see `botMessageCoalesceKey` below and
+  // `getSubTypeLogPolicy` in core/src/bot/errorRulesCache.ts. Absent on
+  // `always`-mode rows and on everything written before this shipped, which is
+  // exactly what keeps them out of the unique index.
+  bucket: Number,
   paperContext: Boolean,
   terminal: Boolean,
   showUser: Boolean,
@@ -2996,6 +3008,63 @@ export const registerIndexes = () => {
   // subType:{$ne}; the userId-leading indexes above can't serve a botId-first
   // predicate. botId is write-once (static); isDeleted is one-way/low-cardinality.
   botMessageSchema.index({ botId: 1, isDeleted: 1 })
+  // RETENTION. `isDeleted` on this collection is a tombstone that nothing ever
+  // collected: on prod 2,689,136 of 2,702,725 rows (99.5%, ~1.8GB) are
+  // isDeleted:true, the oldest from 2022-12-24, and only 13,589 are live. Both
+  // producers of tombstones — "mark all read" and the per-bot clear on recovery —
+  // are one-way, so a deleted row can never come back and there is nothing to
+  // read it. `botEvents` next door has had a 30-day TTL all along; this had none.
+  //
+  // PARTIAL, on `isDeleted:true`, deliberately: a blanket TTL over `created`
+  // would also reap LIVE messages, and a live row is one the user has not
+  // dismissed and can still see in the notifications feed. Age is not consent to
+  // hide it. This reaps only what is already invisible.
+  //
+  // Expiry is measured from `created`, so a row soft-deleted long after it was
+  // written is reaped on the next TTL pass rather than 30 days later. That is the
+  // intent — the clock that matters is how long the row has existed, and it is
+  // unreadable either way.
+  //
+  // NB: run `src/db/scripts/purgeBotMessages.ts` BEFORE this index reaches a
+  // host carrying the backlog. The TTL monitor deletes in unbounded per-minute
+  // passes; letting it discover 2.69M expired docs at once is a self-inflicted
+  // delete storm on the oplog. The script does the same work in bounded batches.
+  botMessageSchema.index(
+    { created: 1 },
+    {
+      name: 'botMessageTombstoneTtl',
+      expireAfterSeconds: 2592000, // 30d
+      partialFilterExpression: { isDeleted: true },
+    },
+  )
+  // COALESCING KEY — what actually caps the write rate, by construction rather
+  // than by a check that can be wrong. `processError` upserts on this key and
+  // `$inc`s `count`, so a repeating condition can only ever own ONE row per
+  // window: uniqueness is enforced by the database, not by a preceding count
+  // whose answer is stale the moment it returns and which read a failed query as
+  // "nothing on file" and wrote anyway.
+  //
+  // PARTIAL on `bucket: {$exists: true}` for two reasons. It excludes every one
+  // of the 2.7M rows written before this shipped, so building the index on prod
+  // cannot fail on a duplicate. And it excludes `always`-mode rows, which opt out
+  // of coalescing and must stay free to write one row per occurrence.
+  //
+  // `showUser` is in the key because a subType's visibility can be flipped from
+  // the admin table at any time, and a hidden row must never coalesce onto the
+  // visible row a user is currently looking at.
+  //
+  // NB: the soft-delete paths (`deleteBotMessage`, and the per-bot clear on
+  // recovery) `$unset` `bucket`. That is load-bearing: it drops the dismissed row
+  // out of this index so the next occurrence inserts a fresh, visible row instead
+  // of silently incrementing a tombstone the user can no longer see.
+  botMessageSchema.index(
+    { userId: 1, botId: 1, subType: 1, showUser: 1, bucket: 1 },
+    {
+      name: 'botMessageCoalesceKey',
+      unique: true,
+      partialFilterExpression: { bucket: { $exists: true } },
+    },
+  )
   // Admin Bot Errors page (admin-app `getBotErrors` → GET /bot/error/all): the
   // ONLY fleet-wide reader of this collection — it has no userId/botId predicate
   // at all, filters on a `time` RANGE (the page's date picker) and sorts by
