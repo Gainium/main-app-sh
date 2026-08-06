@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.2] - 2026-08-06
+
+### Fixed
+
+- A hedge bot whose paired bot had been deleted crashed while restarting, silently: it never came back, never reported in, and failed the same way on every subsequent restart.
+
 ## [1.48.1] - 2026-08-06
 
 ### Fixed

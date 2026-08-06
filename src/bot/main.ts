@@ -2518,15 +2518,26 @@ class MainBot<T extends IMainBot> {
                         parentBotId: this.data.parentBotId,
                         _id: { $ne: new Types.ObjectId(this.botId) },
                       })
-                if (findOther.status === StatusEnum.ok) {
+                // `readData` is a findOne: a miss returns `status: ok` with
+                // `result: undefined`, so gating on the status alone is not
+                // enough. A hedge child whose sibling leg has been deleted
+                // dereferenced undefined here and threw out of loadData() —
+                // and start() awaits loadData() OUTSIDE its try/catch, so the
+                // rejection escaped the bot entirely: no `restartFinished` to
+                // the parent (silent restart straggler), `locked` never
+                // cleared, bot inert until the next restart, which failed
+                // identically. Two orphaned combo bots were the recurring
+                // "N-2" combo shortfall on every restart up to 2026-08-06.
+                const other =
+                  findOther.status === StatusEnum.ok
+                    ? findOther.data.result
+                    : undefined
+                if (other) {
                   shouldCheck =
-                    this.data.exchangeUUID ===
-                      findOther.data.result.exchangeUUID &&
+                    this.data.exchangeUUID === other.exchangeUUID &&
                     [this.data.settings.pair]
                       .flat()
-                      .some((p) =>
-                        findOther.data.result.settings.pair.includes(p),
-                      )
+                      .some((p) => [other.settings?.pair].flat().includes(p))
                 }
                 if (shouldCheck) {
                   if (!this.hedge) {
