@@ -117,6 +117,7 @@ import {
   BOT_RESTART_ARM_CAP_MS,
   BOT_RESTART_ARM_FALLBACK,
   BOT_RESTART_ARM_STALL_MS,
+  BOT_RESTART_STRAGGLER_DELAY_MS,
   BOT_SERVICE_RPC_TIMEOUT_MS,
   BOTS_PER_WORKER,
   BotServiceType,
@@ -165,6 +166,7 @@ const armFallbackEnabled = `${BOT_RESTART_ARM_FALLBACK}` !== 'false'
 const armStallMs = Number(BOT_RESTART_ARM_STALL_MS) || 120_000
 const armCapMs = Number(BOT_RESTART_ARM_CAP_MS) || 30 * 60_000
 const armWatchdogTickMs = 15_000
+const stragglerDelayMs = Number(BOT_RESTART_STRAGGLER_DELAY_MS) || 10 * 60_000
 
 const loggerPrefix = `${isMainThread ? 'Main thread' : `Worker ${threadId}`} |`
 
@@ -359,6 +361,11 @@ class Bot<T extends UserSchema = UserSchema> {
   private restartWindowStartedAt = 0
   private lastRestartProgressAt = 0
   private armWatchdog: ReturnType<typeof setInterval> | undefined
+  // Straggler accounting. Both sets live in the PARENT: the restart-stats writer
+  // runs in the worker thread, so anything tracked there is invisible here.
+  private restartExpectedIds = new Set<string>()
+  private restartFinishedIds = new Set<string>()
+  private stragglerTimer: ReturnType<typeof setTimeout> | undefined
 
   public constructor(
     protected useBots?: boolean,
@@ -627,6 +634,9 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     if (data.event === 'response' && data.responseId) {
       this.processReponseBotMessage(data.responseId, data.response)
+    }
+    if (data.event === 'restartFinished' && data.botId) {
+      this.restartFinishedIds.add(`${data.botId}`)
     }
   }
 
@@ -7256,10 +7266,13 @@ class Bot<T extends UserSchema = UserSchema> {
    * because they mean some bots are live but unrestarted. Kill switch:
    * `BOT_RESTART_ARM_FALLBACK=false` restores the strict (deaf-on-stall) behaviour.
    */
-  protected beginRestartWindow(estimated: number) {
+  protected beginRestartWindow(estimated: number, expectedIds: string[] = []) {
     this.estimatedRestart = estimated
     this.restartWindowStartedAt = Date.now()
     this.lastRestartProgressAt = this.restartWindowStartedAt
+    this.restartExpectedIds = new Set(expectedIds)
+    this.restartFinishedIds = new Set()
+    if (this.stragglerTimer) clearTimeout(this.stragglerTimer)
     if (!estimated) {
       this.armCommandListener('no-bots')
       return
@@ -7311,8 +7324,56 @@ class Bot<T extends UserSchema = UserSchema> {
       this.estimatedRestart,
       elapsedMs,
     )
+    this.scheduleStragglerCheck()
     this.setListener()
   }
+
+  /**
+   * Stragglers can only be judged AFTER the restart has had time to settle.
+   *
+   * Arming happens at *dispatch* parity — every bot has been handed to a worker
+   * — which is not the same as every bot having reported back. On a fast type
+   * the two coincide (hedgeCombo: all 30 finished inside 7.3s), but DCA takes
+   * minutes, so measuring at arm time would report almost the entire fleet as
+   * missing. That is exactly the bug this replaces: the first version computed
+   * the difference at arm time, from a set the parent could never populate.
+   *
+   * So: wait, then compare what the workers reported against what we expected.
+   */
+  private scheduleStragglerCheck() {
+    if (!this.restartExpectedIds.size) return
+    if (this.stragglerTimer) clearTimeout(this.stragglerTimer)
+    this.stragglerTimer = setTimeout(() => {
+      const missing = [...this.restartExpectedIds].filter(
+        (id) => !this.restartFinishedIds.has(id),
+      )
+      const finished = this.restartFinishedIds.size
+      const expected = this.restartExpectedIds.size
+      if (missing.length) {
+        this.handleWarn(
+          `${loggerPrefix} Restart stragglers: ${missing.length}/${expected} bot(s) never reported finished — ${missing
+            .slice(0, 10)
+            .join(', ')}${missing.length > 10 ? ' …' : ''}`,
+        )
+      } else {
+        this.handleLog(
+          `${loggerPrefix} Restart complete: all ${expected} bots reported finished`,
+        )
+      }
+      this.onRestartStragglers(missing, finished, expected)
+    }, stragglerDelayMs)
+    this.stragglerTimer.unref?.()
+  }
+
+  /**
+   * Telemetry hook for the delayed straggler verdict. Core keeps no stats of its
+   * own; main-app overrides this to persist onto the restart-progress doc.
+   */
+  protected onRestartStragglers(
+    _missingBotIds: string[],
+    _finished: number,
+    _expected: number,
+  ): void {}
 
   /**
    * Telemetry hook. Core stays free of the stats collection; main-app overrides

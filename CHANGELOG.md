@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.1] - 2026-08-06
+
+### Fixed
+
+- The count of bots that failed to come back after a restart was measured at the wrong moment and from the wrong place, so it reported every bot as missing even when all of them returned. It is now measured once the restart has had time to settle, and counts what the bot workers actually reported.
+
 ## [1.48.0] - 2026-08-06
 
 ### Changed

@@ -4726,6 +4726,20 @@ export type BotParentEventsDto =
   | BotParentUnsubscribeIndicatorEventDto
   | BotParentProcessStatsEventDto
   | BotParentBotClosed
+  | BotParentRestartFinishedEventDto
+
+/**
+ * A bot has finished re-hydrating after a service restart.
+ *
+ * The restart-stats writer runs inside the worker thread, so the parent — which
+ * owns the restart window and knows which bots were expected — otherwise has no
+ * way to learn which of them actually came back. This carries that one fact
+ * across the boundary.
+ */
+export type BotParentRestartFinishedEventDto = {
+  event: 'restartFinished'
+  botId: string
+}
 
 export type ParentIndicatorMessage = {
   event: 'indicatorData'

@@ -53,4 +53,8 @@ export const {
   // long-standing hardcoded 5 minutes; a bot-type restart routinely outlasts it,
   // which is why a command issued mid-restart looks failed and then applies.
   BOT_SERVICE_RPC_TIMEOUT_MS = '300000',
+  // How long after arming to judge which bots never reported back. Must exceed
+  // the slowest type's re-hydration — observed 2026-08-05: combo 7m28s, DCA
+  // 4m24s — or healthy-but-slow bots are reported as missing.
+  BOT_RESTART_STRAGGLER_DELAY_MS = '600000',
 } = process.env
