@@ -80,6 +80,7 @@ import {
 } from './errorRulesCache'
 import QuantRulesGuard from './quantRulesGuard'
 import ComplianceGuard from './complianceGuard'
+import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
 import RetryBackoff from './retryBackoff'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
@@ -3252,9 +3253,43 @@ class MainBot<T extends IMainBot> {
         }
       }
       if (!finish) {
+        // Hard-auth short-circuit. An expired / revoked key is a PERMANENT
+        // account condition, but `BotStatusEnum.error` is a soft status the
+        // price-update path clears via `restoreFromRangeOrError()`, so nothing
+        // gated the next attempt: one bot re-asked a dead Bybit key ~2/min for
+        // 2.2h+ while sitting at `status: 'open'`. Serve the exchange's OWN
+        // last rejection from a short Redis cooldown instead of calling the
+        // venue again. Downstream is unchanged — callers already handle the
+        // empty/undefined result an auth failure produces today.
+        const authUUID = `${this.data?.exchangeUUID ?? ''}`
+        if (authUUID) {
+          const cooldown = await AuthFailureGuard.check(authUUID)
+          if (cooldown.failed && cooldown.reason) {
+            // debug, not info: the actionable error is already reported on
+            // every re-probe, so a per-tick line here would just move the
+            // flood from the error log to the out log.
+            this.handleDebug(
+              `Balance check skipped, exchange auth cooldown until ${new Date(
+                cooldown.until ?? 0,
+              ).toISOString()}: ${cooldown.reason}`,
+            )
+            if (returnData) {
+              return asset
+            }
+            return
+          }
+        }
         const balances = await this.exchange.getBalance()
         this.handleDebug('Get balance')
         if (balances.status === StatusEnum.notok) {
+          // Open/widen the cooldown only for a real, venue-returned hard-auth
+          // rejection. Everything else stays exactly as transient as it is now.
+          if (authUUID && isHardAuthFailure(`${balances.reason}`)) {
+            await AuthFailureGuard.record({
+              exchangeUUID: authUUID,
+              reason: `${balances.reason}`,
+            })
+          }
           this.handleErrors(balances.reason, 'checkAssets()', 'getBalance')
           if (returnData) {
             return asset
