@@ -105,6 +105,22 @@ export const encrypt = (str: string, k?: string) => {
  * a rotation, which is what keeps un-backfilled rows readable.
  */
 export const decrypt = (str: string, k?: string) => {
+  if (k === undefined && isResolverManaged(str)) {
+    // A host-managed value reached the synchronous path. Resolving it needs an
+    // await, so this cannot return the plaintext — and it must not fall through
+    // to AES, which does not fail on this input: it returns '' and the caller
+    // uses that as the credential. The result is an authentication failure at
+    // the exchange with no exception anywhere, which is the hardest possible
+    // thing to diagnose.
+    //
+    // Throwing is the lesser harm. A caller that needs this value must call
+    // `decryptAsync`.
+    throw new Error(
+      'decrypt: this value can only be read asynchronously — call ' +
+        'decryptAsync instead. Reading it here would silently yield an empty ' +
+        'credential.',
+    )
+  }
   if (k !== undefined) {
     return raw(
       typeof str === 'string' && str.startsWith(KEY_TAG)

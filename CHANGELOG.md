@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.2] - 2026-08-06
+
+### Fixed
+
+- Reading a host-managed stored value through the synchronous path now fails loudly instead of returning an empty string. It previously fell through to AES, which does not signal failure on that input — the caller received `''` and used it as the credential, producing an authentication failure at the exchange with no exception anywhere.
+
 ## [1.48.4] - 2026-08-06
 
 ### Fixed
