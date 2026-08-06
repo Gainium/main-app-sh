@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.49.1] - 2026-08-06
+
+### Fixed
+
+- A deal is now closed when the exchange refuses the closing order because the position is already flat. The rejection was treated as a generic order error, so the deal stayed open with no orders and nothing retried it.
+- Combo bots re-check on start for a deal whose base minigrid already completed and close it, so a close that never landed is recovered instead of leaving the deal open indefinitely.
+
 ## [1.49.0] - 2026-08-06
 
 ### Changed

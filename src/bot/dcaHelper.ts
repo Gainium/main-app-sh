@@ -170,6 +170,24 @@ const mutexOpenDealBySignal = new IdMutex(15)
 
 const notionalReasons = ['The order funds should be more than', 'NOTIONAL']
 
+/**
+ * Exchange rejections that mean "there is nothing left to close" — the position
+ * is already flat (or on the other side), so a reduce-only closing order can
+ * never be accepted. Retrying is pointless; the deal must be booked closed.
+ */
+const positionAlreadyClosedReasons = [
+  // Hyperliquid
+  'reduce only order would increase position',
+  // Binance -2022
+  'ReduceOnly Order is rejected',
+  // Bybit
+  'current position is zero, cannot fix reduce-only order qty',
+  'reduce-only order has same side with current position',
+  // OKX 51169 / 51023
+  "You don't have any positions in this contract",
+  'Position does not exist',
+]
+
 const maxTimeout = 2 ** 31 - 1
 
 // Helper function to apply decorators to methods
@@ -4890,6 +4908,15 @@ function createDCABotHelper<
       return false
     }
 
+    private isPositionAlreadyClosedReason(text: string): boolean {
+      for (const r of positionAlreadyClosedReasons) {
+        if (text.toLowerCase().indexOf(r.toLowerCase()) !== -1) {
+          return true
+        }
+      }
+      return false
+    }
+
     async prepareTpOrder(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       slSource = false,
@@ -5392,6 +5419,20 @@ function createDCABotHelper<
                         closeTrigger,
                         count + 1,
                       )
+                    } else if (this.isPositionAlreadyClosedReason(result)) {
+                      // The exchange says there is no position left to reduce,
+                      // so the closing order can never be placed. Without this
+                      // the deal stays open forever with no orders — see the
+                      // combo base-minigrid case, where completing the base
+                      // minigrid means the position is already flat.
+                      this.handleLog(
+                        `Close order for deal ${dealId} rejected because the position is already closed (${result}). Closing deal without order`,
+                      )
+                      if (fastClose) {
+                        await closeBuy()
+                      }
+                      this.endMethod(_id)
+                      return await this.closeDeal(this.botId, dealId)
                     } else {
                       this.handleOrderErrors(
                         result,
