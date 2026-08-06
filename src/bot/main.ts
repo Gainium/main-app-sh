@@ -340,6 +340,29 @@ export function isDefinitiveOrderNotFound(res?: {
     reason === 'unknownoid'
   )
 }
+/**
+ * The placeholder an {@link Order} carries in `orderId` from the moment it is
+ * constructed until the venue hands back a real exchange order id. Already
+ * guarded on the duplicate / not-found branches of `sendOrderToExchange`; the
+ * `byId` lookup branches did not, which is what this constant names.
+ *
+ * Module-level rather than a static member — see `notEnoughBalanceKeyVersion`.
+ */
+const noExchangeOrderId = '-1'
+/**
+ * The answer for an order on a venue that can only be queried BY exchange
+ * order id (coinbase / kraken / kucoin full futures) when we never received
+ * one. Asking is guaranteed to fail — `'-1'` is not an id, so kraken burns a
+ * `getOpenOrders` + a `getClosedOrders` (userref `parseInt('-1', 16)` = NaN)
+ * and logs an ERROR, per order, per poll. A grid bot re-probing 17 such orders
+ * on every user-stream reconnect produced 39 connector errors in 63s.
+ *
+ * The reason is worded so {@link isDefinitiveOrderNotFound} still matches it:
+ * every venue in that branch answers an unresolvable id with a definitive
+ * not-found today, so callers see exactly what they saw before — minus the
+ * round trip.
+ */
+const orderNeverReachedExchange = 'Order not found: no exchange order id'
 /** Key-scheme version for `MainBot.getNotEnoughOrdersIdByOrder`. Bump when the
  *  key shape changes so counters written under the old scheme are discarded.
  *  Module-level rather than a static member: adding statics to `MainBot`
@@ -3564,6 +3587,12 @@ class MainBot<T extends IMainBot> {
       ) {
         const local = this.getOrderFromMap(id)
         if (local) {
+          if (local.orderId === noExchangeOrderId) {
+            this.endMethod(_id)
+            return this.exchange.returnBad()(
+              new Error(orderNeverReachedExchange),
+            )
+          }
           id = `${local.orderId}`
         }
       }
@@ -3657,6 +3686,7 @@ class MainBot<T extends IMainBot> {
         return null
       }
 
+      let neverReachedExchange = false
       if (byId) {
         let find = this.getOrderFromMap(id)
         if (!find) {
@@ -3664,13 +3694,16 @@ class MainBot<T extends IMainBot> {
             ?.result
         }
         if (find) {
+          neverReachedExchange = find.orderId === noExchangeOrderId
           id = `${find.orderId}`
         }
       }
-      const request = await this.exchange.getOrder({
-        symbol,
-        newClientOrderId: id,
-      })
+      const request = neverReachedExchange
+        ? this.exchange.returnBad()(new Error(orderNeverReachedExchange))
+        : await this.exchange.getOrder({
+            symbol,
+            newClientOrderId: id,
+          })
       if (request.status === StatusEnum.notok) {
         this.handleLog(
           `${request.reason}, handleUnknownOrder(), Send get order request ${origId}, ${symbol}, ${id}`,

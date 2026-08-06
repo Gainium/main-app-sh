@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.50.3] - 2026-08-06
+
+### Fixed
+
+- Orders that never received an exchange order id are no longer looked up on the exchange. On Coinbase, Kraken and KuCoin full futures an order can only be fetched by the id the venue assigns it, and until that id arrives the order carries a placeholder — which was being sent as if it were a real id. Every check of such an order cost two futile exchange calls and an error line; one grid bot re-checking 17 of them on each stream reconnect produced 39 exchange errors in a minute. The checks now answer immediately, with the same verdict the exchange was giving.
+
 ## [1.50.2] - 2026-08-06
 
 ### Fixed
