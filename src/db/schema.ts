@@ -3114,6 +3114,9 @@ export const registerIndexes = () => {
   comboBotSchema.index({ userId: 1 })
   comboBotSchema.index({ userId: 1, status: 1, created: -1 })
   comboBotSchema.index({ userId: 1, created: -1 })
+  // Hedge-sibling lookup — see the dcaBotSchema note below; identical shape,
+  // same call sites (`core/src/bot/main.ts` picks comboBotDb for combo bots).
+  comboBotSchema.index({ parentBotId: 1 })
 
   comboDealSchema.index({ userId: 1 })
   comboDealSchema.index({ botId: 1 })
@@ -3127,6 +3130,19 @@ export const registerIndexes = () => {
   dcaBotSchema.index({ userId: 1, created: -1 })
   // Webhook path looks bots up by uuid (write-once/static) — was a COLLSCAN.
   dcaBotSchema.index({ uuid: 1 })
+  // Hedge bots: every child leg looks its sibling up by the shared parent with
+  // `{parentBotId, _id: {$ne: self}}` — on load (`core/src/bot/main.ts:2506`,
+  // per start/restart) and on close (`:521`). `parentBotId` had no index, so the
+  // planner fell back to IXSCAN {_id:1} and walked the whole collection on every
+  // call. That is worst exactly where it is hottest: a hedge child whose sibling
+  // leg is gone matches nothing, so the scan runs to the end — 44,999 docs
+  // examined for 0 returned, which is the ~43,900 examined:returned ratio this
+  // shape shows in the prod slow-query profile. `parentBotId` is write-once (set
+  // when the hedge pair is created) and present on ~1% of bots, so the index is
+  // tiny and costs the write path nothing. NOT compound with `_id`: the `$ne` is
+  // an anti-predicate that cannot bound an index scan, and a hedge pair is 2 docs
+  // — the equality on `parentBotId` alone already takes the scan to those 2 keys.
+  dcaBotSchema.index({ parentBotId: 1 })
 
   hedgeComboBotSchema.index({ userId: 1 })
   hedgeComboBotSchema.index({ userId: 1, status: 1, created: -1 })
