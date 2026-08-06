@@ -1008,6 +1008,15 @@ function createDCABotHelper<
                     ...d,
                     initialOrders,
                     currentOrders,
+                    // `closeBySl` / `closeByTp` mean "a close is in flight in
+                    // this process". Nothing is in flight at load, so a value
+                    // restored from Redis is stale by definition — and a stale
+                    // `true` is a one-way latch: the deal is skipped by
+                    // `checkPlaceOrders` and by the close-recovery, so a close
+                    // that failed once freezes the deal permanently. The DB
+                    // load path below already resets both; this one did not.
+                    closeBySl: false,
+                    closeByTp: false,
                   },
                   false,
                 )

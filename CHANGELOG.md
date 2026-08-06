@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.49.2] - 2026-08-06
+
+### Fixed
+
+- A deal that started closing and did not finish stayed frozen after a restart: the "closing now" markers were restored from the cache as if the close were still running, so the bot refused to place orders for that deal and the close was never retried. They are now cleared on load, matching what the database load path already did.
+
 ## [1.49.1] - 2026-08-06
 
 ### Fixed
