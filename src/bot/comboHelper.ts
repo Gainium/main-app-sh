@@ -5873,6 +5873,10 @@ function createComboBotHelper<
         }
         await this.checkOrders(this.botId)
       } else {
+        // Not a service restart — the user started or restarted this bot, which
+        // is the manual escape hatch from order quarantine: whatever we decided
+        // to stop polling, look again now.
+        await this.clearAllOrderQuarantine('bot started by user')
         await this.cancelAllOrder()
         await this.checkOrders(this.botId, true)
       }

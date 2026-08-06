@@ -3109,11 +3109,40 @@ export type CommonOrder = {
   }[]
 }
 
+/**
+ * Polling quarantine for an order the venue keeps saying does not exist.
+ *
+ * This is a statement about **our polling policy**, not about the order. It
+ * deliberately does not mark the order CANCELED: that would assert something
+ * about venue state we do not know. Quarantine asserts only "stop asking", and
+ * it is reversible.
+ *
+ * The invariant that makes it safe: **quarantine suppresses the poll, never the
+ * push.** A quarantined order stays subscribed on the user stream, stays in the
+ * order map, and stays in `cancelAllOrder()`. If the venue ever mentions it
+ * again — a fill, a cancel, a successful lookup — the order is rebuilt from
+ * that truth and the quarantine goes with it.
+ */
+export type OrderQuarantine = {
+  /** Definitive not-founds seen, at most one per order-check run. */
+  strikes: number
+  firstAt: number
+  lastAt: number
+  /** The venue's own words, kept for triage. */
+  reason: string
+  /** Run id of the most recent strike, so repeats within one run count once. */
+  runId: string
+  /** Set once `strikes` reaches the threshold. Absent = counting, not yet quarantined. */
+  since?: number
+}
+
 export type Order = CommonOrder & {
   _id?: string
   exchange: ExchangeEnum
   exchangeUUID: string
   typeOrder: TypeOrder
+  /** @see OrderQuarantine — absent for every order that behaves normally. */
+  quarantine?: OrderQuarantine
   botId: string
   userId: string
   dealId?: string

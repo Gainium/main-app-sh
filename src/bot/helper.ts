@@ -15,7 +15,7 @@ import {
   FuturesStrategyEnum,
   BotType,
 } from '../../types'
-import MainBot from './main'
+import MainBot, { isDefinitiveOrderNotFound } from './main'
 
 import type {
   BotData,
@@ -889,6 +889,9 @@ function createBotHelper<
               },
             )
           } else {
+            // Not a service restart — the user started or restarted this bot,
+            // which is the manual escape hatch from order quarantine.
+            await this.clearAllOrderQuarantine('bot started by user')
             this.limitOrders(
               this.botId,
               this.lastFilled
@@ -1239,6 +1242,7 @@ function createBotHelper<
       }
       const _id = this.startMethod('checkOrders')
       this.blockCheck = true
+      this.beginOrderCheckRun()
       try {
         if (this.serviceRestart) {
           if (!this.data) {
@@ -1423,13 +1427,19 @@ function createBotHelper<
                   .map((c) => c.newClientOrderId)
                   .includes(ao.clientOrderId),
             )) {
+              if (this.isOrderQuarantined(o)) continue
               if (this.restartProbeExhausted()) continue
               const exchangeData = await this.getOrder(
                 o.clientOrderId,
                 pair,
                 true,
               )
-              if (!exchangeData || !exchangeData.data) {
+              if (isDefinitiveOrderNotFound(exchangeData)) {
+                this.handleWarn(
+                  `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
+                )
+                this.noteOrderNotFound(o, `${exchangeData?.reason}`)
+              } else if (!exchangeData || !exchangeData.data) {
                 this.handleWarn(
                   `Not enough data to get order ${o.clientOrderId}`,
                 )
@@ -1480,6 +1490,7 @@ function createBotHelper<
               }
             }
             this.endRestartProbeBudget('checkOrders')
+            this.endOrderCheckRun()
             if (filledOrders.length > 0) {
               const [lastFilled] = filledOrders.sort(
                 (a, b) => b.updateTime - a.updateTime,

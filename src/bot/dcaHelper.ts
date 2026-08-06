@@ -85,7 +85,7 @@ import {
   LWConditionEnum,
 } from '../../types'
 import { MathHelper } from '../utils/math'
-import MainBot, { notEnoughErrors } from './main'
+import MainBot, { notEnoughErrors, isDefinitiveOrderNotFound } from './main'
 import utils from '../utils'
 import {
   gt,
@@ -8781,6 +8781,7 @@ function createDCABotHelper<
       const _id = this.startMethod('checkOrders')
       this.blockCheck = true
       this.beginRestartProbeBudget()
+      this.beginOrderCheckRun()
       if (this.serviceRestart || partiallyFilled) {
         const dealOrders: Map<string, Order[]> = new Map()
         const all = this.allOrders.filter((o) =>
@@ -8812,18 +8813,31 @@ function createDCABotHelper<
           const forTPCheck = deal && (await this.isDealForTPLevelCheck(deal))
           if (activeTPSLOrders.length && deal && !forTPCheck) {
             for (const activeTPSLOrder of activeTPSLOrders) {
+              if (this.isOrderQuarantined(activeTPSLOrder)) continue
               if (this.restartProbeExhausted()) continue
               const tpslOrderData = await this.getOrder(
                 activeTPSLOrder.clientOrderId,
                 activeTPSLOrder.symbol,
                 true,
               )
-              if (!tpslOrderData || !tpslOrderData.data) {
+              // `notok` is tested BEFORE `!data`: every failed lookup nulls
+              // `data`, so testing `!data` first made this branch unreachable
+              // and discarded the venue's reason — the one thing that separates
+              // "this order does not exist" from "the call failed".
+              if (isDefinitiveOrderNotFound(tpslOrderData)) {
+                this.handleWarn(
+                  `Order ${activeTPSLOrder.clientOrderId} not found on exchange: ${tpslOrderData?.reason}`,
+                )
+                this.noteOrderNotFound(
+                  activeTPSLOrder,
+                  `${tpslOrderData?.reason}`,
+                )
+              } else if (tpslOrderData?.status === StatusEnum.notok) {
+                this.handleWarn(`Cannot get order ${tpslOrderData.reason}`)
+              } else if (!tpslOrderData || !tpslOrderData.data) {
                 this.handleWarn(
                   `Not enough data to get order ${activeTPSLOrder.clientOrderId}`,
                 )
-              } else if (tpslOrderData.status === StatusEnum.notok) {
-                this.handleWarn(`Cannot get order ${tpslOrderData.reason}`)
               } else {
                 const updatedOrder = await this.mergeCommonOrderWithOrder(
                   tpslOrderData.data,
@@ -8958,13 +8972,19 @@ function createDCABotHelper<
                 newOrders = diff.new
               }
               for (const o of activeRegularOrders) {
+                if (this.isOrderQuarantined(o)) continue
                 if (this.restartProbeExhausted()) continue
                 const exchangeData = await this.getOrder(
                   o.clientOrderId,
                   o.symbol,
                   true,
                 )
-                if (!exchangeData || !exchangeData.data) {
+                if (isDefinitiveOrderNotFound(exchangeData)) {
+                  this.handleWarn(
+                    `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
+                  )
+                  this.noteOrderNotFound(o, `${exchangeData?.reason}`)
+                } else if (!exchangeData || !exchangeData.data) {
                   this.handleWarn(
                     `Not enough data to get order ${o.clientOrderId}`,
                   )
@@ -9119,6 +9139,7 @@ function createDCABotHelper<
         }
       }
       this.endRestartProbeBudget('checkOrders')
+      this.endOrderCheckRun()
       this.blockCheck = false
       this.endMethod(_id)
     }
@@ -9318,6 +9339,10 @@ function createDCABotHelper<
       if (serviceRestart) {
         await this.checkOrders(this.botId)
       } else {
+        // Not a service restart — the user started or restarted this bot, which
+        // is the manual escape hatch from order quarantine: whatever we decided
+        // to stop polling, look again now.
+        await this.clearAllOrderQuarantine('bot started by user')
         await this.cancelAllOrder()
         await this.checkOrders(this.botId, true)
       }

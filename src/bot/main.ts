@@ -8,6 +8,7 @@ import type {
   FreeAsset,
   Grid,
   Order,
+  OrderQuarantine,
   OrderTypeT,
   UserDataStreamEvent,
   CommonOrder,
@@ -259,6 +260,56 @@ const maxMethods = 30
 const restartProbeBudgetMs = Number(
   process.env.BOT_RESTART_PROBE_BUDGET_MS ?? 60_000,
 )
+
+/**
+ * Consecutive order-check runs that must each produce a *definitive* not-found
+ * before an order is quarantined. `0` disables quarantine entirely.
+ *
+ * Strikes are counted per run, not per lookup, deliberately: an order probed
+ * three times inside one loop has told us one thing once. Requiring distinct
+ * runs means a venue outage — however long it lasts — contributes at most one
+ * strike per restart, and a real order that the venue is merely being slow
+ * about is never quarantined by a single bad afternoon.
+ */
+const orderQuarantineStrikes = Number(
+  process.env.BOT_ORDER_QUARANTINE_STRIKES ?? 3,
+)
+
+/**
+ * Does this failed lookup mean "the venue says this order does not exist", as
+ * opposed to "the call did not succeed"?
+ *
+ * This distinction is the whole safety argument for quarantine, and it was
+ * being thrown away: every venue reports a missing order as
+ * `{status: notok, reason: '<venue> order not found…', data: null}`, but every
+ * call site tested `!res.data` first and `returnBad` always nulls `data`, so
+ * the `status === notok` branch that reads `reason` was unreachable. A timeout,
+ * a rate-limit and a genuinely absent order all arrived as the same
+ * "Not enough data" warning.
+ *
+ * Matching is deliberately narrow. `Symbol not found`, `Fee not found`,
+ * `Account not found` and `Balances not found` are all real reason strings on
+ * these paths and none of them says anything about the order — quarantining on
+ * those would be exactly the "transient failure rendered as a definitive
+ * negative" mistake, with money attached.
+ */
+export function isDefinitiveOrderNotFound(res?: {
+  status: StatusEnum
+  reason?: string | null
+  data?: unknown
+}) {
+  if (!res || res.status !== StatusEnum.notok) return false
+  const reason = `${res.reason ?? ''}`.toLowerCase()
+  if (!reason) return false
+  // Coinbase: "Coinbase order not found after execution."
+  // OKX / Bitget: "Order not found"   Bybit: "Order not found after execution"
+  // Kraken: "Order not found in active orders" / "in history" / "in open orders"
+  // Binance passes through -2013 "Order does not exist".
+  return (
+    /\border not found\b/.test(reason) ||
+    /\border does not exist\b/.test(reason)
+  )
+}
 /** Key-scheme version for `MainBot.getNotEnoughOrdersIdByOrder`. Bump when the
  *  key shape changes so counters written under the old scheme are discarded.
  *  Module-level rather than a static member: adding statics to `MainBot`
@@ -348,6 +399,12 @@ class MainBot<T extends IMainBot> {
   private restartProbeStartedAt = 0
   /** Orders skipped because the budget ran out, reported once at the end. */
   private restartProbeSkipped = 0
+  /** Identifies the current order-check run so repeat strikes within it count once. */
+  private orderCheckRunId = ''
+  /** Orders newly quarantined in this run — coalesced into one user message. */
+  private newlyQuarantined: string[] = []
+  /** Quarantined orders skipped in this run, reported once at the end. */
+  private quarantineSkipped = 0
   secondRestart = false
   reload = false
   /** Array to store list of orders that in work */
@@ -498,6 +555,119 @@ class MainBot<T extends IMainBot> {
     }
     this.restartProbeStartedAt = 0
     this.restartProbeSkipped = 0
+  }
+
+  /**
+   * Open an order-check run. Everything quarantine-related is scoped to a run:
+   * strikes are counted once per run, and the end-of-run summary is what the
+   * user sees, rather than one message per order.
+   */
+  protected beginOrderCheckRun() {
+    this.orderCheckRunId = v4()
+    this.newlyQuarantined = []
+    this.quarantineSkipped = 0
+  }
+
+  /** Close the run and report both halves once. */
+  protected endOrderCheckRun() {
+    if (this.quarantineSkipped) {
+      this.handleLog(
+        `Skipped ${this.quarantineSkipped} quarantined order(s) — not polled. Restart the bot to re-check them.`,
+      )
+    }
+    if (this.newlyQuarantined.length) {
+      const n = this.newlyQuarantined.length
+      this.handleWarn(
+        `Quarantined ${n} order(s) the exchange reports as non-existent after ${orderQuarantineStrikes} checks: ${this.newlyQuarantined
+          .slice(0, 10)
+          .join(', ')}${n > 10 ? ' …' : ''}`,
+      )
+      // `cbEmit` is the core-safe user-alert hook (main-app maps it to a bot
+      // warning). Grid's override suppresses alerts before `finishLoad`, so on
+      // a restart the log line above is the reliable half.
+      this.cbEmit(
+        false,
+        `${n} order${
+          n === 1 ? '' : 's'
+        } could not be found on the exchange after ${orderQuarantineStrikes} checks and will no longer be polled. Trading is unaffected — the bot still receives live updates for them. Restarting the bot re-checks them.`,
+      )
+    }
+    this.orderCheckRunId = ''
+    this.newlyQuarantined = []
+    this.quarantineSkipped = 0
+  }
+
+  /** Should this order be skipped by the polling loops? */
+  protected isOrderQuarantined(order: Order) {
+    if (!orderQuarantineStrikes) return false
+    if (!order.quarantine?.since) return false
+    this.quarantineSkipped += 1
+    return true
+  }
+
+  /**
+   * Record one definitive not-found for an order and quarantine it once the
+   * strikes add up. Called only when {@link isDefinitiveOrderNotFound} is true
+   * — never on a timeout, a rate-limit or any other transient failure.
+   */
+  protected noteOrderNotFound(order: Order, reason: string) {
+    if (!orderQuarantineStrikes) return
+    const now = +new Date()
+    const runId = this.orderCheckRunId || `${now}`
+    const current = order.quarantine
+    // Already quarantined, or already struck in this run: nothing new was learned.
+    if (current?.since || (current && current.runId === runId)) return
+    const next: OrderQuarantine = {
+      strikes: (current?.strikes ?? 0) + 1,
+      firstAt: current?.firstAt ?? now,
+      lastAt: now,
+      reason,
+      runId,
+    }
+    if (next.strikes >= orderQuarantineStrikes) {
+      next.since = now
+      this.newlyQuarantined.push(order.clientOrderId)
+    }
+    order.quarantine = next
+    this.setOrder(order)
+    this.updateOrderOnDb(order)
+  }
+
+  /**
+   * Drop quarantine for every order this bot holds. Called on a user-initiated
+   * start — the manual escape hatch, so a user who believes their orders are
+   * real can always force a fresh look without an operator.
+   */
+  protected async clearAllOrderQuarantine(why: string) {
+    if (!orderQuarantineStrikes) return
+    const cleared = this.allOrders.filter((o) => o.quarantine)
+    if (!cleared.length) return
+    for (const o of cleared) {
+      delete o.quarantine
+      this.setOrder(o, false)
+    }
+    this.setOrdersToRedis(this.botId, false)
+    // Explicit `$unset`, not `updateOrderOnDb`: that spreads the order into a
+    // `$set`, so a key deleted from the JS object is merely absent from the
+    // update and Mongo keeps the old value. The flag would then come back the
+    // next time orders were loaded from the DB — an escape hatch that only
+    // worked until the next restart is worse than none.
+    await this.ordersDb
+      .updateData(
+        { clientOrderId: { $in: cleared.map((o) => o.clientOrderId) } },
+        { $unset: { quarantine: '' } },
+      )
+      .catch((e) =>
+        this.handleWarn(`Cannot clear order quarantine in DB: ${e}`),
+      )
+    this.handleLog(
+      `Cleared order quarantine on ${cleared.length} order(s) (${why}) — they will be polled again`,
+    )
+  }
+
+  /** How many of this bot's orders are currently not being polled. */
+  get quarantinedOrderCount() {
+    return this.allOrders.filter((o) => o.quarantine?.since).length
   }
 
   startMethod(name: string) {
@@ -3701,6 +3871,14 @@ class MainBot<T extends IMainBot> {
       return null
     }
     const order = { ...find }
+    // The venue just told us about this order, so it demonstrably exists and
+    // any decision to stop polling it is void. This is the push half of the
+    // quarantine invariant, and it has to be explicit: `{ ...find }` copies the
+    // whole order, so without this a quarantined order that started filling
+    // would keep its flag and stay unpolled while it was visibly alive.
+    // (The pull half is free — `mergeCommonOrderWithOrder` rebuilds from the
+    // exchange payload and never re-adds `quarantine`.)
+    delete order.quarantine
     if (
       msg.orderStatus === 'CANCELED' ||
       msg.orderStatus === 'FILLED' ||
@@ -5928,20 +6106,27 @@ class MainBot<T extends IMainBot> {
     if (force) {
       delete filter.$and
     }
-    await this.ordersDb
-      .updateData(filter, { ...o }, false, true)
-      .then((res) => {
-        if (res.status === StatusEnum.notok) {
-          return this.handleErrors(
-            res.reason,
-            'limitOrders()',
-            `Error saving order ${o.clientOrderId}`,
-            false,
-            false,
-            false,
-          )
-        }
-      })
+    // An order whose in-memory copy has no quarantine must not keep one in the
+    // DB. Both paths that clear it — `mergeCommonOrderWithOrder` rebuilding
+    // from a successful lookup, and the user-stream converter — produce an
+    // object with the key simply absent, which a `$set`-shaped update leaves
+    // untouched. Without the explicit `$unset`, an order that recovered would
+    // be re-quarantined the next time orders were loaded from Mongo.
+    const update = o.quarantine
+      ? { ...o }
+      : { ...o, $unset: { quarantine: '' as const } }
+    await this.ordersDb.updateData(filter, update, false, true).then((res) => {
+      if (res.status === StatusEnum.notok) {
+        return this.handleErrors(
+          res.reason,
+          'limitOrders()',
+          `Error saving order ${o.clientOrderId}`,
+          false,
+          false,
+          false,
+        )
+      }
+    })
   }
   /** Map order to grid */
 

@@ -750,6 +750,21 @@ const orderSchema: Schema<OrderSchema> = new Schema({
   acBefore: Number,
   acAfter: Number,
   leverage: Number,
+  // Polling quarantine — see `OrderQuarantine` in core/types.ts. Purely
+  // additive and absent on every existing row; readers that don't know about
+  // it are unaffected.
+  quarantine: {
+    type: {
+      strikes: Number,
+      firstAt: Number,
+      lastAt: Number,
+      reason: String,
+      runId: String,
+      since: Number,
+    },
+    required: false,
+    default: undefined,
+  },
   ...CreatedUpdated,
 })
 

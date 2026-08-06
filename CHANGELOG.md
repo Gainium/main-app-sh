@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.50.0] - 2026-08-06
+
+### Added
+
+- Orders the exchange repeatedly reports as non-existent are now put in a polling quarantine instead of being re-checked forever. An order that has been gone for months used to cost a failed lookup on every single restart — on venues that sleep-and-retry before admitting an order is missing, that is tens of seconds each. After `BOT_ORDER_QUARANTINE_STRIKES` (default 3) separate checks each get a definitive "no such order" from the exchange, the bot stops asking. Set `0` to disable.
+- Quarantine only ever stops the bot *asking* about an order — it never stops the bot *hearing* about one. A quarantined order stays subscribed to the live order stream, stays in the bot's order list, and is still cancelled when the bot stops. If the exchange mentions it again for any reason, the quarantine is dropped immediately. Restarting the bot re-checks everything, so there is always a way back.
+
+### Fixed
+
+- A failed order lookup no longer discards the exchange's explanation. "This order does not exist", "the request timed out" and "you are rate limited" were all collapsed into the same message, because the branch that read the reason was unreachable — which is why nothing could tell a genuinely missing order from a temporarily unreachable exchange. Only the first of those now counts towards quarantine.
+
 ## [1.49.4] - 2026-08-06
 
 ### Fixed
