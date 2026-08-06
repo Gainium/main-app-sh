@@ -8780,6 +8780,7 @@ function createDCABotHelper<
       }
       const _id = this.startMethod('checkOrders')
       this.blockCheck = true
+      this.beginRestartProbeBudget()
       if (this.serviceRestart || partiallyFilled) {
         const dealOrders: Map<string, Order[]> = new Map()
         const all = this.allOrders.filter((o) =>
@@ -8811,6 +8812,7 @@ function createDCABotHelper<
           const forTPCheck = deal && (await this.isDealForTPLevelCheck(deal))
           if (activeTPSLOrders.length && deal && !forTPCheck) {
             for (const activeTPSLOrder of activeTPSLOrders) {
+              if (this.restartProbeExhausted()) continue
               const tpslOrderData = await this.getOrder(
                 activeTPSLOrder.clientOrderId,
                 activeTPSLOrder.symbol,
@@ -8956,6 +8958,7 @@ function createDCABotHelper<
                 newOrders = diff.new
               }
               for (const o of activeRegularOrders) {
+                if (this.restartProbeExhausted()) continue
                 const exchangeData = await this.getOrder(
                   o.clientOrderId,
                   o.symbol,
@@ -9115,6 +9118,7 @@ function createDCABotHelper<
           this.serviceRestart = false
         }
       }
+      this.endRestartProbeBudget('checkOrders')
       this.blockCheck = false
       this.endMethod(_id)
     }

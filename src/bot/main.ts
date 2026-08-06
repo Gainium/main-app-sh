@@ -237,6 +237,28 @@ export const eventMap: { [x: string]: string } = {
 }
 const maxLogs = 30
 const maxMethods = 30
+/**
+ * Wall-clock a single bot may spend probing the exchange inside the
+ * restart-time order check before it stops asking and lets the normal
+ * reconcile path finish the job. `0` disables the budget entirely.
+ *
+ * Why this exists: `checkOrders` walks a bot's open orders and does one
+ * serial `getOrder()` per order, so its cost is unbounded in the number of
+ * orders the exchange will not resolve. Re-hydration is the one moment where
+ * that cost is paid by everybody, because a restart's wall-clock is set by
+ * its slowest bot — one bot holding a long tail of orders that no longer
+ * exist on the venue can stretch a restart by minutes on its own.
+ *
+ * Two things make the tail expensive. Orders can sit in a local `NEW` state
+ * indefinitely once their venue-side counterpart is gone, and some venue
+ * clients deliberately sleep-and-retry on "order not found" — correct when
+ * confirming an order that was just placed, very wrong when reconciling a
+ * months-old one. The budget does not fix either; it is the guarantee that
+ * no single bot, for any reason, can set the restart's wall-clock.
+ */
+const restartProbeBudgetMs = Number(
+  process.env.BOT_RESTART_PROBE_BUDGET_MS ?? 60_000,
+)
 /** Key-scheme version for `MainBot.getNotEnoughOrdersIdByOrder`. Bump when the
  *  key shape changes so counters written under the old scheme are discarded.
  *  Module-level rather than a static member: adding statics to `MainBot`
@@ -321,6 +343,11 @@ class MainBot<T extends IMainBot> {
   math: MathHelper
   /** Service restart flag */
   serviceRestart = false
+  /** When the current restart-time order check started probing the exchange.
+   *  `0` = no budget running, so every non-restart path is unaffected. */
+  private restartProbeStartedAt = 0
+  /** Orders skipped because the budget ran out, reported once at the end. */
+  private restartProbeSkipped = 0
   secondRestart = false
   reload = false
   /** Array to store list of orders that in work */
@@ -433,6 +460,44 @@ class MainBot<T extends IMainBot> {
     this.updateExchangeCredentials = this.updateExchangeCredentials.bind(this)
     this.botUpdateGlobalVars = this.botUpdateGlobalVars.bind(this)
     this.connectRedisSub()
+  }
+
+  /**
+   * Arm the restart-time exchange-probe budget. No-op outside a service
+   * restart, so normal running behaviour is byte-identical.
+   */
+  protected beginRestartProbeBudget() {
+    this.restartProbeStartedAt =
+      this.serviceRestart && restartProbeBudgetMs > 0 ? +new Date() : 0
+    this.restartProbeSkipped = 0
+  }
+
+  /**
+   * True once this bot has spent its whole budget asking the exchange about
+   * orders during re-hydration. Callers skip the remaining lookups; the
+   * orders keep their local state and are picked up by the mechanisms that
+   * already own that job — the user stream, the reconcile sweep and the
+   * fill-failsafe. Nothing is lost that was not already being lost: the
+   * lookups this trips on are the ones returning no data anyway.
+   */
+  protected restartProbeExhausted() {
+    if (!this.restartProbeStartedAt) return false
+    if (+new Date() - this.restartProbeStartedAt < restartProbeBudgetMs) {
+      return false
+    }
+    this.restartProbeSkipped += 1
+    return true
+  }
+
+  /** Disarm the budget and report the shortfall, if any, exactly once. */
+  protected endRestartProbeBudget(context: string) {
+    if (this.restartProbeStartedAt && this.restartProbeSkipped) {
+      this.handleWarn(
+        `Restart order check gave up after ${restartProbeBudgetMs}ms in ${context}: ${this.restartProbeSkipped} order(s) left unprobed — reconcile will pick them up`,
+      )
+    }
+    this.restartProbeStartedAt = 0
+    this.restartProbeSkipped = 0
   }
 
   startMethod(name: string) {

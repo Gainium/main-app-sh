@@ -1412,12 +1412,18 @@ function createBotHelper<
                 await this.cancelGridOnExchange(c)
               }
             }
+            // Armed here rather than at the top of the method: everything
+            // above probes at most one order, this loop is the only unbounded
+            // one, and scoping it this tightly keeps every early return above
+            // free of teardown.
+            this.beginRestartProbeBudget()
             for (const o of activeRegularOrders.filter(
               (ao) =>
                 !diff.cancel
                   .map((c) => c.newClientOrderId)
                   .includes(ao.clientOrderId),
             )) {
+              if (this.restartProbeExhausted()) continue
               const exchangeData = await this.getOrder(
                 o.clientOrderId,
                 pair,
@@ -1473,6 +1479,7 @@ function createBotHelper<
                 }
               }
             }
+            this.endRestartProbeBudget('checkOrders')
             if (filledOrders.length > 0) {
               const [lastFilled] = filledOrders.sort(
                 (a, b) => b.updateTime - a.updateTime,

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.49.4] - 2026-08-06
+
+### Fixed
+
+- A single bot can no longer stretch a service restart by minutes. The restart-time order check asks the exchange about each open order one at a time, so a bot holding orders the venue no longer recognises paid the full failed-lookup cost for every one of them while the rest of the fleet waited. That check now has a per-bot time budget (`BOT_RESTART_PROBE_BUDGET_MS`, default 60s, `0` disables): once it is spent the bot stops probing and the orders are left to the user stream, the reconcile sweep and the fill-failsafe, which already own that job. Normal running behaviour is unchanged — the budget only arms during a service restart.
+
 ## [1.49.3] - 2026-08-06
 
 ### Fixed
