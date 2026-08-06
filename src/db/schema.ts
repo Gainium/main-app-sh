@@ -504,6 +504,11 @@ const botCommon = {
     orders: Schema.Types.Map,
     thresholdPassed: Boolean,
     thresholdPassedTime: Number,
+    // Key-scheme version of `orders`. Without it declared here Mongoose strips
+    // the field on write (strict mode), the one-time migration in
+    // `updateNotEnoughBalanceErrors` re-runs on every bot load, and the guard
+    // re-arms from scratch after each worker restart. Additive-only field.
+    keyVersion: Number,
   },
   cost: Number,
   ...CreatedUpdated,

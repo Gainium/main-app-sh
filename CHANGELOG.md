@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.3] - 2026-08-06
+
+### Fixed
+
+- The marker recording which scheme a bot's not-enough-balance counters were written under was not declared on the stored bot, so it was silently dropped every time the bot saved. The one-time clean-up it guards therefore ran again on every restart, clearing the counters and making the safeguard re-arm from scratch — which costs a handful of pointless exchange calls per stuck order each time a worker restarts. Confirmed against production, where the marker read as absent on a bot whose counters had plainly been migrated.
+
 ## [1.48.2] - 2026-08-06
 
 ### Fixed
