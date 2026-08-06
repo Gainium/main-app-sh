@@ -5475,7 +5475,17 @@ class MainBot<T extends IMainBot> {
           }
           if (this.orders && this.orders.size > 0) {
             this.deleteOrder(order.clientOrderId)
-            this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+            // Only persist a CANCELED record for an order that actually
+            // reached the venue. When a local guard served the rejection the
+            // order never existed anywhere but in this process, and
+            // `updateOrderOnDb` UPSERTS on a clientOrderId that is freshly
+            // minted per attempt — so every suppressed retry created a brand
+            // new row describing an order that never was. Production carried
+            // ~6.6k-10.7k such rows/hour, and 2.5M of them from ten bots
+            // accounted for 20.3% of the whole `orders` collection.
+            if (!notEnoughBalanceShortCircuit && !complianceShortCircuit) {
+              this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+            }
           }
           if (returnError) {
             this.endMethod(_id)

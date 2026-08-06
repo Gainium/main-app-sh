@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.4] - 2026-08-06
+
+### Fixed
+
+- An order held back by one of the local safeguards no longer leaves a cancelled-order record behind. Each attempt is issued under its own order id, so every held-back retry was filing a fresh record for an order that was never placed anywhere — on production these accounted for roughly a third of all stored orders. Orders that genuinely reached the exchange are recorded exactly as before.
+
 ## [1.48.3] - 2026-08-06
 
 ### Fixed
