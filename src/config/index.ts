@@ -40,4 +40,17 @@ export const {
   CORS_ORIGIN,
   SYNC_USER = 'true',
   CANDLES_OFFSET = '../../../../',
+  // Command-listener arming fallback (see CoreBot.beginRestartWindow). The bot
+  // service only starts consuming its command queue once every bot has been
+  // re-hydrated; without a fallback a re-hydration that never completes leaves
+  // the service permanently deaf to user commands.
+  BOT_RESTART_ARM_FALLBACK = 'true',
+  // No re-hydration progress for this long => the restart is stuck, not slow.
+  BOT_RESTART_ARM_STALL_MS = '120000',
+  // Absolute ceiling on a restart window, however slowly it is progressing.
+  BOT_RESTART_ARM_CAP_MS = '1800000',
+  // How long the API waits for a bot-service RPC reply. The default is the
+  // long-standing hardcoded 5 minutes; a bot-type restart routinely outlasts it,
+  // which is why a command issued mid-restart looks failed and then applies.
+  BOT_SERVICE_RPC_TIMEOUT_MS = '300000',
 } = process.env

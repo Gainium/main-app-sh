@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.47.0] - 2026-08-06
+
+### Fixed
+
+- A bot service that could not finish bringing every bot back after a restart would never begin accepting commands again, for as long as it kept running. Start, stop and edit requests for that bot type then sat unanswered until they timed out. The service now starts accepting commands once the bots are back, and also when the restart has clearly stopped making progress — in which case it says so loudly rather than going quiet.
+
+### Added
+
+- Restart telemetry: how long the bot lookup took, how long each bot took to come back, the slowest bots of the restart, and which bots never reported back — so a slow restart can be explained instead of guessed at.
+- The wait for a reply from a bot service is now configurable rather than fixed at five minutes.
+
 ## [1.46.0] - 2026-08-05
 
 ### Changed

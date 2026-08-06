@@ -114,6 +114,10 @@ import ColdStoreRehydrator from '../archive/coldStoreRehydrator'
 import ColdClient, { isColdStoreEnabled } from '../archive/coldClient'
 import { coldReadOrders, coldReadTransactions } from '../archive/coldRead'
 import {
+  BOT_RESTART_ARM_CAP_MS,
+  BOT_RESTART_ARM_FALLBACK,
+  BOT_RESTART_ARM_STALL_MS,
+  BOT_SERVICE_RPC_TIMEOUT_MS,
   BOTS_PER_WORKER,
   BotServiceType,
   COMBO_PER_WORKER,
@@ -144,6 +148,23 @@ export type WebhookData = {
 }
 
 const defaultBotsPerWorker = 100
+
+/**
+ * Why the bot service started consuming its command queue.
+ *
+ * `parity` is the healthy path: every bot the boot query found has been
+ * re-hydrated. `no-bots` is the trivially-empty service. The other two are
+ * fallbacks and are always a warning — they mean re-hydration did not finish,
+ * and some bots are live-but-unrestarted while the service takes commands.
+ */
+export type RestartArmReason = 'parity' | 'no-bots' | 'stalled' | 'cap'
+
+const botServiceRpcTimeoutMs = Number(BOT_SERVICE_RPC_TIMEOUT_MS) || 5 * 60_000
+
+const armFallbackEnabled = `${BOT_RESTART_ARM_FALLBACK}` !== 'false'
+const armStallMs = Number(BOT_RESTART_ARM_STALL_MS) || 120_000
+const armCapMs = Number(BOT_RESTART_ARM_CAP_MS) || 30 * 60_000
+const armWatchdogTickMs = 15_000
 
 const loggerPrefix = `${isMainThread ? 'Main thread' : `Worker ${threadId}`} |`
 
@@ -333,6 +354,11 @@ class Bot<T extends UserSchema = UserSchema> {
 
   protected estimatedRestart = 0
   private restarted = 0
+  // Command-listener arming state — see `beginRestartWindow` / `armCommandListener`.
+  private commandListenerArmed = false
+  private restartWindowStartedAt = 0
+  private lastRestartProgressAt = 0
+  private armWatchdog: ReturnType<typeof setInterval> | undefined
 
   public constructor(
     protected useBots?: boolean,
@@ -3469,7 +3495,7 @@ class Bot<T extends UserSchema = UserSchema> {
           await this.rabbit.sendWithCallback<BotServicePayload, R>(
             this.getRabbitQueueName(t),
             { method, params: payload },
-            5 * 60 * 1000,
+            botServiceRpcTimeoutMs,
           )
         }),
       )
@@ -3487,7 +3513,7 @@ class Bot<T extends UserSchema = UserSchema> {
           await this.rabbit.sendWithCallback<BotServicePayload, R>(
             this.getRabbitQueueName(t),
             { method, params: payload },
-            5 * 60 * 1000,
+            botServiceRpcTimeoutMs,
           )
         }),
       )
@@ -3496,7 +3522,7 @@ class Bot<T extends UserSchema = UserSchema> {
     const result = await this.rabbit.sendWithCallback<BotServicePayload, R>(
       this.getRabbitQueueName(type),
       { method, params: payload },
-      5 * 60 * 1000,
+      botServiceRpcTimeoutMs,
     )
     if (!result) {
       throw new Error(notAvailable)
@@ -7203,11 +7229,101 @@ class Bot<T extends UserSchema = UserSchema> {
 
   private updateRestart() {
     this.restarted++
-    if (this.restarted === this.estimatedRestart) {
-      this.handleDebug(`Restarted equal to estimated restart. Set listener`)
-      this.setListener()
+    this.lastRestartProgressAt = Date.now()
+    // `>=`, not `===`: the counter can overshoot (a worker that terminates
+    // mid-boot re-restarts its bots through the same callback), and an exact
+    // match that is stepped over never arms the listener at all.
+    if (this.restarted >= this.estimatedRestart) {
+      this.armCommandListener('parity')
     }
   }
+
+  /**
+   * Open the restart window: record how many bots we expect to re-hydrate and
+   * start the arming fallback.
+   *
+   * The bot service deliberately does not consume its command queue until every
+   * bot is back (a command processed before its bot is recreated used to start
+   * the bot twice — ClickUp 86eqmqjxg). That ordering is correct, but it was
+   * gated on an exact count with no escape hatch: if one bot never finished
+   * re-hydrating, the listener never armed **for the life of the process**, and
+   * every user start/stop/edit for that bot type sat in the durable queue until
+   * the caller's RPC deadline expired — silently, indefinitely.
+   *
+   * The fallback arms the listener anyway when re-hydration has clearly stopped
+   * making progress (`stalled`) or has run past an absolute ceiling (`cap`).
+   * Both are logged as warnings and surfaced through `onCommandListenerArmed`,
+   * because they mean some bots are live but unrestarted. Kill switch:
+   * `BOT_RESTART_ARM_FALLBACK=false` restores the strict (deaf-on-stall) behaviour.
+   */
+  protected beginRestartWindow(estimated: number) {
+    this.estimatedRestart = estimated
+    this.restartWindowStartedAt = Date.now()
+    this.lastRestartProgressAt = this.restartWindowStartedAt
+    if (!estimated) {
+      this.armCommandListener('no-bots')
+      return
+    }
+    if (!armFallbackEnabled) {
+      this.handleWarn(
+        `${loggerPrefix} Restart arm fallback DISABLED — a stalled re-hydration will leave this service deaf to commands`,
+      )
+      return
+    }
+    this.armWatchdog = setInterval(() => {
+      if (this.commandListenerArmed) return
+      const now = Date.now()
+      if (now - this.lastRestartProgressAt >= armStallMs) {
+        this.armCommandListener('stalled')
+        return
+      }
+      if (now - this.restartWindowStartedAt >= armCapMs) {
+        this.armCommandListener('cap')
+      }
+    }, armWatchdogTickMs)
+    this.armWatchdog.unref?.()
+  }
+
+  /** Single-shot: start consuming the command queue, whatever got us here. */
+  protected armCommandListener(reason: RestartArmReason) {
+    if (this.commandListenerArmed) return
+    this.commandListenerArmed = true
+    if (this.armWatchdog) {
+      clearInterval(this.armWatchdog)
+      this.armWatchdog = undefined
+    }
+    const elapsedMs = this.restartWindowStartedAt
+      ? Date.now() - this.restartWindowStartedAt
+      : 0
+    const msg = `${loggerPrefix} Command listener armed (${reason}): ${this.restarted}/${this.estimatedRestart} bots restarted in ${elapsedMs}ms`
+    if (reason === 'stalled' || reason === 'cap') {
+      this.handleWarn(
+        `${msg} — re-hydration did not complete; ${
+          this.estimatedRestart - this.restarted
+        } bot(s) are live but unrestarted`,
+      )
+    } else {
+      this.handleLog(msg)
+    }
+    this.onCommandListenerArmed(
+      reason,
+      this.restarted,
+      this.estimatedRestart,
+      elapsedMs,
+    )
+    this.setListener()
+  }
+
+  /**
+   * Telemetry hook. Core stays free of the stats collection; main-app overrides
+   * this to persist the arm reason + shortfall onto the restart-progress doc.
+   */
+  protected onCommandListenerArmed(
+    _reason: RestartArmReason,
+    _restarted: number,
+    _estimated: number,
+    _elapsedMs: number,
+  ): void {}
 
   protected setServiceListener() {
     if (!!bosServiceType) {
@@ -7240,12 +7356,13 @@ class Bot<T extends UserSchema = UserSchema> {
         : []
     const findHedgeDcaBotsData =
       BotServiceType === BotType.hedgeDca ? await this.findActiveHedgeDca() : []
-    this.estimatedRestart =
+    this.beginRestartWindow(
       (findBotsData ?? []).length +
-      (findDCABotsData ?? []).length +
-      (findComboBotsData ?? []).length +
-      (findHedgeComboBotsData ?? []).length +
-      (findHedgeDcaBotsData ?? []).length
+        (findDCABotsData ?? []).length +
+        (findComboBotsData ?? []).length +
+        (findHedgeComboBotsData ?? []).length +
+        (findHedgeDcaBotsData ?? []).length,
+    )
     if (findDCABotsData && findDCABotsData.length > 0) {
       this.handleLog(`Found ${findDCABotsData.length} active DCA bots`)
       for (const bot of findDCABotsData) {
@@ -7345,8 +7462,10 @@ class Bot<T extends UserSchema = UserSchema> {
         )
       }
     }
+    // The empty-service case is armed by `beginRestartWindow('no-bots')`; this
+    // is the belt-and-braces path for a service that found nothing to restart.
     if (!this.estimatedRestart) {
-      this.setListener()
+      this.armCommandListener('no-bots')
     }
     this.handleLog('End finding open bots')
   }
