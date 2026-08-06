@@ -469,13 +469,14 @@ async function start() {
       res.status(400).send('File not found')
       return
     }
-    const path = file.data.result.path
-    const exist = fs.existsSync(path)
+    const filePath = file.data.result.path
+    const absolutePath = path.resolve(filePath)
+    const exist = fs.existsSync(absolutePath)
     if (!exist) {
       res.status(400).send('File not found')
       return
     }
-    res.status(200).sendFile(path)
+    res.status(200).sendFile(absolutePath)
   })
 
   if (!JWT_SECRET) {
