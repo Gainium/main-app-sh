@@ -8839,6 +8839,7 @@ function createDCABotHelper<
                   `Not enough data to get order ${activeTPSLOrder.clientOrderId}`,
                 )
               } else {
+                this.clearOrderStrikes(activeTPSLOrder)
                 const updatedOrder = await this.mergeCommonOrderWithOrder(
                   tpslOrderData.data,
                   activeTPSLOrder,
@@ -8992,6 +8993,7 @@ function createDCABotHelper<
                   if (exchangeData.status === StatusEnum.notok) {
                     this.handleWarn(`Cannot get order ${exchangeData.reason}`)
                   } else {
+                    this.clearOrderStrikes(o)
                     const updatedOrder = await this.mergeCommonOrderWithOrder(
                       exchangeData.data,
                       o,
@@ -13103,7 +13105,9 @@ function createDCABotHelper<
                 ? 1
                 : volumeScale ** (i - 1)
             let price = this.math.round(
-              (i === 1 ? latestPrice : (orders[orders.length - 1]?.price ?? 0)) -
+              (i === 1
+                ? latestPrice
+                : (orders[orders.length - 1]?.price ?? 0)) -
                 (this.isLong ? 1 : -1) * gridStep * stepVal,
               symbol.priceAssetPrecision,
             )

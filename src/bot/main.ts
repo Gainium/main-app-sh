@@ -276,6 +276,26 @@ const orderQuarantineStrikes = Number(
 )
 
 /**
+ * How old an order must be before a not-found is allowed to count against it.
+ *
+ * This is the guard against the case that matters most: **an exchange that has
+ * just been handed an order does not always know about it yet.** Ask for it a
+ * second later and some venues answer "unknown order id" — that is the venue
+ * describing its own propagation lag, not the order. Hyperliquid is explicit
+ * about this: its client retries `unknownOid` up to four times with a sleep
+ * when it knows an order was just placed. The reconcile path does not get that
+ * retry, so without an age floor a freshly-placed, entirely real order could
+ * take a strike.
+ *
+ * An order that has been sitting untouched for a day and is *still* unknown to
+ * the venue is a different claim entirely. That asymmetry is what makes the
+ * ambiguous venue answers safe to act on.
+ */
+const orderQuarantineMinAgeMs = Number(
+  process.env.BOT_ORDER_QUARANTINE_MIN_AGE_MS ?? 24 * 60 * 60 * 1000,
+)
+
+/**
  * Does this failed lookup mean "the venue says this order does not exist", as
  * opposed to "the call did not succeed"?
  *
@@ -305,9 +325,18 @@ export function isDefinitiveOrderNotFound(res?: {
   // OKX / Bitget: "Order not found"   Bybit: "Order not found after execution"
   // Kraken: "Order not found in active orders" / "in history" / "in open orders"
   // Binance passes through -2013 "Order does not exist".
+  // Hyperliquid: the raw `unknownOid` status, via `HyperliquidError`.
+  //
+  // `unknownOid` is the ambiguous one, and it is only safe to act on because of
+  // the age floor: Hyperliquid returns it both for an order that never existed
+  // and for one placed moments ago that has not propagated yet. Its own client
+  // retries `unknownOid` four times when it knows an order was just placed; the
+  // reconcile path gets no such retry, so age is what separates the two cases.
+  // Matched exactly rather than as a substring — it is a bare status token.
   return (
     /\border not found\b/.test(reason) ||
-    /\border does not exist\b/.test(reason)
+    /\border does not exist\b/.test(reason) ||
+    reason === 'unknownoid'
   )
 }
 /** Key-scheme version for `MainBot.getNotEnoughOrdersIdByOrder`. Bump when the
@@ -614,6 +643,12 @@ class MainBot<T extends IMainBot> {
     if (!orderQuarantineStrikes) return
     const now = +new Date()
     const runId = this.orderCheckRunId || `${now}`
+    // Too young to judge. A venue that says "unknown order id" about an order
+    // placed minutes ago is describing its own propagation lag. Use the most
+    // recent timestamp we have, and refuse to judge at all when we have none —
+    // both choices err towards leaving the order alone.
+    const lastKnownAt = Math.max(order.transactTime ?? 0, order.updateTime ?? 0)
+    if (!lastKnownAt || now - lastKnownAt < orderQuarantineMinAgeMs) return
     const current = order.quarantine
     // Already quarantined, or already struck in this run: nothing new was learned.
     if (current?.since || (current && current.runId === runId)) return
@@ -663,6 +698,28 @@ class MainBot<T extends IMainBot> {
     this.handleLog(
       `Cleared order quarantine on ${cleared.length} order(s) (${why}) — they will be polled again`,
     )
+  }
+
+  /**
+   * The venue answered for this order, so whatever we had counted against it is
+   * void. Strikes are documented as *consecutive* not-founds and this is what
+   * makes that true: without it they accumulate for the life of the order, so
+   * three unrelated propagation blips months apart would quarantine a live
+   * order. The merge path drops the flag on its own, but only on the branches
+   * that write the order back — an order that resolves *unchanged* takes
+   * neither `setOrder` nor `updateOrderOnDb`, which is the common case for a
+   * resting limit order and exactly where strikes would go stale.
+   */
+  protected clearOrderStrikes(order: Order) {
+    if (!order.quarantine) return
+    delete order.quarantine
+    this.setOrder(order, false)
+    this.ordersDb
+      .updateData(
+        { clientOrderId: order.clientOrderId },
+        { $unset: { quarantine: '' } },
+      )
+      .catch(() => undefined)
   }
 
   /** How many of this bot's orders are currently not being polled. */

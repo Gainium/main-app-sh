@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.50.1] - 2026-08-06
+
+### Fixed
+
+- Order quarantine could count a freshly-placed order against itself. Some exchanges answer "unknown order id" for an order they were handed moments ago — that is the exchange describing its own propagation lag, not a missing order. A not-found now only counts once the order has gone untouched for `BOT_ORDER_QUARANTINE_MIN_AGE_MS` (default 24h); an order with no usable timestamp is never counted at all.
+- Quarantine strikes are now genuinely consecutive, as documented. A successful lookup clears them, including on the common path where a resting order comes back unchanged and is not written back — previously strikes accumulated for the life of an order, so three unrelated blips months apart could quarantine a live one.
+
+### Added
+
+- Hyperliquid's `unknownOid` is now recognised as a definitive not-found, so its stale orders stop being re-probed on every restart. Safe only in combination with the age floor above, because Hyperliquid uses that same answer for both a long-gone order and a just-placed one.
+
 ## [1.50.0] - 2026-08-06
 
 ### Added
