@@ -14547,6 +14547,20 @@ function createDCABotHelper<
       )
     }
 
+    /**
+     * The price a percentage stop loss is measured from — the deal average or
+     * its initial price, per `baseSlOn`. Single source of truth so the level
+     * and the checks that compare against it cannot drift apart.
+     */
+    private async getDealSlRefPrice(
+      deal: ExcludeDoc<Deal>,
+      avgPrice?: number,
+    ): Promise<number> {
+      return (await this.baseSlOn(deal)) === BaseSlOnEnum.avg
+        ? (avgPrice ?? deal.avgPrice)
+        : deal.initialPrice
+    }
+
     async getDealStopLossPrice(d: FullDeal<ExcludeDoc<Deal>>): Promise<number> {
       const settings = await this.getAggregatedSettings(d.deal)
       const {
@@ -14644,10 +14658,7 @@ function createDCABotHelper<
               : ((await this.getUserFee(d.deal.symbol.symbol))?.taker ?? 0) * 2)
 
           if (!isNaN(sl) && slPerc !== undefined) {
-            const ref =
-              (await this.baseSlOn(d.deal)) === BaseSlOnEnum.avg
-                ? (avgPrice ?? d.deal.avgPrice)
-                : d.deal.initialPrice
+            const ref = await this.getDealSlRefPrice(d.deal, avgPrice)
             const price = this.isLong ? ref * (sl + 1) : ref * (1 - sl)
             if (get !== price) {
               this.handleDebug(
@@ -16007,14 +16018,32 @@ function createDCABotHelper<
           multiTp,
           slPerc,
           moveSLValue,
+          avgPrice,
         } = await this.getAggregatedSettings(d.deal)
         const dealId = d.deal._id
         let closeBySl = true
         let notCheckSl = false
         let closeByMulti = false
+        // Once moveSL has fired, `slPerc` is the move value — and a positive one
+        // puts the stop on the PROFIT side of the entry, so it can only be hit
+        // coming BACK from profit. When the market is already past it on the
+        // losing side (safety orders dragged the average through it, or the
+        // check resumes after the price ran away), the bare level test below is
+        // true from the very first tick and closes the deal at a loss — the
+        // opposite of what "move SL to +N%" is for.
+        const slMovedIntoProfit =
+          !!moveSL &&
+          !!d.deal.moveSlActivated &&
+          +(slPerc ?? 0) === +(moveSLValue ?? 0) &&
+          +(slPerc ?? 0) > 0
+        const slRef = slMovedIntoProfit
+          ? await this.getDealSlRefPrice(d.deal, avgPrice)
+          : 0
         const close =
-          (this.isLong && last <= priceToClose) ||
-          (!this.isLong && last >= priceToClose)
+          ((this.isLong && last <= priceToClose) ||
+            (!this.isLong && last >= priceToClose)) &&
+          (!slMovedIntoProfit ||
+            (this.isLong ? last >= slRef : last <= slRef))
         let trailing = false
         if (
           close &&

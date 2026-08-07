@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.1] - 2026-08-07
+
+### Fixed
+
+- A stop loss that "move SL" had already pushed into profit no longer closes a deal at a loss. Once the move fires, the deal's stop sits on the profit side of the average entry and can only be reached on the way back from profit — but the check only compared the price to the stop level, so as soon as the market ran past that level the wrong way (safety orders pulling the average through it), the very next tick closed the deal at market. Two BTCUSDT deals on one short bot were closed 3.8% down this way. The stop now only triggers while the deal is still on the profit side of its entry; ordinary loss-side stops are unaffected.
+
 ## [1.51.0] - 2026-08-07
 
 ### Added
