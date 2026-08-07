@@ -120,7 +120,12 @@ import {
   topUpUserBalance,
 } from '../exchange/paper/utils'
 import { encrypt, isEncryptKeyConfigured } from '../utils/crypto'
-import { findMatchingConnection, resolveConnection } from '../utils/credentials'
+import {
+  findMatchingConnection,
+  resolveConnection,
+  sealApiSecret,
+  sealConnection,
+} from '../utils/credentials'
 import logger from '../utils/logger'
 import { verifyPassword } from './handlers/password'
 // ⚠️ Note the two similarly-named helpers now in scope. `verifyPassword`
@@ -5769,6 +5774,13 @@ const resolvers = <
                 )
               }
             }
+            // Sealed before the write rather than inside the object literal:
+            // producing the stored form is asynchronous now, and an object
+            // literal cannot await.
+            const sealedNew = await sealConnection(
+              { userId: user.data._id.toString(), provider: e, uuid },
+              { key, secret, passphrase },
+            )
             const saveDataRequest = await userDb.updateData(
               { _id: user.data._id },
               {
@@ -5899,14 +5911,14 @@ const resolvers = <
                                             : 'Spot'
                                         })`
                                       : name,
-                      key: encrypt(key),
-                      secret: encrypt(secret),
+                      key: sealedNew.key,
+                      secret: sealedNew.secret,
                       uuid,
                       keysType,
                       okxSource,
                       bybitHost,
                       affiliate,
-                      passphrase: passphrase ? encrypt(passphrase) : undefined,
+                      passphrase: sealedNew.passphrase,
                       status: true,
                       lastUpdated: +new Date(),
                       hedge: isFutures(e)
@@ -6220,9 +6232,33 @@ const resolvers = <
           const plainKey = key
           const plainSecret = secret
           const plainPassphrase = passphrase
-          key = key ? encrypt(key) : key
-          secret = secret ? encrypt(secret) : secret
-          passphrase = passphrase ? encrypt(passphrase) : undefined
+          // Which fields the CALLER supplied, captured before sealing rewrites
+          // them. The stream-restart condition below keys off this and must not
+          // start seeing a sealed value as "the caller changed the key".
+          const suppliedKey = !!key
+          const suppliedSecret = !!secret
+          if (key || secret || passphrase) {
+            // A credential is being replaced. Seal all three under ONE data key
+            // — falling back to the stored plaintext for any field the caller
+            // did not supply — so the connection keeps costing one unwrap to
+            // read. A metadata-only edit takes none of this: every field stays
+            // falsy and the `|| find.key` below leaves the stored value alone.
+            const sealedUpdate = await sealConnection(
+              {
+                userId: user.data._id.toString(),
+                provider: find.provider,
+                uuid,
+              },
+              {
+                key: key || oldKey,
+                secret: secret || oldSecret,
+                passphrase: passphrase || oldPassphrase || undefined,
+              },
+            )
+            key = sealedUpdate.key
+            secret = sealedUpdate.secret
+            passphrase = sealedUpdate.passphrase
+          }
           const saveDataRequest = await userDb.updateData(
             { _id: user.data._id },
             {
@@ -6265,8 +6301,8 @@ const resolvers = <
             )
           userUtils.updateUserFee(user.data._id.toString(), uuid)
           if (
-            key &&
-            secret &&
+            suppliedKey &&
+            suppliedSecret &&
             !paperExchanges.includes(find.provider) &&
             (oldKey !== plainKey ||
               oldSecret !== plainSecret ||
@@ -8179,12 +8215,20 @@ const resolvers = <
       // round-trip only ever returned what this line already had, and reading
       // a stored credential back is what the envelope layer makes expensive.
       const plaintextSecret = v4()
-      const secret = encrypt(plaintextSecret)
+      // The subdocument id is generated HERE rather than left to Mongo, because
+      // the sealed form is bound to it: the identity has to exist before the
+      // value is sealed, and `$push` would not hand it back until after.
+      const apiKeyId = new Types.ObjectId()
+      const secret = await sealApiSecret(
+        { userId: user.data._id.toString(), id: apiKeyId.toString() },
+        plaintextSecret,
+      )
       const saveDataRequest = await userDb.updateData(
         { _id: user.data._id },
         {
           $push: {
             apiKeys: {
+              _id: apiKeyId,
               name: 'New API Key',
               secret: secret,
               created: new Date().getTime(),

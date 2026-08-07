@@ -22,7 +22,16 @@
  * connection list is the single hottest place this would show up. Resolve one
  * connection, when something actually needs its plaintext.
  */
-import { decryptAsync } from './crypto'
+import { decryptAsync, encrypt } from './crypto'
+import { isPaper } from './index'
+import { ExchangeEnum } from '../../types'
+import {
+  ApiKeyIdentity,
+  ConnectionIdentity,
+  ConnectionPlaintext,
+  ConnectionSealed,
+  getCredentialSealer,
+} from './credentialSealer'
 
 /** The stored fields this module reads. Structural, so any row shape fits. */
 export type StoredConnection = {
@@ -140,4 +149,50 @@ export const findMatchingConnection = async <T extends StoredConnection>(
     if (await connectionMatches(e, candidate)) return e
   }
   return null
+}
+
+// ── writes ──────────────────────────────────────────────────────────────────
+//
+// The mirror of the reads above, and the same reasoning applies: one module
+// owns the stored form, so what a credential is written as can change in one
+// place rather than at every call site. Without a sealer registered these are
+// exactly the `encrypt()` calls they replaced, which is what keeps a default
+// installation unchanged.
+
+/**
+ * Seal the three fields of one connection.
+ *
+ * `passphrase` keeps the distinction the stored shape makes: a connection with
+ * no passphrase stores `undefined`, not an empty string. The write paths this
+ * replaces all spelled that `passphrase ? encrypt(passphrase) : undefined`, and
+ * `connectionMatches` compares against the stored falsy value, so turning an
+ * absent passphrase into `''` here would quietly change duplicate detection.
+ */
+export const sealConnection = async (
+  identity: ConnectionIdentity,
+  fields: ConnectionPlaintext,
+): Promise<ConnectionSealed> => {
+  const sealer = getCredentialSealer()
+  // Paper connections are excluded here rather than at the call sites, so no
+  // caller can forget. Their key and secret are simulated account identifiers
+  // rather than exchange credentials — there is nothing to protect — and the
+  // one code path that reads them (`exchange/paper`) does so outside an async
+  // request, which is exactly what a sealed value cannot support.
+  if (sealer && !isPaper(identity.provider as ExchangeEnum)) {
+    return sealer.sealConnection(identity, fields)
+  }
+  return {
+    key: encrypt(fields.key),
+    secret: encrypt(fields.secret),
+    passphrase: fields.passphrase ? encrypt(fields.passphrase) : undefined,
+  }
+}
+
+/** Seal one API-key secret. */
+export const sealApiSecret = async (
+  identity: ApiKeyIdentity,
+  plaintext: string,
+): Promise<string> => {
+  const sealer = getCredentialSealer()
+  return sealer ? sealer.sealApiSecret(identity, plaintext) : encrypt(plaintext)
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.0] - 2026-08-07
+
+### Added
+
+- An application embedding this package can now own how a stored credential is written, not only how it is read. With nothing registered, credentials are written exactly as before.
+
 ## [1.50.3] - 2026-08-06
 
 ### Fixed
