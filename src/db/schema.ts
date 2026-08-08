@@ -981,6 +981,9 @@ const balancesSchema: Schema<BalancesSchema> = new Schema({
   userId: RequiredString,
   free: RequiredNumber,
   locked: RequiredNumber,
+  // Optional on purpose: absent means the venue publishes no such figure, which
+  // is not the same as zero. See `BalancesSchema.venueAvailable`.
+  venueAvailable: Number,
   paperContext: Boolean,
   ...CreatedUpdated,
 })

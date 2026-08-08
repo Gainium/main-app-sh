@@ -2490,6 +2490,19 @@ export interface BalancesSchema extends SchemaI {
   asset: string
   free: number
   locked: number
+  /**
+   * The venue's OWN figure for how much of this asset is spendable, when it
+   * publishes one. Absent for every venue that reports no such figure — read it
+   * as "unknown", never as zero.
+   *
+   * `free`/`locked` cannot describe a pooled cross-collateral account: on Kraken
+   * Futures' flex account every currency margins every contract, so `free`
+   * carries the wallet quantity and `locked` stays 0. `free - venueAvailable` is
+   * then the margin the venue has actually committed, which is the only
+   * continuously-available signal that the account holds a position the engine
+   * is not tracking — otherwise invisible until an order is rejected.
+   */
+  venueAvailable?: number
   paperContext?: boolean
 }
 
@@ -3217,6 +3230,14 @@ export interface AssetBalance {
   asset: string
   free: string
   locked: string
+  /**
+   * The venue's own spendable figure for this asset, when the producing stream
+   * publishes one. Mirrors `AssetBalance.venueAvailable` in
+   * websocket-connector-sh — optional on both sides, so a producer that omits it
+   * and a consumer that ignores it both keep working. Persisted to
+   * {@link BalancesSchema.venueAvailable}.
+   */
+  venueAvailable?: string
 }
 
 export interface OutboundAccountPosition {

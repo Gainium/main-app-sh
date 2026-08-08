@@ -87,6 +87,27 @@ const { getTimezoneOffset, findUSDRate } = utils
 const normalizeLocked = (locked: number): number =>
   Number.isFinite(locked) && locked > 0 ? locked : 0
 
+/**
+ * The venue's own spendable figure, as fields to merge into the balance write.
+ *
+ * Returns `{}` when the producer sent nothing usable, so the field stays ABSENT
+ * rather than being written as `0`. That distinction is the whole point: most
+ * venues publish no such figure, and a stored `0` would read as "none of this
+ * balance is spendable" — indistinguishable from a real, fully-committed
+ * account, and enough to make a balance look catastrophically wrong.
+ */
+const venueAvailableFields = (
+  raw?: string,
+): { venueAvailable: number | undefined } => {
+  if (raw === undefined || raw === null || `${raw}` === '') {
+    return { venueAvailable: undefined }
+  }
+  const parsed = parseFloat(`${raw}`)
+  return {
+    venueAvailable: Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined,
+  }
+}
+
 const streams: { stream: Socket; uuid: string }[] = []
 
 const streamsSet: Set<string> = new Set()
@@ -193,6 +214,9 @@ const processBalanceUpdate = async () => {
                   ...d,
                   free: parseFloat(d.free),
                   locked: normalizeLocked(parseFloat(d.locked)),
+                  // After the spread, so the raw string from the event never
+                  // reaches the doc.
+                  ...venueAvailableFields(d.venueAvailable),
                   userId,
                   exchange: e.provider,
                   exchangeUUID: e.uuid,
@@ -216,6 +240,9 @@ const processBalanceUpdate = async () => {
                     ...d,
                     free: parseFloat(d.free),
                     locked: normalizeLocked(parseFloat(d.locked)),
+                    // After the spread, so the raw string from the event never
+                    // reaches the doc.
+                    ...venueAvailableFields(d.venueAvailable),
                   },
                 },
                 false,

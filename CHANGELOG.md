@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.3] - 2026-08-08
+
+### Added
+
+- Balance records now keep `venueAvailable`, the venue's own figure for how much of an asset is spendable, whenever the user stream publishes one. The field is optional and stays **absent** when the venue reports nothing — absent means unknown, not zero, and a stored zero would read as "none of this balance is spendable". On a pooled cross-collateral account (Kraken Futures' flex account) `free`/`locked` cannot express what the venue has committed, so `free - venueAvailable` is the only continuously-available signal that an account holds a position the engine is not tracking — which is otherwise invisible until an order is rejected.
+
 ## [1.51.2] - 2026-08-08
 
 ### Fixed
