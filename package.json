@@ -96,5 +96,5 @@
     "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0"
   },
-  "version": "1.51.1"
+  "version": "1.51.2"
 }

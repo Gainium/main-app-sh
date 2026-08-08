@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.2] - 2026-08-08
+
+### Fixed
+
+- Kraken USDⓈ-M Futures bots no longer latch into "Not enough balance" on an account that has funds. Kraken's flex account pools every collateral currency into one cross-margin pool, so the per-asset `free`/`locked` split in the cached `balances` doc cannot represent anything the venue enforces — and its two writers derived one anyway, in opposite directions, so the stored figure meant whichever write landed last. The not-enough-balance latch read that figure and broke both ways: on the wallet-quantity convention it cleared the latch and sent an order the venue then refused for insufficient funds; on the other it suppressed every order from then on, with no way back, because the cached number could never rise above the required amount. The latch now confirms against the venue's own `availableMargin` before clearing, and the error message reports that same figure instead of a wallet total the venue will not let the bot spend. The venue is consulted only for a bot that is already in the failing regime — never on the healthy order path — and every non-pooled venue keeps the existing cached-balance behaviour unchanged.
+
 ## [1.51.1] - 2026-08-07
 
 ### Fixed

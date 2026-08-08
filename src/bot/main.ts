@@ -240,6 +240,12 @@ export const eventMap: { [x: string]: string } = {
 const maxLogs = 30
 const maxMethods = 30
 /**
+ * How long a pooled-margin read stays good for. Long enough to cover one order
+ * attempt (the latch check plus the error message it produces), short enough
+ * that the next attempt re-asks the venue.
+ */
+const pooledMarginMemoTtl = 5_000
+/**
  * Wall-clock a single bot may spend probing the exchange inside the
  * restart-time order check before it stops asking and lets the normal
  * reconcile path finish the job. `0` disables the budget entirely.
@@ -401,6 +407,13 @@ class MainBot<T extends IMainBot> {
   brokerCode = ''
   notEnoughBalanceLogPrefix = 'NOB |'
   notEnoughBalanceThreshold = 10
+  /**
+   * Last pooled-margin answer, memoised for one order attempt so the latch
+   * check and the error message it goes on to build cost one venue call, not
+   * two. `null` records "the venue has no opinion" — see
+   * {@link MainBot#spendableForNotEnoughBalance}.
+   */
+  private pooledMarginMemo?: { value: number | null; at: number }
   botService = new Bot()
   sharedStream = SharedStream.getInstance()
   finishLoad = false
@@ -2279,11 +2292,17 @@ class MainBot<T extends IMainBot> {
     const subType = 'Not enough balance'
     const { asset, balance, required } =
       await this.getAssetBalanceAndRequiredByOrder(order)
+    // Report what the venue will actually let the bot commit. On a pooled
+    // account the wallet quantity is not that number, and printing it is how
+    // this message came to read "free - 50 USD" on an order the venue had just
+    // refused for insufficient funds. Unchanged for every non-pooled venue.
+    const free = await this.spendableForNotEnoughBalance(
+      asset,
+      balance?.free ?? 0,
+    )
     message = `${message}, balance total - ${
       (balance?.free ?? 0) + (balance?.locked ?? 0)
-    } ${asset}, free - ${
-      balance?.free ?? 0
-    } ${asset}, required - ${required} ${asset}`
+    } ${asset}, free - ${free} ${asset}, required - ${required} ${asset}`
     if (order.typeOrder !== TypeOrderEnum.stab) {
       if (setError || sendError) {
         this.botEventDb
@@ -5518,9 +5537,21 @@ class MainBot<T extends IMainBot> {
             this.handleDebug(
               `${this.notEnoughBalanceLogPrefix} Not enough balance threshold passed for order id ${notEnoughBalanceId} ${order.clientOrderId}. Checking balance`,
             )
-            const { balance, required } =
+            const { asset, balance, required } =
               await this.getAssetBalanceAndRequiredByOrder(order)
-            if ((balance?.free ?? 0) < required) {
+            // On a pooled-collateral venue the cached per-asset `free` is not
+            // the figure the venue enforces, so confirm against its own before
+            // CLEARING the latch — otherwise the guard resets on a number
+            // Kraken rejects and the bot loops. The short branch needs no extra
+            // call: its probe below already lets the venue break the tie.
+            const spendable =
+              (balance?.free ?? 0) < required
+                ? (balance?.free ?? 0)
+                : await this.spendableForNotEnoughBalance(
+                    asset,
+                    balance?.free ?? 0,
+                  )
+            if (spendable < required) {
               notEnoughBalanceArmed = true
               // Suppress on a widening window rather than continuously. The
               // block decision above reads `checkAssets` WITHOUT `direct`, i.e.
@@ -5536,7 +5567,7 @@ class MainBot<T extends IMainBot> {
               if (cooldown.suppressed) {
                 notEnoughBalanceShortCircuit = true
                 this.handleDebug(
-                  `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${balance?.free}, required: ${required}. Suppressed until ${new Date(cooldown.until).toISOString()} (attempt ${cooldown.attempt})`,
+                  `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${spendable}, required: ${required}. Suppressed until ${new Date(cooldown.until).toISOString()} (attempt ${cooldown.attempt})`,
                 )
                 request = {
                   status: StatusEnum.notok,
@@ -5548,12 +5579,12 @@ class MainBot<T extends IMainBot> {
                 // exchange. If it is rejected, the error path widens the
                 // window; if it fills, the success path clears it.
                 this.handleDebug(
-                  `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId}. Cached balance: ${balance?.free}, required: ${required}`,
+                  `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId}. Cached balance: ${spendable}, required: ${required}`,
                 )
               }
             } else {
               this.handleDebug(
-                `${this.notEnoughBalanceLogPrefix} Balance is enough for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${balance?.free}, required: ${required}. Reset not enough balance orders`,
+                `${this.notEnoughBalanceLogPrefix} Balance is enough for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${spendable}, required: ${required}. Reset not enough balance orders`,
               )
               this.updateNotEnoughBalanceErrors(order, -1)
             }
@@ -6379,6 +6410,53 @@ class MainBot<T extends IMainBot> {
     // The venue already nets margin committed to open positions, so this is
     // what can actually be committed now. Never shrink what the caller found.
     return Math.max(available, res.data)
+  }
+
+  /**
+   * Spendable quote for the not-enough-balance latch on a pooled-collateral
+   * futures account (Kraken Futures' flex account).
+   *
+   * The cached `balances` doc carries a per-asset `free`/`locked` split, and on
+   * a pooled account that split cannot represent anything the venue enforces:
+   * every collateral currency margins every contract, so no writer can derive a
+   * per-asset reservation from what Kraken publishes. Both writers of that doc
+   * invented one anyway, in opposite directions — the REST path reports the
+   * whole wallet quantity as free, the user stream reported
+   * `quantity - available` as locked — so the latch's answer depended on which
+   * write landed last. On prod that flip-flopped between "50 USD free" and
+   * "4.64 USD free" for the same 50 USD account.
+   *
+   * `availableMargin` is the venue's own figure and the only one it enforces at
+   * order time, so here it REPLACES the per-asset `free` instead of widening
+   * it. `pooledMarginOrKeep`'s `Math.max` is right for deal sizing — a venue
+   * with no opinion must never shrink it — but wrong for a latch: a figure that
+   * only ever widens would clear the guard on a number the venue goes on to
+   * reject, which is exactly the rejection loop this replaces.
+   *
+   * Returns the cached `free` unchanged for every non-pooled venue and on any
+   * error, so nothing outside Kraken Futures changes behaviour.
+   */
+  protected async spendableForNotEnoughBalance(
+    quoteAsset: string,
+    cachedFree: number,
+  ): Promise<number> {
+    if (!this.futures || this.coinm || quoteAsset !== 'USD' || !this.exchange) {
+      return cachedFree
+    }
+    const now = +new Date()
+    const memo = this.pooledMarginMemo
+    if (memo && now - memo.at < pooledMarginMemoTtl) {
+      return memo.value ?? cachedFree
+    }
+    const res = await this.exchange.getMarginAvailableUsd()
+    if (res.status !== StatusEnum.ok || typeof res.data !== 'number') {
+      // No opinion: remember that too, so the error message this attempt goes
+      // on to build doesn't re-ask a venue that just declined to answer.
+      this.pooledMarginMemo = { value: null, at: now }
+      return cachedFree
+    }
+    this.pooledMarginMemo = { value: res.data, at: now }
+    return res.data
   }
 
   get futures() {
