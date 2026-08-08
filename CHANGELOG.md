@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.4] - 2026-08-08
+
+### Added
+
+- `getAccountFills()` on the exchange layer — read-only access to the venue's own execution history, for reconciling what a venue actually did against what we recorded. Distinct from `getTrades`, which is the public tape for a symbol. Returns an empty list for every venue publishing no such feed and for the paper simulator, whose fills we already own in full.
+
 ## [1.51.3] - 2026-08-08
 
 ### Added

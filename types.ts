@@ -3441,6 +3441,28 @@ export type TradeResponse = {
   timestamp: number
 }
 
+/**
+ * One execution on the ACCOUNT — not a public market trade (`TradeResponse`).
+ * Mirrors `AccountFill` in exchange-connector-sh; keep the two in step.
+ *
+ * `clientOrderId` is the id WE supplied when placing the order, which is what
+ * makes this reconcilable: a fill the venue reports against one of our ids, for
+ * an order we recorded as cancelled-and-unfilled, is a fill we lost — provable
+ * per fill, with no inference about margin or position size. A trade the user
+ * placed by hand carries no id of ours and drops out by construction.
+ */
+export type AccountFill = {
+  fillId: string
+  orderId: string
+  clientOrderId: string
+  symbol: string
+  side: 'BUY' | 'SELL'
+  price: string
+  quantity: string
+  timestamp: number
+  fillType?: string
+}
+
 export type FundingRateResponse = {
   symbol: string
   /** Settled funding rate as a fraction, e.g. -0.000123 */

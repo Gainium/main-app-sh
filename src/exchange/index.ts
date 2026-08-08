@@ -1,5 +1,6 @@
 import { StatusEnum, ExchangeIntervals, MarginType } from '../../types'
 import type {
+  AccountFill,
   OrderTypes,
   ExchangeInfo,
   BaseReturn,
@@ -264,6 +265,19 @@ abstract class AbsctractExchange implements Exchange {
     return {
       status: StatusEnum.ok,
       data: null,
+      reason: null,
+    }
+  }
+
+  /**
+   * Executions on the account, newest first — read-only reconciliation feed.
+   * Empty for every venue that publishes no such history, and for the paper
+   * simulator, whose fills we already own in full.
+   */
+  async getAccountFills(_sinceMs?: number): Promise<BaseReturn<AccountFill[]>> {
+    return {
+      status: StatusEnum.ok,
+      data: [],
       reason: null,
     }
   }

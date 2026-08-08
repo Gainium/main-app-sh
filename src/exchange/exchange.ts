@@ -1,5 +1,6 @@
 import AbstractExchange from './index'
 import {
+  AccountFill,
   AllPricesResponse,
   BaseReturn,
   CandleResponse,
@@ -295,6 +296,36 @@ class Exchange extends AbstractExchange {
       },
       timeProfile,
     ).catch(this.handleError(this.getMarginAvailableUsd, timeProfile))
+    this.saveTimeProfile(result.timeProfile)
+    return result.data
+  }
+
+  /**
+   * Executions on the account, newest first — NOT the public tape
+   * (`getTrades`). Read-only, for reconciling what the venue actually did
+   * against what we recorded.
+   *
+   * Every fill carries the client order id WE supplied, so a fill the venue
+   * reports against one of our ids, for an order we recorded as
+   * cancelled-and-unfilled, is a fill we lost. Trades the user placed by hand
+   * carry no id of ours and drop out on their own.
+   *
+   * `sinceMs` pages backwards; an empty array means there is no more history
+   * (and is also what every venue publishing no such feed returns).
+   */
+  async getAccountFills(
+    sinceMs?: number,
+    timeProfile = this.getEmptyTimeProfile('getAccountFills'),
+  ): Promise<BaseReturn<AccountFill[]>> {
+    const result = await this.apiCall<AccountFill[]>(
+      {
+        endpoint: 'accountFills',
+        method: 'get',
+        isPrivate: true,
+        params: sinceMs ? { since: `${sinceMs}` } : undefined,
+      },
+      timeProfile,
+    ).catch(this.handleError(this.getAccountFills, timeProfile))
     this.saveTimeProfile(result.timeProfile)
     return result.data
   }
