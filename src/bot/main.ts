@@ -2180,6 +2180,31 @@ class MainBot<T extends IMainBot> {
     return `${order.symbol}@${order.side}`
   }
 
+  /**
+   * Record the size of an order the VENUE refused for funds, per counter key,
+   * keeping the smallest seen. See `notEnoughBalance.refusedRequired`.
+   */
+  private noteRefusedRequired(id: string, order: Order) {
+    if (!this.data?.notEnoughBalance) {
+      return
+    }
+    const required = this.requiredForOrder(order)
+    if (!Number.isFinite(required) || required <= 0) {
+      return
+    }
+    if (!this.data.notEnoughBalance.refusedRequired) {
+      this.data.notEnoughBalance.refusedRequired = {}
+    }
+    const prev = this.data.notEnoughBalance.refusedRequired[id]
+    if (prev !== undefined && prev <= required) {
+      return
+    }
+    this.data.notEnoughBalance.refusedRequired[id] = required
+    this.updateData({
+      notEnoughBalance: this.data.notEnoughBalance,
+    })
+  }
+
   @IdMute(mutex, (order: Order) => `notEnoughBalance${order.botId}`)
   private async updateNotEnoughBalanceErrors(
     order: Order,
@@ -2206,6 +2231,7 @@ class MainBot<T extends IMainBot> {
     // the first time a bot writes under the new scheme.
     if (this.data.notEnoughBalance.keyVersion !== notEnoughBalanceKeyVersion) {
       this.data.notEnoughBalance.orders = {}
+      this.data.notEnoughBalance.refusedRequired = {}
       this.data.notEnoughBalance.thresholdPassed = false
       this.data.notEnoughBalance.thresholdPassedTime = 0
       this.data.notEnoughBalance.keyVersion = notEnoughBalanceKeyVersion
@@ -2229,7 +2255,11 @@ class MainBot<T extends IMainBot> {
       delete this.data.notEnoughBalance.orders[id]
       // The constraint is gone (an order filled, or the balance covered it), so
       // drop the cooldown too — the next shortfall should start a fresh window
-      // at `minMs` rather than resume a wide one.
+      // at `minMs` rather than resume a wide one. The refused size goes with
+      // it: it only describes the constraint that just cleared.
+      if (this.data.notEnoughBalance.refusedRequired) {
+        delete this.data.notEnoughBalance.refusedRequired[id]
+      }
       notEnoughBalanceBackoff.clear([this.botId, id])
     }
     this.updateData({
@@ -5384,6 +5414,25 @@ class MainBot<T extends IMainBot> {
     })
     return balances.status === StatusEnum.ok && !!balances.data?.result
   }
+  /**
+   * What this one order needs, in the asset the guard measures for its
+   * (symbol, side) key. Pure arithmetic on the order — no venue or DB call —
+   * so the size-aware paths of the not-enough-balance guard can ask it about
+   * an order they are not otherwise pricing.
+   */
+  private requiredForOrder(order: Order) {
+    return (
+      (+order.origQty *
+        (this.futures
+          ? this.coinm
+            ? 1
+            : +order.price
+          : order.side === 'BUY'
+            ? +order.price
+            : 1)) /
+      this.currentLeverage
+    )
+  }
   private async getAssetBalanceAndRequiredByOrder(order: Order) {
     const asset = this.futures
       ? this.coinm
@@ -5396,16 +5445,7 @@ class MainBot<T extends IMainBot> {
     return {
       asset,
       balance: balance?.get(asset),
-      required:
-        (+order.origQty *
-          (this.futures
-            ? this.coinm
-              ? 1
-              : +order.price
-            : order.side === 'BUY'
-              ? +order.price
-              : 1)) /
-        this.currentLeverage,
+      required: this.requiredForOrder(order),
     }
   }
   /**
@@ -5605,15 +5645,38 @@ class MainBot<T extends IMainBot> {
         // Gating the cooldown on that comparison meant the disagreement case —
         // the only one where the engine cannot see why it is being refused —
         // was the one case that never backed off.
+        //
+        // The comparison is `>=` to match `checkNotEnoughBalanceErrors`, which
+        // arms `thresholdPassed` at `>= threshold`. They used to disagree by
+        // one, and the counter's own headroom (capped at `threshold + 1`) then
+        // worked against the guard: the `-1` on a probe dropped the counter to
+        // exactly `threshold`, which still read as armed but no longer as
+        // tripped, so every second attempt bypassed the guard entirely and
+        // went straight to the venue.
         let notEnoughBalanceTripped = false
         // Set when THIS attempt was served from the local cooldown rather than
         // the venue. A suppressed attempt must never widen the window, or it
         // would slide forever and the bot could not self-heal.
         let notEnoughBalanceShortCircuit = false
         if (this.data.notEnoughBalance?.thresholdPassed) {
+          // The guard only speaks for orders AT LEAST AS BIG as one the venue
+          // has actually refused on this key. `getNotEnoughOrdersIdByOrder`
+          // collapses every order on a (symbol, side) onto one counter, but
+          // affordability is a function of NOTIONAL: a combo bot's 4.83 USD
+          // grid order fills happily while its 35.10 USD safety order on the
+          // same SOL-USD BUY is refused. Letting the small one through this
+          // block was how the guard came apart — it decayed the counter on its
+          // own affordability, cleared the latch when it filled, and would
+          // have been suppressed by a window it had no business being in.
+          const refusedRequired =
+            this.data.notEnoughBalance.refusedRequired?.[notEnoughBalanceId]
+          const atRefusedSize =
+            refusedRequired === undefined ||
+            this.requiredForOrder(order) >= refusedRequired
           if (
-            (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) >
-            this.notEnoughBalanceThreshold
+            atRefusedSize &&
+            (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) >=
+              this.notEnoughBalanceThreshold
           ) {
             notEnoughBalanceTripped = true
             this.handleDebug(
@@ -5768,16 +5831,28 @@ class MainBot<T extends IMainBot> {
         request = request ?? (await this.exchange.openOrder(requestData))
         if (
           request.status === StatusEnum.notok &&
-          notEnoughBalanceTripped &&
           !notEnoughBalanceShortCircuit &&
           this.isErrorNotEnoughBalance(request.reason)
         ) {
-          // A REAL rejection of a probe opens/widens the window. Suppressed
-          // attempts are excluded so the window can always expire.
-          await notEnoughBalanceBackoff.record(
-            [this.botId, notEnoughBalanceId],
-            request.reason,
-          )
+          // Remember how big the refused order was, keeping the SMALLEST the
+          // venue has turned down on this key: anything at or above it is
+          // unfundable too, anything below it might not be. Only a rejection
+          // that came back from the venue is evidence about size — replaying
+          // our own cooldown would ratchet the figure down to whatever order
+          // happened to ask next — but it is evidence from the FIRST such
+          // rejection, long before the counter trips. Recording it only once
+          // tripped would be too late: the counter has to survive ten
+          // rejections to get there, and it is precisely the size-blind reset
+          // that keeps it from ever doing so.
+          this.noteRefusedRequired(notEnoughBalanceId, order)
+          if (notEnoughBalanceTripped) {
+            // A REAL rejection of a probe opens/widens the window. Suppressed
+            // attempts are excluded so the window can always expire.
+            await notEnoughBalanceBackoff.record(
+              [this.botId, notEnoughBalanceId],
+              request.reason,
+            )
+          }
         }
         if (
           request.status === StatusEnum.notok &&
@@ -5995,7 +6070,25 @@ class MainBot<T extends IMainBot> {
             this.data.notEnoughBalance?.thresholdPassed &&
             (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) > 0
           ) {
-            this.updateNotEnoughBalanceErrors(order, 0, true)
+            // Clearing the guard needs a success that actually proves the
+            // constraint is gone — one at least as big as the smallest order
+            // the venue has refused on this key. A combo bot fills a small
+            // grid order every few minutes on the same (symbol, side) as the
+            // safety order Kraken keeps refusing; letting those wipe the
+            // counter and the cooldown is what kept the guard disarmed for
+            // 12h at a time while the venue was refused ~11 times an hour.
+            const refusedRequired =
+              this.data.notEnoughBalance.refusedRequired?.[notEnoughBalanceId]
+            if (
+              refusedRequired === undefined ||
+              this.requiredForOrder(order) >= refusedRequired
+            ) {
+              this.updateNotEnoughBalanceErrors(order, 0, true)
+            } else {
+              this.handleDebug(
+                `${this.notEnoughBalanceLogPrefix} Order id ${notEnoughBalanceId} ${order.clientOrderId} filled at ${this.requiredForOrder(order)}, below the refused size ${refusedRequired}. Keeping the not enough balance guard armed`,
+              )
+            }
           }
         }
       }

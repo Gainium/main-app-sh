@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.9] - 2026-08-10
+
+### Fixed
+
+- The not-enough-balance guard is now aware of order SIZE, so a bot that keeps a small order filling on the same pair and side as one the exchange refuses no longer hammers the venue forever. The guard counts failures per (symbol, side), but affordability depends on the order's notional: a combo bot's 4.83 USD grid order filled every few minutes on Kraken SOL-USD BUY while its 35.10 USD safety order on the same key was refused, and each of those fills wiped the failure counter and the cooldown the safety order had built up. The counter never survived long enough to engage, so every single retry reached the exchange and raised a "Not enough balance" alert — 48 in 12h on one bot, with the guard disarmed for 12.2h at a stretch. Orders below the size the venue has actually refused now pass through the guard untouched (the grid keeps trading), and only a success at or above that size clears it. The failure counter's arm and trip thresholds were also one apart, which let every second attempt slip past the guard.
+
 ## [1.51.8] - 2026-08-10
 
 ### Fixed

@@ -1927,6 +1927,13 @@ export interface MainBot<T = BaseSettings> extends SchemaI {
      *  `getNotEnoughOrdersIdByOrder` changes shape so stale counters keyed by
      *  the old scheme are discarded instead of lingering forever. */
     keyVersion?: number
+    /** Smallest order size (in the same `required` units the guard compares)
+     *  the VENUE has actually refused for funds on each counter key. The key
+     *  is `symbol@side`, which deliberately collapses orders of very different
+     *  notionals onto one counter, so affordability has to be carried
+     *  separately: a 5 USD grid order succeeding says nothing about the 35 USD
+     *  safety order the venue keeps refusing. */
+    refusedRequired?: Record<string, number>
   }
   share?: boolean
   shareId?: string

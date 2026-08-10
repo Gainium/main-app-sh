@@ -509,6 +509,12 @@ const botCommon = {
     // `updateNotEnoughBalanceErrors` re-runs on every bot load, and the guard
     // re-arms from scratch after each worker restart. Additive-only field.
     keyVersion: Number,
+    // Smallest `required` the venue has refused per counter key. Persisted for
+    // the same reason as `keyVersion`: bot workers restart every few hours and
+    // a chronic shortfall outlives them, so holding it only in memory would
+    // hand the guard back its size-blindness after every restart.
+    // Additive-only field.
+    refusedRequired: Schema.Types.Map,
   },
   cost: Number,
   ...CreatedUpdated,
