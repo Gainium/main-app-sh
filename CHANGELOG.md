@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.8] - 2026-08-10
+
+### Fixed
+
+- An order the exchange never accepted is no longer re-checked against the exchange five times before the bot gives up on it. Such an order carries a placeholder instead of an exchange order id, so "the exchange does not know this order" is the final answer the first time it is given — waiting ~15 seconds to ask four more times cannot change it. A Kraken Futures combo bot was holding 37 grid orders that had been refused for insufficient funds days earlier, and re-checking them after a restart cost 222 exchange calls and eleven minutes of errors. Checks that fail for any other reason — a timeout, a rate limit — still get the full retry ladder, as do orders that do hold a real exchange order id.
+
 ## [1.51.7] - 2026-08-10
 
 ### Fixed

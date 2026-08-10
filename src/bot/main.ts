@@ -356,6 +356,13 @@ export function isDefinitiveOrderNotFound(res?: {
  */
 const noExchangeOrderId = '-1'
 /**
+ * How many times `_handleUnknownOrder` re-asks the venue about an order it
+ * cannot resolve before it gives up and marks the local order CANCELED.
+ * Named so the early-exit below can hand control to that terminal branch by
+ * saturating the counter instead of duplicating its map/DB resolution.
+ */
+const unknownOrderMaxAttempts = 5
+/**
  * The answer for an order on a venue that can only be queried BY exchange
  * order id (coinbase / kraken / kucoin full futures) when we never received
  * one. Asking is guaranteed to fail — `'-1'` is not an id, so kraken burns a
@@ -3705,7 +3712,7 @@ class MainBot<T extends IMainBot> {
         this.data?.exchange === ExchangeEnum.coinbase ||
         this.data?.exchange === ExchangeEnum.kraken ||
         this.kucoinFullFutures
-      if ((this.canceledMap.get(id) ?? 0) > 5) {
+      if ((this.canceledMap.get(id) ?? 0) > unknownOrderMaxAttempts) {
         this.canceledMap.delete(id)
         const get = this.getOrderFromMap(id)
         let find = get && get.status === 'NEW' ? get : undefined
@@ -3736,16 +3743,22 @@ class MainBot<T extends IMainBot> {
         return null
       }
 
+      // The order as we still hold it. Its `orderId` is the only thing that
+      // says whether the order ever reached the venue, and that is worth
+      // knowing on EVERY venue — not just the `byId` ones — so the lookup is
+      // hoisted out of the branch below. The in-memory map is free; the DB
+      // fallback stays inside `byId`, which is the only path that actually
+      // needs `orderId` to build the request.
+      let local = this.getOrderFromMap(id)
       let neverReachedExchange = false
       if (byId) {
-        let find = this.getOrderFromMap(id)
-        if (!find) {
-          find = (await this.ordersDb.readData({ clientOrderId: id })).data
+        if (!local) {
+          local = (await this.ordersDb.readData({ clientOrderId: id })).data
             ?.result
         }
-        if (find) {
-          neverReachedExchange = find.orderId === noExchangeOrderId
-          id = `${find.orderId}`
+        if (local) {
+          neverReachedExchange = local.orderId === noExchangeOrderId
+          id = `${local.orderId}`
         }
       }
       const request = neverReachedExchange
@@ -3758,6 +3771,33 @@ class MainBot<T extends IMainBot> {
         this.handleLog(
           `${request.reason}, handleUnknownOrder(), Send get order request ${origId}, ${symbol}, ${id}`,
         )
+
+        // An order still carrying the `-1` placeholder never got an exchange
+        // order id, so the venue answering "I do not know this order" is the
+        // FINAL answer, not a race we can wait out — re-asking four more times
+        // over ~14s cannot change it. Bug #369: a krakenUsdm combo bot held 37
+        // such grid orders (all rejected days earlier for insufficient funds,
+        // left at status NEW), and reconciling them on restart cost 222 Kraken
+        // round trips and 11 minutes of connector ERRORs where 37 would do.
+        //
+        // Deliberately narrow on BOTH conditions:
+        //  - `isDefinitiveOrderNotFound` (the venue said "no such order"), so a
+        //    timeout / rate-limit / auth failure still gets the full ladder —
+        //    the "transient failure rendered as a definitive negative" mistake
+        //    that helper exists to prevent.
+        //  - `orderId === '-1'`, so an order that DOES hold an exchange id
+        //    keeps retrying, which is what covers propagation lag.
+        // The first round trip is deliberately kept: on a venue queried by
+        // client order id the order may exist there under that id even though
+        // we never recorded the response, and that call is the only thing that
+        // would find it. This drops the 5 redundant retries, not the lookup.
+        if (
+          isDefinitiveOrderNotFound(request) &&
+          local?.orderId === noExchangeOrderId
+        ) {
+          this.canceledMap.set(origId, unknownOrderMaxAttempts)
+          return this._handleUnknownOrder(origId, symbol)
+        }
 
         await sleep(1000 * (getCount + 1))
         return this._handleUnknownOrder(origId, symbol)
