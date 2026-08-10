@@ -5828,7 +5828,56 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
+        // Hard exchange-auth short-circuit. The #326/#362 cooldown was wired
+        // into `checkAssets()` and `getActiveOrders()` — both PER-TICK calls —
+        // but order submission is a PER-ORDER loop, so a dead key was still
+        // charged once per order. A grid restore places the whole grid in one
+        // pass: on the 2026-08-10 16:00Z worker restart 14 combo bots emitted
+        // 110 `Invalid API-key, IP, or permissions for action. Method
+        // limitOrders()` rejections in 44s (one bot alone 39), across only 7
+        // accounts. Gating the per-tick reads can never see those, because they
+        // all happen inside a single tick. Replay the venue's OWN last
+        // rejection from the shared cooldown instead, exactly as the compliance
+        // gate above does, so everything downstream (bot status, user message,
+        // order cleanup) behaves as if the venue had refused it — which it
+        // would have.
+        let authShortCircuit = false
+        const authUUID = `${this.data.exchangeUUID ?? ''}`
+        if (!request && authUUID) {
+          const cooldown = await AuthFailureGuard.check(authUUID)
+          if (cooldown.failed && cooldown.reason) {
+            authShortCircuit = true
+            // debug, not log/warn: one line per suppressed order would just
+            // move the flood from the error log to the out log (#362's lesson).
+            this.handleDebug(
+              `Order ${
+                order.clientOrderId
+              } not sent: exchange auth cooldown until ${new Date(
+                cooldown.until ?? 0,
+              ).toISOString()}. Exchange reason: ${cooldown.reason}`,
+            )
+            request = {
+              status: StatusEnum.notok,
+              reason: cooldown.reason,
+              data: null,
+            }
+          }
+        }
         request = request ?? (await this.exchange.openOrder(requestData))
+        // Open/widen the cooldown only for a REAL, venue-returned hard-auth
+        // rejection — never a replayed one, or the window would slide forward
+        // forever and never self-heal.
+        if (
+          request.status === StatusEnum.notok &&
+          !authShortCircuit &&
+          authUUID &&
+          isHardAuthFailure(`${request.reason}`)
+        ) {
+          await AuthFailureGuard.record({
+            exchangeUUID: authUUID,
+            reason: `${request.reason}`,
+          })
+        }
         if (
           request.status === StatusEnum.notok &&
           !notEnoughBalanceShortCircuit &&
@@ -6046,7 +6095,11 @@ class MainBot<T extends IMainBot> {
             // new row describing an order that never was. Production carried
             // ~6.6k-10.7k such rows/hour, and 2.5M of them from ten bots
             // accounted for 20.3% of the whole `orders` collection.
-            if (!notEnoughBalanceShortCircuit && !complianceShortCircuit) {
+            if (
+              !notEnoughBalanceShortCircuit &&
+              !complianceShortCircuit &&
+              !authShortCircuit
+            ) {
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             }
           }
@@ -6055,14 +6108,26 @@ class MainBot<T extends IMainBot> {
             return request.reason
           }
           const setError = this.needToSendOrder(order)
-          this.handleOrderErrors(
-            request.reason,
-            order,
-            'limitOrders()',
-            `Send new order request ${order.clientOrderId}, qty ${order.origQty}, price ${order.price}, side ${order.side}`,
-            setError,
-            setError,
-          )
+          // A rejection this process served from its own cooldown is not news:
+          // the venue never saw the order. Reporting it per order is what made
+          // the symptom a LOG storm as well as a venue storm — `processError`
+          // emits the `Error | Bot … Reason …` line on every call under
+          // LOG_LEVEL=debug (prod), so a grid restore wrote one per order (110
+          // in 44s on 2026-08-10). The re-probe that opens each window still
+          // reports here normally, so the user keeps getting a refreshed,
+          // actionable "API keys error" — at the backoff rate (5min → 1h)
+          // instead of once per order. Same call the #362 fix made for the
+          // per-tick path.
+          if (!authShortCircuit) {
+            this.handleOrderErrors(
+              request.reason,
+              order,
+              'limitOrders()',
+              `Send new order request ${order.clientOrderId}, qty ${order.origQty}, price ${order.price}, side ${order.side}`,
+              setError,
+              setError,
+            )
+          }
         }
         if (request.status === StatusEnum.ok) {
           processedOrder = request.data
