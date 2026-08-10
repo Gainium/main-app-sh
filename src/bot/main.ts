@@ -3463,7 +3463,8 @@ class MainBot<T extends IMainBot> {
   /**
    * Get active orders for bot pair on exchange where bot supposted to work<br />
    *
-   * If gets an error - return 200
+   * On error returns 0 — the permissive value, so the max-orders check in the
+   * caller does not block a deal because of a failed lookup.
    */
 
   async getActiveOrders(symbol: string): Promise<number> {
@@ -3471,9 +3472,39 @@ class MainBot<T extends IMainBot> {
       return 0
     }
     if (this.exchange && this.data) {
+      // Same hard-auth short-circuit as `checkAssets()` above. Gating only the
+      // balance call was not enough: the combo open-a-deal path calls this
+      // once per tick, so a dead key kept re-asking the venue every single
+      // minute (236 rejections in 3.9h on one bot on 2026-08-10) while the
+      // balance path was already correctly backed off to hourly. Serve the
+      // exchange's OWN last rejection from the shared cooldown instead.
+      const authUUID = `${this.data.exchangeUUID ?? ''}`
+      if (authUUID) {
+        const cooldown = await AuthFailureGuard.check(authUUID)
+        if (cooldown.failed && cooldown.reason) {
+          // debug, not warn: the re-probe still reports normally, so a
+          // per-tick line here would just move the flood to the out log.
+          this.handleDebug(
+            `Active orders check skipped, exchange auth cooldown until ${new Date(
+              cooldown.until ?? 0,
+            ).toISOString()}: ${cooldown.reason}`,
+          )
+          // 0 = exactly what the error path below already returns, so
+          // downstream behaviour is unchanged by the suppression.
+          return 0
+        }
+      }
       const result = await this.exchange.getAllOpenOrders(symbol)
       if (result.status === StatusEnum.ok) {
         return result.data
+      }
+      // Open/widen the cooldown only for a real, venue-returned hard-auth
+      // rejection. Everything else stays exactly as transient as it is now.
+      if (authUUID && isHardAuthFailure(`${result.reason}`)) {
+        await AuthFailureGuard.record({
+          exchangeUUID: authUUID,
+          reason: `${result.reason}`,
+        })
       }
       this.handleErrors(
         `Cannot get active orders: ${result.reason}`,

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.51.6] - 2026-08-10
+
+### Fixed
+
+- `getActiveOrders()` now honours the exchange auth-failure cooldown, like `checkAssets()` already did. Gating only the balance call left the combo open-a-deal path re-asking a dead API key once per minute — 236 rejections in 3.9h on one bot — while the balance path was correctly backed off to hourly.
+
+## [1.51.5] - 2026-08-10
+
+### Fixed
+
+- `setStatus(..., ignoreErrors)` now forwards the flag to `stop()`. `stop()` assigns `this.ignoreErrors = ignoreErrors` (default `false`) as its first statement, so calling it without the argument wiped the flag `setStatus` had just set and every caller asking to close a bot quietly was ignored. Both the DCA/combo and the grid helper are affected.
+- `resetUser` marks its own bot teardown as errors-to-ignore, except for `softLive` which deletes nothing. It closes the account's bots and then deletes their paper user milliseconds later, while the workers are still cancelling — paper-trading answers `400 User not found` and the bot filed it as a user-visible error on a bot that no longer exists. `changeStatus` carries the new `input.ignoreErrors` through to the grid/DCA/combo workers.
+
 ## [1.51.4] - 2026-08-08
 
 ### Added
