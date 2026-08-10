@@ -13744,11 +13744,17 @@ function createDCABotHelper<
             ? (closeTypeFromWebhook ?? settings.stopType)
             : settings.stopType
         }
-        await this.stop(closeType)
+        // Forward the flag `setStatus` just set on the instance. `stop()`
+        // assigns `this.ignoreErrors = ignoreErrors` as its first statement, so
+        // calling it without the argument silently resets the flag to `false`
+        // and every teardown failure is reported to the user — which is why the
+        // caller-side "ignore errors while deleting/resetting" attempts never
+        // took effect.
+        await this.stop(closeType, undefined, this.ignoreErrors)
       } else if (status === 'open') {
         await this.start(undefined, undefined, undefined, skipAvailable)
       } else {
-        await this.stop()
+        await this.stop(undefined, undefined, this.ignoreErrors)
       }
 
       if (this.shouldProceed()) {
