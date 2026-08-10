@@ -5549,13 +5549,23 @@ class MainBot<T extends IMainBot> {
       if (!processedOrder) {
         let request: BaseReturn<CommonOrder> | undefined
         const notEnoughBalanceId = this.getNotEnoughOrdersIdByOrder(order)
-        // Armed = the failure counter has tripped and the balance really is
-        // short, so this order is in the suppression regime. Only rejections
-        // from that regime widen the cooldown: the counter trips within seconds
-        // (the engine retries fast), so escalating on every raw rejection would
+        // Tripped = the failure counter for this key has passed the threshold,
+        // so this order is in the suppression regime. Only rejections from that
+        // regime widen the cooldown: the counter trips within seconds (the
+        // engine retries fast), so escalating on every raw rejection would
         // reach the ceiling before the guard ever engaged and a shortfall that
         // clears in a minute would still be held for an hour.
-        let notEnoughBalanceArmed = false
+        //
+        // It deliberately does NOT also require our own balance arithmetic to
+        // agree that the order is unaffordable. `required` is one order's bare
+        // notional, while the venue prices the whole ladder plus its fees and
+        // margin buffer, so the two disagree in the direction that matters: on
+        // prod a Kraken Futures bot was refused `insufficientAvailableFunds`
+        // for 12.75 USD while the venue's OWN availableMargin read 13.40 USD.
+        // Gating the cooldown on that comparison meant the disagreement case —
+        // the only one where the engine cannot see why it is being refused —
+        // was the one case that never backed off.
+        let notEnoughBalanceTripped = false
         // Set when THIS attempt was served from the local cooldown rather than
         // the venue. A suppressed attempt must never widen the window, or it
         // would slide forever and the bot could not self-heal.
@@ -5565,6 +5575,7 @@ class MainBot<T extends IMainBot> {
             (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) >
             this.notEnoughBalanceThreshold
           ) {
+            notEnoughBalanceTripped = true
             this.handleDebug(
               `${this.notEnoughBalanceLogPrefix} Not enough balance threshold passed for order id ${notEnoughBalanceId} ${order.clientOrderId}. Checking balance`,
             )
@@ -5582,38 +5593,48 @@ class MainBot<T extends IMainBot> {
                     asset,
                     balance?.free ?? 0,
                   )
-            if (spendable < required) {
-              notEnoughBalanceArmed = true
-              // Suppress on a widening window rather than continuously. The
-              // block decision above reads `checkAssets` WITHOUT `direct`, i.e.
-              // the cached `balances` collection, which can lag badly (two
-              // weeks was observed on prod for a thinly-traded asset). Letting
-              // one attempt through per window makes the exchange — the only
-              // authority — break the tie, so an under-reporting cache can
-              // never latch a bot off permanently.
-              const cooldown = await notEnoughBalanceBackoff.check([
-                this.botId,
-                notEnoughBalanceId,
-              ])
-              if (cooldown.suppressed) {
-                notEnoughBalanceShortCircuit = true
-                this.handleDebug(
-                  `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${spendable}, required: ${required}. Suppressed until ${new Date(cooldown.until).toISOString()} (attempt ${cooldown.attempt})`,
-                )
-                request = {
-                  status: StatusEnum.notok,
-                  reason: `Not enough balance`,
-                  data: null,
-                }
-              } else {
-                // Window elapsed (or never opened): let this one reach the
-                // exchange. If it is rejected, the error path widens the
-                // window; if it fills, the success path clears it.
-                this.handleDebug(
-                  `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId}. Cached balance: ${spendable}, required: ${required}`,
-                )
+            // Suppress on a widening window rather than continuously. The
+            // block decision above reads `checkAssets` WITHOUT `direct`, i.e.
+            // the cached `balances` collection, which can lag badly (two
+            // weeks was observed on prod for a thinly-traded asset). Letting
+            // one attempt through per window makes the exchange — the only
+            // authority — break the tie, so an under-reporting cache can
+            // never latch a bot off permanently.
+            //
+            // The window is consulted whichever way the comparison below falls.
+            // A cooldown only exists because the VENUE refused this key for
+            // funds, and the venue outranks our arithmetic: when our figures
+            // say the order is affordable and the venue keeps saying it is not,
+            // re-asking on the strength of our own number is exactly the
+            // rejection loop the cooldown exists to stop.
+            const cooldown = await notEnoughBalanceBackoff.check([
+              this.botId,
+              notEnoughBalanceId,
+            ])
+            if (cooldown.suppressed) {
+              notEnoughBalanceShortCircuit = true
+              this.handleDebug(
+                `${this.notEnoughBalanceLogPrefix} Not enough balance for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${spendable}, required: ${required}. Suppressed until ${new Date(cooldown.until).toISOString()} (attempt ${cooldown.attempt})`,
+              )
+              request = {
+                status: StatusEnum.notok,
+                reason: `Not enough balance`,
+                data: null,
               }
+            } else if (spendable < required) {
+              // Window elapsed (or never opened): let this one reach the
+              // exchange. If it is rejected, the error path widens the
+              // window; if it fills, the success path clears it.
+              this.handleDebug(
+                `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId}. Cached balance: ${spendable}, required: ${required}`,
+              )
             } else {
+              // Our figures say it is affordable and no window is open, so this
+              // one goes to the venue on their say-so. The decrement is the
+              // self-heal path for a counter left latched by a shortfall that
+              // has since cleared; it is only reached when nothing is
+              // suppressing, so it can no longer erode the counter underneath
+              // an active cooldown.
               this.handleDebug(
                 `${this.notEnoughBalanceLogPrefix} Balance is enough for order id ${notEnoughBalanceId} ${order.clientOrderId}. Balance: ${spendable}, required: ${required}. Reset not enough balance orders`,
               )
@@ -5707,7 +5728,7 @@ class MainBot<T extends IMainBot> {
         request = request ?? (await this.exchange.openOrder(requestData))
         if (
           request.status === StatusEnum.notok &&
-          notEnoughBalanceArmed &&
+          notEnoughBalanceTripped &&
           !notEnoughBalanceShortCircuit &&
           this.isErrorNotEnoughBalance(request.reason)
         ) {

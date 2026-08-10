@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.7] - 2026-08-10
+
+### Fixed
+
+- The not-enough-balance cooldown now opens on any real venue rejection once the failure counter has tripped, instead of only when our own balance figures also agreed the order was unaffordable. `required` is one order's bare notional while the venue prices the whole safety-order ladder plus its fees, so the two disagree — a Kraken Futures bot was refused `insufficientAvailableFunds` for a 12.75 USD order while the venue's OWN available margin read 13.40 USD, and that disagreement was the one case that never backed off. The cooldown is also consulted whichever way the balance comparison falls, so the window it opens actually suppresses. 22 rejected orders in 1.4h becomes 3.
+
 ## [1.51.6] - 2026-08-10
 
 ### Fixed
