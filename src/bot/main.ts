@@ -3224,8 +3224,45 @@ class MainBot<T extends IMainBot> {
     if (!this.data || !this.exchange) {
       return null
     }
+    // Same hard-auth short-circuit as `checkAssets()`, `getActiveOrders()` and
+    // `openOrder()` above. Those three gated the balance CHECK, the open-orders
+    // read and the order send, but this helper — the balance read that sizes a
+    // percFree/percTotal base order — stayed ungated, so a dead key still burst
+    // through it: one DCA bot on a revoked Binance key logged 16 rejections in
+    // 5s on 2026-08-11 (11x `placeBaseOrder`, 5x `create intial orders`) and
+    // ~44/day for six days straight, while that same bot's `checkAssets()` path
+    // was already correctly backed off to ~1/day by the shared cooldown. Replay
+    // the venue's OWN last rejection instead of asking it again.
+    const authUUID = `${this.data.exchangeUUID ?? ''}`
+    if (authUUID) {
+      const cooldown = await AuthFailureGuard.check(authUUID)
+      if (cooldown.failed && cooldown.reason) {
+        // debug, not error: the re-probe still reports normally, so a line per
+        // suppressed attempt would just move the flood to the out log (#362).
+        this.handleDebug(
+          `Balance read skipped, exchange auth cooldown until ${new Date(
+            cooldown.until ?? 0,
+          ).toISOString()}: ${cooldown.reason}`,
+        )
+        // Exactly the shape a venue rejection produces, so every caller's
+        // existing `status === notok` / `?.reason` branch is unchanged.
+        return {
+          status: StatusEnum.notok,
+          reason: cooldown.reason,
+          data: null,
+        } as BaseReturn<FreeAsset>
+      }
+    }
     const result = await this.exchange.getBalance()
     if (result.status === StatusEnum.notok) {
+      // Open/widen the cooldown only for a real, venue-returned hard-auth
+      // rejection. Everything else stays exactly as transient as it is now.
+      if (authUUID && isHardAuthFailure(`${result.reason}`)) {
+        await AuthFailureGuard.record({
+          exchangeUUID: authUUID,
+          reason: `${result.reason}`,
+        })
+      }
       return result
     }
     const bnfcr = await this.isBNFCR()
