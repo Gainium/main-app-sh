@@ -7184,9 +7184,21 @@ function createDCABotHelper<
             true,
           )
         }
-        if (qty * price < ed.quoteAsset.minAmount) {
+        // A venue measures the minimum notional at the price the order will
+        // actually transact at: the live market price for a MARKET order, the
+        // limit price for a LIMIT one. `price` above carries the slippage
+        // shift, which for a SHORT sits ABOVE the market — sizing against it
+        // satisfies this guard while the notional the exchange sees is still
+        // under the minimum, so the entry is rejected and the slippage ladder
+        // (which raises the price, and so shrinks qty, on every rung) can never
+        // converge. Size against whichever of the two is lower so the notional
+        // clears at both. For a LONG the slippage price is already the lower
+        // one, so this leaves that side untouched. See bug #376.
+        const notionalPrice =
+          type === OrderTypeEnum.market ? Math.min(price, priceRequest) : price
+        if (qty * notionalPrice < ed.quoteAsset.minAmount) {
           qty = this.math.round(
-            (ed.quoteAsset.minAmount / price) * feeFactor,
+            (ed.quoteAsset.minAmount / notionalPrice) * feeFactor,
             precision,
             false,
             true,
@@ -7564,13 +7576,16 @@ function createDCABotHelper<
             }
           }
           this.handleLog('Send base order')
+          // The last rung of the slippage ladder downgrades the entry to a
+          // LIMIT so the venue accepts its notional. That leaves a RESTING
+          // order even when the bot's `startOrderType` is MARKET, so the timer
+          // block below has to key off what was actually sent — see bug #376.
+          const sentType =
+            count === this.slippageRetry ? OrderTypeEnum.limit : baseOrder.type
           const result = await this.sendOrderToExchange(
             {
               ...baseOrder,
-              type:
-                count === this.slippageRetry
-                  ? OrderTypeEnum.limit
-                  : baseOrder.type,
+              type: sentType,
             },
             true,
           )
@@ -7616,13 +7631,14 @@ function createDCABotHelper<
                 baseOrder.clientOrderId = result.clientOrderId
               }
               if (
-                startOrderType === OrderTypeEnum.limit &&
+                (startOrderType === OrderTypeEnum.limit ||
+                  sentType === OrderTypeEnum.limit) &&
                 (baseOrderPrice === 0 ||
                   isNaN(baseOrderPrice) ||
                   !useLimitPrice)
               ) {
                 const deal = this.getDeal(dealId)
-                if (deal && count < this.slippageRetry) {
+                if (deal && count <= this.slippageRetry) {
                   const dealTimer = this.dealTimersMap.get(deal.deal._id) ?? {
                     limitTimer: null,
                     enterMarketTimer: null,
