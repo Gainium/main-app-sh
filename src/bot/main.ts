@@ -4177,7 +4177,7 @@ class MainBot<T extends IMainBot> {
         : `${
             (+msg.totalTradeQuantity * (ed?.quoteAsset.minAmount ?? 1)) / price
           }`
-      : (this.okx || this.kucoinFutures) && this.futures
+      : this.sizedInContracts
         ? `${this.math.round(
             +msg.totalTradeQuantity /
               (await this.getOKXDenominator(msg.symbol)),
@@ -4204,8 +4204,7 @@ class MainBot<T extends IMainBot> {
 
   async mergeCommonOrderWithOrder(co: CommonOrder, o: Order): Promise<Order> {
     const quote =
-      co.cummulativeQuoteQty &&
-      !((this.okx || this.kucoinFutures) && this.futures)
+      co.cummulativeQuoteQty && !this.sizedInContracts
         ? +co.cummulativeQuoteQty
         : +co.price * +co.executedQty
     const base = +co.executedQty
@@ -5388,7 +5387,7 @@ class MainBot<T extends IMainBot> {
               (+order.executedQty * (ed.quoteAsset.minAmount ?? 1)) /
               (+order.price || +(order.avgPrice ?? '0') || +order.origQty)
             }`
-          : (this.okx || this.kucoinFutures) && this.futures
+          : this.sizedInContracts
             ? `${this.math.round(
                 +order.executedQty /
                   (await this.getOKXDenominator(order.symbol)),
@@ -5548,7 +5547,7 @@ class MainBot<T extends IMainBot> {
                   0,
                 ),
               )
-            : (this.okx || this.kucoinFutures) && this.futures
+            : this.sizedInContracts
               ? Math.max(
                   this.data.exchange === ExchangeEnum.okxLinear ? 0 : 1,
                   this.math.round(
@@ -6790,6 +6789,33 @@ class MainBot<T extends IMainBot> {
       this.data?.exchange === ExchangeEnum.kucoinLinear ||
       this.data?.exchange === ExchangeEnum.kucoinInverse
     )
+  }
+
+  /**
+   * True when the venue sizes orders in **contracts** rather than base units,
+   * so `origQty` must be multiplied by {@link MainBot#getOKXDenominator} on the
+   * way out and divided by it on the way back in. The two directions MUST agree
+   * — convert on send but not on read and every fill is mis-booked by the
+   * contract multiplier — so both sides read this one getter.
+   *
+   * Note what it does NOT consult on the KuCoin arm: `settings.futures`.
+   * `kucoinFutures` is `exchange === kucoinLinear`, which is a futures-ONLY
+   * venue — there is no spot market on it and no bot configuration for which
+   * sending a fractional base size is correct. KuCoin's `size` field is a
+   * `java.lang.Long`, so an unconverted `0.003` is rejected outright with
+   * "Cannot deserialize value of type `java.lang.Long` from String" (bug #380:
+   * a `kucoinLinear` DCA bot whose `settings.futures` had drifted to `false`
+   * had every base order rejected). The rest of this module already keys the
+   * KuCoin contract path off the exchange alone (see the `kucoinFutures`
+   * branches around the order-processing path), so gating only these four call
+   * sites on the flag left the module self-contradictory.
+   *
+   * The OKX arm still consults it, and must: `okx` also matches OKX **spot**,
+   * where base sizing is correct. `okxLinear`/`okxInverse` carry
+   * `settings.futures === true`.
+   */
+  get sizedInContracts() {
+    return this.kucoinFutures || (this.okx && this.futures)
   }
 
   get kucoinSpot() {
