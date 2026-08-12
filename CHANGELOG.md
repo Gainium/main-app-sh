@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.13] - 2026-08-12
+
+### Fixed
+
+- RPC-latency counters now expose a per-window max (`windowMaxMs`) alongside the cumulative one, so a monitor can report the worst round-trip of a sample window rather than a since-boot high-water mark
+
 ## [1.51.12] - 2026-08-12
 
 ### Fixed

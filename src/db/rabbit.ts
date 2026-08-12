@@ -29,12 +29,18 @@ const retryTimeout = 30 * 1000
 // Module-level (NOT per-instance) so every Rabbit instance in a process
 // accumulates into the same table — the main-app publisher reads a snapshot of
 // this and computes deltas. Purely additive, zero-dep, and every mutation is
-// wrapped so a counter bug can never affect an RPC. Cumulative — never reset
-// here; the publisher diffs against its own last snapshot.
+// wrapped so a counter bug can never affect an RPC. Cumulative — the publisher
+// diffs the totals against its own last snapshot. `windowMaxMs` is the one
+// exception: a max cannot be recovered by differencing, so it is reset here as
+// the publisher reads it.
 interface RpcQueueStat {
   count: number
   sumMs: number
   maxMs: number
+  /** Worst round-trip since the last reset-on-read. `maxMs` is a since-boot
+   *  high-water mark and therefore cannot describe a sample window — one slow
+   *  RPC would be re-reported forever. The stats publisher consumes this one. */
+  windowMaxMs: number
   breaches: number
   timeouts: number
 }
@@ -47,7 +53,14 @@ const rpcLatencyStats = new Map<string, RpcQueueStat>()
 const rpcStatFor = (queue: string): RpcQueueStat => {
   let s = rpcLatencyStats.get(queue)
   if (!s) {
-    s = { count: 0, sumMs: 0, maxMs: 0, breaches: 0, timeouts: 0 }
+    s = {
+      count: 0,
+      sumMs: 0,
+      maxMs: 0,
+      windowMaxMs: 0,
+      breaches: 0,
+      timeouts: 0,
+    }
     rpcLatencyStats.set(queue, s)
   }
   return s
@@ -60,6 +73,7 @@ const recordRpcSuccess = (queue: string, totalMs: number): void => {
     s.count += 1
     s.sumMs += totalMs
     if (totalMs > s.maxMs) s.maxMs = totalMs
+    if (totalMs > s.windowMaxMs) s.windowMaxMs = totalMs
     if (totalMs > RPC_BREACH_MS) s.breaches += 1
   } catch {
     // counters must never affect the RPC
@@ -82,17 +96,26 @@ const recordRpcTimeout = (queue: string): void => {
  * Cumulative RPC-latency counters keyed by queue name, aggregated across every
  * Rabbit instance in this process. Returns a shallow snapshot (copies) so the
  * caller can't mutate the live table. Cumulative — the caller computes deltas.
+ *
+ * `windowMaxMs` is the exception: it is the worst round-trip since the previous
+ * reset-on-read. Pass `resetWindowMax` (the stats publisher does, once per
+ * sample interval) to consume it and start a fresh window, so a reported max
+ * describes that window instead of everything since boot.
  */
-export const getRpcLatencyStats = (): Record<string, RpcQueueStat> => {
+export const getRpcLatencyStats = (
+  resetWindowMax = false,
+): Record<string, RpcQueueStat> => {
   const out: Record<string, RpcQueueStat> = {}
   for (const [queue, s] of rpcLatencyStats.entries()) {
     out[queue] = {
       count: s.count,
       sumMs: s.sumMs,
       maxMs: s.maxMs,
+      windowMaxMs: s.windowMaxMs,
       breaches: s.breaches,
       timeouts: s.timeouts,
     }
+    if (resetWindowMax) s.windowMaxMs = 0
   }
   return out
 }
