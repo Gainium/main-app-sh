@@ -1,0 +1,57 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Lets a maintainer run the checks against a branch by hand — useful because
+  # this workflow is otherwise only exercised by pull requests.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  type-check-and-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # `npm install` runs the `prepare` script, which is husky. There are no
+      # git hooks to install on a runner and husky is not a dependency of the
+      # checks below.
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # `@gainium/backtester` and `@gainium/indicators` are git dependencies and
+      # package-lock.json pins them to `git+ssh://git@github.com/…`. A runner has
+      # no SSH key for GitHub, so git would be asked for a key it does not have
+      # and the install would fail before any check ran. Both repos are public,
+      # so anonymous HTTPS reaches them.
+      - name: Use HTTPS for GitHub git dependencies
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      # `npm install`, not `npm ci`: package-lock.json is currently out of sync
+      # with package.json (`npm ci` fails with "Missing: bcryptjs@3.0.3 from lock
+      # file"), so `ci` cannot run here at all today. `--legacy-peer-deps` matches
+      # the project's documented install. Once the lock is regenerated this
+      # should become `npm ci`, which would also make the pinned git+ssh URLs
+      # above load-bearing rather than incidental.
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      # One step rather than separate type-check and lint steps: this repo has no
+      # `type-check` script, and its `lint` is already `tsc --noEmit && eslint`.
+      # Splitting them would mean restating that command here, where it would
+      # quietly drift from the package.json definition. The cost is that eslint
+      # does not report when tsc fails.
+      - name: Type-check and lint
+        run: npm run lint
