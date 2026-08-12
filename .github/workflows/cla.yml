@@ -17,7 +17,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "CLA Assistant"
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        # Match loosely, NOT with `==`. A signature comment copied out of the
+        # bot's own comment (or posted with `gh pr comment --body-file`) carries
+        # a trailing newline, which made a strict equality check false — the step
+        # was silently skipped while the job still reported success, so the
+        # contributor got no feedback at all. The action itself already trims and
+        # lowercases the body, so it is safe to let it decide.
+        # `recheck` is matched with startsWith rather than contains so a comment
+        # that merely mentions the word mid-sentence doesn't re-trigger the bot.
+        if: (startsWith(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
