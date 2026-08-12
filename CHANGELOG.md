@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.10] - 2026-08-12
+
+### Fixed
+
+- `saveFile` now refuses to write outside `user-files`. The name, extension and subdirectory it receives all arrive from a request body and are all concatenated into a path, so any one of them could walk out of the directory with `../` — the extension included, since it is appended after a dot. Rather than filtering each argument, the resolved directory and the resolved file path are both checked to still be under the root, which also covers whatever argument gets threaded through here next.
+
 ## [1.51.9] - 2026-08-10
 
 ### Fixed
