@@ -7042,12 +7042,19 @@ function createDCABotHelper<
           price = baseOrderPrice
         }
         price = this.math.round(price, ed.priceAssetPrecision)
-        const feeFactor = this.futures
-          ? 1
-          : settings.terminalDealType === TerminalDealTypeEnum.simple
-            ? 1
-            : 1 + fee.taker
         const short = !this.isLong
+        // SPOT fees are charged in the asset you RECEIVE. A LONG entry BUYS
+        // base, so the fill credits base minus fee and the qty is grossed up to
+        // still end up holding the configured size. A SHORT entry SELLS base —
+        // the fee is taken out of the quote proceeds, never out of the base
+        // sent — so grossing up here just sells MORE base than the user asked
+        // for (and more than the safety orders, which never gross up). Bug #396.
+        const feeFactor =
+          this.futures || short
+            ? 1
+            : settings.terminalDealType === TerminalDealTypeEnum.simple
+              ? 1
+              : 1 + fee.taker
         let qty = this.math.round(
           (baseOrderSize / price) * feeFactor + (sizes?.base ?? 0),
           precision,
@@ -12318,7 +12325,16 @@ function createDCABotHelper<
           pendingReduceFunds.base -
           reduceFundsBase
         const maxFee = Math.max(fee?.maker ?? 0, fee?.taker ?? 0)
-        let qty = _qty * (this.futures ? 1 : 1 - maxFee) + add
+        // Same asymmetry as the base order (bug #396): on SPOT the fee is taken
+        // out of the asset received. Closing a LONG SELLS base, so only what the
+        // entry actually credited (gross * (1 - fee)) can be sold. Closing a
+        // SHORT BUYS base back, and that buy is itself charged in base — so
+        // buying `_qty` credits only `_qty * (1 - fee)` and the deal ends a fee
+        // short of base every cycle. Buy `_qty / (1 - fee)` so the fill returns
+        // the full amount sold. `add` (already-closed qty) is gross on both
+        // sides, so it keeps composing correctly for partial take profits.
+        let qty =
+          _qty * (this.futures ? 1 : long ? 1 - maxFee : 1 / (1 - maxFee)) + add
         let origQty = qty
         const sellDisplacement = maxFee * 2
         const priceDisplacement = this.futures
