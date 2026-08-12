@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.12] - 2026-08-12
+
+### Fixed
+
+- Changing a DCA bot's profit currency no longer re-bases the deals that are already running. A running deal keeps the profit currency it entered with; only deals opened after the change use the new one. Combo bots already behaved this way.
+
 ## [1.51.11] - 2026-08-12
 
 ### Fixed

@@ -4711,6 +4711,11 @@ class Bot<T extends UserSchema = UserSchema> {
           BotType.dca,
           merged,
         )
+        // Profit currency is fixed for the lifetime of a running deal — the
+        // deal already entered in that currency, so re-basing it mid-flight
+        // would re-target its TP. Only deals opened after the save pick the
+        // new one up. Same rule as the combo path below.
+        dealSettings.profitCurrency = d.settings.profitCurrency
         dealSettings.avgPrice = d.settings.avgPrice
         dealSettings.slChangedByUser = d.settings.slChangedByUser
         dealSettings.orderSizePercQty = d.settings.orderSizePercQty
