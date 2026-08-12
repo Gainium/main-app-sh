@@ -10,6 +10,7 @@ import axios from 'axios'
 import http from 'http'
 import { updateRequest } from '../../utils/backtestRequest'
 import saveFileHelper from '../../../utils/files'
+import { internalToken } from '../../utils/token'
 
 import {
   BotType,
@@ -126,6 +127,7 @@ class BacktestWrapper {
         name: `${this.userId}-backtest`,
         resolution: 'json',
         path: 'user-backtests',
+        encryptedToken: internalToken(),
       },
       httpAgent: new http.Agent({ keepAlive: true }),
     })

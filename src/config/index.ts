@@ -35,6 +35,9 @@ export const {
   EXCHANGE_SERVICE_API_URL,
   BACKTEST_SERVICE_HOST = defaultHost,
   JWT_SECRET = '',
+  // Optional override for the internal backtest-callback secret. Left unset,
+  // it is derived from JWT_SECRET — see src/backtest/utils/token.ts.
+  INTERNAL_API_SECRET = '',
   INIDCATORS_PER_WORKER = '5000',
   SERVER_HOST,
   CORS_ORIGIN,

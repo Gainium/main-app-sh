@@ -21,6 +21,7 @@ import { apiReference } from '@scalar/express-api-reference'
 import cookieParser from 'cookie-parser'
 import logger from '../utils/logger'
 import saveFileHelper from '../utils/files'
+import { checkToken } from '../backtest/utils/token'
 import { ExchangeEnum } from '../../types'
 import RedisClient from '../db/redis'
 import { filesDb, userDb } from '../db/dbInit'
@@ -402,7 +403,11 @@ async function start() {
   })
 
   app.post('/api/serverSideBacktest', async (req, res) => {
-    const { userId, backtestData } = req.body
+    const { userId, backtestData, encryptedToken } = req.body
+    if (!checkToken(encryptedToken)) {
+      res.sendStatus(403)
+      return
+    }
     if (backtestData.shareId) {
       const data = {
         shareId: backtestData.shareId,
@@ -419,7 +424,11 @@ async function start() {
   })
 
   app.post('/api/serverSideBacktestSaveFile', async (req, res) => {
-    const { data, name, resolution, path } = req.body
+    const { data, name, resolution, path, encryptedToken } = req.body
+    if (!checkToken(encryptedToken)) {
+      res.sendStatus(403)
+      return
+    }
 
     try {
       const fileResult = saveFileHelper(

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.11] - 2026-08-12
+
+### Fixed
+
+- The backtest callback routes (`/api/serverSideBacktest`, `/api/serverSideBacktestSaveFile`) now authenticate the caller. They sit above the global JWT middleware — deliberately, since the backtest worker calls them host-to-host with no user token — which left them reachable by anyone who could reach the port. Cloud already guards the equivalent routes with a shared token compiled into its private source; that could not be copied here, because this repo is public and a literal would be both published and identical across every install, so the token is derived per-install from `JWT_SECRET` (override with `INTERNAL_API_SECRET`). Fails closed: with no secret configured, no caller is accepted.
+
 ## [1.51.10] - 2026-08-12
 
 ### Fixed
