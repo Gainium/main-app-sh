@@ -1756,6 +1756,48 @@ class MainBot<T extends IMainBot> {
     return
   }
 
+  /**
+   * May this occurrence raise a USER-FACING alert, or has one already gone out
+   * for this account's current hard-auth cooldown window?
+   *
+   * A dead / revoked API key is one ACCOUNT-wide condition. The #386 gate stops
+   * the engine re-asking the venue and stops the error log, but its suppressed
+   * branch replays the venue's cached rejection precisely so downstream is
+   * unchanged — and downstream includes the `botError` → AlertService → Telegram
+   * emission below. So the log went quiet while the user's phone got louder
+   * (95 alerts/day before the gate → 103 after, 50 of them inside one minute
+   * from four sibling bots on the same revoked key), because the suppressed call
+   * returns with no network wait and the loop churns faster.
+   *
+   * Coalescing cannot save this on its own: `restoreFromRangeOrError()` clears
+   * the bot's message rows with `$unset: { bucket: '' }` on every error→recover
+   * cycle — deliberately, so a recovered bot can raise the error again — which
+   * drops the live row out of `botMessageCoalesceKey`, so the next occurrence
+   * inserts a fresh row with `count: 1` and reads as a first occurrence. Every
+   * single time. The dedupe therefore has to key on the CONDITION (the account's
+   * cooldown window), which is also the only key that spans sibling bots and
+   * worker processes.
+   *
+   * Narrow by construction: only the `AUTH_FAILURE_SIGNATURES` allowlist that
+   * opens the cooldown in the first place is gated, so a nonce blip or any other
+   * error is untouched. Fail-open — see {@link AuthFailureGuard.claimAlert}.
+   */
+  private async canRaiseUserAlert(fullMessage: string): Promise<boolean> {
+    const authUUID = `${this.data?.exchangeUUID ?? ''}`
+    if (!authUUID || !isHardAuthFailure(fullMessage)) {
+      return true
+    }
+    const claimed = await AuthFailureGuard.claimAlert(authUUID)
+    if (!claimed) {
+      // debug, not warn: one line per suppressed alert would just move the
+      // flood to the out log (#362's lesson).
+      this.handleDebug(
+        `User alert suppressed: an API-key rejection alert has already been sent for this exchange account in the current auth cooldown window`,
+      )
+    }
+    return claimed
+  }
+
   @IdMute(mutex, (botId: string) => `${botId}processError`)
   async processError(
     _botId: string,
@@ -1929,7 +1971,12 @@ class MainBot<T extends IMainBot> {
         }
       }
 
-      if (savedId && sendError && firstOccurrence) {
+      if (
+        savedId &&
+        sendError &&
+        firstOccurrence &&
+        (await this.canRaiseUserAlert(message))
+      ) {
         _id = savedId
         this.emit('bot message', {
           botName,

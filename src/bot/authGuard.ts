@@ -1,3 +1,5 @@
+import RedisClient from '../db/redis'
+import logger from '../utils/logger'
 import RetryBackoff from './retryBackoff'
 
 /**
@@ -65,11 +67,18 @@ export const isHardAuthFailure = (reason?: string | null): boolean => {
   return AUTH_FAILURE_SIGNATURES.some((s) => r.includes(s))
 }
 
+const logPrefix = '[AuthFailureGuard]'
+
+const AUTH_MIN_MS = 5 * 60 * 1000
+
 const backoff = new RetryBackoff({
   namespace: 'af',
-  minMs: 5 * 60 * 1000,
+  minMs: AUTH_MIN_MS,
   maxMs: 60 * 60 * 1000,
 })
+
+/** Redis key holding "an alert already went out for this account's window". */
+const alertKey = (exchangeUUID: string) => `af:alert:${exchangeUUID}`
 
 export type AuthCheckResult = {
   /** Is this account inside an auth-failure cooldown? */
@@ -108,8 +117,69 @@ export class AuthFailureGuard {
     }
   }
 
+  /**
+   * Claim the ONE user-facing alert this account is allowed for its current
+   * cooldown window. Returns true for exactly one caller per window — across
+   * sibling bots AND across worker processes — and false for every other
+   * occurrence inside it.
+   *
+   * Why this is needed on top of the call gate: the gate above suppresses the
+   * exchange round trip and the error LOG line, but it deliberately replays the
+   * venue's cached rejection so that "every caller's existing `status === notok`
+   * branch is unchanged" — and one of those branches is the one that raises
+   * `botError` → AlertService → Telegram. Suppressing the log without the alert
+   * is the worst split of the two: prod looks clean while the user's phone does
+   * not. Worse, a suppressed call returns with no network wait, so the loop
+   * churns faster; production went from 95 alerts/day before the gate to 103
+   * after, including 50 in a single minute from four sibling bots on one revoked
+   * key. A dead credential is ONE account-wide condition, so it is worth exactly
+   * one actionable alert per backoff window, not one per bot per call.
+   *
+   * Keyed on `exchangeUUID` (a credential is account-wide) and made atomic by
+   * `INCR`, so the sibling bots that re-probe in the same second cannot each
+   * win. Fail-OPEN on any Redis trouble: a duplicate "your API key was rejected"
+   * is an annoyance, a silenced one loses the user money.
+   */
+  static async claimAlert(exchangeUUID: string): Promise<boolean> {
+    try {
+      const state = await backoff.check([exchangeUUID])
+      const now = +new Date()
+      // Tie the claim's lifetime to the cooldown itself so it expires exactly
+      // when the window does: the first REAL re-probe after that is then the
+      // first caller to INCR and earns a fresh, refreshed alert, while every
+      // replay inside the window shares the one already sent. The fallback
+      // covers the hard-auth call sites that are still ungated (`checkOrder` /
+      // `getOrder`), which reach here with no `record()` behind them — they get
+      // the same one-per-minimum-window budget instead of one per call.
+      const ttlMs =
+        state.suppressed && state.until > now ? state.until - now : AUTH_MIN_MS
+      const redis = await RedisClient.getInstance()
+      const key = alertKey(exchangeUUID)
+      const count = await redis.incr(key)
+      if (count === undefined) {
+        return true
+      }
+      // Re-armed on EVERY occurrence, not just the winning one: a claim left
+      // without a TTL (process died between INCR and EXPIRE) would silence the
+      // account for good, and a claim from a narrower window would otherwise
+      // outlive a cooldown that a later re-probe has since widened.
+      await redis.expire(key, Math.ceil(ttlMs / 1000))
+      return count === 1
+    } catch (e) {
+      logger.error(
+        `${logPrefix} claimAlert ${exchangeUUID} error: ${
+          (e as Error)?.message ?? e
+        }`,
+      )
+      return true
+    }
+  }
+
   /** Drop a cooldown — e.g. when the user re-enters the key (and by tests). */
   static async clear(exchangeUUID: string): Promise<void> {
+    await RedisClient.getInstance()
+      .then((r) => r.del(alertKey(exchangeUUID)))
+      .catch(() => undefined)
     return backoff.clear([exchangeUUID])
   }
 }
