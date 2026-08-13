@@ -175,6 +175,26 @@ const notAvailable = 'Bots service is unavailable, please try again later'
 const webhookQueue = 'webhookQueue'
 
 /**
+ * The actions `singleWebhookProcess` actually dispatches. Kept as an explicit
+ * list rather than `Object.values(WebhookActionEnum)` because the enum having a
+ * member is exactly what does NOT make an action work — four position-control
+ * values sat in the enum with no handler and answered 200 for months.
+ * Used only to word the rejection; the rejection itself keys off whether
+ * anything was dispatched, so forgetting to add a new action here degrades the
+ * message, never the behaviour.
+ */
+const implementedWebhookActions: WebhookActionEnum[] = [
+  WebhookActionEnum.start,
+  WebhookActionEnum.close,
+  WebhookActionEnum.closeSl,
+  WebhookActionEnum.startBot,
+  WebhookActionEnum.stopBot,
+  WebhookActionEnum.addFunds,
+  WebhookActionEnum.reduceFunds,
+  WebhookActionEnum.changePairs,
+]
+
+/**
  * First stage of every orphan sweep in `premanenetlyDeleteBots`.
  *
  * `botId` is a plain string on these collections and not every value is a bot
@@ -8872,6 +8892,11 @@ class Bot<T extends UserSchema = UserSchema> {
     } = data
     if (action && uuid) {
       let call: (() => unknown) | undefined
+      // The cold-start path posts to the worker directly instead of setting
+      // `call`, so it has to say so explicitly — otherwise the
+      // nothing-was-dispatched guard at the end would reject a success.
+      let dispatched = false
+      let failReason: string | undefined
       let findBot = this.dcaBots.find((b) => b.uuid === uuid)
       if (!findBot) {
         //@ts-ignore
@@ -9020,6 +9045,7 @@ class Bot<T extends UserSchema = UserSchema> {
               event.botType = type
               event.metadata = JSON.stringify({ action })
               event.paperContext = !!botData.data.result.paperContext
+              dispatched = true
             } else {
               this.handleWarn(
                 `Received ${action} signal for ${uuid}, but bot not found`,
@@ -9030,6 +9056,7 @@ class Bot<T extends UserSchema = UserSchema> {
             this.handleWarn(
               `Received ${action} signal for ${uuid}, but bot is terminal`,
             )
+            failReason = `Action "${action}" is not available for a terminal bot`
           }
         }
       }
@@ -9078,6 +9105,7 @@ class Bot<T extends UserSchema = UserSchema> {
           this.handleWarn(
             `Received ${action} signal for ${uuid}, but bot is terminal`,
           )
+          failReason = `Action "${action}" is not available for a terminal bot`
         }
         findBot = this.dcaBots.find((b) => b.uuid === uuid)
       }
@@ -9208,6 +9236,26 @@ class Bot<T extends UserSchema = UserSchema> {
               pairsToSet,
               pairsToSetMode,
             ))
+        }
+      }
+      // Nothing matched — an unknown action name, or a known one whose
+      // required params/bot state were missing. Both used to fall through to
+      // `return undefined`, which webhookProcess turned into StatusEnum.ok and
+      // the /trade_signal route answered 200: a silent no-op that reads as
+      // success. Say what happened instead.
+      if (!call && !dispatched) {
+        const reason =
+          failReason ??
+          (implementedWebhookActions.includes(action)
+            ? `Action "${action}" could not be executed for bot ${uuid}. Check that the bot supports it and that all required parameters are present.`
+            : `Unknown action "${action}". Supported actions: ${implementedWebhookActions.join(', ')}`)
+        this.handleWarn(
+          `Received ${action} signal for ${uuid}, but nothing was dispatched: ${reason}`,
+        )
+        return {
+          status: StatusEnum.notok as const,
+          reason,
+          data: null,
         }
       }
       if (event.botId) {

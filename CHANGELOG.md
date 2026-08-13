@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.51.14] - 2026-08-13
+
+### Fixed
+
+- `/trade_signal` rejects a webhook it can't act on instead of answering 200. `singleWebhookProcess` returned `undefined` whenever no branch matched — an unknown action name, or a known action whose required parameters or bot state were missing — and `webhookProcess` turned that into `StatusEnum.ok`. The caller got a success for a signal that did nothing. It now returns `{status: notok, reason}`, which the route already maps to HTTP 400, naming the action and listing the supported ones.
+
+### Removed
+
+- `enterLong`, `enterShort`, `exitLong` and `exitShort` dropped from `WebhookActionEnum`. No handler was ever written for them, so they were the silent-200 case above in its purest form: advertised by the dashboard, discarded by the engine.
+
 ## [1.51.13] - 2026-08-12
 
 ### Fixed
