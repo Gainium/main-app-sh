@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.15] - 2026-08-13
+
+### Fixed
+
+- Reducing a deal's funds by 100% told the user "Reduce funds order qty 1222 NEAR is more than closed order qty 1222 NEAR. Order size will be reduced" — an inequality between two equal numbers, followed by a promise the bot does not keep. When the requested reduction covers the whole remaining position there is nothing left to keep, so the deal is closed at market and no reduce order is placed. The warning now says the deal will be closed, and distinguishes a reduction that exactly covers the position from one that exceeds it. Behaviour is unchanged — only the wording.
+
 ## [1.51.14] - 2026-08-13
 
 ### Fixed

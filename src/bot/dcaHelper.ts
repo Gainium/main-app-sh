@@ -18541,8 +18541,15 @@ function createDCABotHelper<
       )
       const tpQty = tpOrder?.[0]?.qty ?? 0
       if (tpQty <= +origQty) {
+        // Nothing is left to keep, so the reduce is fulfilled by closing the
+        // deal below. The message must say so: it used to claim the requested
+        // qty was "more than" the position even when the two were equal (a
+        // 100% reduce), and that the order size "will be reduced" when in fact
+        // no reduce order is placed at all.
         this.handleErrors(
-          `Reduce funds order qty ${origQty} ${ed?.baseAsset.name} is more than closed order qty ${tpQty} ${ed?.baseAsset.name}. Order size will be reduced`,
+          tpQty === +origQty
+            ? `Reduce funds order qty ${origQty} ${ed?.baseAsset.name} covers the whole remaining position ${tpQty} ${ed?.baseAsset.name}. The deal will be closed`
+            : `Reduce funds order qty ${origQty} ${ed?.baseAsset.name} is more than the remaining position ${tpQty} ${ed?.baseAsset.name}. The deal will be closed`,
           '',
           '',
           false,
