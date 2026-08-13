@@ -115,37 +115,85 @@ const checkKey = (
   return false
 }
 
+/** Why an API key failed to authenticate. */
+enum ApiKeyRejection {
+  /** The `token` header is not a key id at all. */
+  malformed = 'malformed',
+  /** No such key — never issued, or deleted since. */
+  unknown = 'unknown',
+  /** The key exists and is the caller's, but its 90-day term has run out. */
+  expired = 'expired',
+  /** Ours, not theirs: the key could not be read back from storage. */
+  unreadable = 'unreadable',
+}
+
+/**
+ * What the caller is told, in the same `{status, reason}` shape the read-only
+ * permission rejection below already returns. A key dies of old age after 90
+ * days with nothing else to announce it, so the 403 body is the only place an
+ * integration can learn why it stopped working.
+ */
+const apiKeyRejectionReason: Record<ApiKeyRejection, string> = {
+  [ApiKeyRejection.malformed]: 'This API key is not a valid key.',
+  [ApiKeyRejection.unknown]:
+    'This API key is not recognized. It may have been deleted.',
+  [ApiKeyRejection.expired]:
+    'This API key has expired. Renew it under Settings → API Keys to restore access.',
+  [ApiKeyRejection.unreadable]: 'This API key could not be verified.',
+}
+
+const rejectKey = (rejection: ApiKeyRejection) => ({
+  id: undefined,
+  secret: undefined,
+  permission: undefined,
+  keyPaperContext: undefined,
+  keyBotId: undefined,
+  rejection,
+})
+
 const getUserByKey = async <R extends UserSchema = UserSchema>(
   key: string,
   userDb: DB<R> = _userDb as unknown as DB<R>,
 ) => {
+  let keyId: Types.ObjectId
   try {
+    keyId = new Types.ObjectId(key)
+  } catch {
+    return rejectKey(ApiKeyRejection.malformed)
+  }
+  try {
+    // Expiry is asserted below rather than in the query. Folding it in made an
+    // expired key indistinguishable from one that was never issued, so every
+    // rejection reached the caller as the same anonymous 403.
     const user = await userDb.readData({
       apiKeys: {
         $elemMatch: {
-          _id: new Types.ObjectId(key)._id,
-          expired: { $gt: new Date().getTime() },
+          _id: keyId._id,
         },
       },
     })
+    if (user.status === StatusEnum.notok) {
+      return rejectKey(ApiKeyRejection.unreadable)
+    }
     const api = user.data?.result?.apiKeys?.find(
       (a) => a._id?.toString() === key,
     )
+    if (!api) {
+      return rejectKey(ApiKeyRejection.unknown)
+    }
+    if (new Date(api.expired).getTime() <= Date.now()) {
+      return rejectKey(ApiKeyRejection.expired)
+    }
     return {
       id: user.data?.result?._id.toString(),
-      secret: api ? await resolveApiSecret(api) : undefined,
-      permission: api?.permission,
-      keyPaperContext: api?.paperContext,
-      keyBotId: api?.botId,
+      secret: await resolveApiSecret(api),
+      permission: api.permission,
+      keyPaperContext: api.paperContext,
+      keyBotId: api.botId,
+      rejection: undefined,
     }
   } catch {
-    return {
-      id: undefined,
-      secret: undefined,
-      permission: undefined,
-      keyPaperContext: undefined,
-      keyBotId: undefined,
-    }
+    return rejectKey(ApiKeyRejection.unreadable)
   }
 }
 
@@ -194,8 +242,24 @@ export const middleware =
     }
     const user = await getUserByKey(token.toString(), userDb)
     if (!user.id || !user.secret || !user.permission) {
-      error(`API request: ${req.method} ${req.url} user not found`)
-      res.sendStatus(403)
+      const rejection = user.rejection ?? ApiKeyRejection.unknown
+      // A rejected key is the caller's problem, not ours, so it is a warning —
+      // an expired key retrying on a schedule used to fill the error log for as
+      // long as the client kept polling. `unreadable` stays an error: that one
+      // is a fault on our side of the credential store.
+      const log = rejection === ApiKeyRejection.unreadable ? error : warn
+      log(
+        `API request: ${req.method} ${req.url} key rejected (${rejection})` +
+          // Only echoed once it has parsed as a key id, so an arbitrary header
+          // value never reaches the log verbatim.
+          (rejection === ApiKeyRejection.malformed
+            ? ''
+            : `: ${token.toString()}`),
+      )
+      res.status(403).json({
+        status: StatusEnum.notok,
+        reason: apiKeyRejectionReason[rejection],
+      })
       return
     }
     if (req.method !== 'GET' && user.permission !== APIPermission.write) {
