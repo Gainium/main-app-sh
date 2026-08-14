@@ -6312,6 +6312,47 @@ class MainBot<T extends IMainBot> {
                       )
                     }`
                   : (processedOrder.price ?? ord.price)
+        // `ord.price` is the price we ASKED for, and for a MARKET order
+        // `getBaseOrder` deliberately shifts it by the slippage allowance
+        // (0.5% against the side, so ABOVE the market for a SHORT). Nothing
+        // ever trades there — it is a sizing/request figure, not a fill.
+        // Binance USDⓈ-M can answer a new-order request with a FILLED order
+        // that carries no execution data at all: the connector stringifies the
+        // absent `avgPrice`/`cumQuote` into the literal `"undefined"`, which
+        // passes the `!== '0'` guard above and only then parses to NaN, so the
+        // ladder lands on the fallback and books the padded price as the entry.
+        // Everything downstream is then built on a price that never existed —
+        // the deal's `initialPrice`/`avgPrice`, its safety-order ladder, its TP
+        // price, the "deal started" alert and the reported P/L. Bug #426: SHORT
+        // deals were booked 0.5% above the market, the TP landed AT the market,
+        // filled instantly, and the deal was reported closed in profit while it
+        // had actually lost the fees. Ask the venue for the fill it will not
+        // volunteer before inventing one.
+        if (
+          (isNaN(parseFloat(price)) || price === '0') &&
+          orderType === OrderTypeEnum.market &&
+          +processedOrder.executedQty > 0
+        ) {
+          const fetched = await this.getOrder(
+            order.clientOrderId,
+            order.symbol,
+            false,
+          )
+          if (fetched?.status === StatusEnum.ok && fetched.data) {
+            const merged = await this.mergeCommonOrderWithOrder(
+              fetched.data,
+              ord,
+            )
+            const mergedPrice = parseFloat(merged.price)
+            if (
+              !isNaN(mergedPrice) &&
+              isFinite(mergedPrice) &&
+              mergedPrice > 0
+            ) {
+              price = merged.price
+            }
+          }
+        }
         if (isNaN(parseFloat(price)) || price === '0') {
           price = ord.price
         }
