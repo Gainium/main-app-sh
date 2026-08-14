@@ -12300,13 +12300,25 @@ function createDCABotHelper<
         ).reduce((acc, v) => acc + v.qty, 0)
         const long = this.isLong
         const bo = this.findBaseOrderByDeal(dealId)
+        // No base order on record — a worker restart can restore an order
+        // snapshot that no longer carries it — so re-derive it from settings.
+        // `getBaseOrder` floors the size it actually placed at
+        // `baseAsset.minAmount`; re-deriving without that floor under-states a
+        // base order worth less than one step (bug #423: $1 on krakenUsdm
+        // BTC-USD, step 0.0001 ≈ $6), and on futures — where every "too small"
+        // guard below is gated `!this.futures` — it rounds to 0 and we send the
+        // venue a zero-qty TP it can only reject (`invalidArgument: 0`).
         let boQty =
           parseFloat(bo?.executedQty || '0') ||
           parseFloat(bo?.origQty || '0') ||
-          (orderSizeType === OrderSizeTypeEnum.quote
-            ? (baseOrderSize * (this.coinm ? symbol.quoteAsset.minAmount : 1)) /
-              boPrice
-            : baseOrderSize)
+          Math.max(
+            orderSizeType === OrderSizeTypeEnum.quote
+              ? (baseOrderSize *
+                  (this.coinm ? symbol.quoteAsset.minAmount : 1)) /
+                boPrice
+              : baseOrderSize,
+            symbol.baseAsset.minAmount,
+          )
         boQty = this.math.round(boQty, precision, !this.futures)
         const _qty =
           filledOrders.reduce((acc, v) => acc + +v.executedQty, 0) + boQty

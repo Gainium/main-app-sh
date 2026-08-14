@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.16] - 2026-08-14
+
+### Fixed
+
+- Futures deal take profit placed as a zero-quantity order after a bot worker restart
+
 ## [1.51.15] - 2026-08-13
 
 ### Fixed
