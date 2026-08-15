@@ -6094,6 +6094,53 @@ class MainBot<T extends IMainBot> {
             this.endMethod(_id)
             return this.sendOrderToExchange(order, returnError, count)
           }
+          // A venue can WIDEN a symbol's tickSize at any time, and Binance did
+          // exactly that around 06:00Z on 2026-08-15: AKEUSDT went 1e-7 -> 1e-6
+          // and ONUSDT 1e-5 -> 1e-4. `priceAssetPrecision` is derived from
+          // tickSize by the connector but only refreshed by an HOURLY cron, so
+          // until it catches up every price we compute still carries the old,
+          // finer decimals and the venue refuses it with -4014 `Price not
+          // increased by tick size.` — 49 such rejections across 11 bots and 3
+          // bot types in the 18 minutes before the cron caught up at 06:20:25Z,
+          // leaving the affected grid/safety orders CANCELED. This is the same
+          // shape as the MARKET_LOT_SIZE handler above — a cached symbol filter
+          // went stale — so it takes the same cure: re-read the filters from
+          // the venue and re-quantize to the refreshed precision.
+          //
+          // Retrying only when the refreshed precision actually CHANGES the
+          // price is what makes this self-limiting: the resubmission carries an
+          // already-quantized price, so a second rejection cannot change it
+          // again and the branch falls through to normal error handling. No
+          // retry counter is needed, and `count` is deliberately passed through
+          // unchanged so the coin-M contract-quantity conversion — which only
+          // runs at `count === 0` — still applies to the resubmission.
+          //
+          // `price` and `origPrice` move together on purpose: further down,
+          // a `processedOrder.price !== order.origPrice` mismatch is what
+          // classifies a fill as MARKET, so re-quantizing only `price` would
+          // book this limit order at a market average.
+          if (
+            (request.reason.toLowerCase().indexOf('tick size') !== -1 ||
+              request.reason.toLowerCase().indexOf('price_filter') !== -1) &&
+            order.type !== 'MARKET'
+          ) {
+            const fresh = await this.getExchangeInfo(order.symbol, true)
+            if (fresh) {
+              const requantized = `${this.math.round(
+                +order.price,
+                fresh.priceAssetPrecision,
+              )}`
+              if (+requantized > 0 && requantized !== order.price) {
+                this.handleLog(
+                  `Order ${order.clientOrderId} refused on tick size. ${order.symbol} price precision refreshed to ${fresh.priceAssetPrecision}, re-quantized ${order.price} -> ${requantized}, retry`,
+                )
+                order.price = requantized
+                order.origPrice = requantized
+                this.endMethod(_id)
+                return this.sendOrderToExchange(order, returnError, count)
+              }
+            }
+          }
           if (
             (request.reason.toLowerCase().indexOf('duplicate') !== -1 ||
               request.reason
