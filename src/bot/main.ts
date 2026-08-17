@@ -396,6 +396,25 @@ const notEnoughBalanceBackoff = new RetryBackoff({
   minMs: 5 * 60 * 1000,
   maxMs: 60 * 60 * 1000,
 })
+/**
+ * How often the SAME (bot, subType) condition may be raised to the user again.
+ *
+ * The two guards above stop the engine re-asking the venue; this one stops the
+ * engine re-telling the user. They are separate problems: a condition can keep
+ * being detected locally (a tick that re-reads state, a leg that re-checks its
+ * position) without any suppressed exchange call, and every detection is a fresh
+ * visible bot message once the recovery clear has dropped the previous row out
+ * of the coalescing index — see the long note in `processError`.
+ *
+ * Same shape as the sibling cooldowns, and the same ceiling: a condition the
+ * user resolves is re-checked within `minMs`, one that is never resolved settles
+ * at one notification per `maxMs` instead of one per bot cycle.
+ */
+const errorRaiseBackoff = new RetryBackoff({
+  namespace: 'er',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+})
 type LastLog = {
   time: number
   message: string
@@ -1845,29 +1864,6 @@ class MainBot<T extends IMainBot> {
         this.data?.statusReason === subType
       )
     ) {
-      // How many rows this occurrence is allowed to occupy — see
-      // `getSubTypeLogPolicy`. This REPLACES the count-then-insert gate that used
-      // to live here. That gate asked "does a live visible row already exist?",
-      // which is the right question asked in a way that cannot hold: the answer
-      // is stale the moment it returns, it read a failed query as "no" and wrote
-      // anyway, and it filtered on `showUser:true` so no hidden row was ever
-      // covered by it. Uniqueness is now the database's job
-      // (`botMessageCoalesceKey`), and repeats become a `count` instead of a row.
-      let policy = getSubTypeLogPolicy(subType, sendError)
-      if (
-        !getSubTypeBehavior(subType)?.logMode &&
-        (subType === 'Not enough balance' ||
-          (subType === 'Uncategorized' && isMaxDeals))
-      ) {
-        // These two carried a bespoke "at most one per 24h" branch. Expressed as
-        // a policy it is just a daily coalesce window, and an admin can now
-        // change it without a deploy. The window is calendar-aligned where the
-        // old branch was rolling — one row per UTC day rather than one per 24h
-        // since the last — which is the only behaviour change here.
-        policy = { mode: 'coalesce', windowMs: 24 * 60 * 60 * 1000 }
-      }
-      const bucket = logPolicyBucket(policy, time)
-
       if (!debug) {
         if (setError) {
           this.handleError(errorText)
@@ -1883,6 +1879,58 @@ class MainBot<T extends IMainBot> {
         : MessageTypeEnum.warning
       const symbol = this.data?.settings.pair[0]
       const exchange = this.data?.exchange
+
+      // Re-raise backoff. `logMode: 'once'` caps a persistent condition at one
+      // visible row per bot only for as long as that row stays the coalescing
+      // target — and for any subType with `errorsBot: true` it never does:
+      // `BotStatusEnum.error` is a SOFT status, so `restoreFromRangeOrError()`
+      // clears the bot's messages (and `$unset`s their bucket) before the next
+      // attempt. The condition then re-fails, inserts a FRESH row, and every
+      // occurrence is `count === 1` — i.e. a first occurrence — so the user is
+      // re-notified on every cycle for a condition only they can fix (sign an
+      // exchange agreement, replace a dead API key, lift a restriction).
+      //
+      // The clear itself is load-bearing (without it a subType could never be
+      // raised again once dismissed), so the rate limit belongs on the RAISE,
+      // not on the row: consult a per-(bot, subType) cooldown and, while it is
+      // open, write the occurrence into the hidden lane instead. Hidden rows are
+      // born `isDeleted`, which is exactly what the recovery clear filters on,
+      // so their bucket survives and they coalesce as intended — the admin keeps
+      // a counted record, the user gets one notification per backoff window.
+      //
+      // Backoff rather than a fixed window for the usual reason: a condition the
+      // user fixes is picked up quickly, one that is never fixed settles at an
+      // hourly re-raise. Redis-backed, so the window is shared across bot
+      // workers and survives a restart; fail-open, so a Redis blip re-raises.
+      // `force` (user-initiated actions) is never suppressed.
+      let raise = sendError
+      if (raise && !force) {
+        const cooldown = await errorRaiseBackoff.check([messageBotId, subType])
+        raise = !cooldown.suppressed
+      }
+
+      // How many rows this occurrence is allowed to occupy — see
+      // `getSubTypeLogPolicy`. This REPLACES the count-then-insert gate that used
+      // to live here. That gate asked "does a live visible row already exist?",
+      // which is the right question asked in a way that cannot hold: the answer
+      // is stale the moment it returns, it read a failed query as "no" and wrote
+      // anyway, and it filtered on `showUser:true` so no hidden row was ever
+      // covered by it. Uniqueness is now the database's job
+      // (`botMessageCoalesceKey`), and repeats become a `count` instead of a row.
+      let policy = getSubTypeLogPolicy(subType, raise)
+      if (
+        !getSubTypeBehavior(subType)?.logMode &&
+        (subType === 'Not enough balance' ||
+          (subType === 'Uncategorized' && isMaxDeals))
+      ) {
+        // These two carried a bespoke "at most one per 24h" branch. Expressed as
+        // a policy it is just a daily coalesce window, and an admin can now
+        // change it without a deploy. The window is calendar-aligned where the
+        // old branch was rolling — one row per UTC day rather than one per 24h
+        // since the last — which is the only behaviour change here.
+        policy = { mode: 'coalesce', windowMs: 24 * 60 * 60 * 1000 }
+      }
+      const bucket = logPolicyBucket(policy, time)
       // Immutable identity of the row, applied only when one is created.
       const onInsert = {
         userId: this.userId,
@@ -1893,10 +1941,10 @@ class MainBot<T extends IMainBot> {
             : BotType.hedgeCombo
           : this.botType,
         subType,
-        showUser: sendError,
+        showUser: raise,
         // A suppressed message is born dismissed: it is kept only so the admin
         // Bot Errors page can count it, and the tombstone TTL reaps it on age.
-        isDeleted: !sendError,
+        isDeleted: !raise,
         paperContext: !!this.data?.paperContext,
         terminal,
         firstTime: time,
@@ -1931,7 +1979,7 @@ class MainBot<T extends IMainBot> {
           userId: this.userId,
           botId: messageBotId,
           subType,
-          showUser: sendError,
+          showUser: raise,
           bucket,
         }
         // `$inc` makes "is this the first occurrence in this window?" a property
@@ -1971,12 +2019,17 @@ class MainBot<T extends IMainBot> {
         }
       }
 
-      if (
-        savedId &&
-        sendError &&
-        firstOccurrence &&
-        (await this.canRaiseUserAlert(message))
-      ) {
+      // A REAL raise (never a suppressed one, or the window would slide forward
+      // forever and the subType could never be raised again) opens or widens the
+      // re-raise window. Recorded on the visible ROW, not on the alert below: a
+      // row the user can see in the dashboard is the thing being rate-limited;
+      // `canRaiseUserAlert` is a narrower, alert-only gate on top of it.
+      const raisedToUser = !!savedId && raise && firstOccurrence
+      if (raisedToUser && !force) {
+        await errorRaiseBackoff.record([messageBotId, subType], messageToSet)
+      }
+
+      if (savedId && raisedToUser && (await this.canRaiseUserAlert(message))) {
         _id = savedId
         this.emit('bot message', {
           botName,

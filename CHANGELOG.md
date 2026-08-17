@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.17] - 2026-08-17
+
+### Fixed
+
+- A bot error the user alone can resolve (an unsigned exchange agreement, a dead API key, a venue restriction) was re-raised on every bot cycle. `logMode: 'once'` caps such a condition at one visible bot message per bot only while that message stays the coalescing target, and for any subType with `errorsBot: true` it never does: `BotStatusEnum.error` is a soft status, so `restoreFromRangeOrError()` clears the bot's messages and `$unset`s their bucket before the next attempt. The condition re-failed, inserted a fresh row, and every occurrence looked like a first occurrence — a new dashboard message and alert each cycle. `processError` now consults a Redis-backed exponential re-raise cooldown per (bot, subType) — same mechanism and 5min→1h ceiling as the compliance/auth/balance guards — and while it is open writes the occurrence into the hidden lane instead. Hidden rows are born `isDeleted`, which is what the recovery clear filters on, so their bucket survives and they coalesce; the admin Bot Errors page keeps a counted record. User-initiated (`force`) reports are never suppressed, and a Redis failure re-raises as before.
+
 ## [1.51.16] - 2026-08-14
 
 ### Fixed
