@@ -79,6 +79,9 @@ import {
 import {
   validateBotCreationContext,
   findConflictingFuturesPosition,
+  terminalDealGuard,
+  terminalDealGuardKey,
+  isTerminalDealGuardOpen,
   replaceVarsInInput,
   addAditionalFields,
   addIndicatorsDefaults,
@@ -2258,11 +2261,37 @@ const v2API = <R extends UserSchema = UserSchema>(
       // A terminal deal that the engine will refuse to start is rejected here
       // rather than created and dropped a few milliseconds later in the bot
       // worker — see `findConflictingFuturesPosition`.
+      //
+      // A caller that ignores that answer and re-sends is answered from Redis
+      // instead, so the position read is not paid for again — see
+      // `terminalDealGuard`. The breaker is consulted BEFORE the check it is
+      // standing in for, which is the whole point of it.
+      const guardKey = terminalDealGuardKey(
+        `${userData._id}`,
+        exchange.uuid,
+        [validate.data.pair].flat()[0] ?? '',
+        'position-conflict',
+      )
+      const cooldown = await terminalDealGuard.check(guardKey)
+      if (isTerminalDealGuardOpen(cooldown)) {
+        return res
+          .status(429)
+          .set(
+            'Retry-After',
+            `${Math.max(1, Math.ceil((cooldown.until - Date.now()) / 1000))}`,
+          )
+          .json({
+            status: StatusEnum.notok,
+            reason: cooldown.reason,
+          })
+      }
+
       const positionConflict = await findConflictingFuturesPosition(
         exchange,
         validate.data,
       )
       if (positionConflict) {
+        await terminalDealGuard.record(guardKey, positionConflict)
         return res.status(400).json({
           status: StatusEnum.notok,
           reason: positionConflict,
@@ -2287,6 +2316,9 @@ const v2API = <R extends UserSchema = UserSchema>(
 
         // Extract bot data from response
         const botData = bot.data
+
+        // The constraint the breaker was counting is demonstrably gone.
+        await terminalDealGuard.clear(guardKey)
 
         return res.status(200).json({
           status: StatusEnum.ok,

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.51.20] - 2026-08-18
+
+### Fixed
+
+- The re-raise cooldown no longer misses one-bot-per-deal patterns. It is keyed per (bot, subType), which is what makes the window mean anything for a bot the user keeps — but a terminal deal is one bot per deal, created by the request that starts it, so the bot id is never the same twice and the cooldown could suppress nothing at all: every occurrence was the first for its bot, and a caller looping on a condition that would not clear collected one notification per attempt. Terminal deals now key the cooldown on the user, the subType and the symbol, which is what identifies the constraint and is stable across the bots.
+
+### Added
+
+- A repeated-refusal breaker on `POST /api/v2/deals/terminal`. The `400` for a position conflict tells an honest caller why, but does nothing about an automation that ignores the answer and re-sends — and each attempt still pays for a credentialed position read on the way to the same refusal, spending the same exchange rate-limit budget as real trading. After three consecutive refusals of the same (user, connection, symbol, kind), the refusal is replayed from Redis as a `429` with `Retry-After` and the read is skipped. The window widens per refusal, caps at 15 minutes, expires on its own, and is cleared by the first deal that goes through, so a user who closes the position recovers with no intervention. Fed only by refusals the endpoint decides itself — never by the engine's asynchronous start failures, some of which are ours.
+
 ## [1.51.19] - 2026-08-18
 
 ### Fixed

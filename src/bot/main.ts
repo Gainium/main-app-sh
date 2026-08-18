@@ -1903,9 +1903,22 @@ class MainBot<T extends IMainBot> {
       // hourly re-raise. Redis-backed, so the window is shared across bot
       // workers and survives a restart; fail-open, so a Redis blip re-raises.
       // `force` (user-initiated actions) is never suppressed.
+      //
+      // Keyed per (bot, subType) for a bot the user keeps — which is what makes
+      // the window mean anything: the bot is the thing they are watching. A
+      // terminal deal is not that. It is one bot per deal, created by the
+      // request that starts it, so `messageBotId` is never the same twice and a
+      // per-bot cooldown can suppress nothing at all: every occurrence is the
+      // first for its bot, and a caller looping on a condition that will not
+      // clear collects one notification per attempt. For those, key on what
+      // actually identifies the constraint and is stable across the bots — the
+      // user, the subType, and the symbol it keeps failing on.
+      const cooldownKey = terminal
+        ? [this.userId, subType, symbol ?? '']
+        : [messageBotId, subType]
       let raise = sendError
       if (raise && !force) {
-        const cooldown = await errorRaiseBackoff.check([messageBotId, subType])
+        const cooldown = await errorRaiseBackoff.check(cooldownKey)
         raise = !cooldown.suppressed
       }
 
@@ -2026,7 +2039,7 @@ class MainBot<T extends IMainBot> {
       // `canRaiseUserAlert` is a narrower, alert-only gate on top of it.
       const raisedToUser = !!savedId && raise && firstOccurrence
       if (raisedToUser && !force) {
-        await errorRaiseBackoff.record([messageBotId, subType], messageToSet)
+        await errorRaiseBackoff.record(cooldownKey, messageToSet)
       }
 
       if (savedId && raisedToUser && (await this.canRaiseUserAlert(message))) {

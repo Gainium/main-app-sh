@@ -11,11 +11,67 @@ import {
 import { globalVarsDb } from '../../db/dbInit'
 import DB from '../../db'
 import ExchangeChooser from '../../exchange/exchangeChooser'
+import { RetryBackoff, type BackoffCheck } from '../../bot/retryBackoff'
 import logger from '../../utils/logger'
 import { isFutures, isCoinm, isPaper } from '../../utils'
 import { indicatorConfigDefaults } from './botDefaults'
 import { Types } from 'mongoose'
 import { CreateDCABotInputRaw, CreateGridBotInputRaw } from './api'
+/**
+ * Circuit breaker for a caller that keeps asking for a terminal deal we keep
+ * refusing.
+ *
+ * A 400 fixes the honesty problem — the caller is finally told why — but it
+ * does not fix an automation that ignores the answer and re-sends every fifteen
+ * seconds. Each attempt still costs a credentialed position read on the way to
+ * the same refusal, and that read spends the same exchange rate-limit budget as
+ * real trading.
+ *
+ * So: after a few CONSECUTIVE refusals of the same constraint, stop paying for
+ * the check and replay the refusal from Redis instead, with a Retry-After the
+ * caller can honour. The window widens per refusal and expires on its own, so
+ * the attempt after it lands like any other — a user who closes the position
+ * gets their next deal through with no intervention.
+ *
+ * Fed ONLY by refusals this endpoint decides itself. It is deliberately not fed
+ * by the engine's asynchronous start failures: some of those are ours (a
+ * transient exchange-info miss, a connector blip), and a breaker that blocks
+ * trading on the strength of a platform hiccup is a worse failure than the
+ * noise it was built to stop.
+ */
+export const terminalDealGuard = new RetryBackoff({
+  namespace: 'td',
+  minMs: 60 * 1000,
+  // Capped well below the sibling cooldowns: this one refuses a trade, so the
+  // cost of holding it open too long is the user's, not ours.
+  maxMs: 15 * 60 * 1000,
+})
+
+/**
+ * Consecutive refusals tolerated before the breaker starts answering for the
+ * endpoint. Above one, so a caller who reacts to the first 400 — reads it,
+ * fixes the position, retries — never meets the breaker at all.
+ */
+export const TERMINAL_DEAL_GUARD_THRESHOLD = 3
+
+/** The breaker answers only once the same constraint has been refused repeatedly. */
+export const isTerminalDealGuardOpen = (
+  cooldown: BackoffCheck,
+): cooldown is Extract<BackoffCheck, { suppressed: true }> =>
+  cooldown.suppressed && cooldown.attempt >= TERMINAL_DEAL_GUARD_THRESHOLD
+
+/**
+ * What the breaker is counting: this user, this connection, this symbol, this
+ * kind of refusal. Not the deal — two identical deals are the same constraint,
+ * and a different symbol is a different question that deserves its own answer.
+ */
+export const terminalDealGuardKey = (
+  userId: string,
+  exchangeUUID: string,
+  symbol: string,
+  kind: string,
+): string[] => [userId, exchangeUUID, symbol, kind]
+
 /**
  * The direction a bot will open. The engine consults `futuresStrategy` first
  * and falls back to `strategy` (core/src/bot/main.ts, `check positions`); a
