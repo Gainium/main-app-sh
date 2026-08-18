@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.18] - 2026-08-18
+
+### Security
+
+- DataGrid `contains` / `startsWith` / `endsWith` filters now match the user's value as a literal string. `mapDataGridOptionsToMongoOptions` ran the value through `encodeURIComponent` and fed the result straight to `new RegExp`, but `encodeURIComponent` leaves `.`, `*`, `(` and `)` intact — so the value reached the engine as a pattern rather than a literal. A bare `(` threw a `SyntaxError` and failed the whole query, and a value such as `.*` silently matched every document instead of the substring the operator names promise. Every metacharacter is now escaped. Reported as GHSA-cc5x-49gv-35wr; note the report's denial-of-service impact does not apply — the pattern is serialised into the MongoDB query and evaluated by `mongod`, never matched on the Node event loop.
+
 ## [1.51.17] - 2026-08-17
 
 ### Fixed

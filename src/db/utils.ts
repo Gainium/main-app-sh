@@ -16,6 +16,17 @@ const timeOperatorValues = [
 const checkNumber = (value: string | number) =>
   !isNaN(+value) || isFinite(+value)
 
+// SECURITY: escape every regex metacharacter before building a RegExp from a
+// user-supplied filter value. `encodeURIComponent` above looks like it
+// sanitises, but it leaves `.`, `*`, `(` and `)` intact -- so a
+// `contains`/`startsWith`/`endsWith` value reaches `new RegExp` as a pattern,
+// not a literal. Two consequences: a bare `(` throws a SyntaxError and fails
+// the query, and a value like `.*` silently matches everything instead of the
+// literal-substring match the operator names imply. Escaping restores those
+// semantics and closes the regex injection.
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 export const mapDataGridOptionsToMongoOptions = (input?: {
   sortModel?: GridSortModel[]
   filterModel?: { items: GridFilterItem[]; linkOperator?: string }
@@ -41,16 +52,16 @@ export const mapDataGridOptionsToMongoOptions = (input?: {
       }
       let filterItem
       if (item.operator === 'contains') {
-        filterItem = { $regex: new RegExp(`${item.value}`, 'i') }
+        filterItem = { $regex: new RegExp(escapeRegExp(item.value), 'i') }
       }
       if (item.operator === 'equals') {
         filterItem = { $eq: item.value }
       }
       if (item.operator === 'startsWith') {
-        filterItem = { $regex: new RegExp(`^${item.value}`, 'i') }
+        filterItem = { $regex: new RegExp(`^${escapeRegExp(item.value)}`, 'i') }
       }
       if (item.operator === 'endsWith') {
-        filterItem = { $regex: new RegExp(`${item.value}$`, 'i') }
+        filterItem = { $regex: new RegExp(`${escapeRegExp(item.value)}$`, 'i') }
       }
       if (item.operator === 'isEmpty') {
         filterItem = { $eq: '' }
