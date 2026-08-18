@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.23] - 2026-08-18
+
+### Fixed
+
+- `addExchange` no longer persists one trade type's connections before the next one has been verified. A "Spot & Futures" add whose key lacked the Futures permission saved the Spot leg and then returned an error, so the account kept a connection the user was told had not been created — and the duplicate check then refused every retry with that key. All requested trade types are verified up front, anything a failed attempt already wrote is rolled back, and the duplicate reason names the existing connection and how to clear it.
+
 ## [1.51.22] - 2026-08-18
 
 ### Fixed

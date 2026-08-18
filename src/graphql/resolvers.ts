@@ -5484,6 +5484,13 @@ const resolvers = <
       },
       { token, req }: InputRequest,
     ) => {
+      // Real implementation is installed once the user is known (see
+      // `rollbackCreatedLegs` below). It lives out here because the catch at
+      // the bottom has to undo partial writes too, and a `const` declared
+      // inside the try would not be in scope there. Until it is assigned there
+      // is nothing written to undo, so the default is a no-op.
+      let rollbackCreatedLegs: (why: string) => Promise<void> = async () =>
+        undefined
       try {
         if (token === 'demo' || !req.user?.authorized) {
           return errorAccess()
@@ -5521,13 +5528,58 @@ const resolvers = <
             : [tradeType]
         const uuids: string[] = []
         const returnExchanges: ExchangeInUser[] = []
-        for (const tt of tradeTypesToUse) {
-          // Captured from verification so every leg created for this trade type
-          // is stored with the permissions we just observed — the periodic
-          // re-check then has a baseline to compare against instead of having
-          // to treat every pre-existing connection as never-checked.
-          let observedPermissions: ExchangeKeyPermissions | undefined
-          if (!paperExchanges.includes(provider)) {
+        // Anything that fails AFTER the first leg has been written still leaves
+        // a half-connected account behind (a Mongo write error, the Hyperliquid
+        // builder-fee check, an exception out of a leg's identity probe). The
+        // mutation returns an error, so the dashboard tells the user nothing
+        // was added — while the connection list says otherwise, and the next
+        // attempt is refused as a duplicate of the orphan. `uuids` already
+        // tracks exactly what this mutation created, so undo it. Nothing else
+        // has been provisioned for these legs yet — fees, balances and
+        // snapshots only run once the loop below completes — so pulling the
+        // sub-documents is the whole cleanup, and no other connection can point
+        // at them (`linkedTo` is only ever set ON the new leg).
+        rollbackCreatedLegs = async (why: string) => {
+          if (!uuids.length) {
+            return
+          }
+          const created = uuids.splice(0, uuids.length)
+          returnExchanges.length = 0
+          const undo = await userDb.updateData(
+            { _id: user.data._id },
+            { $pull: { exchanges: { uuid: { $in: created } } } },
+          )
+          logger.warn(
+            `[addExchange] rolled back ${created.length} partially created leg(s) (${created.join(
+              ', ',
+            )}) for user ${user.data._id} (${user.data.username}) after ${why}${
+              undo.status === StatusEnum.notok
+                ? ` — ROLLBACK FAILED: ${undo.reason}`
+                : ''
+            }`,
+          )
+        }
+        // EVERY requested trade type is verified — and checked for duplicates —
+        // BEFORE anything is persisted. These checks used to live inside the
+        // write loop below, which walks the trade types in order and saves a
+        // trade type's legs before the next one is even verified: a "Spot &
+        // Futures" add with a key that has Reading+Spot but not Futures enabled
+        // therefore SAVED the SPOT leg and only then failed on futures. The
+        // mutation returned "API keys not valid for futures", so the user
+        // believed nothing had been connected, while an orphaned "<name> (SPOT)"
+        // connection stayed on the account — and because the duplicate check is
+        // scoped to the input provider, every retry with that key was then
+        // refused with "already exists in <name> (SPOT)", leaving no way
+        // forward. Verification is read-only, so running it for both trade
+        // types up front changes nothing but the point of no return. Paper adds
+        // mint a fresh key/secret per leg inside the loop and cannot be
+        // verified ahead of it; they keep their existing path.
+        const verifiedPermissions = new Map<
+          TradeTypeEnum,
+          ExchangeKeyPermissions | undefined
+        >()
+        if (!paperExchanges.includes(provider)) {
+          for (const tt of tradeTypesToUse) {
             const verifyResult = await verify.verifyExchange(
               tt,
               provider,
@@ -5539,7 +5591,11 @@ const resolvers = <
               bybitHost,
               subaccount,
             )
-            observedPermissions = verifyResult.permissions
+            // Captured from verification so every leg created for this trade
+            // type is stored with the permissions we just observed — the
+            // periodic re-check then has a baseline to compare against instead
+            // of having to treat every pre-existing connection as never-checked.
+            verifiedPermissions.set(tt, verifyResult.permissions)
             // Fund-movement permission is refused outright on a NEW
             // connection. Safe to hard-fail here (unlike re-verification): the
             // user is at the form and has nothing running yet. Checked before
@@ -5581,14 +5637,28 @@ const resolvers = <
               (e) => e.provider === provider,
             )
             if (find) {
+              // The old text ("This API keys already exsits in X") named the
+              // connection but nothing the user could act on, and its typo made
+              // it read like a glitch. Whoever hits this is almost always
+              // trying to re-add a key an earlier half-finished add left
+              // behind — say which connection holds it and how to get past it.
+              const existing = find.name
+                ? `"${find.name}" (${find.provider})`
+                : find.provider
               return {
                 status: StatusEnum.notok,
-                reason: `This API keys already exsits in ${
-                  find.name ? `${find.name} (${find.provider})` : find.provider
-                }`,
+                data: null,
+                reason:
+                  `This API key is already connected to Gainium as ${existing}. ` +
+                  `A key can only be connected once per exchange — to reconnect it ` +
+                  `(for example to add Futures to a key that is already connected ` +
+                  `for Spot), delete that connection first, then add the key again.`,
               }
             }
           }
+        }
+        for (const tt of tradeTypesToUse) {
+          const observedPermissions = verifiedPermissions.get(tt)
           for (const e of tt === TradeTypeEnum.futures &&
           provider === ExchangeEnum.bybit
             ? [ExchangeEnum.bybitCoinm, ExchangeEnum.bybitUsdm]
@@ -5700,6 +5770,9 @@ const resolvers = <
                 username: `${user.data.username}@${exch}`,
               })
               if (paperUserCreationResult.status === StatusEnum.notok) {
+                await rollbackCreatedLegs(
+                  `paper account creation failed for leg "${e}"`,
+                )
                 return paperUserCreationResult
               }
               const verifyResult = await verify.verifyExchange(
@@ -5710,6 +5783,9 @@ const resolvers = <
                 passphrase || '',
               )
               if (!verifyResult) {
+                await rollbackCreatedLegs(
+                  `paper verification failed for leg "${e}"`,
+                )
                 return {
                   status: StatusEnum.notok,
                   reason: `API keys not valid for ${tt}`,
@@ -5747,6 +5823,9 @@ const resolvers = <
                   `Add exchange affiliate check for user ${user.data._id} (${user.data.username}), exchange: "${e}", code: "${code.data.result.code}", affiliate: ${affiliate}`,
                 )
                 if (!affiliate) {
+                  await rollbackCreatedLegs(
+                    `the builder-fee approval check failed for leg "${e}"`,
+                  )
                   return {
                     status: StatusEnum.notok,
                     // The old text ("you need to follow the instructions")
@@ -5940,6 +6019,7 @@ const resolvers = <
               logger.error(
                 `Resolver Exchange | Save ${saveDataRequest.reason}, user ${user.data._id} (${user.data.username}), uuid ${uuid}`,
               )
+              await rollbackCreatedLegs(`the write of leg "${e}" failed`)
               return {
                 status: StatusEnum.notok,
                 data: null,
@@ -6076,6 +6156,12 @@ const resolvers = <
         }
       } catch (e) {
         logger.error(`Resolver Exchange | Add Exchange ${e}`)
+        // Same contract as the handled failures above: the user is told the
+        // add did not happen, so nothing this mutation created may survive.
+        // Best-effort — a failing rollback must not replace the original error.
+        await rollbackCreatedLegs(`an unexpected error: ${e}`).catch((err) =>
+          logger.error(`Resolver Exchange | Add Exchange rollback ${err}`),
+        )
         return {
           status: StatusEnum.notok,
           reason: 'Cannot add exchange. Please try again later',
