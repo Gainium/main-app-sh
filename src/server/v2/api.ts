@@ -78,6 +78,7 @@ import {
 } from './validators/bots'
 import {
   validateBotCreationContext,
+  findConflictingFuturesPosition,
   replaceVarsInInput,
   addAditionalFields,
   addIndicatorsDefaults,
@@ -2254,6 +2255,20 @@ const v2API = <R extends UserSchema = UserSchema>(
           errors: validate.errors,
         })
       }
+      // A terminal deal that the engine will refuse to start is rejected here
+      // rather than created and dropped a few milliseconds later in the bot
+      // worker — see `findConflictingFuturesPosition`.
+      const positionConflict = await findConflictingFuturesPosition(
+        exchange,
+        validate.data,
+      )
+      if (positionConflict) {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: positionConflict,
+        })
+      }
+
       // 7. Call Bot.createDCABot with terminal type
       try {
         const bot = await Bot.createDCABot(

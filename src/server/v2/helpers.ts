@@ -6,13 +6,116 @@ import {
   CreateDCABotInput,
   ExchangeInUser,
   BotSettings,
+  StrategyEnum,
 } from '../../../types'
 import { globalVarsDb } from '../../db/dbInit'
 import DB from '../../db'
+import ExchangeChooser from '../../exchange/exchangeChooser'
+import logger from '../../utils/logger'
 import { isFutures, isCoinm, isPaper } from '../../utils'
 import { indicatorConfigDefaults } from './botDefaults'
 import { Types } from 'mongoose'
 import { CreateDCABotInputRaw, CreateGridBotInputRaw } from './api'
+/**
+ * The direction a bot will open. The engine consults `futuresStrategy` first
+ * and falls back to `strategy` (core/src/bot/main.ts, `check positions`); a
+ * terminal deal is a DCA bot, which carries no `futuresStrategy`, so the
+ * fallback is the whole rule here.
+ */
+const requiredPositionSide = (settings: CreateDCABotInput): 'LONG' | 'SHORT' =>
+  settings.strategy === StrategyEnum.long ? 'LONG' : 'SHORT'
+
+/**
+ * Pre-flight for the engine's "existing position" rule.
+ *
+ * A futures bot refuses to start when a position is already open on the symbol
+ * in the opposite direction — see `loadData` → `check positions` in
+ * `core/src/bot/main.ts`. That refusal happens inside the bot worker, well
+ * after the HTTP request has answered. For a bot the caller already owns that
+ * is tolerable: the bot persists, and the refusal shows up as a message on it.
+ *
+ * For a terminal deal it is not. The request itself is what creates the bot, so
+ * a caller who is told the deal was created has no object to watch and no way
+ * to learn it was dropped a few milliseconds later — and the abandoned bot is
+ * left behind, closed and dealless, for every attempt.
+ *
+ * So ask the same question before creating anything, and let the caller have
+ * the answer as a 400. Deliberately conservative — it reports only a conflict
+ * it is certain of, and anything it cannot establish (positions unreadable, a
+ * symbol it cannot line up, a hedge account that may legitimately hold both
+ * sides) falls through to the engine's own check, which is the behaviour that
+ * exists today.
+ *
+ * @returns the reason to reject with, or null to proceed
+ */
+export const findConflictingFuturesPosition = async (
+  exchange: ExchangeInUser,
+  settings: CreateDCABotInput,
+  ec = ExchangeChooser,
+): Promise<string | null> => {
+  if (!settings.futures || isPaper(exchange.provider) || exchange.hedge) {
+    return null
+  }
+  const requiredSide = requiredPositionSide(settings)
+  // Terminal deals are single-pair. Taking the first entry keeps the symbol
+  // identical to the one the engine checks, so the two cannot disagree about
+  // formatting — and a symbol that does not line up simply finds no position.
+  const symbol = [settings.pair].flat()[0]
+  if (!symbol) {
+    return null
+  }
+  try {
+    const factory = ec.chooseExchangeFactory(exchange.provider)
+    if (!factory) {
+      return null
+    }
+    const provider = factory(
+      exchange.key,
+      exchange.secret,
+      exchange.passphrase,
+      undefined,
+      exchange.keysType,
+      exchange.okxSource,
+      exchange.bybitHost,
+    )
+    const positions = await provider.futures_getPositions(symbol)
+    if (positions.status !== StatusEnum.ok) {
+      return null
+    }
+    const conflict = positions.data.find((p) => {
+      if (p.symbol !== symbol || +p.positionAmt === 0) {
+        return false
+      }
+      const side =
+        p.positionSide === 'BOTH'
+          ? +p.positionAmt > 0
+            ? 'LONG'
+            : 'SHORT'
+          : p.positionSide
+      return side !== requiredSide
+    })
+    if (!conflict) {
+      return null
+    }
+    const side =
+      conflict.positionSide === 'BOTH'
+        ? +conflict.positionAmt > 0
+          ? 'LONG'
+          : 'SHORT'
+        : conflict.positionSide
+    // Same wording the engine uses for the same condition, so a caller who has
+    // seen one of these in their bot messages recognises the other.
+    return `Cannot start when existing position not met bot settings. Side in active position is ${side}, but bot will open ${requiredSide}. Symbol: ${symbol}`
+  } catch (e) {
+    logger.warn(
+      `findConflictingFuturesPosition | ${exchange.provider} ${symbol} | ${
+        (e as Error)?.message ?? e
+      }`,
+    )
+    return null
+  }
+}
+
 /**
  * Common validation helper for bot creation
  * Validates exchangeUUID, fetches user data, finds exchange, and verifies paper/real context

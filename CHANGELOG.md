@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.19] - 2026-08-18
+
+### Fixed
+
+- `POST /api/v2/deals/terminal` no longer answers `200` for a deal the engine is about to refuse. The endpoint created the bot and dispatched it to a worker, where `loadData` rejected the start because a position was already open on the symbol in the opposite direction — after the response had been sent. The caller was told the deal had been created and scheduled, had no object to watch, and never learned otherwise; the abandoned bot was left behind, closed and without deals, once per attempt. The same question is now asked before anything is created, and a conflict comes back as a `400` naming the side already open. The check is conservative by design: only a conflict it can establish rejects, while unreadable positions, a symbol it cannot line up, a hedge account that may legitimately hold both sides, spot deals and paper exchanges all fall through to the engine's own check unchanged.
+
 ## [1.51.18] - 2026-08-18
 
 ### Security
