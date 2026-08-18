@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.21] - 2026-08-18
+
+### Fixed
+
+- Take profit and percentage stop loss are fee-compensated on futures again. Both prices are derived from the deal's average entry and then pushed out far enough to clear the round trip — but the fee that displacement reads is deliberately zeroed on futures, because there the fee is charged against margin and never taken out of the position, so the *quantity* leg must ignore it. The two uses were folded into one value in 1.14.17, and the price leg has been reading the zeroed one since: every futures TP and percentage SL was placed at exactly the configured percentage from average entry, with no allowance for fees. Nothing about that is visible from the outside — the deal closes cleanly and the reported profit is accurate, it is simply smaller than the configured percentage implies, by roughly one round trip. It goes unnoticed at ordinary targets and dominates at small ones, where a tenth of a percent is most of the target. The price leg now reads the venue's real fee, the quantity leg still ignores it on futures, and both are pinned by tests.
+
 ## [1.51.20] - 2026-08-18
 
 ### Fixed

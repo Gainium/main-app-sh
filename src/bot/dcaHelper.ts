@@ -120,6 +120,7 @@ import {
 import { ExchangeIntervals } from '../../types'
 import { convertDCABot, convertComboBot } from './utils'
 import DCAUtils from './dca/utils'
+import { tpPriceDisplacement, worstFee } from './dca/tpFees'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
 import { removePaperFormExchangeName } from '../exchange/helpers'
@@ -12261,6 +12262,12 @@ function createDCABotHelper<
         if (!fee) {
           return
         }
+        // The venue's real fee, captured BEFORE the futures zeroing below.
+        // The zeroing exists only for the QUANTITY leg — futures charge margin
+        // in quote and never take the fee out of the position — but the TP/SL
+        // PRICE still has to clear the round trip on futures. Keep the two
+        // apart; see `./dca/tpFees`.
+        const priceFee = fee
         if (this.futures) {
           fee = {
             maker: 0,
@@ -12336,7 +12343,7 @@ function createDCABotHelper<
           filledCloseOrders.reduce((acc, v) => acc + +v.executedQty, 0) -
           pendingReduceFunds.base -
           reduceFundsBase
-        const maxFee = Math.max(fee?.maker ?? 0, fee?.taker ?? 0)
+        const maxFee = worstFee(fee)
         // Same asymmetry as the base order (bug #396): on SPOT the fee is taken
         // out of the asset received. Closing a LONG SELLS base, so only what the
         // entry actually credited (gross * (1 - fee)) can be sold. Closing a
@@ -12348,10 +12355,7 @@ function createDCABotHelper<
         let qty =
           _qty * (this.futures ? 1 : long ? 1 - maxFee : 1 / (1 - maxFee)) + add
         let origQty = qty
-        const sellDisplacement = maxFee * 2
-        const priceDisplacement = this.futures
-          ? 1 + maxFee * 2 * (long ? 1 : -1)
-          : 1 + (long ? 1 : -1) * sellDisplacement
+        const priceDisplacement = tpPriceDisplacement(priceFee, long)
         let tpPrice = this.math.round(
           settings.useFixedTPPrices && settings.fixedTpPrice
             ? +settings.fixedTpPrice
