@@ -23,9 +23,11 @@ import { CreateDCABotInputRaw, CreateGridBotInputRaw } from './api'
  *
  * A 400 fixes the honesty problem — the caller is finally told why — but it
  * does not fix an automation that ignores the answer and re-sends every fifteen
- * seconds. Each attempt still costs a credentialed position read on the way to
- * the same refusal, and that read spends the same exchange rate-limit budget as
- * real trading.
+ * seconds. Each attempt still costs a position read on the way to the same
+ * refusal: against a real connection that is a credentialed venue call out of
+ * the same rate-limit budget as trading, and against a paper one a round trip
+ * to paper-trading. The second is cheap; neither is worth paying repeatedly for
+ * an answer we already have.
  *
  * So: after a few CONSECUTIVE refusals of the same constraint, stop paying for
  * the check and replay the refusal from Redis instead, with a Retry-After the
@@ -109,7 +111,13 @@ export const findConflictingFuturesPosition = async (
   settings: CreateDCABotInput,
   ec = ExchangeChooser,
 ): Promise<string | null> => {
-  if (!settings.futures || isPaper(exchange.provider) || exchange.hedge) {
+  // No paper exclusion, because the engine has none for this check: the side
+  // rule fires for `botType === dca` outright, and a terminal deal is a DCA bot.
+  // `paperExchanges` guards only the margin-type rule and the grid branch. A
+  // paper connection that is refused by the engine must be refused here too, or
+  // the pre-check silently does nothing for exactly the accounts most likely to
+  // be driven by an automation on a loop.
+  if (!settings.futures || exchange.hedge) {
     return null
   }
   const requiredSide = requiredPositionSide(settings)
