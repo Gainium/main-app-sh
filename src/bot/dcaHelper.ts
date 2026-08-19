@@ -16580,6 +16580,24 @@ function createDCABotHelper<
                 {
                   dealId: deal.deal._id,
                   type: 'MARKET',
+                  // A hedge-mode futures account rejects an order whose
+                  // position side does not name the leg. Omitting positionSide
+                  // here left it undefined through `convertGridToOrder`, so the
+                  // connector fell back to the one-way default ('net' on OKX)
+                  // and the venue rejected this DCA-by-market safety order —
+                  // OKX 51000 "Parameter posSide error", Binance USDM -4061
+                  // "Order's position side does not match user's setting" —
+                  // while the base order and TP, which do pass it, filled
+                  // normally, so the deal opened and then stopped averaging
+                  // down. Same expression the regular safety-order path uses
+                  // (`sendGridToExchange` in `checkOrders`) and the sibling
+                  // TP-by-market call below. Non-hedge accounts are unaffected:
+                  // BOTH maps to the same 'net' that undefined did.
+                  positionSide: this.hedge
+                    ? this.isLong
+                      ? PositionSide.LONG
+                      : PositionSide.SHORT
+                    : PositionSide.BOTH,
                 },
                 ed,
               )
