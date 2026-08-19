@@ -528,6 +528,12 @@ class MainBot<T extends IMainBot> {
   botType: BotType
   /** Canceled orders queue */
   private canceledMap: Map<string, number> = new Map()
+  /**
+   * The unknown-order ladder currently running for each client order id, so a
+   * second entry joins it instead of starting a competing one. See
+   * {@link MainBot#_handleUnknownOrder}.
+   */
+  private unknownOrderInFlight: Map<string, Promise<null | Order>> = new Map()
   /** Used pairs */
   pairs: Set<string> = new Set()
   /** Run after loading */
@@ -3883,6 +3889,48 @@ class MainBot<T extends IMainBot> {
    */
 
   async _handleUnknownOrder(id: string, symbol: string): Promise<null | Order> {
+    // Every caller is asking the same single question — "what actually happened
+    // to this order?" — so concurrent entries for one client order id are
+    // coalesced onto the ladder that is already asking it, the same
+    // single-flight shape as `fetchOnce` in `core/src/utils/leverageBracketCache`.
+    //
+    // Without this the ceiling below is per-CALLER, not per-order, because
+    // nothing upstream deduplicates: DCA trailing take-profit re-evaluates on
+    // every price tick and re-cancels the same resting order, and on a venue
+    // that answers "unknown order" each cancel starts its own 5-retry ladder
+    // that takes ~4.6s of linear backoff to finish. Bug #455: five trailing
+    // ticks inside 4.6s cost 25 Kraken round trips for one order the bot had
+    // already quarantined as non-existent four days earlier. Measured: five
+    // overlapping entries cost exactly the same as five spaced 30s apart, so
+    // the amplifier is the duplicate entries — `canceledMap` cannot bound them
+    // on its own, and must not try: the terminal branch clears it precisely so
+    // the next INDEPENDENT occurrence gets a fresh budget.
+    //
+    // Joining also returns the fresher answer, since the running ladder is
+    // still polling the venue when the late caller arrives.
+    const running = this.unknownOrderInFlight.get(id)
+    if (running) {
+      this.handleLog(`Unknown order lookup already running for ${id}, joining`)
+      return running
+    }
+    const ladder = this._runUnknownOrderLadder(id, symbol)
+    this.unknownOrderInFlight.set(id, ladder)
+    try {
+      return await ladder
+    } finally {
+      this.unknownOrderInFlight.delete(id)
+    }
+  }
+
+  /**
+   * The retry ladder itself. Private because re-entering it through
+   * {@link MainBot#_handleUnknownOrder} would make its own recursion join the
+   * in-flight entry it just registered, and deadlock.
+   */
+  private async _runUnknownOrderLadder(
+    id: string,
+    symbol: string,
+  ): Promise<null | Order> {
     const origId = id
     if (this.data && this.exchange && this.orders) {
       this.handleLog(`Send request to unknow order ${id}`)
@@ -3976,11 +4024,11 @@ class MainBot<T extends IMainBot> {
           local?.orderId === noExchangeOrderId
         ) {
           this.canceledMap.set(origId, unknownOrderMaxAttempts)
-          return this._handleUnknownOrder(origId, symbol)
+          return this._runUnknownOrderLadder(origId, symbol)
         }
 
         await sleep(1000 * (getCount + 1))
-        return this._handleUnknownOrder(origId, symbol)
+        return this._runUnknownOrderLadder(origId, symbol)
       }
       if (request.status === StatusEnum.ok) {
         this.handleLog(`Real order ${origId} status: ${request.data.status}`)
