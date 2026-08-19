@@ -1350,6 +1350,14 @@ export interface DCADealsSchema extends SchemaI {
   isDeleted?: boolean
   feeBalance?: number
   moveSlActivated?: boolean
+  /**
+   * A moved stop loss only closes on a real crossing, so the engine has to
+   * remember where the price was last seen relative to the moved level. True
+   * once a tick has been observed on the profit side of it; the close fires on
+   * the tick that crosses back. Persisted so a bot worker restart cannot turn a
+   * profit lock into a market close at an arbitrary price.
+   */
+  moveSlArmed?: boolean
   newBalance?: boolean
   sizes?: Sizes
   fullFee?: number

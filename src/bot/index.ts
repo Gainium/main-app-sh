@@ -4748,6 +4748,10 @@ class Bot<T extends UserSchema = UserSchema> {
           } else {
             dealUpdate.moveSlActivated = false
           }
+          // Either branch can move the stop level, so the crossing state the
+          // deal earned against the old one has to be re-earned from a live
+          // tick before the moved stop can fire again.
+          dealUpdate.moveSlArmed = false
         }
         await this.dcaDealsDb.updateData(
           { _id: d._id.toString(), userId },

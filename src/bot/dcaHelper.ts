@@ -14285,9 +14285,13 @@ function createDCABotHelper<
         d.deal.settings.slPerc = settings.moveSLValue
       }
       d.deal.moveSlActivated = true
+      // The stop level is only being set now, so no tick has been observed
+      // against it yet — `checkDealsStopLoss` re-arms from the live price.
+      d.deal.moveSlArmed = false
       this.saveDeal(d, {
         'settings.slPerc': d.deal.settings.slPerc,
         moveSlActivated: d.deal.moveSlActivated,
+        moveSlArmed: d.deal.moveSlArmed,
       })
       await this.setDealForStopLoss(d)
       this.checkDealsPriceExtremum()
@@ -16088,32 +16092,40 @@ function createDCABotHelper<
           multiTp,
           slPerc,
           moveSLValue,
-          avgPrice,
         } = await this.getAggregatedSettings(d.deal)
         const dealId = d.deal._id
         let closeBySl = true
         let notCheckSl = false
         let closeByMulti = false
         // Once moveSL has fired, `slPerc` is the move value — and a positive one
-        // puts the stop on the PROFIT side of the entry, so it can only be hit
-        // coming BACK from profit. When the market is already past it on the
-        // losing side (safety orders dragged the average through it, or the
-        // check resumes after the price ran away), the bare level test below is
-        // true from the very first tick and closes the deal at a loss — the
-        // opposite of what "move SL to +N%" is for.
+        // puts the stop on the PROFIT side of the average, so it can only be hit
+        // by price coming BACK from profit. That makes it an EVENT (price trades
+        // through the level), not a state (price is on the wrong side of it).
+        // The bare level test below cannot tell the two apart, so whenever the
+        // check resumes with the market already past the level — a worker
+        // restart, a deal re-registered, a close that never completed — it is
+        // true on the very first tick and closes the deal at whatever price is
+        // current, booking a loss from a stop whose whole job was to lock a
+        // profit. So remember which side of the level the last observed tick was
+        // on, persisted on the deal so a restart cannot forget it, and require a
+        // real crossing. Arming is always earned from a live tick: it is cleared
+        // wherever the level can move (see `triggerMoveSl` and the settings
+        // paths that touch `moveSlActivated`).
         const slMovedIntoProfit =
           !!moveSL &&
           !!d.deal.moveSlActivated &&
           +(slPerc ?? 0) === +(moveSLValue ?? 0) &&
           +(slPerc ?? 0) > 0
-        const slRef = slMovedIntoProfit
-          ? await this.getDealSlRefPrice(d.deal, avgPrice)
-          : 0
-        const close =
-          ((this.isLong && last <= priceToClose) ||
-            (!this.isLong && last >= priceToClose)) &&
-          (!slMovedIntoProfit ||
-            (this.isLong ? last >= slRef : last <= slRef))
+        const levelHit =
+          (this.isLong && last <= priceToClose) ||
+          (!this.isLong && last >= priceToClose)
+        const close = slMovedIntoProfit
+          ? levelHit && !!d.deal.moveSlArmed
+          : levelHit
+        if (slMovedIntoProfit && !!d.deal.moveSlArmed === levelHit) {
+          d.deal.moveSlArmed = !levelHit
+          await this.saveDeal(d, { moveSlArmed: d.deal.moveSlArmed }, false)
+        }
         let trailing = false
         if (
           close &&
@@ -17507,6 +17519,9 @@ function createDCABotHelper<
               (settings.moveSLValue ?? findDeal.deal.settings.moveSLValue) ===
               (settings.slPerc ?? findDeal.deal.settings.slPerc)
           }
+          // These settings can move the stop level, so the crossing state that
+          // was earned against the old one no longer means anything.
+          findDeal.deal.moveSlArmed = false
           findDeal.deal.settings = {
             ...findDeal.deal.settings,
             ...settings,
@@ -17581,6 +17596,7 @@ function createDCABotHelper<
             settings: findDeal.deal.settings,
             levels: findDeal.deal.levels,
             moveSlActivated: findDeal.deal.moveSlActivated,
+            moveSlArmed: findDeal.deal.moveSlArmed,
             fullFee: findDeal.deal.fullFee,
             trailingLevel: findDeal.deal.trailingLevel,
             trailingMode: findDeal.deal.trailingMode,
