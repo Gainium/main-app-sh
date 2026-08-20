@@ -155,6 +155,11 @@ export const DCA_DEAL_STANDARD_FIELDS = [
   'value',
   'updateTime',
   'closeTime',
+  // Why a deal that exists has never opened (venue refused its opening order).
+  // Standard rather than essential: additive for API consumers on the default
+  // preset, and the people who most need it are the ones polling a deal after
+  // an automation opened it.
+  'startBlocked',
 ] as const
 
 /**

@@ -83,6 +83,7 @@ import {
   RRSlTypeEnum,
   ComboBotSchema,
   LWConditionEnum,
+  DealStartBlock,
 } from '../../types'
 import { MathHelper } from '../utils/math'
 import MainBot, { notEnoughErrors, isDefinitiveOrderNotFound } from './main'
@@ -139,6 +140,7 @@ import {
   SuperTrendResult,
 } from '@gainium/indicators'
 import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
+import { getSubTypeBehavior } from './errorRulesCache'
 
 export type PercentileResult = {
   percentile?: number
@@ -555,6 +557,112 @@ function createDCABotHelper<
       this.removeDealByStatus(key)
       if (get) {
         this.removeDealBySymbol(get.deal.symbol.symbol, key)
+      }
+    }
+
+    /**
+     * Put the venue's refusal of a deal's opening order ON the deal, or clear it
+     * once the venue accepts one. Overrides the no-op on `MainBot`; inherited by
+     * the combo and hedge bots, which extend this helper.
+     *
+     * Why the deal and not just the notification: a deal is written before its
+     * base order reaches the exchange, so a refusal leaves it in `start` with no
+     * orders. The bot-level warning that `handleErrors` raises names neither the
+     * deal nor the symbol and is coalesced across hours, so the user staring at
+     * a stuck deal has nothing connecting the two. An account-wide Binance
+     * Quantitative Rules restriction stalled several of one account's deals this
+     * way, and the exchange's own order history could not explain it either —
+     * unsurprisingly, since the orders were never sent.
+     *
+     * Descriptive only: no status change, no error, no notification of its own.
+     * The -4400 path must stay soft (re-hitting Binance escalates the penalty
+     * L1 -> L2 -> L3, and the deferred retry is the self-heal), so this adds an
+     * explanation to that state without turning it into an alarm.
+     */
+    protected async markDealStartBlocked(
+      order: Order,
+      reason: string | null,
+      cooldown?: {
+        until?: number | null
+        level?: number | null
+        scope?: string | null
+      },
+    ): Promise<void> {
+      const dealId = order.dealId
+      // Only the OPENING order can leave a deal unstarted. A refused safety
+      // order or take-profit is a different situation with a different remedy,
+      // and the deal it belongs to is already open and visibly working.
+      if (!dealId || order.typeOrder !== TypeOrderEnum.dealStart) {
+        return
+      }
+      const fullDeal = this.getDeal(dealId)
+      if (!fullDeal) {
+        return
+      }
+      const deal = fullDeal.deal
+      try {
+        if (reason === null) {
+          if (!deal.startBlocked) {
+            return
+          }
+          delete deal.startBlocked
+          await this.dealsDb.updateData(
+            { _id: dealId } as any,
+            {
+              $unset: { startBlocked: 1 },
+            } as any,
+          )
+        } else {
+          // A deal past `start` has opened, so nothing about it is blocked —
+          // whatever was refused belongs to a later stage of its life.
+          if (deal.status !== DCADealStatusEnum.start) {
+            return
+          }
+          const now = +new Date()
+          const subType = this.getErrorSubType(reason)
+          // Prefer the operator-configured wording for this subType, so the
+          // deal reads the same as the notification for the same condition and
+          // an admin can improve both without a deploy.
+          const userMessage = getSubTypeBehavior(subType)?.userMessage
+          const previous = deal.startBlocked
+          // `since` and `attempts` describe one run of refusals for one cause.
+          // A different cause is a new run, not a continuation of the old count.
+          const continues = !!previous && previous.subType === subType
+          const block: DealStartBlock = {
+            reason: (userMessage || reason).slice(0, 500),
+            subType,
+            since: continues ? previous.since : now,
+            lastAttempt: now,
+            attempts: continues ? previous.attempts + 1 : 1,
+          }
+          if (cooldown?.until) {
+            block.retryAfter = cooldown.until
+          }
+          if (cooldown?.scope) {
+            block.scope = cooldown.scope
+          }
+          if (cooldown?.level) {
+            block.level = cooldown.level
+          }
+          deal.startBlocked = block
+          await this.dealsDb.updateData(
+            { _id: dealId } as any,
+            {
+              $set: { startBlocked: block },
+            } as any,
+          )
+        }
+        this.setDeal(fullDeal, false)
+        this.emit('bot deal update', deal)
+      } catch (e) {
+        // Never let bookkeeping break the order path — this is an explanation,
+        // and an order that cannot be placed is worse than one that cannot be
+        // explained.
+        this.handleWarn(
+          `markDealStartBlocked failed for deal ${dealId}: ${
+            (e as Error)?.message ?? e
+          }`,
+        )
       }
     }
 

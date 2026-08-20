@@ -1373,6 +1373,55 @@ export interface DCADealsSchema extends SchemaI {
   hundredSent?: number
   sellRemainder?: boolean
   parentBotId?: string
+  /**
+   * Why a deal that exists has never been opened.
+   *
+   * A deal row is created BEFORE its opening (base) order reaches the venue, so
+   * a venue refusal leaves the deal sitting in `start` with no orders and
+   * nothing at all on it saying why. The only trace was a
+   * bot-level warning in the notification bell, which names neither the deal nor
+   * the symbol and is coalesced across hours, so a user looking at the stuck
+   * deal could not connect the two. See `markDealStartBlocked` in `dcaHelper`.
+   *
+   * Set whenever the venue (or one of our own pre-send guards standing in for
+   * it) refuses the opening order; cleared the moment one is accepted. Purely
+   * descriptive — it never changes deal status, and must not: the Binance
+   * Quantitative Rules (-4400) path is deliberately non-erroring because
+   * re-hitting the venue during a restriction escalates the penalty.
+   */
+  startBlocked?: DealStartBlock
+}
+
+/**
+ * The reason a created deal's opening order has not been accepted by the venue.
+ * Descriptive only — see `DCADealsSchema['startBlocked']`.
+ */
+export type DealStartBlock = {
+  /**
+   * User-facing reason. The venue's own text, replaced by the subType's
+   * `userMessage` when an operator has configured a clearer one
+   * (`boterrorsubtypes`, admin-managed) so this reads the same as the
+   * notification for the same condition.
+   */
+  reason: string
+  /** Bot-error subType the reason classified as, e.g. `Exchange rules`. */
+  subType?: string
+  /** ms epoch of the first refusal in this run of refusals. */
+  since: number
+  /** ms epoch of the most recent refusal. */
+  lastAttempt: number
+  /** How many opening attempts have been refused since `since`. */
+  attempts: number
+  /**
+   * ms epoch when the restriction is expected to lift, where the venue grades
+   * it and we can compute it (Binance Quantitative Rules cooldowns). Absent for
+   * refusals with no known end.
+   */
+  retryAfter?: number
+  /** Restriction scope where the venue distinguishes one, e.g. `account`. */
+  scope?: string
+  /** Restriction level where the venue grades one (Binance QR 1 | 2 | 3). */
+  level?: number
 }
 
 export enum AddFundsTypeEnum {

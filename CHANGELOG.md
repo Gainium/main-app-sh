@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.24] - 2026-08-20
+
+### Added
+
+- A deal that was created but whose opening order the exchange refused now records why, on the deal itself. The deal row is written before that order reaches the exchange, so a refusal left the deal listed with no orders and nothing explaining it; the only trace was a bot-level warning that names neither the deal nor the pair. The deal now carries the exchange's reason, when the restriction is expected to lift where the exchange grades it, and whether it covers one pair or the whole account — available over GraphQL, over `/api/v2/deals/*` at the `standard` field preset, and pushed live to an open dashboard. It is cleared the moment the exchange accepts an opening order, and it changes nothing else: the deal keeps its status and the bot is not put into an error state. That matters most for the Binance Quantitative Rules (-4400) cooldown this was built for, where the whole point of the existing handling is that we stop sending orders rather than escalate the restriction, and the deal opens by itself once the cooldown ends.
+
 ## [1.51.23] - 2026-08-18
 
 ### Fixed

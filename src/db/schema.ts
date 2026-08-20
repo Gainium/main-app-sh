@@ -1883,7 +1883,27 @@ const filledFunds = [
   },
 ]
 
+/**
+ * Why a created deal has never opened — see `DealStartBlock` in `types.ts`.
+ * `_id: false` because it is a plain value object, not a sub-document.
+ */
+const startBlocked = {
+  type: {
+    reason: String,
+    subType: String,
+    since: Number,
+    lastAttempt: Number,
+    attempts: Number,
+    retryAfter: Number,
+    scope: String,
+    level: Number,
+  },
+  _id: false,
+  required: false,
+}
+
 const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
+  startBlocked,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
   flags: [String],
   note: String,
@@ -2064,6 +2084,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
 })
 
 const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
+  startBlocked,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
   action: { type: String, enum: ActionsEnum },
   note: String,

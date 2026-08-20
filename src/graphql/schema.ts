@@ -4065,6 +4065,7 @@ export const BotSchema = /* GraphQL */ `
     price: Float
   }
   type dcaDeal {
+    startBlocked: dealStartBlock
     paperContext: Boolean
     parentBotId: String
     flags: [String]
@@ -4123,6 +4124,28 @@ export const BotSchema = /* GraphQL */ `
     tags: [String]
     ac: dealAc
   }
+  # Why a created deal has never opened: the venue refused its opening order,
+  # or one of our pre-send guards held it back on the venue's behalf. Present
+  # only while the deal is still unstarted; cleared as soon as an opening order
+  # is accepted. Descriptive - the deal is NOT in an error state.
+  type dealStartBlock {
+    # User-facing reason the opening order was not accepted.
+    reason: String
+    # Bot-error subType the reason classified as, e.g. "Exchange rules".
+    subType: String
+    # ms epoch of the first refusal in this run of refusals.
+    since: Date
+    # ms epoch of the most recent refusal.
+    lastAttempt: Date
+    # How many opening attempts have been refused since "since".
+    attempts: Int
+    # ms epoch the restriction is expected to lift, when the venue grades it.
+    retryAfter: Date
+    # Restriction scope where the venue distinguishes one, e.g. "account".
+    scope: String
+    # Restriction level where the venue grades one (Binance QR 1 | 2 | 3).
+    level: Int
+  }
   type dealAc {
     before: Float
     after: Float
@@ -4145,6 +4168,7 @@ export const BotSchema = /* GraphQL */ `
     qty: Float
   }
   type comboDeal {
+    startBlocked: dealStartBlock
     paperContext: Boolean
     parentBotId: String
     flags: [String]

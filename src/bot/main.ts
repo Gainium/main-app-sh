@@ -354,6 +354,19 @@ export function isDefinitiveOrderNotFound(res?: {
  *
  * Module-level rather than a static member — see `notEnoughBalanceKeyVersion`.
  */
+/**
+ * Binance's own Quantitative Rules (-4400) rejection text, verbatim.
+ *
+ * Used as the reason when the PRE-SEND gate holds an order back: the venue
+ * never saw that attempt, but the cooldown it is honouring was opened by a real
+ * rejection carrying exactly this message. Keeping the text identical matters —
+ * it is the `errorDict` key that classifies to the `Exchange rules` subType, so
+ * the deal's block reads with whatever `userMessage` an operator has configured
+ * for it rather than with a second, drifting wording.
+ */
+const quantRulesRejection =
+  'Futures Trading Quantitative Rules violated, only reduceOnly order is allowed, please try again later.'
+
 const noExchangeOrderId = '-1'
 /**
  * How many times `_handleUnknownOrder` re-asks the venue about an order it
@@ -4950,6 +4963,43 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Record on a deal that its opening (base) order was refused by the venue, or
+   * held back by one of our pre-send guards standing in for it.
+   *
+   * A deal row is written BEFORE its base order reaches the exchange, so a
+   * refusal leaves the deal in `start` with no orders and nothing on it saying
+   * why. The only trace was a bot-level warning in the notification bell, which
+   * names neither the deal nor the symbol and is coalesced across hours. Under a
+   * level-3 (account-wide) Binance Quantitative Rules restriction that left one
+   * account's webhook-driven signals producing no positions at all, with the
+   * exchange's own order history unable to explain it — the orders were never
+   * sent.
+   *
+   * Descriptive only. It must never change deal status or bot status: the
+   * -4400 path is deliberately non-erroring because re-hitting Binance during a
+   * restriction escalates the penalty, and the deferred retry is the self-heal.
+   * The point is an explanation, not an alarm.
+   *
+   * No-op on bot types that have no deals (grid). Overridden in `dcaHelper`,
+   * which owns `deals` / `dealsDb` and is the base of the combo + hedge bots.
+   *
+   * @param order the order that was refused — ignored unless it is a
+   *   `dealStart` order carrying a `dealId`
+   * @param reason venue text, or `null` to clear the block after an acceptance
+   * @param cooldown when the venue grades the restriction and we know when it
+   *   lifts
+   */
+  protected async markDealStartBlocked(
+    _order: Order,
+    _reason: string | null,
+    _cooldown?: {
+      until?: number | null
+      level?: number | null
+      scope?: string | null
+    },
+  ): Promise<void> {}
+
+  /**
    * Schedule a bounded, deduped re-send of an order soft-skipped by a Binance
    * Quantitative Rules (-4400) cooldown. The order was NOT sent to the exchange
    * (delay, don't fail), so nothing else will re-place it reliably during normal
@@ -5976,6 +6026,11 @@ class MainBot<T extends IMainBot> {
                 requestData.symbol,
               )
               if (recheck.restricted) {
+                await this.markDealStartBlocked(
+                  order,
+                  quantRulesRejection,
+                  recheck,
+                )
                 this.endMethod(_id)
                 return this.scheduleQuantRulesRetry(order, returnError, recheck)
               }
@@ -5988,6 +6043,11 @@ class MainBot<T extends IMainBot> {
               // (RECONCILE_SWEEP_ENABLED), so we cannot rely on it to re-send an
               // order that was never placed. The deferred retry below is the
               // self-heal path; it dedups on clientOrderId.
+              await this.markDealStartBlocked(
+                order,
+                quantRulesRejection,
+                cooldown,
+              )
               this.endMethod(_id)
               return this.scheduleQuantRulesRetry(order, returnError, cooldown)
             }
@@ -6165,6 +6225,15 @@ class MainBot<T extends IMainBot> {
                 true,
               )
             }
+            // Explain the stall on the deal itself. `handleErrors` above only
+            // reaches the bot-level notification bell, which names no deal and
+            // no symbol — the deal is where the user is actually looking when
+            // they wonder why a signal produced nothing.
+            await this.markDealStartBlocked(order, request.reason, {
+              until: violation.until,
+              level: violation.level,
+              scope: violation.scope,
+            })
             // Clean up the local order record and defer a bounded retry that
             // re-checks the cooldown before re-sending (self-heals the skip).
             if (this.orders && this.orders.size > 0) {
@@ -6347,6 +6416,12 @@ class MainBot<T extends IMainBot> {
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             }
           }
+          // Every other venue refusal lands here — min-notional, price band,
+          // margin, permissions, a compliance block, an exhausted balance. Any
+          // of them can leave a created deal with no opening order, which is
+          // the same dead end for the user whatever the venue called it, so the
+          // reason goes on the deal here rather than per-rejection-type above.
+          await this.markDealStartBlocked(order, request.reason)
           if (returnError) {
             this.endMethod(_id)
             return request.reason
@@ -6375,6 +6450,11 @@ class MainBot<T extends IMainBot> {
         }
         if (request.status === StatusEnum.ok) {
           processedOrder = request.data
+          // The venue took the opening order, so whatever was blocking it is
+          // over. Cleared on ACCEPTANCE, not on fill: a resting limit base
+          // order leaves the deal in `start` legitimately, and describing that
+          // as blocked would be worse than saying nothing.
+          await this.markDealStartBlocked(order, null)
           if (
             this.data.notEnoughBalance?.thresholdPassed &&
             (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) > 0
