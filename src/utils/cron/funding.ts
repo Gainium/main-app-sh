@@ -28,6 +28,17 @@ export type CandleSource = (params: {
 const STALE_MS = 10 * 60 * 1000
 /** First-seen / gap recovery look-back when there's no stored head yet. */
 const LOOKBACK_MS = 2 * 24 * 60 * 60 * 1000
+/**
+ * How long a settlement may stay unvalued before we publish it anyway.
+ *
+ * Holding an unvalued settlement back is what makes mark-price resolution
+ * retryable, but it also parks the head — and therefore every LATER settlement
+ * — behind it. A symbol whose candle data never materialises would wedge its
+ * whole funding stream forever, which is worse than the single hole we are
+ * avoiding. So the hold is bounded: after this long we publish it unvalued
+ * (charged as zero, as before) and log loudly, and the stream moves on.
+ */
+const MARK_RETRY_MS = 6 * 60 * 60 * 1000
 
 /**
  * Real futures exchanges that settle funding. The registry ZSET only exists for
@@ -78,6 +89,13 @@ async function resolveMarkPrices(
     endAt: `${maxT + hour}`,
   })
   if (candles.status !== StatusEnum.ok || !candles.data?.length) {
+    // Leave the events unvalued and say so. The caller holds them back rather
+    // than publishing a hole, so this is a retry — not a lost settlement.
+    logger.warn(
+      `[Funding] ${provider}@${symbol}: no candles for ${minT - hour}..${
+        maxT + hour
+      } (${candles.status}); ${missing.length} settlement(s) left unvalued`,
+    )
     return events
   }
   const sorted = (candles.data as { time: number; close: string }[])
@@ -87,9 +105,17 @@ async function resolveMarkPrices(
     if (e.markPrice !== undefined) {
       return e
     }
+    // `c.time` is the candle's OPEN time (verified on both sources: the
+    // archive-first cloud path maps ClickHouse `t`, and the connectors map the
+    // venue's own open time), so the candle opening at `c.time` only CLOSES at
+    // `c.time + hour`. Funding settles against the mark AT the settlement, so
+    // we want the last candle that has already closed by then — `c.time <=
+    // e.time` takes the close of the hour that STARTS at the settlement, i.e.
+    // the price up to an hour later. The window's `minT - hour` padding exists
+    // for exactly this look-back.
     let mark: number | undefined
     for (const c of sorted) {
-      if (c.time <= e.time) {
+      if (c.time + hour <= e.time) {
         mark = c.close
       } else {
         break
@@ -100,6 +126,54 @@ async function resolveMarkPrices(
     }
     return { ...e, markPrice: mark }
   })
+}
+
+/**
+ * The leading run of settlements that are safe to publish: everything up to the
+ * first one we could not value.
+ *
+ * The store's head is a single high-water mark and the bots' offsets follow it,
+ * so publishing across a hole buries that hole permanently — the next poll asks
+ * the venue from `head` and keeps only `fundingTime > head`, so the unvalued
+ * settlement is never fetched again, and `computeFunding` charges it as zero
+ * while still advancing the deal's offset past it. A settlement is therefore
+ * only published once it carries a mark price, or once {@link MARK_RETRY_MS}
+ * has passed and we accept the zero deliberately.
+ *
+ * Stopping at the first hole rather than filtering holes out is load-bearing:
+ * because the head is a single high-water mark, publishing a LATER valued
+ * settlement would bury an earlier unvalued one just the same.
+ */
+function publishablePrefix(
+  events: FundingEvent[],
+  now: number,
+  provider: ExchangeEnum,
+  symbol: string,
+): FundingEvent[] {
+  const sorted = [...events].sort((a, b) => a.time - b.time)
+  const out: FundingEvent[] = []
+  for (const e of sorted) {
+    if (e.markPrice !== undefined) {
+      out.push(e)
+      continue
+    }
+    if (now - e.time >= MARK_RETRY_MS) {
+      logger.error(
+        `[Funding] ${provider}@${symbol}: settlement ${e.time} still unvalued after ${
+          MARK_RETRY_MS / 3600000
+        }h; publishing it anyway — it will be charged as zero funding`,
+      )
+      out.push(e)
+      continue
+    }
+    logger.warn(
+      `[Funding] ${provider}@${symbol}: settlement ${e.time} unvalued; holding it and ${
+        sorted.length - out.length - 1
+      } later settlement(s) for the next run`,
+    )
+    break
+  }
+  return out
 }
 
 let locked = false
@@ -174,8 +248,13 @@ export const publishFunding = async (
             markPrice: e.markPrice,
           }))
           events = await resolveMarkPrices(getCandles, provider, symbol, events)
-          await FundingStore.addEvents(provider, symbol, events)
-          const last = Math.max(...events.map((e) => e.time))
+          const publishable = publishablePrefix(events, now, provider, symbol)
+          if (!publishable.length) {
+            // Nothing valued yet; the head stays put so the next run retries.
+            continue
+          }
+          await FundingStore.addEvents(provider, symbol, publishable)
+          const last = Math.max(...publishable.map((e) => e.time))
           await redis.publish(fundingChannel(provider, symbol), `${last}`)
           logger.debug(`[Funding] Provider ${provider} published last ${last}`)
         } catch (e) {
