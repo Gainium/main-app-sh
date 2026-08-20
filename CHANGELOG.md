@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.25] - 2026-08-20
+
+### Fixed
+
+- An order whose response was lost on the way back is no longer either placed twice or written off while it is still live on the exchange. Sending an order could fail with a timeout, a dropped connection or a server error — none of which say whether the exchange actually received it — and the order was then re-sent with the same client order id up to six times. On an exchange that does not reject a repeated client order id, such as Hyperliquid, each re-send opened another real order. The opposite case was worse: when the send finally gave up, the order was recorded as cancelled without ever asking the exchange, and because that also unhooks it from the live fill feed, the exchange's later fills for it reached no bot at all — so the position moved on the exchange and never in the deal, silently, with the take-profit ladder then sized off the wrong position. An order is now sent once, and on any outcome that does not tell us what happened the exchange is asked what it has: if the order is there it is adopted rather than re-sent, and it is only re-sent when the exchange confirms it never arrived. The same question is asked before an order is written off, so an order the exchange is still holding is kept. Genuine exchange rejections — minimum notional, tick size, insufficient funds — are unaffected and still fail immediately.
+
 ## [1.51.24] - 2026-08-20
 
 ### Added

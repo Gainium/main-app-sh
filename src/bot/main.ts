@@ -59,6 +59,7 @@ import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
 import utils, { isPaper } from '../utils'
 import { resolveConnection } from '../utils/credentials'
+import { isAmbiguousOrderFailure } from '../utils/exchange'
 import logger from '../utils/logger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import * as crypto from 'crypto'
@@ -6396,6 +6397,58 @@ class MainBot<T extends IMainBot> {
               )
               this.endMethod(_id)
               return findInCurrent
+            }
+          }
+          // A venue REFUSAL is an answer: the order does not exist. A transport
+          // failure is not an answer at all — the request may have been signed,
+          // sent, accepted and matched, and only the response lost. Writing the
+          // order off on the second case is what turns "we do not know" into an
+          // orphan, and the write-off is not recoverable: `deleteOrder` also
+          // calls `SharedStream.removeOrder`, and `SharedStream.redisCb` routes
+          // an execution report ONLY via `ordersToBotMap`. From that moment the
+          // venue's fills for this id are dropped at the router and reach no bot
+          // at all, so the position moves on the venue and never in the deal.
+          // Observed on a live Hyperliquid combo bot: two such orders (a 9.95
+          // BUY and a 1.99 reduce-only SELL) filled hours later, and the deal's
+          // tracked base ended 9.40 HYPE short of the venue's — a drift that
+          // only grows, because the take-profit ladder is then sized off the
+          // wrong position.
+          //
+          // So ask before writing off. `_handleUnknownOrder` is exactly that
+          // question and is already hardened for it: it resolves by client order
+          // id, adopts what the venue has, is single-flighted per id, and its
+          // own `orderId === '-1'` short-circuit turns a definitive "no such
+          // order" into one round trip rather than five.
+          //
+          // The local short-circuits are exempt — those rejections were served
+          // by this process, the venue never saw the order, and there is nothing
+          // to ask about.
+          if (
+            this.orders &&
+            this.orders.size > 0 &&
+            !notEnoughBalanceShortCircuit &&
+            !complianceShortCircuit &&
+            !authShortCircuit &&
+            isAmbiguousOrderFailure(request.reason)
+          ) {
+            this.handleWarn(
+              `Ambiguous outcome for order ${order.clientOrderId} (${request.reason}) — asking ${this.data.exchange} whether it has it before writing it off`,
+            )
+            const settled = await this._handleUnknownOrder(
+              order.clientOrderId,
+              order.symbol,
+            )
+            // Held after the ladder means the venue answered that it HAS the
+            // order; the ladder has already reconciled its status. Anything else
+            // means the venue gave a definitive negative and the ladder recorded
+            // CANCELED itself.
+            const stillHeld = this.getOrderFromMap(order.clientOrderId)
+            if (settled || stillHeld) {
+              this.handleLog(
+                `Order ${order.clientOrderId} DID reach ${this.data.exchange} despite the failed response — keeping it instead of cancelling it`,
+              )
+              this.endMethod(_id)
+              return settled ?? stillHeld
             }
           }
           if (this.orders && this.orders.size > 0) {

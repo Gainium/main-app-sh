@@ -32,10 +32,19 @@ import RedisClient from '../db/redis'
 import { EXCHANGE_SERVICE_API_URL } from '../config'
 import { brokerCodesDb } from '../db/dbInit'
 import ExpirableMap from '../utils/expirableMap'
+import { isAmbiguousOrderFailure } from '../utils/exchange'
 
 const { sleep } = utils
 
 class Exchange extends AbstractExchange {
+  /**
+   * How many times a placement may be re-sent after the venue has CONFIRMED
+   * the previous send did not land. Low on purpose: each pass costs a venue
+   * round trip, and the failure this bounds (a genuinely lost send) is rare.
+   */
+  private static readonly OPEN_ORDER_RESEND_ATTEMPTS = 3
+  /** Linear backoff between confirmed-safe resends. */
+  private static readonly OPEN_ORDER_RESEND_DELAY_MS = 500
   protected readonly exchange: ExchangeEnum
   protected isOkx: boolean
   protected brokerCodes = new ExpirableMap<string, string>(60 * 60 * 1000) // 1 hour cache
@@ -463,6 +472,84 @@ class Exchange extends AbstractExchange {
     return result.data
   }
 
+  /** One send. No retry of any kind — see {@link Exchange#openOrder}. */
+  private async sendOpenOrder(
+    order: {
+      symbol: string
+      side: OrderTypes
+      quantity: number
+      price: number
+      newClientOrderId?: string
+      type?: 'LIMIT' | 'MARKET'
+      reduceOnly?: boolean
+      positionSide?: PositionSide
+      marginType?: MarginType
+      leverage?: number
+    },
+    timeProfile: ExchangeRequestTimeProfile,
+  ): Promise<BaseReturn<CommonOrder>> {
+    const result = await this.apiCall<CommonOrder>(
+      {
+        endpoint: 'order',
+        method: 'post',
+        body: order,
+        isPrivate: true,
+        noAutoRetry: true,
+      },
+      timeProfile,
+    ).catch(
+      // NOT `handleError`: that helper's own ladder re-drives the whole method
+      // up to five more times on ECONNRESET/socket-hang-up/fetch-failed, which
+      // is the same blind resend this method exists to prevent. The ladders
+      // compose, so one logical placement could reach the venue many times over
+      // under the same client order id. This mirrors `handleError`'s terminal
+      // branch only.
+      async (
+        e: Error & { response?: { data?: { message: string } } },
+      ): Promise<{
+        data: BaseReturn<CommonOrder>
+        timeProfile: ExchangeRequestTimeProfile
+      }> => {
+        const message = e?.response?.data?.message || e?.message
+        return {
+          data: this.returnBad()(new Error(message)) as BaseReturn<CommonOrder>,
+          timeProfile,
+        }
+      },
+    )
+    this.saveTimeProfile(result.timeProfile)
+    return result.data
+  }
+
+  /**
+   * Place an order, and never place it twice.
+   *
+   * `POST /order` is the only call in this class that CHANGES the venue, so it
+   * is the only one whose blind retry can double a position. Every retry layer
+   * this class has fires on outcomes that are silent about whether the request
+   * arrived — timeouts, resets, 5xx, a bare rejected promise — and re-sends the
+   * identical `newClientOrderId`. A venue that rejects a duplicate client order
+   * id absorbs that; Hyperliquid accepts it and opens a second live order.
+   * Measured against the real built class with a lost response: 2 live orders
+   * from one placement when only the first response is lost, 6 when all are.
+   *
+   * So the automatic ladders are off here (`noAutoRetry`, plus a non-retrying
+   * error handler in `sendOpenOrder`) and the retry is re-expressed as
+   * RESOLVE-then-resend:
+   *
+   *   1. send once
+   *   2. on an ambiguous failure, ask the venue what happened to this client
+   *      order id
+   *   3. if the venue has it, that IS the result — return it, never resend
+   *   4. only resend when the venue answers, definitively, that it does not
+   *      have it
+   *   5. if the lookup is itself inconclusive, give up and report the failure
+   *      rather than guess. An unconfirmed order is the caller's problem to
+   *      resolve (it still holds the id); a duplicate position is nobody's.
+   *
+   * Without `newClientOrderId` there is nothing to resolve BY, so that case
+   * keeps the old single-shot behaviour.
+   */
   async openOrder(
     order: {
       symbol: string
@@ -478,23 +565,42 @@ class Exchange extends AbstractExchange {
     },
     timeProfile = this.getEmptyTimeProfile('openOrder'),
   ): Promise<BaseReturn<CommonOrder>> {
-    const result = await this.apiCall<CommonOrder>(
-      {
-        endpoint: 'order',
-        method: 'post',
-        body: order,
-        isPrivate: true,
-      },
-      timeProfile,
-    ).catch(this.handleError(this.openOrder, order, timeProfile))
-    this.saveTimeProfile(result.timeProfile)
-    if ((result.data.reason ?? '').indexOf(`ECONNRESET`) !== -1) {
-      logger.error(
-        `Got ECONNRESET in new order. Exchange: ${this.exchange}, symbol: ${order.symbol}`,
-      )
-      return this.openOrder.bind(this)(order)
+    let result = await this.sendOpenOrder(order, timeProfile)
+    if (!order.newClientOrderId) {
+      return result
     }
-    return result.data
+    for (
+      let attempt = 1;
+      attempt <= Exchange.OPEN_ORDER_RESEND_ATTEMPTS &&
+      result.status === StatusEnum.notok &&
+      isAmbiguousOrderFailure(result.reason);
+      attempt++
+    ) {
+      logger.error(
+        `Ambiguous new-order outcome (${result.reason}). Exchange: ${this.exchange}, symbol: ${order.symbol}, id: ${order.newClientOrderId}. Asking the venue before resending.`,
+      )
+      const placed = await this.getOrder({
+        symbol: order.symbol,
+        newClientOrderId: order.newClientOrderId,
+      })
+      if (placed.status === StatusEnum.ok && placed.data) {
+        logger.error(
+          `Order ${order.newClientOrderId} DID reach ${this.exchange} despite the failed response — adopting it instead of resending.`,
+        )
+        return placed
+      }
+      if (isAmbiguousOrderFailure(placed.reason)) {
+        logger.error(
+          `Cannot tell whether ${order.newClientOrderId} reached ${this.exchange} (lookup: ${placed.reason}). Not resending.`,
+        )
+        return result
+      }
+      // The venue answered and does not have it: the send genuinely did not
+      // land, so this resend cannot duplicate anything.
+      await sleep(Exchange.OPEN_ORDER_RESEND_DELAY_MS * attempt)
+      result = await this.sendOpenOrder(order, timeProfile)
+    }
+    return result
   }
 
   async getCandles(
@@ -920,6 +1026,17 @@ class Exchange extends AbstractExchange {
       params?: Record<string, unknown>
       body?: Record<string, unknown>
       isPrivate?: boolean
+      /**
+       * Opt this request OUT of the transport retry ladders below.
+       *
+       * They fire on timeouts, resets and 5xx — outcomes that do not say
+       * whether the request reached the venue — and re-send the identical body.
+       * For a read that is free. For `POST /order` it is a second live order on
+       * any venue that does not deduplicate `newClientOrderId` (Hyperliquid
+       * does not), so that one caller resends deliberately, after asking the
+       * venue what happened. See {@link Exchange#openOrder}.
+       */
+      noAutoRetry?: boolean
     },
     timeProfile: ExchangeRequestTimeProfile,
     count = 0,
@@ -1043,7 +1160,7 @@ class Exchange extends AbstractExchange {
               'Client network socket disconnected before secure TLS connection was established'.toLowerCase(),
             ) !== -1
         ) {
-          if (count < 5) {
+          if (count < 5 && !request.noAutoRetry) {
             const time = res?.status === 404 ? 3000 : 1000
             logger.error(
               `Received code:${res.status}, status:${res.statusText} (${
@@ -1129,7 +1246,7 @@ class Exchange extends AbstractExchange {
             .toLowerCase()
             .indexOf('Internal Server Error'.toLowerCase()) !== -1
         ) {
-          if (count < 5) {
+          if (count < 5 && !request.noAutoRetry) {
             const time =
               res?.response?.status === 404 ||
               res?.response?.status === 405 ||
