@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.26] - 2026-08-21
+
+### Fixed
+
+- A `startDeal`, `closeDeal`, `addFunds` or `reduceFunds` webhook sent to a multi-pair DCA bot now accepts the pair written the way the platform itself writes it. The webhook only ever recognised the `BASE_QUOTE` form, so `AAVE_USDT` worked but `AAVEUSDT` and `AAVE-USDT` were both refused with "Symbol AAVE-USDT format is incorrect" and no deal was opened — even though those are exactly the identifiers the bot stores in its own pair list and shows in the interface, compact on Binance and dashed on KuCoin. Users copying a pair out of their own bot settings therefore got a webhook that returned HTTP 200, was logged as received, and then quietly did nothing. The pair is now resolved by matching it against the bot's own configured pairs ignoring separators and case, so the underscore, dashed, compact, slashed and lower-case forms all reach the same pair. The quote asset is never guessed from the text: only pairs already configured on the bot can match, an exact `BASE_QUOTE` match still takes precedence, and a pair that is genuinely not on the bot is still refused.
+
 ## [1.51.25] - 2026-08-20
 
 ### Fixed

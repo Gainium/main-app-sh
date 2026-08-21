@@ -11889,7 +11889,20 @@ function createDCABotHelper<
     async convertSymbol(symbol?: string, checkOpen?: boolean) {
       if (symbol) {
         const [base, quote] = symbol.split('_')
-        if (!base || !quote) {
+        // The webhook contract documents `BASE_QUOTE`, but every pair
+        // identifier the platform itself stores and renders is exchange-native
+        // — compact on Binance (`AAVEUSDT`), dashed on KuCoin (`AAVE-USDT`) —
+        // so users copy the pair straight out of their own bot settings and it
+        // was rejected outright as "format is incorrect" (bug #463).
+        // Accept those too, by comparing a separator-stripped form against the
+        // bot's OWN configured pairs. This is not the suffix-guessing this
+        // codebase forbids: the quote is never inferred, each candidate keeps
+        // its explicit baseAsset/quoteAsset and we only match against a finite
+        // known list. The canonical `val.pair` is always what gets returned, so
+        // case-folding never leaks into the resolved symbol.
+        const compact = (s: string) => s.replace(/[-_/]/g, '').toUpperCase()
+        const wanted = compact(symbol)
+        if (!wanted) {
           return this.handleErrors(
             `Symbol ${symbol} format is incorrect`,
             'openDealBySignal',
@@ -11897,7 +11910,11 @@ function createDCABotHelper<
             false,
           )
         }
+        // An exact BASE_QUOTE hit still wins and still short-circuits the scan;
+        // the separator-insensitive hit is only a fallback, so every input that
+        // resolves today resolves to exactly the same pair.
         let symbolToUse = ''
+        let looseMatch = ''
         for (const p of this.pairs) {
           const val = await this.getExchangeInfo(p)
           if (!val) {
@@ -11907,14 +11924,28 @@ function createDCABotHelper<
             symbolToUse = val.pair
             break
           }
+          if (
+            !looseMatch &&
+            (wanted === compact(val.pair) ||
+              wanted === compact(`${val.baseAsset.name}${val.quoteAsset.name}`))
+          ) {
+            looseMatch = val.pair
+          }
+        }
+        if (!symbolToUse) {
+          symbolToUse = looseMatch
         }
         if (!symbolToUse && checkOpen) {
           for (const val of this.getOpenDeals()) {
+            const dealSymbol = val.deal.symbol
             if (
-              val.deal.symbol.baseAsset === base &&
-              val.deal.symbol.quoteAsset === quote
+              (dealSymbol.baseAsset === base &&
+                dealSymbol.quoteAsset === quote) ||
+              wanted === compact(dealSymbol.symbol) ||
+              wanted ===
+                compact(`${dealSymbol.baseAsset}${dealSymbol.quoteAsset}`)
             ) {
-              symbolToUse = val.deal.symbol.symbol
+              symbolToUse = dealSymbol.symbol
               break
             }
           }
