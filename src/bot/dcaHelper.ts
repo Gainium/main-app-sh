@@ -1803,6 +1803,33 @@ function createDCABotHelper<
       this.handleDebug(
         `Funding for deal ${dealId}. Quote: ${result.deltaQuote}, USD: ${result.deltaUsd}, max time: ${result.maxTime}, last time: ${result.lastTime}, applied: ${result.applied}`,
       )
+      // Adopt the cursor on a deal that has none. The commit below is a CAS on
+      // `funding.offset`, and `{'funding.offset': <n>}` matches no document
+      // where that field is absent — so on such a deal every funding write was
+      // a permanent no-op while `closeDeal` still folded the in-memory funding
+      // into the reported profit. Every combo deal was in that state (their
+      // `createDeal` override never seeded the cursor), and the ones already
+      // open when this shipped still are, so seeding at creation alone does not
+      // repair them.
+      //
+      // `$exists: false` is what makes this safe: it can only ever write a
+      // cursor that is missing, never move a live one backwards. Carrying the
+      // in-memory totals across means a deal that has been accruing unpersisted
+      // funding this session adopts what it already has rather than restarting
+      // from zero behind its own cursor.
+      if (result.applied > 0) {
+        await this.dealsDb.updateData(
+          { _id: dealId, 'funding.offset': { $exists: false } } as any,
+          {
+            $set: {
+              'funding.offset': offset,
+              'funding.total': deal.funding?.total ?? 0,
+              'funding.totalUsd': deal.funding?.totalUsd ?? 0,
+              'funding.lastTime': deal.funding?.lastTime ?? 0,
+            },
+          } as any,
+        )
+      }
       // Per-deal commit: atomic + CAS on the deal's own offset.
       await this.dealsDb.updateData(
         { _id: dealId, 'funding.offset': offset } as any,

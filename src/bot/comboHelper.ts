@@ -59,6 +59,13 @@ const { sleep } = utils
 import { RunWithDelay } from '../utils/delay'
 import { DealStats } from './worker/statsService'
 import createDCABotHelper from './dcaHelper'
+import {
+  comboPercentAtPrice,
+  comboPnlAtPrice,
+  comboPriceForTarget,
+  comboSolveParts,
+} from './combo/tpSolve'
+import type { ComboTpSolveInput } from './combo/tpSolve'
 
 const mutex = new IdMutex()
 const mutexConcurrently = new IdMutex(300)
@@ -4527,6 +4534,15 @@ function createComboBotHelper<
           commission: 0,
           createTime: time,
           updateTime: time,
+          // Funding cursor starts at deal creation so we never backfill funding
+          // from before the deal existed. This mirrors `dcaHelper.createDeal`,
+          // and it is load-bearing: the per-deal commit in
+          // `processDealFunding` is a compare-and-swap on `funding.offset`, and
+          // a document with no such field matches no CAS filter — so without
+          // this seed every funding write for a combo deal was a silent no-op
+          // while `closeDeal` still subtracted the in-memory funding from the
+          // reported profit.
+          funding: { total: 0, totalUsd: 0, offset: time, lastTime: 0 },
           levels: {
             all: this.data.settings.useDca
               ? this.data.settings.ordersCount +
@@ -4619,6 +4635,16 @@ function createComboBotHelper<
           closeByTp: false,
         })
         this.resetPending(this.botId, symbol)
+        // Same reason as `dcaHelper.createDeal`: without a subscription no
+        // funding events reach the store for this symbol, so a deal opened on
+        // a pair the bot was not already holding would accrue no funding at
+        // all until the next `startFunding()` at bot start.
+        if (this.futures) {
+          const fundingSym = await this.toFundingSymbol(symbolData.symbol)
+          if (fundingSym) {
+            await this.subscribeFunding(fundingSym)
+          }
+        }
         this.emit('bot deal update', record.data)
         await this.updateBotDeals(this.botId, true)
         this.endMethod(_id)
@@ -5229,29 +5255,22 @@ function createComboBotHelper<
         sl,
       )
     }
-    async claculateTpSlFromPrice(
+    /**
+     * Gather everything the TP/SL equation needs, in the deal's own profit
+     * currency, so both directions of it read from one place.
+     *
+     * The funding term needs no conversion: `computeFunding` denominates the
+     * accrual in the settlement asset — coin for inverse contracts, quote for
+     * linear — and for futures `profitBase` is true exactly when `coinm` is,
+     * so it is already measured in the same asset as `profit.total`. Spot
+     * combos can also set `profitBase`, but they never accrue funding.
+     */
+    private async tpSolveInput(
       d: FullDeal<CleanComboDealsSchema>,
-      price: number,
-    ) {
-      const profitBase = await this.profitBase(d.deal)
-      const qty = this.isLong
-        ? d.deal.currentBalances.base
-        : d.deal.initialBalances.base - d.deal.currentBalances.base
-      const quote =
-        (this.isLong
-          ? d.deal.initialBalances.quote - d.deal.currentBalances.quote
-          : d.deal.currentBalances.quote) +
-        (profitBase ? 0 : d.deal.profit.total * (this.isLong ? 1 : -1))
-      const quoteTp = qty * price
-      const base =
-        quote / price +
-        (profitBase ? d.deal.profit.total * (this.isLong ? 1 : -1) : 0)
-      const fee = (await this.getUserFee(d.deal.symbol.symbol))?.maker ?? 0
-      const total =
-        d.deal.profit.total +
-        (profitBase ? qty - base : quoteTp - quote) * (this.isLong ? 1 : -1) -
-        (d.deal.fullFee ?? 0) -
-        (profitBase ? qty * fee : quoteTp * fee)
+    ): Promise<ComboTpSolveInput> {
+      // `profitBase()` can return undefined; every call site treated that as
+      // false by using it in a ternary, so keep that meaning explicit here.
+      const profitBase = !!(await this.profitBase(d.deal))
       const comboBasedOn = await this.comboBasedOn(d.deal)
       const usageBase =
         comboBasedOn === ComboTpBase.full
@@ -5263,105 +5282,57 @@ function createComboBotHelper<
           : d.deal.usage.current.quote
       const { avgPrice } = await this.getAggregatedSettings(d.deal)
       const avgToUse = d.deal.avgPrice || (avgPrice ?? d.deal.avgPrice)
-      const denominator = this.futures
-        ? this.coinm
-          ? usageBase
-          : usageQuote
-        : this.isLong
-          ? usageQuote * (profitBase ? 1 / avgToUse : 1)
-          : usageBase * (profitBase ? 1 : avgToUse)
-      const perc = total / denominator
-      return perc
+      return {
+        isLong: this.isLong,
+        profitBase,
+        initialBalances: d.deal.initialBalances,
+        currentBalances: d.deal.currentBalances,
+        profit: d.deal.profit.total,
+        // `closeDeal` folds funding into the realized profit the user is
+        // shown, so a target that ignores it aims at a number the deal can
+        // never report. On a perpetual held for months this is not a rounding
+        // difference — funding can exceed the whole target, letting a deal
+        // "reach" its take profit and still book a loss.
+        funding: d.deal.funding?.total ?? 0,
+        fullFee: d.deal.fullFee ?? 0,
+        fee: (await this.getUserFee(d.deal.symbol.symbol))?.maker ?? 0,
+        denominator: this.futures
+          ? this.coinm
+            ? usageBase
+            : usageQuote
+          : this.isLong
+            ? usageQuote * (profitBase ? 1 / avgToUse : 1)
+            : usageBase * (profitBase ? 1 : avgToUse),
+      }
+    }
+    async claculateTpSlFromPrice(
+      d: FullDeal<CleanComboDealsSchema>,
+      price: number,
+    ) {
+      return comboPercentAtPrice(await this.tpSolveInput(d), price)
     }
     async getDealStopLossPriceCombo(
       d: FullDeal<CleanComboDealsSchema>,
     ): Promise<DealStopLossCombo> {
-      const { avgPrice, slPerc, tpPerc, useTp, useSl } =
-        await this.getAggregatedSettings(d.deal)
+      const { slPerc, tpPerc, useTp, useSl } = await this.getAggregatedSettings(
+        d.deal,
+      )
       const tpToUse = +(tpPerc ?? '0') / 100
       const slToUse = +(slPerc ?? '0') / 100
       let tp: number | null = null
       let sl: number | null = null
-      const profitBase = await this.profitBase(d.deal)
-      const longMult = this.isLong ? 1 : -1
-      const qty = this.isLong
-        ? d.deal.currentBalances.base
-        : d.deal.initialBalances.base - d.deal.currentBalances.base
-      const quote =
-        (this.isLong
-          ? d.deal.initialBalances.quote - d.deal.currentBalances.quote
-          : d.deal.currentBalances.quote) +
-        (profitBase ? 0 : d.deal.profit.total * longMult)
-      const fee = (await this.getUserFee(d.deal.symbol.symbol))?.maker ?? 0
-      const comboBasedOn = await this.comboBasedOn(d.deal)
-      const usageBase =
-        comboBasedOn === ComboTpBase.full
-          ? d.deal.usage.max.base
-          : d.deal.usage.current.base
-      const usageQuote =
-        comboBasedOn === ComboTpBase.full
-          ? d.deal.usage.max.quote
-          : d.deal.usage.current.quote
-      const avgToUse = d.deal.avgPrice || (avgPrice ?? d.deal.avgPrice)
-      const denominator = this.futures
-        ? this.coinm
-          ? usageBase
-          : usageQuote
-        : this.isLong
-          ? usageQuote * (profitBase ? 1 / avgToUse : 1)
-          : usageBase * (profitBase ? 1 : avgToUse)
+      const solve = await this.tpSolveInput(d)
+      const { denominator, funding } = solve
+      const { qty, quote } = comboSolveParts(solve)
       const quoteTp = qty * d.deal.initialPrice
-      const base =
-        quote / d.deal.initialPrice +
-        (profitBase ? d.deal.profit.total * longMult : 0)
-      const total =
-        d.deal.profit.total +
-        (profitBase ? qty - base : quoteTp - quote) * longMult -
-        (d.deal.fullFee ?? 0) -
-        (profitBase ? qty * fee : quoteTp * fee)
-      if (denominator) {
-        if (profitBase) {
-          if (useTp) {
-            tp =
-              quote /
-              (qty -
-                d.deal.profit.total * longMult -
-                (tpToUse * denominator -
-                  d.deal.profit.total +
-                  (d.deal.fullFee ?? 0) +
-                  qty * fee) /
-                  longMult)
-          }
-          if (useSl) {
-            sl =
-              quote /
-              (qty -
-                d.deal.profit.total * longMult -
-                (slToUse * denominator -
-                  d.deal.profit.total +
-                  (d.deal.fullFee ?? 0) +
-                  qty * fee) /
-                  longMult)
-          }
-        }
-        if (!profitBase) {
-          if (useTp) {
-            tp =
-              (tpToUse * denominator +
-                (d.deal.fullFee ?? 0) -
-                d.deal.profit.total +
-                quote * longMult) /
-              (qty * (longMult - fee))
-          }
-          if (useSl) {
-            sl =
-              (slToUse * denominator +
-                (d.deal.fullFee ?? 0) -
-                d.deal.profit.total +
-                quote * longMult) /
-              (qty * (longMult - fee))
-          }
-        }
+      // Logged below as the deal's P&L at its opening price — the reference
+      // point the solved levels are read against.
+      const total = comboPnlAtPrice(solve, d.deal.initialPrice)
+      if (useTp) {
+        tp = comboPriceForTarget(solve, tpToUse)
+      }
+      if (useSl) {
+        sl = comboPriceForTarget(solve, slToUse)
       }
       if (tp !== null && tp <= 0) {
         this.handleDebug(`TP less than 0, skip new tp ${tp}`)
@@ -5383,7 +5354,7 @@ function createComboBotHelper<
             tpPerc * 100
           }, total: ${total}, denominator: ${denominator}, quote: ${quote}, quoteTP: ${quoteTp}, qty: ${qty}, fullFee: ${
             d.deal.fullFee
-          }, profit: ${d.deal.profit.total}`
+          }, profit: ${d.deal.profit.total}, funding: ${funding}`
           if (tpPerc < 0) {
             this.handleDebug(`NEW PERCENT LOWER THAN 0 skip new tp, ${tpLog}`)
             tp = null
@@ -5416,7 +5387,7 @@ function createComboBotHelper<
               slPerc * 100
             }, total: ${total}, denominator: ${denominator}, quote: ${quote}, quoteTP: ${quoteTp}, qty: ${qty}, fullFee: ${
               d.deal.fullFee
-            }, profit: ${d.deal.profit.total}`,
+            }, profit: ${d.deal.profit.total}, funding: ${funding}`,
           )
           this.botEventDb.createData({
             userId: this.userId,

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.51.29] - 2026-08-21
+
+### Fixed
+
+- Combo futures deals now record the funding they accrue, and their take profit accounts for it. Combo's `createDeal` never seeded the funding cursor its DCA counterpart does, and the per-deal funding write is a compare-and-swap on that cursor — so on a combo deal it matched no document and every write was silently dropped, while closing the deal still subtracted the in-memory funding from the reported profit. Users were left with a profit figure reduced by a real cost and no line anywhere explaining it. Deals already open adopt the cursor on their next settlement instead of having to be reopened, and a combo deal started on a pair the bot was not already holding subscribes to that symbol's funding straight away rather than waiting for the next bot start.
+- Combo take-profit and stop-loss targets now include accrued funding. The target is a percentage of the deal's usage, and it previously ignored funding entirely, so a perpetual held long enough for funding to rival that percentage could reach its take profit and still close at a loss. The two directions of the equation — the price that hits a target, and the percentage at a price — had been maintained as two hand-written copies; they now share one implementation, with a test pinning their round-trip and their agreement with the previous formulas when funding is zero.
+
 ## [1.51.28] - 2026-08-21
 
 ### Fixed
