@@ -515,6 +515,10 @@ const botCommon = {
     // hand the guard back its size-blindness after every restart.
     // Additive-only field.
     refusedRequired: Schema.Types.Map,
+    // Largest `required` the venue has refused per counter key — the size a
+    // success has to match before it may retire the guard. Persisted for the
+    // same reason as `refusedRequired`. Additive-only field.
+    refusedRequiredMax: Schema.Types.Map,
   },
   cost: Number,
   ...CreatedUpdated,

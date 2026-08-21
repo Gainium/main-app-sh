@@ -2315,7 +2315,9 @@ class MainBot<T extends IMainBot> {
 
   /**
    * Record the size of an order the VENUE refused for funds, per counter key,
-   * keeping the smallest seen. See `notEnoughBalance.refusedRequired`.
+   * keeping BOTH ends of the refused range: the smallest seen (what to
+   * suppress) and the largest (what it takes to clear). See
+   * `notEnoughBalance.refusedRequired` / `refusedRequiredMax`.
    */
   private noteRefusedRequired(id: string, order: Order) {
     if (!this.data?.notEnoughBalance) {
@@ -2328,14 +2330,47 @@ class MainBot<T extends IMainBot> {
     if (!this.data.notEnoughBalance.refusedRequired) {
       this.data.notEnoughBalance.refusedRequired = {}
     }
-    const prev = this.data.notEnoughBalance.refusedRequired[id]
-    if (prev !== undefined && prev <= required) {
+    if (!this.data.notEnoughBalance.refusedRequiredMax) {
+      this.data.notEnoughBalance.refusedRequiredMax = {}
+    }
+    const prevMin = this.data.notEnoughBalance.refusedRequired[id]
+    const prevMax = this.data.notEnoughBalance.refusedRequiredMax[id]
+    const newMin = prevMin === undefined || required < prevMin
+    const newMax = prevMax === undefined || required > prevMax
+    if (!newMin && !newMax) {
       return
     }
-    this.data.notEnoughBalance.refusedRequired[id] = required
+    if (newMin) {
+      this.data.notEnoughBalance.refusedRequired[id] = required
+    }
+    if (newMax) {
+      this.data.notEnoughBalance.refusedRequiredMax[id] = required
+    }
     this.updateData({
       notEnoughBalance: this.data.notEnoughBalance,
     })
+  }
+
+  /**
+   * May a success of `amount` retire the not-enough-balance guard for `id`?
+   *
+   * Only if it is at least as big as the LARGEST order the venue has refused on
+   * this key. `getNotEnoughOrdersIdByOrder` collapses a whole (symbol, side)
+   * onto one counter, so the counter can be held up entirely by one big order
+   * while small ones on the same key fill normally — and on a combo bot they
+   * do, every few minutes.
+   *
+   * This used to read the SMALLEST refused size instead, which screens out
+   * nothing once a small order has been refused even once: on prod bot
+   * 6a38fb59a1fdb25024d5a497 the floor sat at 36.77 USD (a grid order refused
+   * during a dip) while the order actually being refused needed 262.47 USD, so
+   * every ordinary ~37 USD grid fill wiped the counter AND the cooldown. The
+   * guard re-armed and was wiped again six times in six hours while the same
+   * SOL-USD recovery order was refused on a loop for 17 days.
+   */
+  private clearsRefusedConstraint(id: string, amount: number) {
+    const refusedMax = this.data?.notEnoughBalance?.refusedRequiredMax?.[id]
+    return refusedMax === undefined || amount >= refusedMax
   }
 
   @IdMute(mutex, (order: Order) => `notEnoughBalance${order.botId}`)
@@ -2365,6 +2400,7 @@ class MainBot<T extends IMainBot> {
     if (this.data.notEnoughBalance.keyVersion !== notEnoughBalanceKeyVersion) {
       this.data.notEnoughBalance.orders = {}
       this.data.notEnoughBalance.refusedRequired = {}
+      this.data.notEnoughBalance.refusedRequiredMax = {}
       this.data.notEnoughBalance.thresholdPassed = false
       this.data.notEnoughBalance.thresholdPassedTime = 0
       this.data.notEnoughBalance.keyVersion = notEnoughBalanceKeyVersion
@@ -2392,6 +2428,9 @@ class MainBot<T extends IMainBot> {
       // it: it only describes the constraint that just cleared.
       if (this.data.notEnoughBalance.refusedRequired) {
         delete this.data.notEnoughBalance.refusedRequired[id]
+      }
+      if (this.data.notEnoughBalance.refusedRequiredMax) {
+        delete this.data.notEnoughBalance.refusedRequiredMax[id]
       }
       notEnoughBalanceBackoff.clear([this.botId, id])
     }
@@ -6027,12 +6066,20 @@ class MainBot<T extends IMainBot> {
                 reason: `Not enough balance`,
                 data: null,
               }
-            } else if (spendable < required) {
+            } else if (
+              spendable < required ||
+              // Affording THIS order says nothing about the constraint when the
+              // counter is being held up by a much bigger one on the same key:
+              // a 37 USD grid order is affordable all day while the 262 USD
+              // safety order behind the latch is not. Decaying the counter on
+              // it is the same size-blind reset as clearing on its fill.
+              !this.clearsRefusedConstraint(notEnoughBalanceId, spendable)
+            ) {
               // Window elapsed (or never opened): let this one reach the
               // exchange. If it is rejected, the error path widens the
               // window; if it fills, the success path clears it.
               this.handleDebug(
-                `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId}. Cached balance: ${spendable}, required: ${required}`,
+                `${this.notEnoughBalanceLogPrefix} Probing exchange for order id ${notEnoughBalanceId} ${order.clientOrderId}. Cached balance: ${spendable}, required: ${required}, largest refused: ${this.data.notEnoughBalance.refusedRequiredMax?.[notEnoughBalanceId]}`,
               )
             } else {
               // Our figures say it is affordable and no window is open, so this
@@ -6579,22 +6626,18 @@ class MainBot<T extends IMainBot> {
             (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) > 0
           ) {
             // Clearing the guard needs a success that actually proves the
-            // constraint is gone — one at least as big as the smallest order
-            // the venue has refused on this key. A combo bot fills a small
-            // grid order every few minutes on the same (symbol, side) as the
-            // safety order Kraken keeps refusing; letting those wipe the
-            // counter and the cooldown is what kept the guard disarmed for
-            // 12h at a time while the venue was refused ~11 times an hour.
-            const refusedRequired =
-              this.data.notEnoughBalance.refusedRequired?.[notEnoughBalanceId]
-            if (
-              refusedRequired === undefined ||
-              this.requiredForOrder(order) >= refusedRequired
-            ) {
+            // constraint is gone — one at least as big as the LARGEST order the
+            // venue has refused on this key. A combo bot fills a small grid
+            // order every few minutes on the same (symbol, side) as the safety
+            // order Kraken keeps refusing; letting those wipe the counter and
+            // the cooldown is what kept the guard disarmed for 12h at a time
+            // while the venue was refused ~11 times an hour.
+            const accepted = this.requiredForOrder(order)
+            if (this.clearsRefusedConstraint(notEnoughBalanceId, accepted)) {
               this.updateNotEnoughBalanceErrors(order, 0, true)
             } else {
               this.handleDebug(
-                `${this.notEnoughBalanceLogPrefix} Order id ${notEnoughBalanceId} ${order.clientOrderId} filled at ${this.requiredForOrder(order)}, below the refused size ${refusedRequired}. Keeping the not enough balance guard armed`,
+                `${this.notEnoughBalanceLogPrefix} Order id ${notEnoughBalanceId} ${order.clientOrderId} accepted at ${accepted}, below the largest refused size ${this.data.notEnoughBalance.refusedRequiredMax?.[notEnoughBalanceId]}. Keeping the not enough balance guard armed`,
               )
             }
           }

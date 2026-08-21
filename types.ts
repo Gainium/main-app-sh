@@ -1991,6 +1991,16 @@ export interface MainBot<T = BaseSettings> extends SchemaI {
      *  separately: a 5 USD grid order succeeding says nothing about the 35 USD
      *  safety order the venue keeps refusing. */
     refusedRequired?: Record<string, number>
+    /** LARGEST order size the VENUE has refused for funds on each counter key.
+     *  `refusedRequired` (the smallest) is the right floor for deciding what to
+     *  SUPPRESS — anything at least that big is suspect. It is the wrong floor
+     *  for deciding what may CLEAR the guard, because the smallest refusal is
+     *  itself just a transient dip: once a ~37 USD grid order has been refused
+     *  once, every ordinary ~37 USD grid fill on that key clears a counter that
+     *  only the 262 USD safety order can raise. Retiring the guard takes proof
+     *  at the size that is actually being refused, so that decision reads this
+     *  one. Additive-only field. */
+    refusedRequiredMax?: Record<string, number>
   }
   share?: boolean
   shareId?: string

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.30] - 2026-08-21
+
+### Fixed
+
+- The not-enough-balance guard is no longer wiped by an ordinary small fill on the same pair, so a recovery order the exchange keeps refusing is finally allowed to back off. The guard counts refusals per (symbol, side), which deliberately puts a combo bot's routine grid orders and its much larger safety/recovery order on one counter, and it retired that counter on any success at least as big as the *smallest* order the venue had ever refused on the key. That floor screens out nothing: once a grid order has been refused a single time during a dip, it sits at grid-order size forever, and every grid fill a few minutes later cleared both the counter and the retry cooldown that only the big order had built. One Kraken combo bot re-sent the same 262 USD recovery order — identical symbol, side, quantity and price, a fresh order id each time — for seventeen days, arming and losing the guard six times in six hours. Retiring the guard now takes a success at the *largest* size the venue has refused, and the same rule stops a small affordable order from decaying the counter before it is sent. Suppression still starts at the smallest refused size, so nothing that was being held back is let through.
+
 ## [1.51.29] - 2026-08-21
 
 ### Fixed
