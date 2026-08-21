@@ -398,6 +398,8 @@ export const UserSchema = /* GraphQL */ `
   }
   input changePasswordInput {
     password: String!
+    "The caller's CURRENT password. Required: without it, anyone holding a session token can take the account over (GHSA-4m6h-m5mj-733x)."
+    currentPassword: String!
   }
   type changePasswordResponse implements BasicResponse {
     status: Status

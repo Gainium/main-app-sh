@@ -8731,17 +8731,30 @@ const resolvers = <
       {
         input,
       }: {
-        input: { password: string }
+        input: { password: string; currentPassword: string }
       },
       { token, req }: InputRequest,
     ) => {
-      const { password } = input
+      const { password, currentPassword } = input
       if (token === 'demo' || !req.user?.authorized) {
         return errorAccess()
       }
       const user = await findUser(token)
       if (user.status === StatusEnum.notok) {
         return user
+      }
+      // SECURITY (GHSA-4m6h-m5mj-733x): verify the CURRENT password before
+      // anything else. Without this, a session token alone was enough to set a
+      // new password — a full account takeover that locked the real owner out.
+      // This runs BEFORE the same-password guard on purpose: that guard is
+      // itself an oracle, and a caller who cannot prove the current password
+      // must not get to probe candidates against it.
+      if (!(await verifyPasswordHash(currentPassword, user.data.password))) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Current password is not correct',
+          data: null,
+        }
       }
       // Async bcrypt comparison (two arguments). It dual-reads, so the guard
       // works whether the stored value is a bcrypt hash or still legacy AES.
@@ -8760,9 +8773,22 @@ const resolvers = <
           data: null,
         }
       }
+      // SECURITY (GHSA-4m6h-m5mj-733x): revoke every OTHER session on a
+      // password change. Leaving `tokens[]` untouched meant a stolen token
+      // survived the very reset performed to get rid of it. The caller's own
+      // token is retained so changing your password does not sign you out of
+      // the tab you did it from.
+      const remainingTokens = (user.data.tokens ?? []).filter(
+        (t) => t.token === token,
+      )
       const result = await userDb.updateData(
         { _id: user.data._id.toString() },
-        { $set: { password: await hashPassword(password) } },
+        {
+          $set: {
+            password: await hashPassword(password),
+            tokens: remainingTokens,
+          },
+        },
       )
       if (result.status === StatusEnum.notok) {
         return result

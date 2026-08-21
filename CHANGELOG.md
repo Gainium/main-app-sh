@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.52.0] - 2026-08-21
+
+### Changed
+
+- **Changing your password now requires your current password.** `changePasswordInput` gains a required `currentPassword` field, so a session alone is no longer sufficient to set a new password (GHSA-4m6h-m5mj-733x). **This is a breaking API change** — update the dashboard to main-dash-sh 2.45.0 or later in the same upgrade, or the change-password form will stop working.
+- Changing your password now signs out every other session on the account, keeping only the one you changed it from. Previously all existing sessions survived a password change.
+
+### Fixed
+
+- The Socket.IO user stream now requires `userId` and `userToken` to be strings before they are used to look a user up, and no longer registers the legacy inbound bot-relay events unless `STREAM_ACCEPT_LEGACY_SOCKET_RELAY=true` is set (GHSA-hmxp-q7gj-rr88). Live updates travel over Redis (`STREAM_TYPE=redis`, the default in `.env.sample`), so the relay events are unused in a standard deployment.
+
 ## [1.51.30] - 2026-08-21
 
 ### Fixed

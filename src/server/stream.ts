@@ -1,4 +1,5 @@
 import { Server } from 'socket.io'
+import { hasStringCredentials } from '../utils/streamCredentials'
 import { StatusEnum, BotType, liveupdate } from '../../types'
 import http from 'http'
 import logger from '../utils/logger'
@@ -91,6 +92,21 @@ type UserUpdateInput = {
   data: Partial<UserSchema>
 }
 
+/**
+ * SECURITY (GHSA-hmxp-q7gj-rr88, issue 2): the inbound bot-relay handlers take
+ * `userId` straight from the client and emit into that user's room, so any
+ * unauthenticated peer able to reach WS_PORT can forge bot/deal/transaction/
+ * balance events into any user's live feed — the dashboard renders whatever
+ * arrives. Nothing publishes over that path any more: the engine publishes to
+ * Redis `liveupdate{userId}` (src/bot/main.ts) and `redisCb` relays it, and
+ * this server calls `initRedis()` unconditionally. `.env.sample` ships
+ * STREAM_TYPE=redis.
+ *
+ * So they stay unregistered unless a legacy socket-relay deployment opts in.
+ */
+const acceptLegacySocketRelay =
+  process.env.STREAM_ACCEPT_LEGACY_SOCKET_RELAY === 'true'
+
 class UserStreamService {
   /** Socket IO server instance */
   private server: Server
@@ -123,6 +139,12 @@ class UserStreamService {
       socket.on('greating', () => {
         this.botGreatingCallback(socket)
       })
+      // SECURITY (GHSA-hmxp-q7gj-rr88, issue 2) — see acceptLegacySocketRelay.
+      // Everything below is backend-originated and travels over Redis in every
+      // supported deployment; accepting it from a socket is forgery surface.
+      if (!acceptLegacySocketRelay) {
+        return
+      }
       /** Set callback on bot update event */
       socket.on('bot update', (msg: BotUpdateInput) => {
         this.botUpdateCallback(socket, msg)
@@ -254,6 +276,13 @@ class UserStreamService {
       return this.handleError(socket, 'Not enough data')
     }
     const { userId, userToken } = msg
+    if (!hasStringCredentials(userId, userToken)) {
+      socket.emit(
+        'message',
+        this.prepareMessage(StatusEnum.notok, 'Not enough data'),
+      )
+      return this.handleError(socket, 'Invalid connect payload')
+    }
     /** Check if token exist on user */
     const user = await this.db.readData({
       $and: [
