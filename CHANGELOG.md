@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.28] - 2026-08-21
+
+### Fixed
+
+- A deal whose opening order the exchange refused under a Binance Quantitative Rules cooldown now re-attempts as soon as the cooldown ends, instead of waiting for the periodic order sweep. The retry timer that exists for exactly this — the exchange never saw the order, so nothing in normal running re-places it — was skipped for any caller that asks for the rejection reason back, which is every deal-opening order. One deal spent 2h28m between its refusal and its next attempt, most of it after the restriction had already expired. The re-attempt re-runs the whole deal-opening sequence rather than re-sending the bare order, because that is what starts the deal on an immediate fill and arms the limit-reposition timers on one that rests; it is keyed on the deal, so repeated refusals collapse onto the single re-open the deal needs instead of accumulating one pending retry per attempt. An opening order held back this way is also no longer left behind as an order the exchange has never heard of. Safety orders and take-profits retry exactly as before.
+
 ## [1.51.27] - 2026-08-21
 
 ### Fixed

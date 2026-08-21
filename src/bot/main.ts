@@ -4964,6 +4964,28 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Re-attempt the deal-opening sequence for a deal whose base order a
+   * Quantitative Rules cooldown refused or held back.
+   *
+   * Re-SENDING a base order is not enough, which is why this exists as its own
+   * hook rather than reusing the plain re-send. `placeBaseOrder` does work
+   * around the send that nothing else does: it starts the deal synchronously
+   * when a market order comes back already filled, and it arms the
+   * limit-reposition / enter-market timers for one that rests. An order
+   * re-sent from underneath it would place fine and then sit there with none
+   * of that attached.
+   *
+   * Re-running the caller is safe to do blindly: `placeBaseOrder` bails on a
+   * deal that has since opened and on a deal that already has an active base
+   * order, so a retry that races the periodic `checkOrders` sweep cannot open
+   * a second position.
+   *
+   * No-op on bot types that have no deals (grid). Overridden in `dcaHelper`,
+   * which is the base of the combo + hedge bots.
+   */
+  protected async retryDealStart(_order: Order): Promise<void> {}
+
+  /**
    * Record on a deal that its opening (base) order was refused by the venue, or
    * held back by one of our pre-send guards standing in for it.
    *
@@ -5006,8 +5028,15 @@ class MainBot<T extends IMainBot> {
    * (delay, don't fail), so nothing else will re-place it reliably during normal
    * running; this timer is the self-heal path. It fires shortly after the
    * cooldown expires, re-checks (so an escalation extends the wait via the gate
-   * inside sendOrderToExchange), and re-sends. Keyed by clientOrderId so a given
-   * order has at most one pending retry (clear-and-replace on reschedule).
+   * inside sendOrderToExchange), and re-sends.
+   *
+   * Keyed so a given piece of work has at most one pending retry
+   * (clear-and-replace on reschedule). For most orders that key is the
+   * clientOrderId. A deal's OPENING order is keyed on its deal instead: each
+   * refused attempt mints a fresh clientOrderId, so keying on the order would
+   * let one chain accumulate per attempt — including the attempts the periodic
+   * `checkOrders` sweep makes independently — instead of collapsing onto the
+   * single re-open the deal actually needs.
    */
   protected scheduleQuantRulesRetry(
     order: Order,
@@ -5018,7 +5047,25 @@ class MainBot<T extends IMainBot> {
       scope: string | null
     },
   ): void {
-    const key = order.clientOrderId
+    const isDealStart =
+      order.typeOrder === TypeOrderEnum.dealStart && !!order.dealId
+    const key = isDealStart ? `dealStart:${order.dealId}` : order.clientOrderId
+    if (isDealStart) {
+      // This order is not going to the venue, and the retry re-runs
+      // `placeBaseOrder` rather than re-sending it — so the record has to go,
+      // or `placeBaseOrder`'s own "deal already has an active base order"
+      // guard sees the order we are abandoning and refuses to mint its
+      // replacement, wedging the deal for good.
+      //
+      // The rejection path has already done this by the time it calls here;
+      // the two PRE-SEND paths have not, and theirs is the order that matters:
+      // it was saved to the DB before the cooldown gate ran, so leaving it
+      // behind would also leave a NEW order the exchange has never heard of.
+      if (this.orders?.has(order.clientOrderId)) {
+        this.deleteOrder(order.clientOrderId)
+        this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+      }
+    }
     const existing = this.quantRulesRetryTimers.get(key)
     if (existing) {
       clearTimeout(existing)
@@ -5029,8 +5076,11 @@ class MainBot<T extends IMainBot> {
     const untilIso = cooldown.until
       ? new Date(cooldown.until).toISOString()
       : 'unknown'
+    const label = isDealStart
+      ? `Opening order for deal ${order.dealId}`
+      : `Order ${key}`
     this.handleLog(
-      `Order ${key} delayed by Binance Quantitative Rules cooldown (level ${
+      `${label} delayed by Binance Quantitative Rules cooldown (level ${
         cooldown.level ?? '?'
       }, ${cooldown.scope ?? '?'}) until ${untilIso}. Reduce-only orders continue to work. Will retry in ${Math.ceil(
         delayMs / 1000,
@@ -5048,13 +5098,18 @@ class MainBot<T extends IMainBot> {
       }
       if (!this.isOrderStillWanted(order)) {
         this.handleLog(
-          `Quantitative Rules deferred retry dropped for ${key}: deal ${order.dealId} no longer open`,
+          `Quantitative Rules deferred retry dropped for ${label}: deal ${order.dealId} no longer open`,
         )
         return
       }
-      void this.sendOrderToExchange(order, returnError as any).catch((e) =>
+      // A deal's opening order needs its CALLER re-run, not itself re-sent —
+      // see `retryDealStart`.
+      const attempt = isDealStart
+        ? this.retryDealStart(order)
+        : this.sendOrderToExchange(order, returnError as any)
+      void Promise.resolve(attempt).catch((e) =>
         this.handleWarn(
-          `Quantitative Rules deferred retry failed for ${key}: ${
+          `Quantitative Rules deferred retry failed for ${label}: ${
             (e as Error)?.message ?? e
           }`,
         ),
@@ -6241,15 +6296,26 @@ class MainBot<T extends IMainBot> {
               this.deleteOrder(order.clientOrderId)
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             }
-            this.endMethod(_id)
-            if (returnError) {
-              return request.reason
-            }
-            return this.scheduleQuantRulesRetry(order, returnError, {
+            // Schedule the retry BEFORE honouring `returnError`. The venue
+            // never saw this order, so nothing in normal running re-places it:
+            // `checkOrders` only re-places on a restart or on the next fill,
+            // and the reconcile sweep is opt-in. This timer is the self-heal
+            // path — and it used to be skipped for every `returnError` caller,
+            // which is exactly the deal-opening path (`placeBaseOrder` passes
+            // `true`). A refused base order was therefore left to the periodic
+            // sweep: one production deal waited 2h28m between its refusal and
+            // its next attempt, with the venue's restriction long expired.
+            // Callers only get a string back; they cannot re-place it for us.
+            this.scheduleQuantRulesRetry(order, returnError, {
               scope: violation.scope,
               level: violation.level,
               until: violation.until,
             })
+            this.endMethod(_id)
+            if (returnError) {
+              return request.reason
+            }
+            return
           }
           if (
             request.reason.toLowerCase().indexOf('MARKET_LOT_SIZE') !== -1 &&

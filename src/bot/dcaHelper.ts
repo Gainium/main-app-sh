@@ -579,6 +579,56 @@ function createDCABotHelper<
      * L1 -> L2 -> L3, and the deferred retry is the self-heal), so this adds an
      * explanation to that state without turning it into an alarm.
      */
+    /**
+     * Re-run the deal-opening sequence for a deal whose base order a
+     * Quantitative Rules cooldown refused. Overrides the no-op on `MainBot`;
+     * inherited by the combo and hedge bots, which extend this helper.
+     *
+     * Calls `placeBaseOrder` rather than re-sending the refused order, because
+     * the send is only part of what opening a deal does — see `retryDealStart`
+     * on `MainBot`. The refused order was already deleted and marked CANCELED
+     * by the caller, so this mints a fresh one, exactly as the periodic
+     * `checkOrders` sweep does for the same deals.
+     *
+     * Every guard that makes this safe lives in `placeBaseOrder` itself: it
+     * returns early on a deal that has since opened, on a deal that already
+     * holds an active base order, and on a bot that is no longer running. A
+     * retry that races the sweep therefore cannot open a second position.
+     */
+    protected override async retryDealStart(order: Order): Promise<void> {
+      const fullDeal = this.getDeal(order.dealId)
+      if (!fullDeal) {
+        this.handleLog(
+          `Quantitative Rules deal re-open dropped for ${order.dealId}: deal is gone`,
+        )
+        return
+      }
+      const deal = fullDeal.deal
+      if (deal.status !== DCADealStatusEnum.start) {
+        this.handleLog(
+          `Quantitative Rules deal re-open dropped for ${deal._id}: status is ${deal.status}`,
+        )
+        return
+      }
+      this.handleLog(
+        `Quantitative Rules cooldown over for deal ${deal._id}. Place base order again`,
+      )
+      await this.placeBaseOrder(
+        this.botId,
+        deal.symbol.symbol,
+        deal._id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deal.fixSize,
+        undefined,
+        deal.sizes,
+        deal.orderSizeType,
+      )
+    }
+
     protected async markDealStartBlocked(
       order: Order,
       reason: string | null,
