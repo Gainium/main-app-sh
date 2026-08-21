@@ -131,6 +131,7 @@ import {
   HEDGE_PER_WORKER,
 } from '../config'
 import { applyGridFuturesConstraints } from '../server/v2/helpers'
+import { ensureDynamicArIndicator } from '../utils/dynamicArIndicator'
 
 const PER_PAGE = 20
 
@@ -3651,7 +3652,11 @@ class Bot<T extends UserSchema = UserSchema> {
     },
     paperContext: boolean,
   ) {
-    const { vars, ...settings } = _settings
+    const { vars, ...rest } = _settings
+    // Same invariant as changeDCABot: a bot that scales DCA on atr/adr needs
+    // the startDca indicator that prices its ladder, or it can never open a
+    // deal. Seed it at creation so no client can produce one without. Bug #463.
+    const settings = ensureDynamicArIndicator(rest)
     if (
       (isPaper(settings.exchange) && !paperContext) ||
       (!isPaper(settings.exchange) && paperContext)
@@ -3777,7 +3782,10 @@ class Bot<T extends UserSchema = UserSchema> {
     _settings: CreateComboBotInput,
     paperContext: boolean,
   ) {
-    const { vars, ...settings } = _settings
+    // Combo settings extend DCA settings and comboHelper extends dcaHelper, so
+    // the atr/adr ladder — and its silent-no-deal failure — applies here too.
+    const { vars, ...rest } = _settings
+    const settings = ensureDynamicArIndicator(rest)
     if (
       (isPaper(settings.exchange) && !paperContext) ||
       (!isPaper(settings.exchange) && paperContext)
@@ -4664,7 +4672,14 @@ class Bot<T extends UserSchema = UserSchema> {
           settings.maxNumberOfOpenDeals)
     const settingKeys = Object.keys(settings)
     if (settingKeys.length > 0) {
-      set.$set.settings = { ...oldSettings.settings, ...settings }
+      // Seed the ATR/ADR startDca indicator when the merged result scales on
+      // atr/adr without one. A save that never touched the "Base scaling on"
+      // field skips the dashboards' own seeding and would otherwise persist a
+      // bot that can never open a deal. Bug #463.
+      set.$set.settings = ensureDynamicArIndicator({
+        ...oldSettings.settings,
+        ...settings,
+      })
     }
     if (settings.pair && !oldSettings.settings.useMulti) {
       return {
@@ -4913,7 +4928,11 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     const settingKeys = Object.keys(settings)
     if (settingKeys.length > 0) {
-      set.$set.settings = { ...oldSettings.settings, ...settings }
+      // See changeDCABot — combo inherits the same atr/adr ladder. Bug #463.
+      set.$set.settings = ensureDynamicArIndicator({
+        ...oldSettings.settings,
+        ...settings,
+      })
     }
     if (settings.pair && !oldSettings.settings.useMulti) {
       return {

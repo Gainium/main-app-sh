@@ -11544,8 +11544,16 @@ function createDCABotHelper<
       }
     }
 
-    private getDynamicLevels(pair: string): DynamicArPrices[] {
-      const indicators = [...this.indicators.values()].filter(
+    /**
+     * The indicators whose values price a dynamic-AR ladder for `pair`.
+     *
+     * Split out from {@link getDynamicLevels} so a caller can tell the two very
+     * different reasons for "no levels" apart: NONE configured (a broken bot
+     * that can never open a deal) versus configured but not warmed up yet
+     * (transient, clears within a candle). Bug #463.
+     */
+    private getDynamicArIndicators(pair: string) {
+      return [...this.indicators.values()].filter(
         (i) =>
           i.symbol === pair &&
           ((this.scaleAr && i.action === IndicatorAction.startDca) ||
@@ -11556,6 +11564,10 @@ function createDCABotHelper<
               i.action === IndicatorAction.closeDeal &&
               i.section === IndicatorSection.sl)),
       )
+    }
+
+    private getDynamicLevels(pair: string): DynamicArPrices[] {
+      const indicators = this.getDynamicArIndicators(pair)
       const result: DynamicArPrices[] = []
       for (const i of indicators) {
         if (!i.history || !i.history.length) {
@@ -11817,6 +11829,29 @@ function createDCABotHelper<
                   .join(', ')}`,
               )
               if (!dynamic.length) {
+                // Empty levels have two causes and only one is worth a user's
+                // attention. Indicators that exist but have no history yet are
+                // warming up and clear on their own — staying silent there is
+                // deliberate. NO matching indicator at all is a broken config:
+                // this bot cannot open a deal on any pair, ever, and until
+                // Bug #463 it said nothing at all — the exit below is reached
+                // after "Balance check skipped" with no error, no bot message
+                // and no event, so the deal simply never appeared. Say so.
+                if (!this.getDynamicArIndicators(symbol).length) {
+                  const arMode =
+                    settings.scaleDcaType === ScaleDcaTypeEnum.adr
+                      ? 'ADR'
+                      : 'ATR'
+                  this.handleErrors(
+                    this.scaleAr
+                      ? `Cannot open deal for ${symbol}: DCA order spacing is set to scale on ${arMode}, but this bot has no ${arMode} indicator configured, so order levels cannot be calculated. Set "Base scaling on" back to Percentage, or re-select ${arMode} to restore the indicator.`
+                      : `Cannot open deal for ${symbol}: deal close is set to dynamic ${arMode} levels, but this bot has no ${arMode} indicator configured, so those levels cannot be calculated.`,
+                    'openNewDeal',
+                    '',
+                    false,
+                    true,
+                  )
+                }
                 this.resetPending(this.botId, symbol)
                 this.endMethod(_id)
                 if (cbIfNotOpened) {

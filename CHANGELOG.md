@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.51.27] - 2026-08-21
+
+### Fixed
+
+- A DCA or combo bot whose DCA order spacing scales on ATR or ADR now always carries the ATR/ADR indicator that spacing is computed from, and says so plainly if it ever does not. That indicator is what prices the safety-order ladder, and until now it was only ever created as a side-effect of switching the "Base scaling on" selector in the interface — so a bot saved through the public API, a clone, an AI agent tool, or a form submit that never touched that selector could be stored set to ATR with no indicator behind it. Such a bot could not open a single deal, on any pair, for its entire life: the engine found no levels to place orders at and returned without opening anything, writing no error, no bot message and no event. The bot log simply stopped after "Balance check skipped", the deal never appeared, and because the interface hides the ATR panel when the indicator is missing, the owner could not see or repair the cause either. The indicator is now filled in whenever a bot is created or saved with ATR/ADR scaling, so the combination cannot be stored broken from any path. If a bot still reaches that state, the deal attempt now reports that the ATR/ADR indicator is missing instead of failing silently — while a bot whose indicator is merely still warming up stays quiet, as before.
+
 ## [1.51.26] - 2026-08-21
 
 ### Fixed
