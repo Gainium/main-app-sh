@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.4] - 2026-08-21
+
+### Fixed
+
+- `getBalances` for a futures leg that is `linkedTo` its spot leg (OKX / Bybit unified accounts) now returns the shared balance pool, tagged with the requested leg — the bot form showed "BAL 0" for every such account because balances are only stored under the source leg (reported on OKX Europe X-Perps, forum topic 4925).
+
 ## [1.52.3] - 2026-08-21
 
 ### Fixed

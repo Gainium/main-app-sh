@@ -20,8 +20,20 @@ export const getBalances = async (
     userId,
     $or: [{ free: { $gt: 0 } }, { locked: { $gt: 0 } }],
   }
+  // A futures leg that shares its API key with a spot leg (OKX / Bybit
+  // unified accounts) is `linkedTo` that spot leg: the balance refresher
+  // skips linked legs and stores the shared pool ONLY under the source uuid,
+  // and the bot engine resolves the link when it checks funds. Do the same
+  // here — read the source uuid's rows, but tag them with the uuid the caller
+  // asked for — or the bot form shows "BAL 0" for every linked futures leg
+  // (the legacy dashboard resolved `linkedTo` client-side; the redesign
+  // doesn't, and first surfaced on OKX Europe where the only futures leg is
+  // linked). No-uuid / summed reads are unchanged.
+  const linkedSourceUuid = uuid
+    ? user.exchanges.find((e) => e.uuid === uuid)?.linkedTo
+    : undefined
   if (uuid) {
-    search.exchangeUUID = uuid
+    search.exchangeUUID = linkedSourceUuid || uuid
   }
   if (assets && assets.length > 0) {
     search.asset = { $in: assets }
@@ -67,16 +79,25 @@ export const getBalances = async (
   return {
     status: StatusEnum.ok,
     reason: null,
-    data: final.map((d) => ({
-      asset: d.asset,
-      free: `${d.free}`,
-      locked: `${d.locked}`,
-      exchange: shouldSumBalance ? '' : d.exchange,
-      exchangeUUID: shouldSumBalance ? '' : d.exchangeUUID,
-      exchangeName: shouldSumBalance
-        ? ''
-        : user.exchanges.find((e) => e.uuid === d.exchangeUUID)?.name ||
-          d.exchange,
-    })),
+    data: final.map((d) => {
+      // Re-tag rows read through a `linkedTo` hop with the requested leg.
+      const remap = !!uuid && !!linkedSourceUuid
+      const outUuid = remap ? uuid : d.exchangeUUID
+      const outExchange = remap
+        ? (user.exchanges.find((e) => e.uuid === uuid)?.provider ??
+          d.exchange)
+        : d.exchange
+      return {
+        asset: d.asset,
+        free: `${d.free}`,
+        locked: `${d.locked}`,
+        exchange: shouldSumBalance ? '' : outExchange,
+        exchangeUUID: shouldSumBalance ? '' : outUuid,
+        exchangeName: shouldSumBalance
+          ? ''
+          : user.exchanges.find((e) => e.uuid === outUuid)?.name ||
+            outExchange,
+      }
+    }),
   }
 }
