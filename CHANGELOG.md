@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.2] - 2026-08-21
+
+### Fixed
+
+- `cli:reset-password` now signs the account out everywhere as well as changing the password. It only rewrote the password before, so every session stayed valid — and on a self-hosted install this command is the recovery path an operator reaches for when an account looks compromised, which meant the intruder stayed logged in through the very reset meant to evict them. Same reasoning as the `changePassword` fix in 1.52.0.
+
 ## [1.52.1] - 2026-08-21
 
 ### Fixed

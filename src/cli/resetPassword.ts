@@ -44,7 +44,14 @@ async function resetPassword() {
     const hashedPassword = await hashPassword(newPassword)
     const updateResult = await userDb.updateData(
       { _id: findUser.data.result._id.toString() },
-      { $set: { password: hashedPassword } },
+      // SECURITY: revoke every session as well as changing the password.
+      // Self-hosted has no email-reset flow, so this CLI is the recovery path
+      // an operator reaches for when an account is suspected compromised —
+      // and leaving `tokens[]` intact left the intruder logged in through the
+      // very reset performed to evict them. Same reasoning as
+      // GHSA-4m6h-m5mj-733x on `changePassword`; unlike that one there is no
+      // caller session to preserve here, so everything goes.
+      { $set: { password: hashedPassword, tokens: [] } },
     )
 
     if (updateResult.status === StatusEnum.notok) {
@@ -53,6 +60,7 @@ async function resetPassword() {
     }
 
     logger.info(`✓ Password reset successfully for user "${email}"`)
+    logger.info('  All existing sessions for this user have been signed out.')
     process.exit(0)
   } catch (error) {
     logger.error('Error resetting password:', error)
