@@ -5427,13 +5427,21 @@ const resolvers = <
         lastName?: string
         nickname?: string
         'userDefined.name'?: string
+        'userDefined.lastName'?: string
       } = {}
-      if (name) {
+      // Mirror into `userDefined` as well as top-level: `userDefined` is what
+      // `getDataByPriority` reads first, so a field written only top-level is
+      // invisible to any user who has a `userDefined` object (bug #471).
+      // `!== undefined` rather than a truthiness check so a field can be CLEARED
+      // — the Settings form sends only fields the user actually changed, so an
+      // empty string here is a deliberate clear, not an unset field.
+      if (name !== undefined) {
         $set.name = name
         $set['userDefined.name'] = name
       }
-      if (lastName) {
+      if (lastName !== undefined) {
         $set.lastName = lastName
+        $set['userDefined.lastName'] = lastName
       }
       if (timezone) {
         $set.timezone = timezone

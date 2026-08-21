@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.5] - 2026-08-21
+
+### Fixed
+
+- `getDataByPriority` now falls back to the OAuth/top-level value when a field is absent from the partial `userDefined` override, so a surname saved to Settings → Personal data survives a reload instead of reading back empty (bug #471). The `userSettings` mutation also mirrors `lastName` into `userDefined` alongside `name`, and no longer drops `name`/`lastName` when they are deliberately cleared.
+
 ## [1.52.4] - 2026-08-21
 
 ### Fixed
