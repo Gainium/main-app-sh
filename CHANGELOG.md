@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.1] - 2026-08-21
+
+### Fixed
+
+- A closed futures deal now reports the quantity it actually closed. `size` means the live position while a deal is open, but once the position is gone there is nothing left to read it from, so it was back-derived from the deal's usage instead — a different quantity, in the same field. Whether the derived value or the real one ended up stored depended on whether a usage update happened to land after the deal's status flipped, so roughly half of closed futures deals showed one basis and half the other, and `Size × Average Price` did not reconcile with `Notional Value`. The real closed amount — the closing fill plus any earlier partial take-profits — is now recorded when the deal closes and preserved afterwards. Display only: nothing in the engine reads this field.
+
+
 ## [1.52.0] - 2026-08-21
 
 ### Changed

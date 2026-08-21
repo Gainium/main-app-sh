@@ -2273,8 +2273,12 @@ function createComboBotHelper<
         const sizeValue =
           this.futures && !this.coinm
             ? findDeal.deal.status === DCADealStatusEnum.closed
-              ? (findDeal.deal.usage.current.quote * leverage) /
-                findDeal.deal.avgPrice
+              ? // Keep whatever the position last measured. `closeDeal` pins
+                // the real closed quantity here; back-deriving it from usage
+                // put a different quantity in the same field depending on
+                // whether a usage update happened to land after the status
+                // flipped, so the column silently changed meaning at close.
+                (findDeal.deal.size ?? 0)
               : long
                 ? findDeal.deal.currentBalances.base
                 : findDeal.deal.initialBalances.base -
