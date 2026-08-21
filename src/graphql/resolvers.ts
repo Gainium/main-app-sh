@@ -167,6 +167,13 @@ import { getBotsByGlobalVar } from '../bot/utils'
 import { JWT_SECRET } from '../config'
 import { DataResponse, ErrorResponse } from '../db/crud'
 
+/**
+ * The single reply every failed password login gets, whatever went wrong.
+ * Distinguishing "wrong password" from "no such user" is a username-enumeration
+ * oracle (GHSA-whmj-5f67-9f3w).
+ */
+const GENERIC_LOGIN_REASON = 'Invalid email or password'
+
 const math = new MathHelper()
 
 type PairsCacheEntry = {
@@ -5226,15 +5233,18 @@ const resolvers = <
             ip,
           )
         }
+        // SECURITY (GHSA-whmj-5f67-9f3w): one message for both "wrong
+        // password" and "no such account". Distinct replies let an attacker
+        // enumerate which addresses have accounts and then target them.
         return {
           status: StatusEnum.notok,
-          reason: 'Password not correct',
+          reason: GENERIC_LOGIN_REASON,
           data: null,
         }
       }
       return {
         status: StatusEnum.notok,
-        reason: 'Sign up Error',
+        reason: GENERIC_LOGIN_REASON,
         data: null,
       }
     },

@@ -1,6 +1,9 @@
 import { userDb as _userDb } from '../../db/dbInit'
 import { StatusEnum } from '../../../types'
-import jwt from 'jsonwebtoken'
+import {
+  signSessionToken,
+  LOGIN_SESSION_TTL_SECONDS,
+} from '../../utils/sessionTtl'
 import { hashPassword } from '../../utils/password'
 import type { ClearUserSchema, UserSchema } from '../../../types'
 import { getFullLocationByIp } from './ip'
@@ -42,24 +45,31 @@ export const createOrUpdateUser = async (
   if (findUser.status === StatusEnum.notok) {
     return findUser
   }
-  const expire = new Date().getTime() + 30 * 24 * 60 * 60 * 1000
-  const jwtToken = jwt.sign(
+  // SECURITY (GHSA-7gxr-ppgj-jjg8): this used to hand `jwt.sign` an ms-epoch
+  // timestamp as `expiresIn`, which jsonwebtoken reads as SECONDS — signing an
+  // `exp` ~56,000 years out, so no session ever expired. `signSessionToken`
+  // takes seconds and reports the window the token actually carries, so the
+  // persisted `expiredAt` and the enforced `exp` claim cannot drift apart.
+  const {
+    token: jwtToken,
+    createdAt: sessionCreatedAt,
+    expiredAt: sessionExpiredAt,
+  } = signSessionToken(
     {
       username: email,
       authorized: true,
     },
     JWT_SECRET,
-    {
-      expiresIn: expire,
-    },
+    LOGIN_SESSION_TTL_SECONDS,
   )
+  const expire = sessionExpiredAt.getTime()
   if (findUser.data.result) {
     const set: { [x: string]: unknown } = {
       $push: {
         tokens: [
           {
             token: jwtToken,
-            createdAt: +new Date(),
+            createdAt: +sessionCreatedAt,
             expiredAt: expire,
             ip,
             userAgent,

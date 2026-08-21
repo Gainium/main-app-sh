@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.52.3] - 2026-08-21
+
+### Fixed
+
+- API-key signatures can no longer be replayed. The `time` header is part of the signed material but was never compared to the clock, so a captured request stayed valid indefinitely and could be replayed verbatim. Requests whose timestamp sits more than five minutes from server time are now rejected before the signature is even computed; `API_SIGNATURE_WINDOW_MS` widens or (at `0`) disables the check. The signature comparison is also constant-time now, so it no longer leaks through timing how many leading bytes a guess got right (GHSA-whmj-5f67-9f3w).
+- Session tokens expire. `jsonwebtoken` reads a numeric `expiresIn` as seconds, and this was handed a millisecond epoch — signing an `exp` roughly 56,000 years out, so no session ever expired and any leaked token was permanent access. Minting now goes through a shared `signSessionToken` helper that takes seconds and derives the persisted `expiredAt` from the token's own claims, so the stored row and the enforced expiry cannot disagree. Override the 30-day default with `SESSION_TTL_SECONDS` (GHSA-7gxr-ppgj-jjg8).
+- Failed logins return one generic message. The login mutation answered "Password not correct" for a real account and "Sign up Error" for an unknown one, which let anyone sort addresses into those that have accounts and those that do not (GHSA-whmj-5f67-9f3w).
+- Credential-bearing GraphQL operations are rate limited. The `/api` REST routes had a limiter; the GraphQL endpoint had none, so the login mutation could be brute-forced at full speed. Ten attempts per minute per address now, applied only to auth operations so ordinary dashboard traffic is untouched — `AUTH_RATE_LIMIT_MAX` adjusts it (GHSA-whmj-5f67-9f3w).
+
 ## [1.52.2] - 2026-08-21
 
 ### Fixed

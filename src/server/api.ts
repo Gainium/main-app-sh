@@ -90,6 +90,58 @@ type StartDealInputType = {
 
 type APIMap = Map<string, (req: Request, res: Response) => void>
 
+/**
+ * How far a request's `time` header may sit from server time and still be
+ * accepted, in milliseconds. `time` is signed but was never checked for
+ * freshness, so a captured request stayed replayable forever
+ * (GHSA-whmj-5f67-9f3w). Five minutes is wide enough for ordinary client clock
+ * skew — every first-party client (gainium-mcp, n8n-nodes-gainium, the Chrome
+ * extension) stamps `Date.now()` per request.
+ *
+ * Set `API_SIGNATURE_WINDOW_MS=0` to disable the check. That restores the
+ * replayable behaviour and exists only as an escape hatch for an integration
+ * with a badly wrong clock — fix the clock instead.
+ */
+const SIGNATURE_WINDOW_MS = (() => {
+  const raw = process.env.API_SIGNATURE_WINDOW_MS
+  if (raw === undefined || raw === '') return 5 * 60 * 1000
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5 * 60 * 1000
+})()
+
+/**
+ * Is the caller's signed `time` close enough to now?
+ *
+ * Accepts the millisecond epoch every client sends. Skew is allowed in both
+ * directions: a client clock that runs fast is as ordinary as one that lags.
+ */
+export const isFreshTimestamp = (
+  time: unknown,
+  now: number = Date.now(),
+  windowMs: number = SIGNATURE_WINDOW_MS,
+): boolean => {
+  if (windowMs === 0) return true
+  const parsed =
+    typeof time === 'number' ? time : Number(String(time ?? '').trim())
+  if (!Number.isFinite(parsed)) return false
+  return Math.abs(now - parsed) <= windowMs
+}
+
+/**
+ * Constant-time string compare. A `===` on the signature leaks, through timing,
+ * how many leading bytes a guess got right.
+ */
+const signaturesMatch = (expected: string, provided: string): boolean => {
+  // Uint8Array rather than Buffer: timingSafeEqual's typings want an
+  // ArrayBufferView over a plain ArrayBuffer, which Buffer no longer satisfies.
+  const a = Uint8Array.from(Buffer.from(expected, 'utf8'))
+  const b = Uint8Array.from(Buffer.from(provided, 'utf8'))
+  // Lengths are fixed for base64 SHA-256, so an early return here reveals
+  // nothing an attacker does not already know.
+  if (a.length !== b.length) return false
+  return crypto.timingSafeEqual(a, b)
+}
+
 const checkKey = (
   secret: string,
   body: Record<string, unknown>,
@@ -103,16 +155,19 @@ const checkKey = (
   if (bodyResult.length === 2) {
     bodiesToCheck.push('')
   }
+  let matched = false
   for (const bodyToCheck of bodiesToCheck) {
     const signatureResult = crypto
       .createHmac('sha256', secret)
       .update(bodyToCheck + method + endpoint + time)
       .digest('base64')
-    if (signatureResult === signature) {
-      return true
+    // No early break: both candidate bodies are always compared, so the reply
+    // time does not reveal which one matched.
+    if (signaturesMatch(signatureResult, signature)) {
+      matched = true
     }
   }
-  return false
+  return matched
 }
 
 /** Why an API key failed to authenticate. */
@@ -273,6 +328,16 @@ export const middleware =
       })
       return
     }
+    // SECURITY (GHSA-whmj-5f67-9f3w): `time` is part of the signed material but
+    // was never checked against the clock, so a captured request replayed
+    // indefinitely. Reject a stale one before spending a HMAC on it.
+    if (!isFreshTimestamp(time.toString())) {
+      warn(
+        `API request: ${req.method} ${req.url} timestamp outside the accepted window`,
+      )
+      res.sendStatus(401)
+      return
+    }
     if (
       !checkKey(
         user.secret,
@@ -283,7 +348,8 @@ export const middleware =
         signature.toString(),
       )
     ) {
-      console.log(req.body, req.method, req.url, time, signature)
+      // Deliberately does not log the body: it is caller-supplied and can carry
+      // credentials on some routes.
       error(`API request: ${req.method} ${req.url} signature not valid`)
       res.sendStatus(401)
       return
