@@ -544,6 +544,11 @@ export const errorDict = {
   'ECONNREFUSED 127.0.0.1:27017': 'Connection to DB refused',
   'Duplicate order sent': 'Duplicate order ID',
   'Duplicate client order ID': 'Duplicate order ID',
+  // The wordings OKX and Kraken Futures actually use. Neither contains
+  // "duplicate", so both landed Uncategorized despite this class already
+  // having an owner.
+  'Client order ID already exists': 'Duplicate order ID',
+  clientOrderIdAlreadyExist: 'Duplicate order ID',
   'Cannot get prices undefined': 'Unknown error',
   'Service Unavailable': 'Service Unavailable',
   'Cast to': 'Object validation error',

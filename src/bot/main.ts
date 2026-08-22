@@ -6470,7 +6470,21 @@ class MainBot<T extends IMainBot> {
               request.reason
                 .toLowerCase()
                 .indexOf('clientOid parameter repeated'.toLowerCase()) !==
-                -1) &&
+                -1 ||
+              // Kraken Futures spells it with NO spaces, so it matches none of
+              // the variants above — not even the bare 'duplicate' probe. It is
+              // the same statement OKX makes with 'Client order ID already
+              // exists': the venue HAS an order under this id. Falling through
+              // sent it to the terminal write-off below, and `deleteOrder` also
+              // calls `SharedStream.removeOrder`, after which `redisCb` routes
+              // that id's execution reports to no bot at all. Observed on combo
+              // bot 6a2afae030d450544636fb1d (krakenUsdm XRP-USD, 2026-08-21):
+              // reduce-only SELL CMB-GR-JYf3r7e8vTnJz2fOkV3rUdzTM2XX was open on
+              // the venue at 12:44:13.952Z, written off at 12:44:15.628Z, then
+              // filled 34 @ 1.4219 at 13:49:09.540Z — a fill the deal never saw.
+              request.reason
+                .toLowerCase()
+                .indexOf('clientOrderIdAlreadyExist'.toLowerCase()) !== -1) &&
             count == 0
           ) {
             this.handleLog(`Order ${order.clientOrderId} is duplicate`)

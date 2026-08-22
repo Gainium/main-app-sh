@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.9] - 2026-08-22
+
+### Fixed
+
+- A Kraken Futures duplicate-order rejection no longer writes off an order the venue is actually holding. Kraken spells it `clientOrderIdAlreadyExist` with no spaces, so it matched none of the duplicate-recovery variants (OKX's spaced `Client order ID already exists` already did) and fell through to the terminal write-off — which also unregisters the id from the shared stream, so the venue's later fills reach no bot at all. One combo bot on krakenUsdm had a reduce-only SELL written off 1.7s after it went live on the venue, then filled 34 @ 1.4219 an hour later — a fill the deal never saw. Both spellings now also classify as `Duplicate order ID` instead of Uncategorized.
+
 ## [1.52.8] - 2026-08-22
 
 ### Fixed
