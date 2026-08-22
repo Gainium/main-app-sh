@@ -68,7 +68,6 @@ import {
   convertComboBotToObject,
   convertDCABotToObject,
   exchangeRules,
-  futuresLiquidation,
   futuresPosition,
   getErrorSubType,
   indicatorsError,
@@ -1808,14 +1807,14 @@ class MainBot<T extends IMainBot> {
    * from four sibling bots on the same revoked key), because the suppressed call
    * returns with no network wait and the loop churns faster.
    *
-   * Coalescing cannot save this on its own: `restoreFromRangeOrError()` clears
-   * the bot's message rows with `$unset: { bucket: '' }` on every error→recover
-   * cycle — deliberately, so a recovered bot can raise the error again — which
-   * drops the live row out of `botMessageCoalesceKey`, so the next occurrence
-   * inserts a fresh row with `count: 1` and reads as a first occurrence. Every
-   * single time. The dedupe therefore has to key on the CONDITION (the account's
-   * cooldown window), which is also the only key that spans sibling bots and
-   * worker processes.
+   * Coalescing cannot save this on its own, because `botMessageCoalesceKey` is
+   * keyed per BOT: four sibling bots on one revoked key own four separate `once`
+   * rows and each raises a first occurrence. (It could not even hold WITHIN one
+   * bot until the recovery clear was removed — that clear `$unset` the live
+   * row's bucket on every error→recover cycle, so the next occurrence inserted a
+   * fresh `count: 1` row and read as a first occurrence, every single time.) The
+   * dedupe therefore has to key on the CONDITION (the account's cooldown
+   * window), which is the only key that spans sibling bots and worker processes.
    *
    * Narrow by construction: only the `AUTH_FAILURE_SIGNATURES` allowlist that
    * opens the cooldown in the first place is gated, so a nonce blip or any other
@@ -1900,23 +1899,26 @@ class MainBot<T extends IMainBot> {
       const symbol = this.data?.settings.pair[0]
       const exchange = this.data?.exchange
 
-      // Re-raise backoff. `logMode: 'once'` caps a persistent condition at one
-      // visible row per bot only for as long as that row stays the coalescing
-      // target — and for any subType with `errorsBot: true` it never does:
-      // `BotStatusEnum.error` is a SOFT status, so `restoreFromRangeOrError()`
-      // clears the bot's messages (and `$unset`s their bucket) before the next
-      // attempt. The condition then re-fails, inserts a FRESH row, and every
-      // occurrence is `count === 1` — i.e. a first occurrence — so the user is
-      // re-notified on every cycle for a condition only they can fix (sign an
-      // exchange agreement, replace a dead API key, lift a restriction).
+      // Re-raise backoff. The rate limit lives on the RAISE, not on the row:
+      // consult a per-(bot, subType) cooldown and, while it is open, write the
+      // occurrence into the hidden lane instead — the admin keeps a counted
+      // record, the user gets at most one notification per backoff window.
       //
-      // The clear itself is load-bearing (without it a subType could never be
-      // raised again once dismissed), so the rate limit belongs on the RAISE,
-      // not on the row: consult a per-(bot, subType) cooldown and, while it is
-      // open, write the occurrence into the hidden lane instead. Hidden rows are
-      // born `isDeleted`, which is exactly what the recovery clear filters on,
-      // so their bucket survives and they coalesce as intended — the admin keeps
-      // a counted record, the user gets one notification per backoff window.
+      // It exists because a row cannot rate-limit what does not reuse it. For a
+      // `logMode: 'once'` subType the row now does hold (one visible row per
+      // bot, `$inc`ed by every repeat) — but `coalesce` and `always` modes still
+      // open a fresh row per window or per occurrence, and the terminal path has
+      // no stable bot to key on at all, so every occurrence there is a first
+      // occurrence. Those are the cases this gate covers, for conditions only
+      // the user can fix (sign an exchange agreement, replace a dead API key,
+      // lift a restriction).
+      //
+      // Historical note: this used to be the ONLY thing standing between the
+      // user and a per-cycle notification, because `restoreFromRangeOrError()`
+      // tombstoned the bot's messages and `$unset` their bucket on every
+      // error→recover cycle, so even a `once` row was destroyed and rewritten as
+      // a first occurrence. That clear has since been removed — it was also
+      // deleting the user's only record of the condition (community #5041).
       //
       // Backoff rather than a fixed window for the usual reason: a condition the
       // user fixes is picked up quickly, one that is never fixed settles at an
@@ -5542,28 +5544,35 @@ class MainBot<T extends IMainBot> {
       }
       this.data.workingShift = this.trimWorkingShift(this.data.workingShift)
       if (this.data.status === BotStatusEnum.error) {
-        // Same key as processError writes and counts under. Clearing by
-        // `this.botId` never matched a hedge bot's rows (they are filed under the
-        // parent), so recovery could not reopen the per-subType throttle and the
-        // bot fell silent on that subType for good. The message stream is
-        // parent-scoped by construction — every leg files into it — so a leg
-        // recovering clears the parent's set; a leg still in error simply
-        // re-raises on its next occurrence, which is the non-hedge behaviour too.
-        // The futuresLiquidation exemption below is deliberate — leave it.
-        this.messagesDb.updateManyData(
-          {
-            botId: this.data?.parentBotId || this.botId,
-            isDeleted: false,
-            subType: { $ne: futuresLiquidation },
-          },
-          // `$unset bucket` drops these rows out of `botMessageCoalesceKey`, so
-          // the next occurrence inserts a fresh visible row. Without it the
-          // recovery clear would hide the row while leaving it as the coalescing
-          // target, and the error could never be raised again — exactly the
-          // "bot fell silent on that subType for good" failure this clear exists
-          // to prevent.
-          { $set: { isDeleted: true }, $unset: { bucket: '' } },
-        )
+        // Recovery clears the bot's error BADGE and nothing else.
+        //
+        // It used to also tombstone every undismissed message on the bot
+        // (`$set isDeleted:true, $unset bucket`), on the premise that leaving
+        // `error` status meant the condition was gone. That premise does not
+        // hold: `BotStatusEnum.error` is SOFT — the bot returns to `open` on the
+        // very next cycle whether or not anything was fixed — so the clear ran
+        // against live conditions, and for a persistent one it ran every cycle.
+        //
+        // What that cost: `getBotMessage` filters the notifications feed on
+        // `isDeleted:{$in:[false,null]}`, so the row was gone from the panel
+        // seconds after it was written. Community #5041 is the shape of it —
+        // an OKX key that could not place orders for three days, 12
+        // visible messages written, 12 tombstoned, ZERO reachable by the panel;
+        // the only surviving trace was `botEvents`, which is where the reporter
+        // eventually found it by hand. The retention comment on
+        // `botMessageTombstoneTtl` already states the rule this violated: a live
+        // row is one the user has not dismissed and can still see, and age is not
+        // consent to hide it. Neither is the bot's status flipping back.
+        //
+        // The clear was load-bearing once, for re-raisability: it was the only
+        // thing that dropped a row out of `botMessageCoalesceKey`, and without
+        // that a `logMode:'once'` row would stay the coalescing target forever.
+        // Two things have since taken that job, which is why removing it is safe:
+        // dismissal (`deleteBotMessage`) `$unset`s `bucket` itself, and the
+        // re-raise backoff moved the rate limit onto the RAISE rather than the
+        // row. So a repeat now does what `once` always meant it to do — `$inc`
+        // the count and refresh `time` on the one row the user is looking at —
+        // instead of destroying it and writing a fresh one.
         const update = { showErrorWarning: 'none' }
         this.updateData(update)
         this.emit('bot settings update', update)

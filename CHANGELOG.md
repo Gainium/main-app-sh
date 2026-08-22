@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.6] - 2026-08-22
+
+### Fixed
+
+- A bot error the user never saw is no longer deleted before they can see it. `restoreFromRangeOrError()` tombstoned every undismissed message on a bot whenever it left `error` status, on the premise that leaving that status meant the condition was gone — but `BotStatusEnum.error` is soft and the bot returns to `open` on the very next cycle whether or not anything was fixed, so the clear ran against live conditions, every cycle. The notifications feed filters on `isDeleted`, so the row vanished from the panel seconds after it was written: an OKX key that could not place an order for three days produced 12 visible messages, 12 tombstoned, and nothing at all in Notifications — the only surviving trace was the bot's Events tab (community #5041). Recovery now clears the bot's error badge and nothing else; a repeat `$inc`s the one row the user is looking at, as `logMode: 'once'` always intended, and dismissal remains what re-arms the subType.
+
 ## [1.52.5] - 2026-08-21
 
 ### Fixed
