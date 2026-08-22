@@ -5,6 +5,7 @@ import {
   OrderSideEnum,
   StatusEnum,
   BotStatusEnum,
+  MessageTypeEnum,
   TypeOrderEnum,
   DCADealStatusEnum,
   OrderTypeEnum,
@@ -119,9 +120,14 @@ import {
   DCACloseTriggerEnum,
 } from '../../types'
 import { ExchangeIntervals } from '../../types'
-import { convertDCABot, convertComboBot } from './utils'
+import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
 import DCAUtils from './dca/utils'
 import { tpPriceDisplacement, worstFee } from './dca/tpFees'
+import {
+  dealCloseEventDescription,
+  dealLeftOpenSize,
+  leftOpenPositionMessage,
+} from './dca/dealOutcome'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
 import { removePaperFormExchangeName } from '../exchange/helpers'
@@ -2493,6 +2499,78 @@ function createDCABotHelper<
         this.deleteOrder(o.clientOrderId)
       }
     }
+
+    /**
+     * Volume this deal still holds on the exchange, or 0.
+     *
+     * A deal that ends without a closing order leaves this on the venue. It is
+     * the discriminator between "the deal finished" and "we walked away from an
+     * open position", so both the deal event and the bot-stop warning key off
+     * it rather than off the close type.
+     */
+    dealLeftOpenSize(deal: ExcludeDoc<Deal>): number {
+      return dealLeftOpenSize(deal.size)
+    }
+
+    /**
+     * Describe how a deal actually ended.
+     *
+     * A `canceled` deal that still holds volume was NOT closed: the position
+     * stays on the exchange, unmanaged, with no take profit and no stop loss —
+     * this is the ordinary outcome of stopping a bot whose `stopType` is
+     * `leave`. Reporting that as "Deal closed" is what let an abandoned short
+     * sit unwatched until the venue liquidated it, so name the outcome instead.
+     */
+    dealCloseEventDescription(deal: ExcludeDoc<Deal>): string {
+      return dealCloseEventDescription(deal)
+    }
+
+    /**
+     * Tell the user that a deal is being abandoned with volume still on the
+     * exchange.
+     *
+     * The `leave` close path cancels the resting orders and returns without
+     * reaching {@link DCABotHelper#processDealClose}, so nothing else records
+     * that a live position was left behind. Deliberately a WARNING, not an
+     * error: leaving a position is what the user asked for, and it must not
+     * flip the bot into `error`. It must still reach them — that it never did
+     * is the entire defect.
+     *
+     * A deal holding nothing stays silent; leaving an empty deal costs nothing.
+     */
+    async announceLeftOpenPosition(deal: ExcludeDoc<Deal>) {
+      const left = this.dealLeftOpenSize(deal)
+      if (!left || !this.shouldProceed()) {
+        return
+      }
+      const message = leftOpenPositionMessage(deal)
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: message,
+        paperContext: !!this.data?.paperContext,
+        deal: deal._id,
+        symbol: deal.symbol.symbol,
+        type: MessageTypeEnum.warning,
+      })
+      await this.processError(
+        this.botId,
+        positionLeftOpen,
+        // @ts-ignore
+        this.data?.settings.type === DCATypeEnum.terminal,
+        false,
+        true,
+        message,
+        +new Date(),
+        message,
+        // User-initiated, so the throttle must not swallow it: stopping two
+        // bots in a row has to report both positions, not just the first.
+        true,
+      )
+    }
+
     /**
      * Process deal close
      *
@@ -2676,7 +2754,7 @@ function createDCABotHelper<
               botId: this.botId,
               event: 'Deal',
               botType: this.botType,
-              description: `Deal closed, id: ${deal.deal._id}, profit: ${deal.deal.profit.totalUsd}$`,
+              description: this.dealCloseEventDescription(deal.deal),
               paperContext: !!this.data?.paperContext,
               deal: deal.deal._id,
               symbol: deal.deal.symbol.symbol,
@@ -5398,6 +5476,12 @@ function createDCABotHelper<
 
       if (findDeal && closeType === CloseDCATypeEnum.leave) {
         await this.cancelAllOrder(findDeal.deal._id)
+        // Leaving a deal cancels its resting orders and walks away from
+        // whatever is already filled. That is the intended behaviour, but it
+        // used to be recorded nowhere at all: the position stayed on the venue
+        // with no TP and no SL while the bot went quiet. Say so, once, where
+        // the user will see it.
+        await this.announceLeftOpenPosition(findDeal.deal)
         this.endMethod(_id)
         return
       }
@@ -15936,6 +16020,26 @@ function createDCABotHelper<
         this.serviceRestart = false
         this.loadingComplete = true
         this.finishLoad = true
+        // `loadData` refused to start (pre-start position checks: leverage,
+        // margin type or side of an existing venue position disagrees with the
+        // settings). It has already reported the reason, but the bot is now
+        // stopped and nothing said so — the event log's last line stayed
+        // "open status is set" while the bot sat closed and never retried, so
+        // a hedge leg that never opened a single deal looked merely idle.
+        // Record the transition; the preceding warning carries the reason.
+        if (this.shouldProceed()) {
+          this.botEventDb.createData({
+            userId: this.userId,
+            botId: this.botId,
+            event: BOT_STATUS_EVENT,
+            botType: this.botType,
+            description: `${this.data?.status ?? 'open'} -> ${
+              BotStatusEnum.closed
+            }: the bot could not start, see the preceding warning for the reason. It will not retry on its own - fix the cause and start it again.`,
+            paperContext: !!this.data?.paperContext,
+            type: MessageTypeEnum.warning,
+          })
+        }
         await unlock()
         this.endMethod(_id)
         return await this.stop()

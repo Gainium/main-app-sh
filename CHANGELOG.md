@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.52.7] - 2026-08-22
+
+### Fixed
+
+- A deal abandoned with an open position is no longer reported as "Deal closed". Stopping a bot whose `stopType` is `leave` cancels the deal's resting orders and deliberately leaves whatever already filled on the exchange, but the bot event still read `Deal closed, id: …, profit: 0$` — so a user who read their event log correctly concluded the deal was finished. It was not: the position stayed on the venue, unmanaged, with no take profit and no stop loss. A 125 XRP Kraken futures short was left that way on Aug 18, went unwatched for three days, and was liquidated by the venue on Aug 21. A `canceled` deal that still holds volume now names the outcome, the size left behind and that the bot no longer manages it.
+- The explicit `leave` close path recorded nothing at all. It cancels the resting orders and returns before `processDealClose`, so a deal left open produced no event and no message anywhere. It now reports the abandoned position as a warning (never an error — leaving a position is what the user asked for, and it must not flip the bot into `error`), under its own `Position left open` subtype so the admin rules can tune it without touching real errors. The throttle is bypassed: stopping two bots in a row has to report both positions.
+- A bot blocked by the pre-start position check no longer goes quiet. When `loadData` refuses to start (leverage, margin type or side of an existing venue position disagrees with the settings) the bot is stopped, but no status event was written — the event log's last line stayed `open status is set` while the bot sat closed and never retried. A hedge long leg blocked this way opened zero deals for ten days and looked merely idle; the user attributed it to an unrelated stop-loss deal on the other leg. The transition is now recorded, and says the bot will not retry on its own.
+
 ## [1.52.6] - 2026-08-22
 
 ### Fixed

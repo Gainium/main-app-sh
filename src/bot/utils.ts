@@ -479,8 +479,17 @@ export const orderProcessing = 'Order processing'
  */
 export const complianceRestriction = 'Compliance restriction'
 
+/**
+ * A deal was abandoned with volume still on the exchange — the ordinary result
+ * of stopping a bot whose `stopType` is `leave`. Not a failure, but the user
+ * now holds an unmanaged position with no TP and no SL, so it must reach them.
+ * Its own subType so the admin rules can tune it without touching real errors.
+ */
+export const positionLeftOpen = 'Position left open'
+
 export const errorDict = {
   'Leverage cannot exceed': futuresPosition,
+  'was left open on the exchange': positionLeftOpen,
   unknownOid: orderProcessing,
   'Indicators error: ': indicatorsError,
   'Exceeded the maximum allowable position at current leverage':
