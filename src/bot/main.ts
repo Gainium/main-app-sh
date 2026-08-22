@@ -3169,8 +3169,16 @@ class MainBot<T extends IMainBot> {
                     return true
                   }
                 }
+                // A connector that cannot state the position's leverage reports
+                // 0 — Kraken: the symbol has no isolated preference (cross,
+                // dynamic leverage) or the preference read failed. 0 is not a
+                // leverage; comparing it here kept every Kraken futures bot
+                // above 1x from restarting into an existing position (the
+                // connector used to hardcode 1). Unknown is not a mismatch.
+                const venueLeverage = +findPosition.leverage
                 if (
-                  +findPosition.leverage !== this.currentLeverage &&
+                  venueLeverage > 0 &&
+                  venueLeverage !== this.currentLeverage &&
                   !this.kucoinFullFutures
                 ) {
                   this.handleErrors(

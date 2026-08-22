@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.8] - 2026-08-22
+
+### Fixed
+
+- The pre-start position check no longer treats a reported leverage of 0 as a mismatch. A connector that cannot state a position's leverage reports 0 — Kraken Futures has no per-position leverage at all (it is a per-contract account preference), and exchange-connector core 1.19.14 reports `'0'` for cross/dynamic or an unreadable preference where it used to hardcode `'1'`. Compared literally, that hardcoded 1 refused to start every Kraken futures bot above 1x into an existing position ("Leverage in active position is 1, but in settings 2") — 119 live bots across 54 users — and users worked around it by dropping bots to 1x. Unknown is not a mismatch; a real isolated leverage still is.
+
 ## [1.52.7] - 2026-08-22
 
 ### Fixed
