@@ -95,5 +95,41 @@ check(
   `budget 5 vs threshold ${LEVEL2_VIOLATIONS}`,
 )
 
+console.log(
+  '\n-- giving up must release the deal, not leave it holding the pair --',
+)
+// The refusal path decides three things in order, and the third is the one a
+// production account lost four hours to: a deal whose opening order we decline
+// to retry still counts against `max deals per pair`, so unless it is released
+// it silently swallows every later signal for that symbol.
+type Deal = { status: string }
+const releaseDecision = (isDealStart: boolean, deal: Deal | null) => {
+  if (!isDealStart) return 'not-a-deal-start'
+  if (!deal) return 'deal-gone'
+  if (deal.status !== 'start') return 'left-alone'
+  return 'released'
+}
+check(
+  'a deal that never reached the venue is released',
+  releaseDecision(true, { status: 'start' }) === 'released',
+)
+check(
+  'an OPEN deal is never cancelled by this path',
+  releaseDecision(true, { status: 'open' }) === 'left-alone',
+  'releasing an open deal would abandon a real position',
+)
+check(
+  'an already-closed deal is left alone',
+  releaseDecision(true, { status: 'closed' }) === 'left-alone',
+)
+check(
+  'a vanished deal is a no-op, not a throw',
+  releaseDecision(true, null) === 'deal-gone',
+)
+check(
+  'a non-deal-start order never triggers a release',
+  releaseDecision(false, { status: 'start' }) === 'not-a-deal-start',
+)
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -617,6 +617,45 @@ function createDCABotHelper<
      * means to. ASAP carries no timing and the bot is meant to stay in a
      * position, so abandoning its open would strand the bot with no deals.
      */
+    /**
+     * Cancel a deal we have given up opening, so it stops occupying its
+     * symbol's slot.
+     *
+     * Only ever touches a deal still in `start` — one that never reached the
+     * venue and therefore holds no position. A deal that has opened, or that
+     * has since been closed or cancelled, is left exactly as it is: this must
+     * not become a path that can cancel real positions.
+     *
+     * `closeDealById` already does the right thing for a `start` deal (marks it
+     * cancelled, and a deal that never traded carries zero profit, so the
+     * accounting paths are unaffected). Reusing it keeps this out of the
+     * business of mutating deal status by hand.
+     */
+    protected override async releaseBlockedDeal(order: Order): Promise<void> {
+      if (!order.dealId) {
+        return
+      }
+      const fullDeal = this.getDeal(order.dealId)
+      if (!fullDeal) {
+        return
+      }
+      if (fullDeal.deal.status !== DCADealStatusEnum.start) {
+        this.handleLog(
+          `Not releasing deal ${order.dealId}: status is ${fullDeal.deal.status}, not start`,
+        )
+        return
+      }
+      this.handleLog(
+        `Releasing deal ${order.dealId} (${fullDeal.deal.symbol?.symbol}): its opening order was refused and will not be retried, so the deal is cancelled rather than left holding the pair`,
+      )
+      await this.closeDealById(
+        this.botId,
+        order.dealId,
+        CloseDCATypeEnum.cancel,
+        false,
+      )
+    }
+
     protected override async quantRulesRetryBudget(
       order: Order,
     ): Promise<number> {
@@ -12696,7 +12735,7 @@ function createDCABotHelper<
             orderSizeType === OrderSizeTypeEnum.quote
               ? (baseOrderSize *
                   (this.coinm ? symbol.quoteAsset.minAmount : 1)) /
-                boPrice
+                  boPrice
               : baseOrderSize,
             symbol.baseAsset.minAmount,
           )

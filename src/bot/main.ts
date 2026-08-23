@@ -5075,6 +5075,22 @@ class MainBot<T extends IMainBot> {
   protected async retryDealStart(_order: Order): Promise<void> {}
 
   /**
+   * Release a deal whose opening order we have decided NOT to retry.
+   *
+   * A deal is written before its opening order reaches the venue, so a refused
+   * order leaves the deal sitting in `start` with nothing on the exchange.
+   * While the retry loop existed something eventually opened or failed it; now
+   * that we correctly stop retrying, nothing does — and an abandoned deal still
+   * counts against `max deals per pair`, so it silently blocks every later
+   * signal for that symbol. One production account had a deal created during an
+   * account-wide restriction hold its symbol for four hours, swallowing a
+   * TradingView signal that arrived long after the restriction had cleared.
+   *
+   * Overridden in the DCA helper, which can cancel the deal. No-op here.
+   */
+  protected async releaseBlockedDeal(_order: Order): Promise<void> {}
+
+  /**
    * How many times a Quantitative-Rules-refused order may be re-sent.
    *
    * The distinction that matters is WHY the deal was opening. A deal started by
@@ -5219,6 +5235,12 @@ class MainBot<T extends IMainBot> {
       // Explain the stall where the user is looking. Still descriptive only —
       // no status change, no error: the -4400 path must stay soft.
       await this.markDealStartBlocked(order, null, cooldown)
+      // ...and let the deal go, so it stops holding its symbol's slot against
+      // `max deals per pair`. Nothing else will: we have just decided not to
+      // retry it, and it never reached the venue.
+      if (isDealStart) {
+        await this.releaseBlockedDeal(order)
+      }
     }
 
     const budget = isDealStart
@@ -6606,8 +6628,7 @@ class MainBot<T extends IMainBot> {
                 .indexOf('Duplicate clientOrderId'.toLowerCase()) !== -1 ||
               request.reason
                 .toLowerCase()
-                .indexOf('clientOid parameter repeated'.toLowerCase()) !==
-                -1 ||
+                .indexOf('clientOid parameter repeated'.toLowerCase()) !== -1 ||
               // Kraken Futures spells it with NO spaces, so it matches none of
               // the variants above — not even the bare 'duplicate' probe. It is
               // the same statement OKX makes with 'Client order ID already

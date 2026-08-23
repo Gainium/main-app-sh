@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.11] - 2026-08-23
+
+### Fixed
+
+- A deal we decline to re-open is now released instead of holding its symbol. A deal is written before its opening order reaches the venue, so an order refused under Binance's Quantitative Rules leaves the deal in `start` with nothing on the exchange. While the retry loop existed something eventually opened or failed it; now that we correctly stop retrying, nothing did — and an abandoned deal still counts against `max deals per pair`, so it silently swallowed every later signal for that symbol. One account had a deal created during an account-wide restriction hold XTZUSDT for four hours and eat a TradingView signal that arrived long after the restriction had cleared; 42 deals on that account were sitting in the same state. Only a deal still in `start` is released — one that has opened, closed or been cancelled is left exactly as it is, so this can never abandon a real position.
+
 ## [1.52.10] - 2026-08-23
 
 ### Fixed
