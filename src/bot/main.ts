@@ -78,7 +78,42 @@ import {
   logPolicyBucket,
   noteErrorRuleHit,
 } from './errorRulesCache'
-import QuantRulesGuard from './quantRulesGuard'
+import QuantRulesGuard, { LEVEL2_VIOLATIONS } from './quantRulesGuard'
+
+/**
+ * Retry budget for a deal whose start carries no timing of its own (ASAP): the
+ * bot is meant to hold a position continuously, so abandoning the open would
+ * strand it. Bounded anyway — a symbol that refuses this many times is not
+ * going to accept the next one either.
+ */
+export const QUANT_RULES_RETRY_BUDGET_ASAP = 5
+/** Budget for everything that is not a deal opening (a deferred re-send). */
+const QUANT_RULES_RETRY_BUDGET_DEFAULT = 5
+/** First backoff step; doubles per attempt, capped below. */
+const QUANT_RULES_RETRY_BACKOFF_MS = 60_000
+const QUANT_RULES_RETRY_BACKOFF_CAP_MS = 30 * 60_000
+/**
+ * Retries are spread randomly across this window instead of all firing at the
+ * cooldown's expiry.
+ *
+ * Every order refused during one restriction shares that restriction's expiry,
+ * so scheduling on it alone fires them in the same instant: a production
+ * account had 39 opening orders retry, fill and place 39 take-profits inside a
+ * single minute the moment an account-wide window lifted. Binance measures the
+ * unfilled ratio per symbol in 10-minute buckets, so a burst like that lands
+ * placed quantity on dozens of symbols at once with nothing executed against
+ * it, records a violation on each, and 10 symbols at once re-opens the
+ * account-wide restriction the burst was waiting out — 69 seconds after the
+ * previous one expired, in that account's case. Spreading the herd is what
+ * breaks the loop.
+ */
+const QUANT_RULES_RETRY_JITTER_MS = 5 * 60_000
+/**
+ * Stop retrying a symbol once it is within this many violations of the L2
+ * threshold. Our own refused retry counts as a violation, so a retry made too
+ * close to the line is the thing that trips it.
+ */
+const QUANT_RULES_VIOLATION_HEADROOM = 3
 import ComplianceGuard from './complianceGuard'
 import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
 import RetryBackoff from './retryBackoff'
@@ -492,6 +527,11 @@ class MainBot<T extends IMainBot> {
    * sendOrderToExchange.
    */
   quantRulesRetryTimers: Map<string, NodeJS.Timeout> = new Map()
+  /**
+   * Attempts already made per retry key, so the backoff below can grow and the
+   * budget can run out. Cleared when the work stops being wanted or succeeds.
+   */
+  quantRulesRetryAttempts: Map<string, number> = new Map()
   /** True while a reconcile is running because the sweep timer fired it
    *  (vs a real user-stream reconnect), for distinct logging. */
   reconcileViaSweep = false
@@ -5035,6 +5075,25 @@ class MainBot<T extends IMainBot> {
   protected async retryDealStart(_order: Order): Promise<void> {}
 
   /**
+   * How many times a Quantitative-Rules-refused order may be re-sent.
+   *
+   * The distinction that matters is WHY the deal was opening. A deal started by
+   * a point-in-time signal (a TradingView webhook, an indicator cross, a timer)
+   * is an instruction to enter *at that moment*; re-sending it twenty minutes
+   * later opens a different trade than the one the signal described, so it gets
+   * a small budget — just enough to ride out a single 5-minute L1 window. A
+   * deal started ASAP carries no such timing, and the bot is meant to hold a
+   * position continuously, so giving up would strand it with no deals; it gets
+   * a longer ladder instead.
+   *
+   * Overridden in the DCA helper, which can see the deal's start condition.
+   * The base returns the ASAP-style budget: bounded, but not stingy.
+   */
+  protected async quantRulesRetryBudget(_order: Order): Promise<number> {
+    return QUANT_RULES_RETRY_BUDGET_ASAP
+  }
+
+  /**
    * Record on a deal that its opening (base) order was refused by the venue, or
    * held back by one of our pre-send guards standing in for it.
    *
@@ -5119,21 +5178,98 @@ class MainBot<T extends IMainBot> {
     if (existing) {
       clearTimeout(existing)
     }
+    void this.armQuantRulesRetry(order, returnError, cooldown, key, isDealStart)
+  }
+
+  /**
+   * Decide whether a refused order may be re-sent, and if so when.
+   *
+   * Split out of {@link scheduleQuantRulesRetry} so the decision can consult
+   * Redis (the symbol's rolling violation count) without changing that
+   * method's signature — its callers are on the send path and only fire it.
+   */
+  private async armQuantRulesRetry(
+    order: Order,
+    returnError: boolean | undefined,
+    cooldown: {
+      until: number | null
+      level: number | null
+      scope: string | null
+    },
+    key: string,
+    isDealStart: boolean,
+  ): Promise<void> {
     const now = +new Date()
-    // Small buffer past expiry to avoid a re-send landing on the exact boundary.
-    const delayMs = Math.max(1000, (cooldown.until ?? now) - now + 1000)
     const untilIso = cooldown.until
       ? new Date(cooldown.until).toISOString()
       : 'unknown'
     const label = isDealStart
       ? `Opening order for deal ${order.dealId}`
       : `Order ${key}`
+    const attempt = (this.quantRulesRetryAttempts.get(key) ?? 0) + 1
+
+    const giveUp = async (why: string) => {
+      this.quantRulesRetryAttempts.delete(key)
+      this.quantRulesRetryTimers.delete(key)
+      this.handleLog(
+        `${label} refused by Binance Quantitative Rules (level ${
+          cooldown.level ?? '?'
+        }, ${cooldown.scope ?? '?'}) until ${untilIso}. Not retrying: ${why}`,
+      )
+      // Explain the stall where the user is looking. Still descriptive only —
+      // no status change, no error: the -4400 path must stay soft.
+      await this.markDealStartBlocked(order, null, cooldown)
+    }
+
+    const budget = isDealStart
+      ? await this.quantRulesRetryBudget(order)
+      : QUANT_RULES_RETRY_BUDGET_DEFAULT
+
+    // A deal whose entry was a point-in-time instruction has no business being
+    // re-sent later, and every such re-send is both a stale trade and more
+    // herd. Its own trigger will fire again when it means to.
+    if (budget <= 0) {
+      await giveUp('this deal opens on its own trigger, which will fire again')
+      return
+    }
+    if (attempt > budget) {
+      await giveUp(`${budget} attempts already made`)
+      return
+    }
+
+    // Our own refused retry is recorded by Binance as a violation, so retrying
+    // near the L2 line is what crosses it. Read the counter without moving it.
+    const violations = await QuantRulesGuard.violationCount24h(
+      `${this.data?.exchangeUUID ?? ''}`,
+      order.symbol,
+    )
+    if (violations >= LEVEL2_VIOLATIONS - QUANT_RULES_VIOLATION_HEADROOM) {
+      await giveUp(
+        `${order.symbol} has ${violations} violations in the last 24h (level 2 at ${LEVEL2_VIOLATIONS})`,
+      )
+      return
+    }
+
+    // Wait out the cooldown, then back off further per attempt, then scatter:
+    // the expiry is shared by everything this restriction refused, so without
+    // the jitter they all fire together and re-trip it.
+    const untilExpiry = Math.max(0, (cooldown.until ?? now) - now)
+    const backoff = Math.min(
+      QUANT_RULES_RETRY_BACKOFF_MS * Math.pow(2, attempt - 1),
+      QUANT_RULES_RETRY_BACKOFF_CAP_MS,
+    )
+    const jitter = Math.floor(Math.random() * QUANT_RULES_RETRY_JITTER_MS)
+    const delayMs = Math.max(1000, untilExpiry + backoff + jitter)
+
+    this.quantRulesRetryAttempts.set(key, attempt)
     this.handleLog(
       `${label} delayed by Binance Quantitative Rules cooldown (level ${
         cooldown.level ?? '?'
       }, ${cooldown.scope ?? '?'}) until ${untilIso}. Reduce-only orders continue to work. Will retry in ${Math.ceil(
         delayMs / 1000,
-      )}s`,
+      )}s (attempt ${attempt}/${budget}, ${violations} violation(s) on ${
+        order.symbol
+      } in 24h)`,
     )
     const timer = setTimeout(() => {
       this.quantRulesRetryTimers.delete(key)
@@ -5146,6 +5282,7 @@ class MainBot<T extends IMainBot> {
         return
       }
       if (!this.isOrderStillWanted(order)) {
+        this.quantRulesRetryAttempts.delete(key)
         this.handleLog(
           `Quantitative Rules deferred retry dropped for ${label}: deal ${order.dealId} no longer open`,
         )

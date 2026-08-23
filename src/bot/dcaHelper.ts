@@ -87,7 +87,11 @@ import {
   DealStartBlock,
 } from '../../types'
 import { MathHelper } from '../utils/math'
-import MainBot, { notEnoughErrors, isDefinitiveOrderNotFound } from './main'
+import MainBot, {
+  notEnoughErrors,
+  isDefinitiveOrderNotFound,
+  QUANT_RULES_RETRY_BUDGET_ASAP,
+} from './main'
 import utils from '../utils'
 import {
   gt,
@@ -601,6 +605,28 @@ function createDCABotHelper<
      * holds an active base order, and on a bot that is no longer running. A
      * retry that races the sweep therefore cannot open a second position.
      */
+    /**
+     * Only an ASAP deal may have its opening order re-sent later.
+     *
+     * Every other start condition is a point in time: a TradingView webhook, an
+     * indicator cross, a timer, a manual click. Re-sending one of those after a
+     * Binance restriction lifts opens a trade the signal never described — the
+     * price it referred to is minutes or hours gone — and each of those
+     * re-sends is also a refused order, which is itself a Quantitative Rules
+     * violation. They all have their own next trigger; it will fire when it
+     * means to. ASAP carries no timing and the bot is meant to stay in a
+     * position, so abandoning its open would strand the bot with no deals.
+     */
+    protected override async quantRulesRetryBudget(
+      order: Order,
+    ): Promise<number> {
+      const fullDeal = order.dealId ? this.getDeal(order.dealId) : undefined
+      const settings = await this.getAggregatedSettings(fullDeal?.deal)
+      return settings.startCondition === StartConditionEnum.asap
+        ? QUANT_RULES_RETRY_BUDGET_ASAP
+        : 0
+    }
+
     protected override async retryDealStart(order: Order): Promise<void> {
       const fullDeal = this.getDeal(order.dealId)
       if (!fullDeal) {

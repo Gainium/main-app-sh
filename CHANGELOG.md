@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.52.10] - 2026-08-23
+
+### Fixed
+
+- A Binance Quantitative Rules restriction no longer re-opens itself. Every order refused during one restriction was scheduled to retry at that restriction's expiry plus one second — the same instant for all of them — so the moment an account-wide window lifted, everything it had blocked fired together: one account saw 39 opening orders retry, fill and place 39 take-profits inside a single minute across 39 symbols. Binance measures the unfilled ratio per symbol in 10-minute buckets, so a burst of that shape lands placed quantity on dozens of symbols with nothing executed against it, records a violation on each, and ten symbols at once re-opens the account-wide restriction the burst was waiting out — 69 seconds after the previous one expired, in that account's case. Retries are now spread across a jitter window, backed off per attempt, capped, and refused outright once a symbol is within a few violations of the level-2 threshold, since our own refused retry is itself a violation. Only a deal started ASAP is retried at all: every other start condition is a point in time, so re-sending it after a restriction lifts opens a trade the original signal never described, and its own trigger will fire again anyway.
+
 ## [1.52.9] - 2026-08-22
 
 ### Fixed

@@ -30,7 +30,7 @@ const HOUR_MS = 60 * 60 * 1000
 const MIN_MS = 60 * 1000
 
 /** Level-2 threshold: same symbol violates >= this many times within 24h. */
-const LEVEL2_VIOLATIONS = 10
+export const LEVEL2_VIOLATIONS = 10
 /** Level-3 threshold: this many symbols restricted at once -> account-wide. */
 const LEVEL3_SYMBOLS = 10
 
@@ -286,6 +286,43 @@ export class QuantRulesGuard {
         }`,
       )
       return NOT_RESTRICTED
+    }
+  }
+
+  /**
+   * How many violations this account+symbol has accumulated in the rolling 24h
+   * window, WITHOUT recording one. `recordViolation` returns the same number,
+   * but only after adding to it — a caller deciding whether it is safe to try
+   * again needs to read the counter without moving it.
+   *
+   * This exists because our own retry is a violation: re-sending an opening
+   * order into a live restriction is refused, and each refusal counts toward
+   * {@link LEVEL2_VIOLATIONS}. Retrying without consulting this budget walks a
+   * symbol from L1 (5 min) to L2 (2h), and enough symbols at L2 is L3 (whole
+   * account, 2h). Fail-open: on any Redis error, returns 0 so a Redis blip
+   * never blocks a legitimate retry.
+   */
+  static async violationCount24h(
+    exchangeUUID: string,
+    symbol: string,
+  ): Promise<number> {
+    try {
+      const redis = await RedisClient.getInstance()
+      const now = +new Date()
+      const members =
+        (await redis.zRangeByScore(
+          violKey(exchangeUUID, symbol),
+          now - DAY_MS,
+          '+inf',
+        )) ?? []
+      return members.length
+    } catch (e) {
+      logger.error(
+        `${logPrefix} violationCount24h ${exchangeUUID}:${symbol} error: ${
+          (e as Error)?.message ?? e
+        }`,
+      )
+      return 0
     }
   }
 
