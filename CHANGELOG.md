@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.2] - 2026-08-24
+
+### Fixed
+
+- A DCA bot-settings save really does leave running deals their orders now. 1.53.0 stopped re-deriving each open deal's settings — that part held — but it removed only one of **two** teardowns, and not the one users were hitting. `restoreWork`, which runs further down `start()`, cancels every resting order for any reload it does not classify as a cold service restart, and the reload flags deliberately make a settings save not look like one. So the cancel moved instead of going away: one 50-pair bot had all 300 of its orders pulled and re-placed about two minutes after an edit, with the user watching it happen for the second time. A reload that must keep the book now says so explicitly, and `restoreWork` reconciles against the venue instead of tearing it down. Combo was never affected — its own `restoreWork` override tests `serviceRestart` alone — and that asymmetry is now pinned by a test rather than left as a coincidence.
+
 ## [1.53.1] - 2026-08-24
 
 ### Fixed

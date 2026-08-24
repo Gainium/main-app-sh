@@ -9734,7 +9734,20 @@ function createDCABotHelper<
       const settings = await this.getAggregatedSettings()
       this.closeAfterTpFilled = settings.type === DCATypeEnum.terminal
       const asapSymbols = await this.getSymbolsToOpenAsapDeals()
-      if (serviceRestart) {
+      if (serviceRestart || this.keepOrders) {
+        // `keepOrders` is a settings save or a deal restore. It is not a cold
+        // service restart, but it is emphatically not the user starting the bot
+        // either, so it must not fall into the branch below — that branch
+        // cancels every resting order the bot owns. Reconcile against the venue
+        // instead and leave the book standing.
+        //
+        // This is the second of two teardowns on the save path. Removing only
+        // the one in `reloadBot` moved the cancel here rather than removing it:
+        // a 50-pair DCA bot still had all 300 of its orders pulled and re-placed
+        // on an edit, while `serviceRestart && !secondRestart` (false for this
+        // reload) sent it down the user-start branch. Note comboHelper's
+        // override tests `this.serviceRestart` alone, so combo never had the
+        // bug — this asymmetry is DCA-only. Forum #5044.
         await this.checkOrders(this.botId)
       } else {
         // Not a service restart — the user started or restarted this bot, which
@@ -16315,6 +16328,7 @@ function createDCABotHelper<
       this.finishLoad = true
       this.secondRestart = true
       this.reload = false
+      this.keepOrders = false
       await unlock()
       this.endMethod(_id)
     }
@@ -17591,6 +17605,12 @@ function createDCABotHelper<
         if (replaceOrders) {
           await this.cancelAllOrder()
         }
+        // Record the intent for the rest of the reload. Skipping the cancel
+        // here is NOT enough on its own: `restoreWork` further down `start()`
+        // cancels the whole book again for any reload it does not recognise as
+        // a cold service restart, and the flags below deliberately make this
+        // one not look like a cold restart.
+        this.keepOrders = !replaceOrders
         if (!replaceOrders) {
           this.serviceRestart = true
           this.secondRestart = true

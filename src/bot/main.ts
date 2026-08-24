@@ -552,6 +552,17 @@ class MainBot<T extends IMainBot> {
   private quarantineSkipped = 0
   secondRestart = false
   reload = false
+  /**
+   * This reload must NOT tear the order book down.
+   *
+   * A settings save, or a deal restore, reloads the bot so it picks the new
+   * settings up for the NEXT deal — the deals already running keep their
+   * settings and their resting orders. That is a third state: it is not a cold
+   * service restart (`serviceRestart && !secondRestart`) and it is not the user
+   * starting the bot, and `restoreWork` cancels the whole book for anything it
+   * classifies as the latter. Cleared at the end of `start()`.
+   */
+  keepOrders = false
   /** Array to store list of orders that in work */
   orders: Map<string, Order> = new Map()
   ordersKeys: Set<string> = new Set()
