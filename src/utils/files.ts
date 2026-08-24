@@ -50,4 +50,25 @@ const saveFile = (
   return { path: pathWithName, name: fileName, size }
 }
 
+/**
+ * Is `candidate` a path this module would have produced?
+ *
+ * The read side needs the same answer the write side enforces, from the same
+ * root, or the two drift apart. `saveFile` bounds what it writes, but rows
+ * stored before that guard existed are still in the database and are still
+ * handed to `res.sendFile()` — so the serving path has to re-check rather than
+ * trust the stored value (GHSA / main-app-sh PR #12).
+ *
+ * `dirDepth` must match what the caller passed to `saveFile`.
+ */
+export const isInsideUserFiles = (
+  candidate: string,
+  dirDepth = '../../../',
+): boolean => {
+  if (typeof candidate !== 'string' || candidate.length === 0) return false
+  const root = resolvePath(userFilesDir, dirDepth)
+  const target = path.resolve(candidate)
+  return target === root || target.startsWith(root + path.sep)
+}
+
 export default saveFile

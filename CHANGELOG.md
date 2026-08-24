@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.4] - 2026-08-24
+
+### Fixed
+
+- Backtest files are served only from inside the `user-files` directory. `loadBacktestDetails` read a path back from the database and handed it straight to `sendFile`, trusting whatever was stored. The writer bounds what it creates today, but rows written before that guard are still in the database, so the serving side now re-checks containment against the same root rather than trusting the stored value. Reported on `main-app-sh` PR #12 by M1ch43lV.
+
 ## [1.53.3] - 2026-08-24
 
 ### Fixed

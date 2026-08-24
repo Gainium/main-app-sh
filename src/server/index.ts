@@ -20,7 +20,7 @@ import swaggerUi from 'swagger-ui-express'
 import { apiReference } from '@scalar/express-api-reference'
 import cookieParser from 'cookie-parser'
 import logger from '../utils/logger'
-import saveFileHelper from '../utils/files'
+import saveFileHelper, { isInsideUserFiles } from '../utils/files'
 import { checkToken } from '../backtest/utils/token'
 import { ExchangeEnum } from '../../types'
 import RedisClient from '../db/redis'
@@ -535,13 +535,25 @@ async function start() {
       res.status(400).send('File not found')
       return
     }
-    const path = file.data.result.path
-    const exist = fs.existsSync(path)
+    // SECURITY: `path` is read back from the database and handed straight to
+    // sendFile. saveFile bounds what it writes today, but rows stored before
+    // that guard existed are still here, and the shadowed local `path` above
+    // masks the imported `path` module — the exact footgun reported in
+    // main-app-sh PR #12. Re-check containment at the point of serving.
+    const storedPath = file.data.result.path
+    if (!isInsideUserFiles(storedPath)) {
+      logger.error(
+        `Refusing to serve a backtest file outside user-files: ${storedPath}`,
+      )
+      res.status(400).send('File not found')
+      return
+    }
+    const exist = fs.existsSync(storedPath)
     if (!exist) {
       res.status(400).send('File not found')
       return
     }
-    res.status(200).sendFile(path)
+    res.status(200).sendFile(storedPath)
   })
 
   if (!JWT_SECRET) {
