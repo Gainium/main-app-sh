@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.1] - 2026-08-24
+
+### Fixed
+
+- A bot reload no longer replays stale signal deals. `restoreWork` walks every deal still in `start` and re-placed its opening order regardless of why the deal existed — so a deal created by a TradingView webhook that was refused at the time (for example under a Binance Quantitative Rules restriction) could be executed hours later by a reload, opening a trade at a moment the signal never described. One production account had a reload replay a 21-hour-old webhook deal into a long the strategy had since flipped short on. The sweep now applies the same rule as the Quantitative Rules give-up path: only an ASAP deal — whose start carries no timing — is re-attempted; a deal opened by a webhook, indicator, timer or manual click is cancelled instead, and its own trigger opens the next one.
+
 ## [1.53.0] - 2026-08-24
 
 ### Changed

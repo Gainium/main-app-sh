@@ -9790,6 +9790,28 @@ function createDCABotHelper<
               }
             }
           } else {
+            // Same intent rule as the Quantitative Rules give-up path: a deal
+            // opened by a point-in-time trigger (a TradingView webhook, an
+            // indicator cross, a timer, a manual click) must not have its
+            // opening order re-sent later — by the time a reload or restart
+            // walks this list, the moment the signal described is gone, and
+            // replaying it opens a trade the signal never asked for. One
+            // production account had a reload replay a 21-hour-old webhook
+            // deal into a long the strategy had since flipped short on. Only
+            // ASAP carries no timing, so only ASAP replays.
+            const dealSettings = await this.getAggregatedSettings(d.deal)
+            if (dealSettings.startCondition !== StartConditionEnum.asap) {
+              this.handleLog(
+                `${d.deal._id} (${d.deal.symbol.symbol}) never started and its ${dealSettings.startCondition} trigger has passed. Cancelling the stale deal instead of replaying it`,
+              )
+              await this.closeDealById(
+                this.botId,
+                d.deal._id,
+                CloseDCATypeEnum.cancel,
+                false,
+              )
+              continue
+            }
             this.handleLog(
               `${d.deal._id} not started yet. Place base order again`,
             )

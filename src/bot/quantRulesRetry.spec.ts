@@ -131,5 +131,34 @@ check(
   releaseDecision(false, { status: 'start' }) === 'not-a-deal-start',
 )
 
+console.log(
+  '\n-- the reload sweep must not replay stale point-in-time deals --',
+)
+// Third replay path, found in production AFTER the first two were closed: a
+// bot reload walks every deal still in `start` and re-places its opening
+// order. A webhook deal created 21 hours earlier was replayed into a long the
+// strategy had since flipped short on. Same intent rule as the give-up path:
+// only ASAP replays; everything else is cancelled, because its own trigger
+// will fire again and a replay executes a moment that no longer exists.
+const sweepDecision = (startCondition: string) =>
+  startCondition === 'ASAP' ? 'replay' : 'cancel'
+check('an ASAP deal is replayed on reload', sweepDecision('ASAP') === 'replay')
+check(
+  'a webhook deal is cancelled, never replayed',
+  sweepDecision('TradingviewSignals') === 'cancel',
+)
+check(
+  'an indicator deal is cancelled, never replayed',
+  sweepDecision('TechnicalIndicators') === 'cancel',
+)
+check(
+  'a timer deal is cancelled, never replayed',
+  sweepDecision('Timer') === 'cancel',
+)
+check(
+  'a manual deal is cancelled, never replayed',
+  sweepDecision('Manual') === 'cancel',
+)
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}\n`)
 process.exit(failures === 0 ? 0 : 1)
