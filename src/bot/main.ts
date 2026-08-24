@@ -3246,6 +3246,21 @@ class MainBot<T extends IMainBot> {
                 if (
                   !this.hedge &&
                   (this.botType === BotType.dca ||
+                    // Combo carries a single directional `strategy` exactly
+                    // like DCA, so the same rule applies: on a one-way
+                    // account the venue keeps ONE net position per symbol,
+                    // and a bot that would trade against it cannot manage
+                    // its own exit — its reduce-only orders are rejected as
+                    // "same trading direction as your existing positions"
+                    // and the deal is stranded until the other side closes.
+                    // Combo was missing here, so two opposing combo bots on
+                    // one symbol started happily and then fought over the
+                    // net position (2026-08-22, OKX Europe X-Perps; venue
+                    // and product are incidental — this is every one-way
+                    // futures account). Hedge legs are unaffected: they run
+                    // only on hedge-enabled accounts, where `this.hedge` is
+                    // true and this whole branch is skipped.
+                    this.botType === BotType.combo ||
                     (this.botType === BotType.grid &&
                       //@ts-ignore
                       this.data.settings.futuresStrategy !==

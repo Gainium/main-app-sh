@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.3] - 2026-08-24
+
+### Fixed
+
+- Combo futures bots now refuse to start when the symbol already holds a position on the opposite side, the same rule DCA and Grid bots have always had. On a one-way (non-hedge) account the venue keeps a single net position per symbol, so two opposing combo bots fought over it: the second bot's reduce-only exits were rejected by the exchange and its deal could only be closed by hand. Hedge legs are unaffected.
+
 ## [1.53.2] - 2026-08-24
 
 ### Fixed
