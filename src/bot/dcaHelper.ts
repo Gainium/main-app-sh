@@ -17537,7 +17537,20 @@ function createDCABotHelper<
      */
 
     @IdMute(mutex, (botId: string) => `reload${botId}`)
-    override async reloadBot(_botId: string, replaceOrders = true) {
+    override async reloadBot(
+      _botId: string,
+      replaceOrders = true,
+      // A bot-settings save arrives with replaceOrders=false: running deals and
+      // their resting orders must survive untouched. But the bot's indicator
+      // set is DERIVED from the settings that just changed, and the
+      // keep-indicators path reconciles by SYMBOL only — it retains any
+      // subscription whose symbol is still in use and then drops that symbol
+      // from the to-subscribe set. Swapping one indicator for another on the
+      // same pair would therefore leave the old one live and never subscribe
+      // the new one, i.e. the save would silently not apply to new deals
+      // either. Settings saves pass true here to force a clean rebuild.
+      rebuildIndicators = false,
+    ) {
       try {
         if (this.reloadTimer) {
           clearTimeout(this.reloadTimer)
@@ -17560,7 +17573,7 @@ function createDCABotHelper<
           this.serviceRestart = true
           this.secondRestart = true
           this.ignoreRestartStats = true
-          this.saveIndicators = true
+          this.saveIndicators = !rebuildIndicators
           this.reload = true
         }
         for (const d of this.getOpenDeals()) {

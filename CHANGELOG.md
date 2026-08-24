@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.0] - 2026-08-24
+
+### Changed
+
+- A bot-settings save now applies to **new deals only**. Deals that are already running keep the settings they opened with and keep their resting orders. Previously every save re-derived each open deal's settings from the new bot settings and then cancelled and re-placed the bot's whole order book — take-profits included — so an edit that could not possibly affect an open deal still re-targeted live take-profits, cost every order its place in the exchange queue, and left open deals with no TP or SL resting on the exchange for the width of the cancel/re-place window. Changing a Deal Start filter, which only ever decides whether a *new* deal opens, tore down and rebuilt the orders of every deal already running. This applies to DCA, Combo and both Hedge types; a Grid bot has no per-deal settings and still rebuilds its ladder on save. A running deal is still editable on its own, from that deal's menu. Combo's TP/SL-only shortcut, which pushed the new target onto open deals without the full reload, is gone for the same reason. The bot worker still reloads on save so the next deal uses the new settings, and it now rebuilds its indicator subscriptions when it does: the keep-orders reload path reconciles indicators by symbol alone, so swapping one indicator for another on the same pair would otherwise have left the old one subscribed and never subscribed the new one.
+
 ## [1.52.11] - 2026-08-23
 
 ### Fixed

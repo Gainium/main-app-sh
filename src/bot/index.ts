@@ -85,7 +85,6 @@ import {
   isXperpPair,
   updateRelatedBotsInVar,
 } from './utils'
-import DCAUtils from './dca/utils'
 import { IdMute, IdMutex } from '../utils/mutex'
 import { mapDataGridOptionsToMongoOptions } from '../db/utils'
 import RabbitClient from '../db/rabbit'
@@ -4620,7 +4619,10 @@ class Bot<T extends UserSchema = UserSchema> {
     input: Partial<DCABotSettings> & { id: string; vars?: BotVars | null },
     userId: string,
     paperContext: boolean,
-    replaceOrders = true,
+    // Default OFF: a settings save must not touch the orders of deals that are
+    // already running. Only callers that genuinely re-own a running deal's
+    // TP/SL — the hedge wrapper flipping externalTp/externalSl — pass true.
+    replaceOrders = false,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<typeof this.getBot>>(
@@ -4630,6 +4632,7 @@ class Bot<T extends UserSchema = UserSchema> {
         input,
         userId,
         paperContext,
+        replaceOrders,
       )
     }
     const { id, vars, ...settings } = input
@@ -4722,58 +4725,16 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
 
-    const deals = await this.dcaDealsDb.readData(
-      {
-        botId: id,
-        'settings.changed': false,
-        userId,
-        status: {
-          $in: [
-            DCADealStatusEnum.error,
-            DCADealStatusEnum.open,
-            DCADealStatusEnum.start,
-          ],
-        },
-      },
-      undefined,
-      undefined,
-      true,
-    )
-    if (deals.status === StatusEnum.ok) {
-      for (const d of deals.data.result) {
-        const merged = { ...oldSettings.settings, ...settings }
-        const dealSettings = new DCAUtils().getInitalDealSettings(
-          BotType.dca,
-          merged,
-        )
-        // Profit currency is fixed for the lifetime of a running deal — the
-        // deal already entered in that currency, so re-basing it mid-flight
-        // would re-target its TP. Only deals opened after the save pick the
-        // new one up. Same rule as the combo path below.
-        dealSettings.profitCurrency = d.settings.profitCurrency
-        dealSettings.avgPrice = d.settings.avgPrice
-        dealSettings.slChangedByUser = d.settings.slChangedByUser
-        dealSettings.orderSizePercQty = d.settings.orderSizePercQty
-        dealSettings.updatedComboAdjustments =
-          d.settings.updatedComboAdjustments
-        const dealUpdate: Record<string, unknown> = { settings: dealSettings }
-        if (d.moveSlActivated) {
-          if (merged.moveSL && merged.moveSLValue) {
-            dealSettings.slPerc = merged.moveSLValue
-          } else {
-            dealUpdate.moveSlActivated = false
-          }
-          // Either branch can move the stop level, so the crossing state the
-          // deal earned against the old one has to be re-earned from a live
-          // tick before the moved stop can fire again.
-          dealUpdate.moveSlArmed = false
-        }
-        await this.dcaDealsDb.updateData(
-          { _id: d._id.toString(), userId },
-          { $set: dealUpdate },
-        )
-      }
-    }
+    // A bot-settings save applies to NEW deals only. Every deal that is
+    // already running keeps the settings snapshot it opened with, and keeps
+    // its resting orders untouched. We used to re-derive each open deal's
+    // settings from the new bot settings here and then cancel + re-place the
+    // whole order book; that re-targeted live TPs, cost every order its
+    // exchange queue position, and left open deals with no TP/SL resting on
+    // the exchange for the width of the cancel/re-place window — all for
+    // saves (a Deal Start filter, say) that cannot affect an open deal at all.
+    // A running deal is still editable individually via updateDealSettings.
+    // Forum #5044.
 
     const saveBotRequest = await this.dcaBotDb.updateData(
       { _id: id, userId },
@@ -4799,7 +4760,9 @@ class Bot<T extends UserSchema = UserSchema> {
               botType: BotType.dca,
               botId: id,
               method: 'reloadBot',
-              args: [id, replaceOrders],
+              // rebuildIndicators: the settings that define the indicator set
+              // are exactly what just changed.
+              args: [id, replaceOrders, true],
             })
           }
         }
@@ -4975,44 +4938,9 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
 
-    const deals = await this.comboDealsDb.readData(
-      {
-        botId: id,
-        'settings.changed': false,
-        userId,
-        status: {
-          $in: [
-            DCADealStatusEnum.error,
-            DCADealStatusEnum.open,
-            DCADealStatusEnum.start,
-          ],
-        },
-      },
-      undefined,
-      undefined,
-      true,
-    )
-    if (deals.status === StatusEnum.ok) {
-      for (const d of deals.data.result) {
-        const dealSettings = new DCAUtils().getInitalDealSettings(
-          BotType.combo,
-          {
-            ...oldSettings.settings,
-            ...settings,
-          },
-        )
-        dealSettings.profitCurrency = d.settings.profitCurrency
-        dealSettings.avgPrice = d.settings.avgPrice
-        dealSettings.slChangedByUser = d.settings.slChangedByUser
-        dealSettings.orderSizePercQty = d.settings.orderSizePercQty
-        dealSettings.comboActiveMinigrids = d.settings.comboActiveMinigrids
-        dealSettings.useActiveMinigrids = d.settings.useActiveMinigrids
-        await this.comboDealsDb.updateData(
-          { _id: d._id.toString(), userId },
-          { $set: { settings: dealSettings } },
-        )
-      }
-    }
+    // New deals only — a running combo deal keeps the settings snapshot it
+    // opened with and keeps its resting orders. Same rule as changeDCABot.
+    // Forum #5044.
 
     const saveBotRequest = await this.comboBotDb.updateData(
       { _id: id, userId },
@@ -5038,33 +4966,19 @@ class Bot<T extends UserSchema = UserSchema> {
           ) ||
           forceRestart
         ) {
-          const changedTp =
-            (settingKeys.filter((k) => k !== 'dcaCustom' && k !== 'indicators')
-              .length === 1 &&
-              (settingKeys.includes('tpPerc') ||
-                settingKeys.includes('slPerc'))) ||
-            (settingKeys.filter((k) => k !== 'dcaCustom' && k !== 'indicators')
-              .length === 2 &&
-              settingKeys.includes('tpPerc') &&
-              settingKeys.includes('slPerc'))
+          // A TP/SL-only save used to route to setNewTp, which walks the open
+          // deals and re-points their tpPerc/slPerc. That is the same
+          // apply-to-running-deals behaviour as the full reload, just cheaper,
+          // so it goes too: the worker soft-reloads to pick the new settings up
+          // for the NEXT deal and every live deal keeps its own target.
           if (find) {
-            if (changedTp) {
-              this.getWorkerById(find.worker)?.postMessage({
-                do: 'method',
-                botType: BotType.combo,
-                botId: id,
-                method: 'setNewTp',
-                args: [settings.tpPerc, settings.slPerc],
-              })
-            } else {
-              this.getWorkerById(find.worker)?.postMessage({
-                do: 'method',
-                botType: BotType.combo,
-                botId: id,
-                method: 'reloadBot',
-                args: [id],
-              })
-            }
+            this.getWorkerById(find.worker)?.postMessage({
+              do: 'method',
+              botType: BotType.combo,
+              botId: id,
+              method: 'reloadBot',
+              args: [id, forceRestart, true],
+            })
           } else {
             this.handleWarn(`Bot ${id} not found in changeComboBot`)
           }
