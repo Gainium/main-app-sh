@@ -1016,24 +1016,36 @@ export const priceBalancesUsd = async (
   }
 
   // 2) Tokenized-stock fallback map (venue-agnostic; keyed off `pairs`).
-  const stockPairMap = new Map<string, string>() // `${exchange}:${BASE}` → pair
-  const stockPairs = await pairDb.readData<
-    Pick<PairsSchema, 'exchange' | 'pair'> & { baseAsset: { name: string } }
-  >(
-    { assetCategory: { $in: ['stock', 'etf'] } },
-    { exchange: 1, pair: 1, 'baseAsset.name': 1 },
-    {},
-    true,
-  )
-  if (stockPairs.status === StatusEnum.ok) {
-    for (const p of stockPairs.data.result) {
-      if (p.exchange && p.pair && p.baseAsset?.name) {
-        stockPairMap.set(
-          `${p.exchange}:${p.baseAsset.name.toUpperCase()}`,
-          p.pair,
-        )
+  // Built LAZILY: `pairs` carries no index on `assetCategory`, so this is a
+  // collection scan, and it is only ever read for an asset the crypto rate
+  // table above could not price. Building it up front cost that scan on every
+  // call — including the all-crypto portfolios that are the overwhelming
+  // majority, and now on every dashboard portfolio view via
+  // `getBalances(includeUsdValues)`. One scan per call at most, none in the
+  // common case.
+  // Cache the PROMISE, not the map, so overlapping callers await the same query
+  // instead of one of them seeing a map that has not been filled yet.
+  let stockPairMap: Promise<Map<string, string>> | undefined // `${exchange}:${BASE}` → pair
+  const getStockPairMap = (): Promise<Map<string, string>> =>
+    (stockPairMap ??= buildStockPairMap())
+  const buildStockPairMap = async (): Promise<Map<string, string>> => {
+    const map = new Map<string, string>()
+    const stockPairs = await pairDb.readData<
+      Pick<PairsSchema, 'exchange' | 'pair'> & { baseAsset: { name: string } }
+    >(
+      { assetCategory: { $in: ['stock', 'etf'] } },
+      { exchange: 1, pair: 1, 'baseAsset.name': 1 },
+      {},
+      true,
+    )
+    if (stockPairs.status === StatusEnum.ok) {
+      for (const p of stockPairs.data.result) {
+        if (p.exchange && p.pair && p.baseAsset?.name) {
+          map.set(`${p.exchange}:${p.baseAsset.name.toUpperCase()}`, p.pair)
+        }
       }
     }
+    return map
   }
   const stockPriceCache = new Map<string, number>()
   const stockPriceProviders = new Map<
@@ -1045,7 +1057,7 @@ export const priceBalancesUsd = async (
     exchange: string,
   ): Promise<number> => {
     const base = balanceAssetToPairBase(asset, exchange).toUpperCase()
-    const pair = stockPairMap.get(`${exchange}:${base}`)
+    const pair = (await getStockPairMap()).get(`${exchange}:${base}`)
     if (!pair) return 0
     const cacheKey = `${exchange}:${pair}`
     const cached = stockPriceCache.get(cacheKey)

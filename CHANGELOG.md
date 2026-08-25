@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.6] - 2026-08-25
+
+### Changed
+
+- `priceBalancesUsd` now builds its tokenized-stock fallback map lazily. `pairs` has no index on `assetCategory`, so that lookup is a collection scan, and it is only ever read for an asset the crypto rate table could not price — but it ran on every call, including the all-crypto portfolios that are the overwhelming majority. With `getBalances(includeUsdValues)` this path is now on every dashboard portfolio view, so the scan is skipped unless something actually needs it.
+
 ## [1.53.5] - 2026-08-25
 
 ### Added
