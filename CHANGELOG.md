@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.5] - 2026-08-25
+
+### Added
+
+- `getBalances` can value each holding in USD server-side (`includeUsdValues`), reusing the same `priceBalancesUsd` per-venue path the portfolio snapshot cron and the public REST balances endpoint already use. The dashboard previously had to derive a price by matching an exchange ticker against the screener's coin symbols, which silently rendered `$0.00` for anything the screener could not match — a coin renamed upstream (Coinbase still lists Toncoin as `TON`; the screener carries CoinGecko's `gram`) or a long-tail listing the screener does not carry at all. An asset the venue publishes no rate for now returns `null` rather than a confident zero, so a consumer can tell "worth nothing" apart from "we could not price this". Off by default; existing callers are byte-for-byte unchanged.
+
 ## [1.53.4] - 2026-08-24
 
 ### Fixed

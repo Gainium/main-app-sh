@@ -708,6 +708,10 @@ export const UserSchema = /* GraphQL */ `
     uuid: String
     assets: [String]
     shouldSumBalance: Boolean
+    # Value every balance in USD server-side, off the venue's own rate table
+    # (the path the portfolio snapshot and the public REST API already use).
+    # Off by default - it costs a per-exchange price-table read (1 min cached).
+    includeUsdValues: Boolean
   }
   type getBalancesResponseData {
     asset: String
@@ -716,6 +720,10 @@ export const UserSchema = /* GraphQL */ `
     exchange: String
     exchangeUUID: String
     exchangeName: String
+    # Only returned when the request sets includeUsdValues. A null price means
+    # the venue publishes no USD rate for this asset - NOT that it is worth 0.
+    price: String
+    usdValue: String
   }
   type getBalancesResponse {
     status: Status

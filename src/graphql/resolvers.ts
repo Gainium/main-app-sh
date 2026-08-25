@@ -2120,14 +2120,19 @@ const resolvers = <
       {
         input,
       }: {
-        input: { assets?: string[]; uuid?: string; shouldSumBalance?: boolean }
+        input: {
+          assets?: string[]
+          uuid?: string
+          shouldSumBalance?: boolean
+          includeUsdValues?: boolean
+        }
       },
       { token, req, paperContext }: InputRequest,
     ) => {
       if (token !== 'demo' && !req.user?.authorized) {
         return errorAccess()
       }
-      const { assets, uuid, shouldSumBalance } = input
+      const { assets, uuid, shouldSumBalance, includeUsdValues } = input
       const user = await findUser(token)
       if (user.status === StatusEnum.notok) {
         return user
@@ -2138,6 +2143,7 @@ const resolvers = <
         assets,
         uuid,
         paperContext,
+        includeUsdValues,
       )
     },
     getProfitByBot: async (
