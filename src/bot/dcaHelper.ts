@@ -221,6 +221,30 @@ const positionAlreadyClosedReasons = [
   'no position to close',
 ]
 
+/**
+ * Exchange rejections that mean "this book is only accepting LIMIT orders right
+ * now". Coinbase puts a product into limit-only mode during a volatility
+ * auction; a MARKET order can never be accepted while that holds, but a LIMIT
+ * one still can. So this is not a fatal entry error — the base order must fall
+ * BACK to limit rather than be abandoned. Kept deliberately narrow: post-only
+ * rejections ("order would immediately match and take") are a *limit* order
+ * being refused and must NOT match here, or the limit fallback would loop.
+ */
+const limitOnlyReasons = [
+  // Coinbase Advanced Trade — observed verbatim as
+  // "Orderbook is in limit only mode - please use limit order type".
+  // Matched via normalizeReason, so "limit-only" spells the same.
+  'limit only',
+]
+
+/**
+ * Venues word the same condition as prose or as a camelCase/hyphenated code
+ * ("no position to close" vs "wouldNotReducePosition", "limit only mode" vs
+ * "limit-only"), so compare on letters and digits only — one list entry then
+ * covers every spelling.
+ */
+const normalizeReason = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+
 const maxTimeout = 2 ** 31 - 1
 
 // Helper function to apply decorators to methods
@@ -5276,13 +5300,19 @@ function createDCABotHelper<
     }
 
     private isPositionAlreadyClosedReason(text: string): boolean {
-      // Venues word the same condition as prose or as a camelCase code
-      // ("no position to close" vs "wouldNotReducePosition"), so compare on
-      // letters and digits only — one entry then covers both spellings.
-      const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
-      const haystack = normalize(text)
+      const haystack = normalizeReason(text)
       for (const r of positionAlreadyClosedReasons) {
-        if (haystack.indexOf(normalize(r)) !== -1) {
+        if (haystack.indexOf(normalizeReason(r)) !== -1) {
+          return true
+        }
+      }
+      return false
+    }
+
+    private isLimitOnlyReason(text: string): boolean {
+      const haystack = normalizeReason(text)
+      for (const r of limitOnlyReasons) {
+        if (haystack.indexOf(normalizeReason(r)) !== -1) {
           return true
         }
       }
@@ -7265,6 +7295,18 @@ function createDCABotHelper<
               )
               return
             }
+            // `enterMarketPrice` is the one-way latch that makes this method
+            // return early forever after, so it must record that the deal HAS
+            // entered at market — not that we are about to try. It used to be
+            // written here, before the send, and `placeBaseOrder` cannot be
+            // awaited to learn the outcome (it shares this method's
+            // `${botId}placeBaseOrder${symbol}` mutex, so awaiting it
+            // deadlocks). A venue refusal therefore latched the flag on a deal
+            // whose resting base order had just been cancelled to make room for
+            // the market entry, leaving it in `start` with no order on the book
+            // and no path back — see bug #505, deal 6a8db1f2271530b06e5360a6 on
+            // a Coinbase book in limit-only mode. The latch now lives in
+            // `placeBaseOrder`, where the venue's answer is known.
             this.placeBaseOrder(
               this.botId,
               symbol,
@@ -7279,10 +7321,6 @@ function createDCABotHelper<
               findDeal.deal.sizes,
               findDeal.deal.orderSizeType,
             )
-            findDeal.deal.enterMarketPrice = true
-            await this.saveDeal(findDeal, {
-              enterMarketPrice: findDeal.deal.enterMarketPrice,
-            })
           }
         }
       }
@@ -7941,8 +7979,66 @@ function createDCABotHelper<
             true,
           )
           if (result) {
+            if (typeof result !== 'string' && forceMarket) {
+              // The venue accepted the forced market entry, so only NOW is it
+              // true that this deal entered at market. Latching this before the
+              // send (which is where `checkBaseOrder` used to do it) stranded
+              // deals whose market order was refused — bug #505.
+              const enteredDeal = this.getDeal(dealId)
+              if (enteredDeal && !enteredDeal.deal.enterMarketPrice) {
+                enteredDeal.deal.enterMarketPrice = true
+                await this.saveDeal(enteredDeal, {
+                  enterMarketPrice: enteredDeal.deal.enterMarketPrice,
+                })
+              }
+            }
             if (typeof result === 'string') {
-              if (this.isNotionalReason(result) && count < this.slippageRetry) {
+              if (
+                forceMarket &&
+                startOrderType === OrderTypeEnum.limit &&
+                sentType === OrderTypeEnum.market &&
+                this.isLimitOnlyReason(result)
+              ) {
+                // The book is in limit-only mode, so this market entry can
+                // never be accepted, however many times we retry it. The
+                // caller (`checkBaseOrder`'s enter-market path) has already
+                // cancelled the resting LIMIT base order to make room for it,
+                // so giving up here leaves the deal in `start` with nothing on
+                // the book at all. Re-place as a LIMIT — the same order the
+                // ladder was resting before the fallback fired — instead of
+                // abandoning the entry. Not awaited and `count` is not
+                // advanced: this is the same rung retried in a different order
+                // type, and awaiting would deadlock on our own mutex.
+                //
+                // The `startOrderType` guard is what makes this terminate:
+                // `getBaseOrder` derives the type as
+                // `forceMarket ? market : (startOrderType ?? market)`, so the
+                // re-place below only actually produces a LIMIT for a
+                // limit-entry bot. Without it, a MARKET-entry bot whose last
+                // slippage rung happened to arm the enter-market timer would
+                // re-send a market order into the same refusal, forever.
+                this.handleLog(
+                  `${symbol} book is in limit only mode, cannot enter at market. Re-placing base order as limit`,
+                )
+                await sleep(250)
+                this.placeBaseOrder(
+                  this.botId,
+                  symbol,
+                  dealId,
+                  false,
+                  cancelPending,
+                  count,
+                  fixSl,
+                  fixTp,
+                  fixSize,
+                  dynamicAr,
+                  sizes,
+                  orderSizeType,
+                )
+              } else if (
+                this.isNotionalReason(result) &&
+                count < this.slippageRetry
+              ) {
                 this.handleDebug(
                   `Cannot place base order due to slippage ${
                     baseOrder.clientOrderId

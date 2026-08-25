@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.7] - 2026-08-25
+
+### Fixed
+
+- A DCA deal whose 35s enter-market fallback was refused by the venue is no longer stranded without an order. `checkBaseOrder` cancels the resting limit base order to make room for the market entry and used to latch `enterMarketPrice` before sending it, so a refusal — a Coinbase book in limit-only mode — left the deal in `start` with nothing on the book and the latch permanently suppressing any further attempt. The latch now records the venue's answer rather than our intent, and a limit-only refusal re-places the base order as a limit instead of abandoning the entry. Such deals still counted as an active pair on the Bots tab while showing no trade, which is the count mismatch users reported.
+
 ## [1.53.6] - 2026-08-25
 
 ### Changed
