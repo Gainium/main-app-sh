@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.13] - 2026-08-26
+
+### Changed
+
+- The base-order fallback notice added in 1.53.12 now logs at debug level for the `nominal` case and keeps log level for the two that are worth reading. Measured on prod right after the fix went live: the `nominal` branch is the routine one — every deal whose opening order has not landed yet passes through it, ~650 lines/min across the DCA fleet and 1% of the worker's whole stdout — and it is the case with nothing to diagnose. `deal` and `accounted` say something about a deal's books and stay visible. The line also prints `(new)` rather than an empty id for a deal that does not exist yet.
+
 ## [1.53.12] - 2026-08-26
 
 ### Fixed

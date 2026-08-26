@@ -13033,9 +13033,17 @@ function createDCABotHelper<
           )
         }
         if (resolvedBo.source !== 'order') {
-          this.handleLog(
-            `Deal ${dealId} has no base order on record, base order qty ${boQty} taken from ${resolvedBo.source} (size ${dealSize}, counted fills ${filledQty})`,
-          )
+          // `nominal` is the routine case: every deal whose opening order has
+          // not landed yet passes through it, ~650 lines/min across the fleet,
+          // and it is the one with nothing to diagnose. The two that say
+          // something about a deal's own books stay at log level. `dealId` is
+          // empty for a deal that does not exist yet, which is most of them.
+          const line = `Deal ${dealId || '(new)'} has no base order on record, base order qty ${boQty} taken from ${resolvedBo.source} (size ${dealSize}, counted fills ${filledQty})`
+          if (resolvedBo.source === 'nominal') {
+            this.handleDebug(line)
+          } else {
+            this.handleLog(line)
+          }
         }
         boQty = this.math.round(boQty, precision, !this.futures)
         const _qty = filledQty + boQty
