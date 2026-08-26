@@ -3387,7 +3387,33 @@ class MainBot<T extends IMainBot> {
     skipRedis = false,
   ): Promise<ClearOrderSchema[]> {
     const id = this.startMethod('loadOrders main')
-    if (this.serviceRestart && !skipRedis) {
+    // The Redis order snapshot is a COLD-START shortcut only, hence the same
+    // `serviceRestart && !secondRestart` guard the deals snapshot above it uses
+    // and that the rest of this file uses to mean "a real service restart".
+    //
+    // It cannot be used for a reload. `setOrdersToRedis` is @RunWithDelay'd, and
+    // that timer RESETS on every mutation, so under order churn the snapshot is
+    // not merely a debounce-interval stale — it is as old as the last quiet gap.
+    // A keep-orders reload (`replaceOrders=false`: a settings save, a deal
+    // restore) sets `serviceRestart = true` AND `secondRestart = true`, then
+    // `clearClassProperties` wipes `orders`/`ordersKeys` and refills them from
+    // whatever this returns. Reading the snapshot there ERASES every order
+    // created since it was written — the bot keeps no record of them at all.
+    //
+    // The order is then untracked, so `accountCallback`'s `ordersKeys` guard
+    // drops every later stream event for it and logs nothing at any level. The
+    // fill still happened on the venue: on 2026-08-25 a Coinbase base order was
+    // created 205 ms before such a reload, the snapshot in Redis was 9.9 s old,
+    // and the FILLED that arrived 3.5 minutes later was discarded — the deal
+    // held a real position for 15h35m while the UI showed it as not started.
+    // REST reconcile was the only thing that ever noticed. Three resting safety
+    // orders on the same bot were lost the same way at 02:24:53, and the bot
+    // re-placed the same three price levels 5 s later, duplicating them on the
+    // venue.
+    //
+    // A reload is one bot, so the DB read this now falls through to is cheap;
+    // the snapshot exists to keep a mass restart off Mongo, which still works.
+    if (this.serviceRestart && !this.secondRestart && !skipRedis) {
       const orders = await this.getFromRedis<Order[]>('orders')
       if (orders && orders.length) {
         this.handleLog(`Found in redis ${orders.length} orders`)
@@ -5421,6 +5447,25 @@ class MainBot<T extends IMainBot> {
         return
       }
       if (!this.ordersKeys.has(clientOrderId) && !msg.liquidation) {
+        // Reaching here means SharedStream's `ordersToBotMap` says this order is
+        // ours while our own book does not — it routed the event to this bot
+        // specifically, it is not a broadcast. For NEW/CANCELED that is
+        // expected background: a reload wipes `orders`/`ordersKeys` and the
+        // router keeps routes for orders the reload legitimately dropped.
+        //
+        // For a fill it is money we are about to not book, and until 2026-08-26
+        // this returned silently at every log level, so the loss was invisible
+        // until a REST reconcile happened to catch it hours later. Warn on the
+        // statuses that cost something; the tag is what a monitor greps for.
+        if (
+          msg.eventType === 'executionReport' &&
+          (msg.orderStatus === 'FILLED' ||
+            msg.orderStatus === 'PARTIALLY_FILLED')
+        ) {
+          this.handleWarn(
+            `STREAM-DESYNC dropped ${msg.orderStatus} for untracked order ${clientOrderId} ${msg.symbol} base: ${msg.totalTradeQuantity}`,
+          )
+        }
         return
       }
       const isHyperliquidOrder =

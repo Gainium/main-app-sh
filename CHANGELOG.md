@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.53.11] - 2026-08-26
+
+### Fixed
+
+- **A keep-orders reload rebuilt the bot's order book from a stale Redis snapshot and silently lost every order created since that snapshot was written.** `setOrdersToRedis` is `@RunWithDelay`'d and the timer resets on every order mutation, so under churn the snapshot is not one debounce interval stale — it is as old as the last quiet gap in the bot's order activity, seconds or more. A keep-orders reload (a settings save, a deal restore) sets `serviceRestart` *and* `secondRestart`, then `clearClassProperties` wipes `orders`/`ordersKeys` and refills them from `_loadOrders`, which gated its Redis shortcut on bare `serviceRestart` and so took the snapshot. Orders newer than it were not marked stale, they were gone: no entry in `orders`, none in `ordersKeys`. `accountCallback` then dropped every later stream event for them at its `ordersKeys` guard and logged nothing at any level, so a fill that really happened on the venue was discarded and the deal sat holding a position the bot did not know about until a REST reconcile happened to notice hours later — and where the lost order was a resting safety order, the reload re-placed the same price level moments after, duplicating it on the exchange. `_loadOrders` now uses the same `serviceRestart && !secondRestart` cold-start guard as the deals snapshot beside it and as the rest of the engine; a reload reads the DB, which is one bot and cheap, and a mass restart still gets the snapshot it exists for. Grid was never affected (it passes `skipRedis`); DCA, combo and hedge shared the path.
+- A fill or partial fill delivered for an order the bot is not tracking is now reported as `STREAM-DESYNC` instead of being dropped in silence. `SharedStream` routes these to one bot specifically, so the bot's book disagreeing with the router is a real desync and, on a fill, money about to go unbooked — it was the same silent `return` that kept the loss above invisible.
+
 ## [1.53.10] - 2026-08-26
 
 ### Fixed
