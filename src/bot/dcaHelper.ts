@@ -10072,14 +10072,38 @@ function createDCABotHelper<
               status: 'PARTIALLY_FILLED',
               dealId: `${d.deal._id}`,
             }).find((o) => o.typeOrder === TypeOrderEnum.dealTP)
+            // On a keep-orders reload — a settings save, or a deal restore —
+            // the deal's safety orders are still resting on the venue, because
+            // this path deliberately skips both teardowns. But `currentOrders`
+            // was rebuilt from the deal's CURRENT price, so its levels sit at
+            // different prices and sizes than the orders already out there:
+            // `isOrderExistInDeal` matches on price+qty+side, finds no
+            // counterpart for any of them, and a whole second ladder goes on
+            // top of the live one — the deal ends up with twice the resting
+            // exposure the user configured. (A TP cannot duplicate this way:
+            // `placeOrders` has its own guard for that one.) Leave the
+            // standing ladder alone; it is replaced by the fill path as each
+            // level is taken, which is the same promise the rest of this path
+            // makes to a running deal.
+            const hasRestingDca =
+              this.keepOrders &&
+              this.getOrdersByStatusAndDealId({
+                status: 'NEW',
+                dealId: `${d.deal._id}`,
+              }).some((o) => o.typeOrder === TypeOrderEnum.dealRegular)
             await this.placeOrders(
               this.botId,
               d.deal.symbol.symbol,
               d.deal._id,
               {
-                new: d.currentOrders.filter((o) =>
-                  findTp ? o.type !== TypeOrderEnum.dealTP : true,
-                ),
+                new: d.currentOrders.filter((o) => {
+                  if (findTp && o.type === TypeOrderEnum.dealTP) {
+                    return false
+                  }
+                  return !(
+                    hasRestingDca && o.type === TypeOrderEnum.dealRegular
+                  )
+                }),
                 cancel: [],
               },
             )
@@ -14624,11 +14648,35 @@ function createDCABotHelper<
      */
 
     async processCanceledOrder(
-      _order: Order,
+      order: Order,
       _updateTime: number,
       _expired: boolean,
     ): Promise<void> {
-      return
+      // A resting TP can take some size and then be canceled — by us, when a
+      // safety order fills and the TP has to be re-sized, or by the venue. The
+      // executed part is a real sale, and the cancel message carries it. If it
+      // is not recorded the deal keeps counting base it no longer owns: every
+      // later TP is sized above the free balance, the venue rejects it, and the
+      // deal is left with no TP and no way to close.
+      //
+      // `updatePartiallyFilledTP` normally records this off the
+      // PARTIALLY_FILLED event, but not every venue emits one (Coinbase keeps
+      // such an order OPEN), so the cancel is the only report that is
+      // guaranteed to arrive. It keys on clientOrderId, so seeing both events
+      // records the qty once.
+      if (order.typeOrder !== TypeOrderEnum.dealTP) {
+        return
+      }
+      const executed = +order.executedQty
+      const original = +order.origQty
+      if (!isFinite(executed) || executed <= 0) {
+        return
+      }
+      // A fully executed order is the FILLED path's to close, not ours.
+      if (isFinite(original) && executed >= original) {
+        return
+      }
+      await this.updatePartiallyFilledTP(order)
     }
     /**
      * Sort function for order queue
