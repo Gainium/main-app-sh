@@ -2705,6 +2705,7 @@ function createDCABotHelper<
         // User-initiated, so the throttle must not swallow it: stopping two
         // bots in a row has to report both positions, not just the first.
         true,
+        deal.symbol.symbol,
       )
     }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.14] - 2026-08-26
+
+### Fixed
+
+- Bot notifications now name the pair that actually errored. `processError` labelled every message with `settings.pair[0]`, so on a multi-pair bot each notification claimed the bot's first pair no matter which one failed — a row could read `BTC-USDC` above a message about AIOZ. The occurrence's own symbol is now threaded through `handleErrors` / `handleOrderErrors` (`order.symbol`, or the deal's symbol), and `settings.pair[0]` stays the fallback only for bot-level conditions that have no erroring pair, such as a revoked API key. Over 30 days of production `Not enough balance` messages, 453 of 8,255 machine-checkable rows named a pair contradicted by their own message text, across 45 users and 78 bots. The same value feeds the realtime `bot message` socket payload, so the notification bell is corrected too.
+
 ## [1.53.13] - 2026-08-26
 
 ### Changed

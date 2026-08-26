@@ -1901,6 +1901,10 @@ class MainBot<T extends IMainBot> {
     // reported back, even if an identical-subType message is already active or
     // was throttled. When true, bypass the de-dup / throttle gates below.
     force = false,
+    // The pair this occurrence actually failed on, when the caller knows it.
+    // Optional: bot-level conditions (a revoked API key, an auto-archive) have
+    // no erroring pair, and those keep the `settings.pair[0]` fallback below.
+    _symbol?: string,
   ) {
     if (this.ignoreErrors) {
       return
@@ -1947,7 +1951,13 @@ class MainBot<T extends IMainBot> {
       const messageType = setError
         ? MessageTypeEnum.error
         : MessageTypeEnum.warning
-      const symbol = this.data?.settings.pair[0]
+      // The pair that actually errored, when the occurrence carried one. The
+      // fallback is `settings.pair[0]`, which used to be applied
+      // unconditionally: on a multi-pair bot that made EVERY notification name
+      // the bot's first pair regardless of which pair failed, so a row could
+      // say `BTC-USDC` above a message about AIOZ (community #5069). Only a
+      // caller with no symbol to give still lands on the fallback.
+      const symbol = _symbol ?? this.data?.settings.pair[0]
       const exchange = this.data?.exchange
 
       // Re-raise backoff. The rate limit lives on the RAISE, not on the row:
@@ -2182,6 +2192,9 @@ class MainBot<T extends IMainBot> {
     // Propagated to processError: when true the error is always reported to
     // the user, even if a same-subType message is already active/throttled.
     force = false,
+    // The pair this occurrence failed on, propagated to processError so the
+    // notification names it instead of the bot's first configured pair.
+    symbol?: string,
   ): Promise<void> {
     if (this.ignoreErrors) {
       return
@@ -2277,6 +2290,7 @@ class MainBot<T extends IMainBot> {
       time,
       messageToSet,
       force,
+      symbol,
     )
   }
 
@@ -2526,6 +2540,7 @@ class MainBot<T extends IMainBot> {
         sendError,
         true,
         isManualFunds,
+        order.symbol,
       )
     }
     this.updateNotEnoughBalanceErrors(order)
@@ -2597,6 +2612,7 @@ class MainBot<T extends IMainBot> {
         time,
         message,
         isManualFunds,
+        order.symbol,
       )
     }
   }
