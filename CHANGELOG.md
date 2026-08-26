@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.53.8] - 2026-08-26
+
+### Fixed
+
+- A partially-filled take-profit that was later canceled no longer loses the part that executed. `updatePartiallyFilledTP` records it off the PARTIALLY_FILLED event, but not every venue emits one — Coinbase keeps such an order OPEN — and `processCanceledOrder` was an empty stub even though the cancel report carries the executed quantity. The deal went on counting base the account no longer held, so every later take-profit was sized above the free balance, rejected by the venue, and the deal was left with no take-profit and no way to close it. The record keys on `clientOrderId`, so seeing both events books the quantity once.
+- A keep-orders reload — a settings save, or a deal restore — no longer stacks a second ladder of safety orders on the live one. The reload deliberately leaves the deal's orders resting, but still re-placed a full set: `currentOrders` is rebuilt from the deal's current price, so its levels sit at prices and sizes that `isOrderExistInDeal` (which matches on price+qty+side) finds no counterpart for, and the deal ended up with twice the resting exposure the user configured. A take-profit cannot duplicate this way — `placeOrders` has its own guard — so that path is unchanged.
+
 ## [1.53.7] - 2026-08-25
 
 ### Fixed
