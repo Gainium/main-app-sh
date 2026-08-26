@@ -1035,6 +1035,17 @@ function createComboBotHelper<
                   o.side === OrderSideEnum.buy)
               usedSet.add(o.clientOrderId)
               if (withMatch) {
+                // POLICY — DO NOT "FIX" THIS TO deal.avgPrice.
+                // 'position price' means the MINIGRID's position, not the deal's.
+                // Grid profit is deliberately booked against the minigrid's own
+                // entry: it measures what the grid leg earned inside its own
+                // range. Once DCA opens a minigrid below the position, this reads
+                // higher than the exchange's realized P&L — expected. The deal
+                // total still reconciles exactly; only the realized/unrealized
+                // split differs. Gainium reports the bot's own books, never
+                // exchange settlement accounting. Reported and rejected as a
+                // not-bug (Claus #508, 2026-08-26) with a working patch attached.
+                // Read 0-knowledge/domain/pnl-accounting-policy.md before editing.
                 matchedId = 'position price'
                 matchQty = _profitBase
                   ? (price * qty) / (minigrid.schema.avgPrice || price)
