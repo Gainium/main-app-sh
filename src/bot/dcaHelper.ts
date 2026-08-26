@@ -10085,19 +10085,46 @@ function createDCABotHelper<
             // standing ladder alone; it is replaced by the fill path as each
             // level is taken, which is the same promise the rest of this path
             // makes to a running deal.
-            const hasRestingDca =
-              this.keepOrders &&
-              this.getOrdersByStatusAndDealId({
-                status: 'NEW',
-                dealId: `${d.deal._id}`,
-              }).some((o) => o.typeOrder === TypeOrderEnum.dealRegular)
+            const resting = this.keepOrders
+              ? this.getOrdersByStatusAndDealId({
+                  status: 'NEW',
+                  dealId: `${d.deal._id}`,
+                })
+              : []
+            const hasRestingDca = resting.some(
+              (o) => o.typeOrder === TypeOrderEnum.dealRegular,
+            )
+            // The TP needs the same treatment as the ladder above, and
+            // `placeOrders`' own TP guard is NOT enough to give it: that guard
+            // only skips when the resting TP is LARGER than the recomputed
+            // one. A recomputed TP that is larger makes it CANCEL the resting
+            // TP and send a replacement, and one of equal size but a different
+            // price makes it place a SECOND TP on top. Both reach every open
+            // deal at once on a save, so a 50-pair bot re-places ~50 TPs
+            // inside two minutes with the entries hours old. Binance Futures
+            // scores that as ~50 orders placed against no fills in the same
+            // 10-minute cycle — an unfilled ratio of 1.0 versus a 0.99
+            // threshold — which is an account-wide Quantitative Rules
+            // restriction.
+            //
+            // A running deal keeps the settings AND the orders it started
+            // with, so its resting TP is the correct one by definition and a
+            // save has no business touching it. Only place a TP when the deal
+            // has none resting.
+            // Pinned by tests/processing/tpBurstInvariant.ts.
+            const hasRestingTp = resting.some(
+              (o) => o.typeOrder === TypeOrderEnum.dealTP,
+            )
             await this.placeOrders(
               this.botId,
               d.deal.symbol.symbol,
               d.deal._id,
               {
                 new: d.currentOrders.filter((o) => {
-                  if (findTp && o.type === TypeOrderEnum.dealTP) {
+                  if (
+                    (findTp || hasRestingTp) &&
+                    o.type === TypeOrderEnum.dealTP
+                  ) {
                     return false
                   }
                   return !(

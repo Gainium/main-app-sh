@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.9] - 2026-08-26
+
+### Fixed
+
+- A keep-orders reload — a settings save, or a deal restore — no longer re-places a running deal's take-profit. 1.53.8 left this path alone because `placeOrders` has its own take-profit guard, but that guard only covers one of the three ways the recompute can land. `currentOrders` is rebuilt from the deal's current price, so the recomputed take-profit sits at a different price and often a different size than the one already resting: a larger one makes `placeOrders` cancel the resting take-profit and send a replacement, and one of equal size makes it place a second take-profit on top (the price differs, so `isOrderExistInDeal` finds no counterpart and neither quantity branch fires). Only a smaller one was skipped. The first two reach every open deal in a single pass, so a 50-pair bot re-placed ~50 take-profits inside two minutes with the entries hours in the past — which Binance Futures scores as ~50 orders placed against no fills in the same 10-minute cycle, an unfilled ratio of 1.0 against a 0.99 ban threshold, and restricts the whole account for. A running deal keeps the settings and the orders it started with, so its resting take-profit is the correct one and a save has no business touching it; one is now placed only when the deal has none resting. The two legitimate cancels are unchanged, both being scoped to a single deal: a deal closing cancels its own take-profit, and a position that changes size has its take-profit resized by the fill path.
+
 ## [1.53.8] - 2026-08-26
 
 ### Fixed
