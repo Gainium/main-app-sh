@@ -14703,6 +14703,20 @@ function createDCABotHelper<
       if (isFinite(original) && executed >= original) {
         return
       }
+      // Only trust a quantity we can also date. Cancel records written from a
+      // REST response rather than a stream event can carry a bogus
+      // `executedQty` alongside `updateTime: -1` — prod has such rows, and one
+      // of them looks exactly like a 1.29 partial fill on an order the venue
+      // never filled at all. Booking that would invent a sale and under-size
+      // every later TP by the phantom amount, which fails silently and in the
+      // opposite direction to the bug this method exists to fix. A stream
+      // event always carries a real timestamp, so this costs us nothing real.
+      if (!(order.updateTime > 0)) {
+        this.handleWarn(
+          `Ignoring partial fill on canceled TP ${order.clientOrderId}: executedQty ${order.executedQty} with no usable updateTime (${order.updateTime})`,
+        )
+        return
+      }
       await this.updatePartiallyFilledTP(order)
     }
     /**

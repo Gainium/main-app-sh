@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.53.10] - 2026-08-26
+
+### Fixed
+
+- Booking a partial fill off a canceled take-profit now requires a usable `updateTime`. Cancel records written from a REST response rather than a stream event can carry a bogus `executedQty` next to `updateTime: -1`; production holds such a row, and it looks exactly like a 1.29 partial fill on an order the venue never filled. Trusting it would invent a sale and under-size every later take-profit by the phantom amount — a silent failure in the opposite direction to the one 1.53.8 fixed. Stream events always carry a real timestamp, so nothing legitimate is lost.
+
 ## [1.53.9] - 2026-08-26
 
 ### Fixed
