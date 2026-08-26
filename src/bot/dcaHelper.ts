@@ -126,6 +126,7 @@ import {
 import { ExchangeIntervals } from '../../types'
 import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
 import DCAUtils from './dca/utils'
+import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { tpPriceDisplacement, worstFee } from './dca/tpFees'
 import {
   dealCloseEventDescription,
@@ -1217,6 +1218,20 @@ function createDCABotHelper<
 
     async loadOrders(): Promise<void> {
       const _id = this.startMethod('loadOrders')
+      // Deals restored from Redis are SEEDED here and their orders generated
+      // further down, AFTER `_loadOrders` has filled the order book. Generating
+      // them here — which is what this used to do — sized every restored deal's
+      // take-profit against an order map that was still empty, so `getTPOrder`
+      // saw no fills at all and fell through to the nominal base order size: a
+      // Coinbase AIOZ deal came back resting a 1786.1 take-profit against
+      // 3711.30 held, and a paperBinance TURBO deal still rests 2226 against
+      // 103,547 taken on over 25 filled orders.
+      //
+      // Seeding first also fixes a second-order version of the same thing: with
+      // the deal generated and set in one pass, `getDeal` could not see the deal
+      // whose orders it was generating, so `findBaseOrderByDeal` — which returns
+      // nothing without it — could never find that deal's own base order either.
+      let restoredFromRedis: FullDeal<ExcludeDoc<Deal>>[] = []
       if (this.serviceRestart && !this.secondRestart) {
         const fromRedis =
           await this.getFromRedis<FullDeal<ExcludeDoc<Deal>>[]>('deals')
@@ -1226,75 +1241,29 @@ function createDCABotHelper<
             (d) => typeof d.deal.avgPrice !== 'number',
           )
           if (!checkAvg) {
-            for (const d of fromRedis) {
-              if (
+            restoredFromRedis = fromRedis.filter(
+              (d) =>
                 d.deal.status !== DCADealStatusEnum.closed &&
-                d.deal.status !== DCADealStatusEnum.canceled
-              ) {
-                const initialOrders: Grid[] = []
-                for (const o of d.initialOrders) {
-                  initialOrders.push({
-                    ...o,
-                    qty: this.math.round(
-                      o.qty,
-                      await this.baseAssetPrecision(d.deal.symbol.symbol),
-                    ),
-                    newClientOrderId:
-                      o.type === TypeOrderEnum.dealRegular
-                        ? this.combo
-                          ? this.getOrderId('CMB-RO')
-                          : this.getOrderId('D-RO')
-                        : this.getOrderId('D-TP'),
-                  })
-                }
-                const currentOrders = await this.createCurrentDealOrders(
-                  d.deal.symbol.symbol,
-                  d.deal.lastPrice,
-                  initialOrders,
-                  d.deal.settings.avgPrice || d.deal.avgPrice,
-                  d.deal.initialPrice,
-                  `${d.deal._id}`,
-                  false,
-                  d.deal,
-                  false,
-                )
-                /* for (const o of d.currentOrders) {
-                  currentOrders.push({
-                    ...o,
-                    qty: this.math.round(
-                      o.qty,
-                      await this.baseAssetPrecision(d.deal.symbol.symbol),
-                    ),
-                    newClientOrderId:
-                      o.type === TypeOrderEnum.dealRegular
-                        ? this.combo
-                          ? this.getOrderId('CMB-RO')
-                          : this.getOrderId('D-RO')
-                        : o.tpSlTarget
-                          ? o.sl
-                            ? this.getOrderId('D-MSL')
-                            : this.getOrderId('D-MTP')
-                          : this.getOrderId('D-TP'),
-                  })
-                } */
-                this.setDeal(
-                  {
-                    ...d,
-                    initialOrders,
-                    currentOrders,
-                    // `closeBySl` / `closeByTp` mean "a close is in flight in
-                    // this process". Nothing is in flight at load, so a value
-                    // restored from Redis is stale by definition — and a stale
-                    // `true` is a one-way latch: the deal is skipped by
-                    // `checkPlaceOrders` and by the close-recovery, so a close
-                    // that failed once freezes the deal permanently. The DB
-                    // load path below already resets both; this one did not.
-                    closeBySl: false,
-                    closeByTp: false,
-                  },
-                  false,
-                )
-              }
+                d.deal.status !== DCADealStatusEnum.canceled,
+            )
+            for (const d of restoredFromRedis) {
+              this.setDeal(
+                {
+                  ...d,
+                  initialOrders: [],
+                  currentOrders: [],
+                  // `closeBySl` / `closeByTp` mean "a close is in flight in
+                  // this process". Nothing is in flight at load, so a value
+                  // restored from Redis is stale by definition — and a stale
+                  // `true` is a one-way latch: the deal is skipped by
+                  // `checkPlaceOrders` and by the close-recovery, so a close
+                  // that failed once freezes the deal permanently. The DB
+                  // load path below already resets both; this one did not.
+                  closeBySl: false,
+                  closeByTp: false,
+                },
+                false,
+              )
             }
           }
         }
@@ -1341,6 +1310,43 @@ function createDCABotHelper<
             status: { $nin: ['CANCELED', 'EXPIRED'] },
           },
           {
+            // An entry order that partially filled and was THEN cancelled still
+            // holds the part the venue executed, and the running bot keeps it in
+            // the order map — `setOrder` overwrites the status in place, it does
+            // not drop the row. Excluding it here meant a restart silently threw
+            // that volume away, and every consumer written for exactly this case
+            // (`findBaseOrderByDeal`, the deal fee split, `updateUsage`'s filled
+            // base) went looking for a row that could no longer be there. The
+            // AIOZ base order — origQty 1790.1, executedQty 345.3, CANCELED —
+            // is the shape this restores.
+            //
+            // Scoped to the open deals, so it adds a handful of rows to a scan
+            // the `botId` index already drives: across all 11.5M orders on prod
+            // only 19,354 rows match at all, and only one belonged to an open
+            // deal. `$convert` rather than `$gt: '0'` because `executedQty` is a
+            // STRING — `'0.00000000' > '0'` is TRUE lexicographically — and
+            // rather than a bare `$toDouble`, which throws the whole query on a
+            // single unparseable value.
+            dealId: { $in: keys },
+            status: 'CANCELED',
+            typeOrder: {
+              $in: [TypeOrderEnum.dealStart, TypeOrderEnum.dealRegular],
+            },
+            $expr: {
+              $gt: [
+                {
+                  $convert: {
+                    input: '$executedQty',
+                    to: 'double',
+                    onError: 0,
+                    onNull: 0,
+                  },
+                },
+                0,
+              ],
+            },
+          },
+          {
             status: { $nin: ['CANCELED', 'EXPIRED', 'FILLED'] },
           },
         ],
@@ -1358,6 +1364,48 @@ function createDCABotHelper<
         this.botId,
         this.serviceRestart && !this.secondRestart,
       )
+      // Now that the order book is populated, generate the orders for the deals
+      // restored from Redis above. `getTPOrder` reads this deal's filled orders
+      // and its base order out of that map; before, it ran against an empty one.
+      for (const d of restoredFromRedis) {
+        const initialOrders: Grid[] = []
+        for (const o of d.initialOrders) {
+          initialOrders.push({
+            ...o,
+            qty: this.math.round(
+              o.qty,
+              await this.baseAssetPrecision(d.deal.symbol.symbol),
+            ),
+            newClientOrderId:
+              o.type === TypeOrderEnum.dealRegular
+                ? this.combo
+                  ? this.getOrderId('CMB-RO')
+                  : this.getOrderId('D-RO')
+                : this.getOrderId('D-TP'),
+          })
+        }
+        const currentOrders = await this.createCurrentDealOrders(
+          d.deal.symbol.symbol,
+          d.deal.lastPrice,
+          initialOrders,
+          d.deal.settings.avgPrice || d.deal.avgPrice,
+          d.deal.initialPrice,
+          `${d.deal._id}`,
+          false,
+          d.deal,
+          false,
+        )
+        this.setDeal(
+          {
+            ...d,
+            initialOrders,
+            currentOrders,
+            closeBySl: false,
+            closeByTp: false,
+          },
+          false,
+        )
+      }
       if (loadFromDb) {
         deals.map((d) =>
           this.setDeal(
@@ -12879,8 +12927,22 @@ function createDCABotHelper<
           status: 'FILLED',
           dealId,
         })
+        // A safety order that partially filled and was then CANCELED still
+        // holds every unit the venue executed before the cancel — the cancel
+        // only withdraws what was still resting. `findBaseOrderByDeal` has
+        // always counted the BASE order that way (`['CANCELED','FILLED']` +
+        // `executedQty > 0`); the safety orders were counted `FILLED`-only, so
+        // each partially-filled-then-cancelled one under-stated the position by
+        // whatever it had already executed.
         const filledOrders = [
           ...orders.filter((o) => o.typeOrder === TypeOrderEnum.dealRegular),
+          ...this.getOrdersByStatusAndDealId({
+            status: 'CANCELED',
+            dealId,
+          }).filter(
+            (o) =>
+              o.typeOrder === TypeOrderEnum.dealRegular && +o.executedQty > 0,
+          ),
         ]
         // Reduce-funds TP orders are excluded on purpose: their quantity is
         // already subtracted below via `reduceFundsBase` (deal.reduceFunds is
@@ -12901,29 +12963,10 @@ function createDCABotHelper<
           ([] as unknown as NonNullable<Deal['reduceFunds']>)
         ).reduce((acc, v) => acc + v.qty, 0)
         const long = this.isLong
-        const bo = this.findBaseOrderByDeal(dealId)
-        // No base order on record — a worker restart can restore an order
-        // snapshot that no longer carries it — so re-derive it from settings.
-        // `getBaseOrder` floors the size it actually placed at
-        // `baseAsset.minAmount`; re-deriving without that floor under-states a
-        // base order worth less than one step (bug #423: $1 on krakenUsdm
-        // BTC-USD, step 0.0001 ≈ $6), and on futures — where every "too small"
-        // guard below is gated `!this.futures` — it rounds to 0 and we send the
-        // venue a zero-qty TP it can only reject (`invalidArgument: 0`).
-        let boQty =
-          parseFloat(bo?.executedQty || '0') ||
-          parseFloat(bo?.origQty || '0') ||
-          Math.max(
-            orderSizeType === OrderSizeTypeEnum.quote
-              ? (baseOrderSize *
-                  (this.coinm ? symbol.quoteAsset.minAmount : 1)) /
-                  boPrice
-              : baseOrderSize,
-            symbol.baseAsset.minAmount,
-          )
-        boQty = this.math.round(boQty, precision, !this.futures)
-        const _qty =
-          filledOrders.reduce((acc, v) => acc + +v.executedQty, 0) + boQty
+        // Hoisted above the base-order fallback: `add` is (negated) the gross
+        // quantity this deal has ALREADY closed, and the fallback needs it to
+        // turn `deal.size` — which is net of those closes — back into the gross
+        // entry volume this sum is expressed in. It does not depend on `boQty`.
         const add =
           -(
             deal?.tpHistory ?? ([] as unknown as NonNullable<Deal['tpHistory']>)
@@ -12938,6 +12981,64 @@ function createDCABotHelper<
           filledCloseOrders.reduce((acc, v) => acc + +v.executedQty, 0) -
           pendingReduceFunds.base -
           reduceFundsBase
+        const filledQty = filledOrders.reduce(
+          (acc, v) => acc + +v.executedQty,
+          0,
+        )
+        const bo = this.findBaseOrderByDeal(dealId)
+        const boFromOrder =
+          parseFloat(bo?.executedQty || '0') ||
+          parseFloat(bo?.origQty || '0') ||
+          0
+        const dealSize = Math.abs(findDeal?.deal.size ?? deal?.size ?? 0)
+        const resolvedBo = resolveBaseOrderQty({
+          boFromOrder,
+          filledQty,
+          dealSize,
+          grossEntry: grossEntryVolume(dealSize, add, pendingReduceFunds.base),
+          floor: (n) => this.math.round(n, precision, !this.futures),
+        })
+        let boQty = resolvedBo.qty
+        if (resolvedBo.source === 'nominal') {
+          // The deal holds nothing yet because its opening order has not landed,
+          // so re-derive the base order from settings. `getBaseOrder` floors the
+          // size it actually placed at `baseAsset.minAmount`; re-deriving without
+          // that floor under-states a base order worth less than one step (bug
+          // #423: $1 on krakenUsdm BTC-USD, step 0.0001 ≈ $6), and on futures —
+          // where every "too small" guard below is gated `!this.futures` — it
+          // rounds to 0 and we send the venue a zero-qty TP it can only reject
+          // (`invalidArgument: 0`).
+          //
+          // Mirror `getBaseOrder`'s own conversion, including its DEFAULT: an
+          // unset `orderSizeType` means QUOTE there, and reading it as a base
+          // quantity here made the two disagree. `percFree`/`percTotal` are a
+          // percentage of a live balance this method cannot see, so there is no
+          // honest conversion — 0 leaves the `minAmount` floor, which
+          // under-states the stopgap rather than asking the venue to sell a
+          // percentage as if it were coins (a `percTotal` BTC deal rested a
+          // 0.537 BTC take-profit against 0.105 BTC held).
+          boQty = Math.max(
+            orderSizeType === OrderSizeTypeEnum.base
+              ? baseOrderSize
+              : orderSizeType === OrderSizeTypeEnum.usd
+                ? baseOrderSize /
+                  ((await this.getUsdRate(_symbol, 'quote')) * boPrice)
+                : orderSizeType === OrderSizeTypeEnum.percFree ||
+                    orderSizeType === OrderSizeTypeEnum.percTotal
+                  ? 0
+                  : (baseOrderSize *
+                      (this.coinm ? symbol.quoteAsset.minAmount : 1)) /
+                    boPrice,
+            symbol.baseAsset.minAmount,
+          )
+        }
+        if (resolvedBo.source !== 'order') {
+          this.handleLog(
+            `Deal ${dealId} has no base order on record, base order qty ${boQty} taken from ${resolvedBo.source} (size ${dealSize}, counted fills ${filledQty})`,
+          )
+        }
+        boQty = this.math.round(boQty, precision, !this.futures)
+        const _qty = filledQty + boQty
         const maxFee = worstFee(fee)
         // Same asymmetry as the base order (bug #396): on SPOT the fee is taken
         // out of the asset received. Closing a LONG SELLS base, so only what the

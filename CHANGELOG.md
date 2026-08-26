@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.53.12] - 2026-08-26
+
+### Fixed
+
+- **A DCA take-profit was sized from the NOMINAL base order size instead of the position the deal actually held.** `getTPOrder` builds the close as `sum(entry fills) + base order`, and when the base order's row was not in the order map it re-derived one from `baseOrderSize`. Two things put it in that state and both are now closed.
+
+  First, a base order that partially fills and is then CANCELED is a terminal row, and `loadOrders` filtered `status: CANCELED` out of its query — so after a worker restart `findBaseOrderByDeal`, which is written for precisely this case (`['CANCELED','FILLED']` plus `executedQty > 0`), could never find it. A Coinbase AIOZ deal's base order executed 345.3 of 1790.1 before being cancelled; the nominal put 1788.4 back, and the deal asked the venue to sell 5147.9 against 3711.30 held. The venue rejected it, which leaves a deal with no take-profit at all. Open deals now load their partially-executed cancelled entry orders back, scoped by deal id so the query examines the same documents as before. The same rows are what the deal fee split and `updateUsage`'s filled base were already written to read.
+
+  Second, deals restored from the Redis snapshot had their orders — take-profit included — generated *before* `_loadOrders` populated the order book, so the sizing saw no fills whatsoever and the nominal became the entire take-profit: 1786.1 against the same 3711.30, and a still-resting 2226 against 103,547 on another deal. The restored deals are now seeded first and their orders generated after the load. That also fixes a second-order case: generating and setting a deal in one pass meant `getDeal` could not see the deal whose orders it was generating, and `findBaseOrderByDeal` returns nothing without it.
+
+  The base order size is now taken from the deal's own books when its row is missing — the volume the counted fills do not explain IS the base order, exactly, with no reference to settings. The settings-derived fallback is kept for the case it was written for, a deal whose opening order has not landed yet, and is no longer reachable once the deal holds anything.
+- A safety order that partially filled and was then cancelled now counts toward the take-profit size. It was matched `status: FILLED` only, so every one of them under-stated the position by whatever it had already executed — the same omission as the base order, on the orders that outnumber it.
+- The settings-derived base order fallback now converts `usd` sizes through the USD rate and treats an unset `orderSizeType` as quote, matching `getBaseOrder`. `percFree`/`percTotal` are a percentage of a live balance the take-profit path cannot see, so they fall to the venue minimum rather than being read as a coin quantity — a `percTotal` BTC deal had rested a 0.537 BTC take-profit against 0.105 BTC held.
+
 ## [1.53.11] - 2026-08-26
 
 ### Fixed
