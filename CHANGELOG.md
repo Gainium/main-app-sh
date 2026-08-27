@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.54.5] - 2026-08-27
+
+### Fixed
+
+- **A follow-up to 1.54.4: an observed fee could be overwritten with zero on the grid/combo transaction path.** That path is built on an invariant the *estimate* happens to satisfy — for a buy the fee sits in `comBase` and `comQuote` is 0, for a sell the other way round — and four separate conversions (`comBase = comQuote / price` and friends) read that shape. A real fee does not satisfy it: Kraken bills the base asset on a sell and Coinbase bills quote on both sides, so writing the venue's split in directly left the opposite field at 0 and let the very next conversion clobber the real number. The observed total is now expressed on the trade's side before it is written (`observedFeeOnSide`), which keeps the magnitude — the thing that was wrong — and leaves the shape alone.
+- `getCommDeal` converts an observed fee at the ORDER's own fill price rather than the deal's current price. The estimate it replaces was per order at `v.price`, so a deal that had moved since a fill would otherwise value that fill's fee at today's price.
+
 ## [1.54.4] - 2026-08-27
 
 ### Added

@@ -34,6 +34,38 @@ import type { CommonOrder, Order } from '../../types'
 
 export type FeeSplit = { base: number; quote: number }
 
+/**
+ * The observed fee expressed on ONE side of the pair — the side the caller's
+ * existing estimate would have used.
+ *
+ * The grid/combo transaction path is built on an invariant the estimate
+ * happens to satisfy: for a buy the fee lives in `comBase` and `comQuote` is
+ * 0, for a sell the other way round. Four separate conversions downstream
+ * (`comBase = comQuote / price` and friends) and several `comQuote === 0 ? …`
+ * guards all read that shape. An observed fee does NOT satisfy it — Kraken
+ * charges base on a sell, Coinbase charges quote on both sides — so writing
+ * the venue's split in directly would leave the opposite field at 0 and let
+ * the next conversion overwrite the real fee with zero.
+ *
+ * Converting here keeps the magnitude, which is the thing that was wrong, and
+ * leaves the shape alone. Returns `null` when there is nothing to convert, so
+ * the caller falls back to its estimate rather than to a zero.
+ */
+export function observedFeeOnSide(
+  split: FeeSplit | null,
+  side: 'base' | 'quote',
+  price: number,
+): number | null {
+  if (!split || !price || !Number.isFinite(price)) {
+    return null
+  }
+  const total =
+    side === 'base'
+      ? split.base + split.quote / price
+      : split.quote + split.base * price
+  return Number.isFinite(total) && total > 0 ? total : null
+}
+
 /** Just the fee-bearing fields, for copying between order shapes. */
 export function observedFeeOf(o: Partial<CommonOrder>): {
   feePaid?: string

@@ -2094,11 +2094,16 @@ function createDCABotHelper<
     async getCommDeal(findDeal: ExcludeDoc<Deal>) {
       const fee = await this.getUserFee(findDeal.symbol.symbol)
       const profitBase = await this.profitBase(findDeal)
-      const price = findDeal.lastPrice || findDeal.avgPrice || 0
+      const dealPrice = findDeal.lastPrice || findDeal.avgPrice || 0
       return this.getOrdersByStatusAndDealId({
         status: 'FILLED',
         dealId: `${findDeal._id}`,
       }).reduce((acc, v) => {
+        // Convert at the ORDER's own fill price, not the deal's — the estimate
+        // this replaces was per order at `v.price` too, and a deal that has
+        // moved since a fill would otherwise value that fill's fee at today's
+        // price. The deal price is only the fallback for an order with none.
+        const price = parseFloat(v.price) || dealPrice
         const observed = price
           ? observedFeeSplit(
               v,

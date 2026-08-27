@@ -53,7 +53,7 @@ import {
   ActionsEnum,
   DCACloseTriggerEnum,
 } from '../../types'
-import { observedFeeSplit } from './orderFee'
+import { observedFeeOnSide, observedFeeSplit } from './orderFee'
 import { IdMute, IdMutex } from '../utils/mutex'
 import utils from '../utils'
 const { sleep } = utils
@@ -905,20 +905,30 @@ function createComboBotHelper<
       // side of the pair, like a BNB deduction — still cost something, and
       // `observedFeeSplit` returns null rather than a zeroed split precisely
       // so that case cannot book as free.
-      const observedFee = observedFeeSplit(
-        o,
-        minigrid.schema.symbol.baseAsset,
-        minigrid.schema.symbol.quoteAsset,
+      // Prefer the fee the VENUE charged over `qty * rate`. The estimate below
+      // is only as good as the stored rate, and this is the number that ends
+      // up in the transaction's `pureFee*` and, through `updateMinigridFee`,
+      // in `minigrid.feePaid` and `deal.feePaid`.
+      //
+      // Expressed on the trade's side rather than the venue's — see
+      // `observedFeeOnSide`, which explains why the one-side shape has to be
+      // preserved here. An order whose fee could not be observed, or was
+      // charged in an asset that is neither side of the pair, keeps the
+      // estimate: it still cost something, and must not book as free.
+      const observedFee = observedFeeOnSide(
+        observedFeeSplit(
+          o,
+          minigrid.schema.symbol.baseAsset,
+          minigrid.schema.symbol.quoteAsset,
+        ),
+        o.side === OrderSideEnum.buy ? 'base' : 'quote',
+        price,
       )
-      let comBase = observedFee
-        ? observedFee.base
-        : o.side === OrderSideEnum.buy
-          ? qty * fee.maker
-          : 0
-      let comQuote = observedFee
-        ? observedFee.quote
-        : o.side === OrderSideEnum.sell
-          ? qty * price * fee.maker
+      let comBase =
+        o.side === OrderSideEnum.buy ? (observedFee ?? qty * fee.maker) : 0
+      let comQuote =
+        o.side === OrderSideEnum.sell
+          ? (observedFee ?? qty * price * fee.maker)
           : 0
       let profitQuote = 0
       let matchedPrice = 0

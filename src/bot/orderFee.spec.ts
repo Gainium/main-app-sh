@@ -18,7 +18,12 @@ process.env.NODE_ENV = 'testing'
  *   2. The stream accrual is idempotent. It sums per-trade commissions, so a
  *      replayed report must not inflate the fee.
  */
-import { accrueStreamFee, hasObservedFee, observedFeeSplit } from './orderFee'
+import {
+  accrueStreamFee,
+  hasObservedFee,
+  observedFeeOnSide,
+  observedFeeSplit,
+} from './orderFee'
 
 let failures = 0
 function expect(label: string, actual: unknown, want: unknown) {
@@ -134,6 +139,44 @@ expect(
   hasObservedFee(order({ feeBreakdown: [{ asset: 'BNB', amount: '1' }] })),
   true,
 )
+
+// ── observedFeeOnSide: the grid/combo one-side shape ──────────────────────
+// The combo transaction path assumes exactly one of comBase/comQuote is
+// populated, keyed to the TRADE side, and converts between them afterwards.
+// A venue that charges on the other side (Kraken bills base on a sell) must
+// therefore be converted here, or the next conversion overwrites the real fee
+// with zero.
+expect(
+  'a quote fee on a buy is converted into base',
+  observedFeeOnSide({ base: 0, quote: 50 }, 'base', 100),
+  0.5,
+)
+expect(
+  'a base fee on a sell is converted into quote',
+  observedFeeOnSide({ base: 0.5, quote: 0 }, 'quote', 100),
+  50,
+)
+expect(
+  'a fee already on the requested side passes through',
+  observedFeeOnSide({ base: 0, quote: 50 }, 'quote', 100),
+  50,
+)
+expect(
+  'a split fee is combined onto one side',
+  observedFeeOnSide({ base: 0.1, quote: 5 }, 'quote', 100),
+  15,
+)
+for (const [label, split, price] of [
+  ['nothing observed', null, 100],
+  ['a zero price', { base: 1, quote: 0 }, 0],
+  ['an empty split', { base: 0, quote: 0 }, 100],
+] as [string, any, number][]) {
+  expect(
+    `observedFeeOnSide falls back on ${label}`,
+    observedFeeOnSide(split, 'quote', price),
+    null,
+  )
+}
 
 // ── Stream accrual: per-trade slices, summed, idempotently ────────────────
 const t1 = accrueStreamFee(
