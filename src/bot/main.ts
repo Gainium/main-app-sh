@@ -7186,8 +7186,25 @@ class MainBot<T extends IMainBot> {
     if (this.exchange) {
       const request = await this.exchange.cancelOrder({
         symbol: order.symbol,
+        // Address the venue by the id it can resolve UNAMBIGUOUSLY. Kraken
+        // spot has no client-order-id lookup at all: the connector falls back
+        // to `userref = parseInt(clientOrderId.substring(0, 8), 16)`, and every
+        // Gainium client id starts with a shared non-hex prefix, so parseInt
+        // stops at the first `-` and ALL `D-*` ids collapse to userref 13 (all
+        // `CMB-*` to 12). `getOrder()` then returns whichever same-userref
+        // order the account happens to list first and we cancel THAT one —
+        // a cancel aimed at order A silently cancels order B. Bug #535: 41
+        // distinct `D-RO-*` cancels on one ETHEUR DCA bot all resolved to the
+        // single stale txid ONK6O3-BF63X-24VAON, so not one of the intended
+        // orders was ever cancelled. The stored `orderId` IS the Kraken txid,
+        // which the connector routes through its exact `isKrakenSpotTxid()` ->
+        // `getSpotOrderByTxid()` lookup. This is the same swap
+        // `_handleUnknownOrder` already makes for kraken in its `byId` set —
+        // v1.32.4 added it there and to nothing else, leaving the cancel that
+        // feeds it still addressed by client id.
         newClientOrderId:
           this.data?.exchange === ExchangeEnum.coinbase ||
+          this.data?.exchange === ExchangeEnum.kraken ||
           this.kucoinFullFutures
             ? `${order.orderId}`
             : order.clientOrderId,

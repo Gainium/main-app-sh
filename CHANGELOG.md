@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.54.1] - 2026-08-27
+
+### Fixed
+
+- Cancelling a Kraken **spot** order no longer cancels a different order. `cancelOrderOnExchange` addressed the venue by our client order id, and Kraken spot has no client-id lookup — the connector falls back to `userref = parseInt(clientOrderId.substring(0, 8), 16)`, which stops at the first non-hex char, so every `D-*` id collapses to userref 13 and every `CMB-*` to 12. `getOrder` then returned whichever same-userref order the account listed first and we cancelled that one, reporting success. Kraken spot now uses the stored `orderId` (the Kraken txid), routing through the connector's exact `isKrakenSpotTxid` → `getSpotOrderByTxid` path — the swap `_handleUnknownOrder` already made in 1.32.4 for the same reason. In production 232 Kraken txids were shared by more than one client order id across 1,992 order rows, on 63 of 79 Kraken-spot bots.
+
 ## [1.54.0] - 2026-08-27
 
 ### Added
