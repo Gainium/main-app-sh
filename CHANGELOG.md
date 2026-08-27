@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.54.0] - 2026-08-27
+
+### Added
+
+- `getBotDcaUsage` / `getComboBotDcaUsage` — DCA-usage histogram folded in Mongo over all of a bot's deals, for the dashboard's DCA Analysis widget
+
 ## [1.53.14] - 2026-08-26
 
 ### Fixed

@@ -10595,6 +10595,146 @@ class Bot<T extends UserSchema = UserSchema> {
     return bot
   }
 
+  /**
+   * DCA-usage histogram for ONE bot, folded in Mongo over EVERY one of its
+   * deals.
+   *
+   * The dashboard's DCA Analysis widget used to derive this client-side from
+   * the deals it happened to have loaded: `getBotDeals` pages of 100 full deal
+   * documents (~600 selected GraphQL fields each), capped at 5 pages by the
+   * display loader. So a bot past 500 deals was silently analysed on a subset,
+   * and the whole payload existed to read ONE integer per deal.
+   *
+   * What comes back is deliberately raw — the count of DCA (safety) orders
+   * each deal actually filled, bucketed. Clamping those buckets to the bot's
+   * CURRENT configured DCA count stays on the client, because that count comes
+   * from the example-orders projection engine (which needs pair metadata and a
+   * live price) and not from anything in this collection. Keeping that seam
+   * means the numbers the widget renders are unchanged; only their coverage is.
+   *
+   * `levels.complete` counts the base order too, hence the -1: a deal that
+   * filled nothing but its base order used 0 DCAs.
+   *
+   * No status filter, so one pass serves both halves of the widget — `finished`
+   * is closed|canceled, `active` is everything else (open/start/error), exactly
+   * the two groups `getBotDeals` splits on. The existing `{botId: 1}` index
+   * bounds the scan; deals are not cold-store archived (only their orders and
+   * transactions are), so this sees the bot's entire history.
+   */
+  private async dcaUsageHistogram(
+    db: Pick<typeof dcaDealsDb, 'aggregate'>,
+    match: PipelineStage.Match['$match'],
+    /** Combo deals carry `transactions.buy`; DCA deals have only `levels`. */
+    useTransactions: boolean,
+  ) {
+    const filled = useTransactions
+      ? { $ifNull: ['$transactions.buy', '$levels.complete'] }
+      : '$levels.complete'
+    const agg = await db.aggregate<{
+      _id: { finished: boolean; dcas: number; configured: number }
+      deals: number
+    }>([
+      { $match: match },
+      {
+        $group: {
+          _id: {
+            finished: {
+              $in: [
+                '$status',
+                [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],
+              ],
+            },
+            dcas: {
+              $max: [0, { $subtract: [{ $ifNull: [filled, 0] }, 1] }],
+            },
+            // The ladder THIS deal ran under. Only used when the caller has no
+            // projected count for the bot's current settings — the client-side
+            // fold this replaced fell back to the deal's own `levels.all` there,
+            // so carrying it keeps that path exact rather than approximating it
+            // with a bot-wide maximum.
+            configured: {
+              $max: [0, { $subtract: [{ $ifNull: ['$levels.all', 0] }, 1] }],
+            },
+          },
+          deals: { $sum: 1 },
+        },
+      },
+    ])
+    if (agg.status !== StatusEnum.ok) {
+      return agg
+    }
+    type Bucket = { dcas: number; deals: number; configured: number }
+    const finished: Bucket[] = []
+    const active: Bucket[] = []
+    let maxConfiguredDcas = 0
+    for (const row of agg.data?.result ?? []) {
+      const bucket = {
+        dcas: Math.max(0, Math.floor(row._id?.dcas ?? 0)),
+        deals: row.deals ?? 0,
+        configured: Math.max(0, Math.floor(row._id?.configured ?? 0)),
+      }
+      ;(row._id?.finished ? finished : active).push(bucket)
+      maxConfiguredDcas = Math.max(maxConfiguredDcas, bucket.configured)
+    }
+    const byDcas = (a: Bucket, b: Bucket) => a.dcas - b.dcas
+    return {
+      status: StatusEnum.ok as StatusEnum.ok,
+      data: {
+        finished: finished.sort(byDcas),
+        active: active.sort(byDcas),
+        maxConfiguredDcas,
+      },
+    }
+  }
+
+  public async getBotDcaUsage(
+    userId: string,
+    id: string,
+    shareId?: string,
+    publicBot = false,
+    paperContext?: boolean,
+  ) {
+    const bot = await this.getDCABotFromDb(
+      userId,
+      id,
+      publicBot,
+      paperContext ?? false,
+      shareId,
+    )
+    if (bot.status === StatusEnum.ok && bot.data) {
+      return await this.dcaUsageHistogram(
+        this.dcaDealsDb,
+        { botId: id.toString() },
+        false,
+      )
+    }
+    return bot
+  }
+
+  public async getComboBotDcaUsage(
+    userId: string,
+    id: string,
+    shareId?: string,
+    publicBot = false,
+    paperContext?: boolean,
+  ) {
+    const bot = await this.getComboBotFromDb(
+      userId,
+      id,
+      publicBot,
+      paperContext ?? false,
+      shareId,
+    )
+    if (bot.status === StatusEnum.ok && bot.data) {
+      return await this.dcaUsageHistogram(
+        this.comboDealsDb,
+        { botId: id.toString() },
+        true,
+      )
+    }
+    return bot
+  }
+
   public async getComboBotDeals(
     userId: string,
     id: string,

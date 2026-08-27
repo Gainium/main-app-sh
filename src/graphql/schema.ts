@@ -792,6 +792,8 @@ export const BotSchema = /* GraphQL */ `
     getHedgeDCABotDealsStats(
       input: getBotDealsStatsInput
     ): botDealsStatsResponse
+    getBotDcaUsage(input: getBotDealsStatsInput): botDcaUsageResponse
+    getComboBotDcaUsage(input: getBotDealsStatsInput): botDcaUsageResponse
     getComboBotMinigrids(input: getBotDealsInput): minigridReponse
     getHedgeComboBotMinigrids(input: getBotDealsInput): minigridReponse
     getProfitByBot(input: getProfitByBot!): getProfitResponse
@@ -1337,6 +1339,21 @@ export const BotSchema = /* GraphQL */ `
     status: Status
     reason: String
     data: dealStatsData
+  }
+  type dcaUsageBucket {
+    dcas: Int
+    deals: Int
+    configured: Int
+  }
+  type dcaUsageData {
+    finished: [dcaUsageBucket]
+    active: [dcaUsageBucket]
+    maxConfiguredDcas: Int
+  }
+  type botDcaUsageResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: dcaUsageData
   }
   input getBacktestsInput {
     shareId: String!

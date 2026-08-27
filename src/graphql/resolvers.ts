@@ -1861,6 +1861,63 @@ const resolvers = <
         paperContext,
       )
     },
+    // DCA-usage histogram for the dashboard's DCA Analysis widget. Same
+    // auth/paper/share preamble as the *DealsStats resolvers above; the widget
+    // only exists on the DCA and combo layouts, so there is no hedge variant.
+    getBotDcaUsage: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: {
+          id: string
+          shareId?: string
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return await Bot.getBotDcaUsage(
+        user.data._id.toString(),
+        input.id,
+        input.shareId,
+        token === 'demo',
+        paperContext,
+      )
+    },
+    getComboBotDcaUsage: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: {
+          id: string
+          shareId?: string
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return await Bot.getComboBotDcaUsage(
+        user.data._id.toString(),
+        input.id,
+        input.shareId,
+        token === 'demo',
+        paperContext,
+      )
+    },
     getComboBotMinigrids: async (
       _parent: any,
       {
