@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.54.3] - 2026-08-27
+
+### Added
+
+- `UserFee.source` mirrored from the exchange-connector contract (optional/additive), so `updateUserFee` can log WHICH user received published-schedule fallback rates instead of their account's real ones. The connector cannot say — it receives credentials only, never a userId — so the sweep is the only place the two halves join. Previously a degraded lookup was silent: it answers OK with a plausible number and the stale rate is written to the user's fees unremarked.
+
 ## [1.54.2] - 2026-08-27
 
 ### Fixed

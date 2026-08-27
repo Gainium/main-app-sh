@@ -2553,7 +2553,22 @@ export interface FeesSchema extends SchemaI {
   taker: number
 }
 
-export type UserFee = { maker: number; taker: number }
+export type UserFee = {
+  maker: number
+  taker: number
+  /**
+   * Where this rate came from, as reported by the connector. `venue` = the
+   * exchange told us what THIS account pays; `ladder` = it could not, so the
+   * rate is the published schedule's entry rung — a guess that is wrong for
+   * anyone off the bottom tier. Absent means "not reported", never "venue".
+   *
+   * Mirrors `UserFee` in exchange-connector's `core/src/exchange/types.ts`.
+   * The two have no compile-time link (Danger List #1) — keep them identical.
+   * Only `updateUserFee` reads it, to name the user whose lookup degraded:
+   * the connector sees credentials, never a userId, so it cannot say whose.
+   */
+  source?: 'venue' | 'ladder'
+}
 
 export type ClearFeesSchema = ExcludeDoc<FeesSchema>
 
