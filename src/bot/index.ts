@@ -7216,7 +7216,7 @@ class Bot<T extends UserSchema = UserSchema> {
    *
    * The bot service deliberately does not consume its command queue until every
    * bot is back (a command processed before its bot is recreated used to start
-   * the bot twice — ClickUp 86eqmqjxg). That ordering is correct, but it was
+   * the bot twice). That ordering is correct, but it was
    * gated on an exact count with no escape hatch: if one bot never finished
    * re-hydrating, the listener never armed **for the life of the process**, and
    * every user start/stop/edit for that bot type sat in the durable queue until
