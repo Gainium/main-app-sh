@@ -7474,12 +7474,33 @@ function createDCABotHelper<
         }
         price = this.math.round(price, ed.priceAssetPrecision)
         const short = !this.isLong
-        // SPOT fees are charged in the asset you RECEIVE. A LONG entry BUYS
-        // base, so the fill credits base minus fee and the qty is grossed up to
-        // still end up holding the configured size. A SHORT entry SELLS base —
-        // the fee is taken out of the quote proceeds, never out of the base
-        // sent — so grossing up here just sells MORE base than the user asked
-        // for (and more than the safety orders, which never gross up). Bug #396.
+        // A SPOT LONG entry is grossed up by one taker fee so the deal ends up
+        // able to close the size the user configured. A SHORT entry SELLS base
+        // — the fee never comes out of the base sent — so grossing up there just
+        // sells MORE base than the user asked for (and more than the safety
+        // orders, which never gross up). Bug #396.
+        //
+        // ⚠️ The reason this gross-up is correct is VENUE-SPECIFIC, and the
+        // obvious reading of it is wrong on at least one venue. This comment
+        // used to say "spot fees are charged in the asset you RECEIVE, so the
+        // fill credits base minus fee". That holds on Binance-shaped venues. It
+        // does NOT hold on Kraken, whose `oflags` default is `fciq` for a BUY
+        // (fee in QUOTE) and `fcib` for a SELL (fee in BASE) — we set no
+        // oflags, so both defaults apply. A Kraken buy therefore credits the
+        // FULL quantity and takes its fee in quote.
+        //
+        // The gross-up is still right there, for the other reason: it funds the
+        // SELL leg's base-denominated fee. Buy `Q = size/price * (1 + f)`, close
+        // `Q * (1 - f)`, and Kraken takes `f` of that sale in base — which is
+        // almost exactly the extra base the entry bought. Verified end to end
+        // against a live ETH-EUR deal (2026-08-27): real base left over was
+        // 0.0000115 ETH, and the reported deal total of -4.861308 reproduced the
+        // venue economics to six decimals.
+        //
+        // So do NOT "fix" this by removing the gross-up on Kraken. Removing it
+        // leaves the close short of the base it needs to pay its own fee. If you
+        // ever set `oflags`, or add a venue whose fee currency differs again,
+        // re-derive this per venue rather than trusting either explanation.
         const feeFactor =
           this.futures || short
             ? 1
@@ -13049,14 +13070,24 @@ function createDCABotHelper<
         boQty = this.math.round(boQty, precision, !this.futures)
         const _qty = filledQty + boQty
         const maxFee = worstFee(fee)
-        // Same asymmetry as the base order (bug #396): on SPOT the fee is taken
-        // out of the asset received. Closing a LONG SELLS base, so only what the
-        // entry actually credited (gross * (1 - fee)) can be sold. Closing a
-        // SHORT BUYS base back, and that buy is itself charged in base — so
-        // buying `_qty` credits only `_qty * (1 - fee)` and the deal ends a fee
-        // short of base every cycle. Buy `_qty / (1 - fee)` so the fill returns
-        // the full amount sold. `add` (already-closed qty) is gross on both
-        // sides, so it keeps composing correctly for partial take profits.
+        // The mirror of the base order's gross-up (bug #396): closing a LONG
+        // SELLS base, so it sells `gross * (1 - fee)` — one fee less than the
+        // entry bought. Closing a SHORT BUYS base back and that buy is itself
+        // charged in base, so buying `_qty` credits only `_qty * (1 - fee)` and
+        // the deal ends a fee short of base every cycle; buy `_qty / (1 - fee)`
+        // so the fill returns the full amount sold. `add` (already-closed qty)
+        // is gross on both sides, so it keeps composing correctly for partial
+        // take profits.
+        //
+        // ⚠️ This used to be justified as "on SPOT the fee is taken out of the
+        // asset received, so only what the entry credited can be sold". That
+        // premise is venue-specific and is false on Kraken, where a BUY defaults
+        // to `fciq` (fee in quote) and credits the FULL quantity. The `1 - fee`
+        // here is still correct on Kraken, because its SELL defaults to `fcib`
+        // and takes the close's fee in base — leaving the entry's extra fee
+        // worth of base as exactly the headroom that pays for it. See the long
+        // note on `feeFactor` in `createOrder` before changing either side; they
+        // are one mechanism and only balance as a pair.
         let qty =
           _qty * (this.futures ? 1 : long ? 1 - maxFee : 1 / (1 - maxFee)) + add
         let origQty = qty
