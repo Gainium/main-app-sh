@@ -53,6 +53,7 @@ import {
   ActionsEnum,
   DCACloseTriggerEnum,
 } from '../../types'
+import { observedFeeSplit } from './orderFee'
 import { IdMute, IdMutex } from '../utils/mutex'
 import utils from '../utils'
 const { sleep } = utils
@@ -894,8 +895,31 @@ function createComboBotHelper<
       const _profitBase = await this.profitBase(deal?.deal)
       const qty = parseFloat(o.origQty)
       const price = parseFloat(o.price)
-      let comBase = o.side === OrderSideEnum.buy ? qty * fee.maker : 0
-      let comQuote = o.side === OrderSideEnum.sell ? qty * price * fee.maker : 0
+      // Prefer the fee the VENUE charged over `qty * rate`. The estimate below
+      // is only as good as the stored rate, and this is the number that ends
+      // up in the transaction's `pureFee*` and, through `updateMinigridFee`,
+      // in `minigrid.feePaid` and `deal.feePaid`.
+      //
+      // The fallback is per ORDER and deliberately not a zero: an order whose
+      // fee the venue did not report — or reported in an asset that is neither
+      // side of the pair, like a BNB deduction — still cost something, and
+      // `observedFeeSplit` returns null rather than a zeroed split precisely
+      // so that case cannot book as free.
+      const observedFee = observedFeeSplit(
+        o,
+        minigrid.schema.symbol.baseAsset,
+        minigrid.schema.symbol.quoteAsset,
+      )
+      let comBase = observedFee
+        ? observedFee.base
+        : o.side === OrderSideEnum.buy
+          ? qty * fee.maker
+          : 0
+      let comQuote = observedFee
+        ? observedFee.quote
+        : o.side === OrderSideEnum.sell
+          ? qty * price * fee.maker
+          : 0
       let profitQuote = 0
       let matchedPrice = 0
       let matchQty = 0

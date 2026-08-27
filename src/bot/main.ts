@@ -54,6 +54,7 @@ import {
   DCATypeEnum,
   getSellBuyCountReturn,
 } from '../../types'
+import { accrueStreamFee, hasObservedFee, observedFeeOf } from './orderFee'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
@@ -4531,6 +4532,18 @@ class MainBot<T extends IMainBot> {
     if (price !== 0) {
       order.price = `${price}`
     }
+    // The venue told us what this trade cost. websocket-connector has always
+    // forwarded `commission`/`commissionAsset` on both `executionReport` and
+    // `ORDER_TRADE_UPDATE`, and this converter has always thrown them away —
+    // so `deal.feePaid` fell back to `qty * price * storedFeeRate` even for
+    // fills the venue had already priced for us. It matters most on Binance,
+    // whose order endpoints report no fee at all: for an order that rests and
+    // fills later this is the only source there is.
+    //
+    // Accumulated, not assigned: the stream reports per TRADE, so a partially
+    // filled order arrives in slices. `accrueStreamFee` keeps that idempotent
+    // against a replayed report via the trade-id high-water mark.
+    Object.assign(order, accrueStreamFee(order, msg))
     return order
   }
 
@@ -4551,6 +4564,19 @@ class MainBot<T extends IMainBot> {
     price = isNaN(price) ? 0 : price
     return {
       ...co,
+      // An observed fee already on the local order must survive a lookup that
+      // reports none. `{ ...co }` rebuilds the order from the exchange payload,
+      // so without this an order whose fee arrived on the user stream — the
+      // only source Binance has for a resting fill — would have it erased by
+      // the next poll, silently, and book as an estimate again. Only a payload
+      // that actually states a fee is allowed to overwrite one.
+      ...observedFeeOf(hasObservedFee(co) ? co : o),
+      // The trade-id watermark only ever moves forward and is never rebuilt
+      // from an exchange payload, so it has to be carried across explicitly.
+      // Losing it would let an already-counted stream trade be added a second
+      // time; keeping a stale one can only ever skip an old trade, which is
+      // the safe direction to be wrong in.
+      feeTradeId: o.feeTradeId,
       _id: o._id,
       // Our local order id is authoritative — never let the exchange's echoed
       // clientOrderId win. For most exchanges co.clientOrderId === o.clientOrderId

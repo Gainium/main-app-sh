@@ -735,6 +735,28 @@ const orderSchema: Schema<OrderSchema> = new Schema({
       },
     },
   ],
+  /**
+   * The fee the venue actually charged for this order. Optional on purpose and
+   * with NO default: absent means "not observed", and a default of 0 would
+   * make every historical order look like a free fill and stop the consumer
+   * falling back to its estimate.
+   *
+   * `feeSide` is set by venues that name a side of the pair; `feeAsset` by
+   * venues that name a ticker — which may be neither side (BNB/BGB/KCS);
+   * `feeBreakdown` when a single order was charged in more than one currency.
+   */
+  feePaid: String,
+  feeSide: String,
+  feeAsset: String,
+  /** High-water mark for the per-trade fee accumulation — see `Order`. */
+  feeTradeId: Number,
+  feeBreakdown: [
+    {
+      asset: String,
+      amount: String,
+      _id: false,
+    },
+  ],
   exchange: {
     ...RequiredString,
     enum: ExchangeEnum,

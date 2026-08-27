@@ -3209,6 +3209,45 @@ export type CommonOrder = {
     commissionAsset: string
     tradeId: string
   }[]
+  /**
+   * The fee the VENUE actually charged for this order, as the venue reported
+   * it — never a rate we applied ourselves. Mirrors `CommonOrder` in
+   * exchange-connector core and paper-trading field for field.
+   *
+   * This is the observation that `deal.commission` never was.
+   * `commission` is `qty * price * storedFeeRate` — an estimate, and only ever
+   * as good as the stored rate, which can silently stop matching what the
+   * venue charges. An observed fee cannot go stale that way.
+   *
+   * ABSENT MEANS "NOT OBSERVED", NEVER "FREE". Every producer omits the field
+   * rather than sending a `0`, and every consumer here must fall back to the
+   * estimate when it is missing — a fee we could not observe must never book
+   * as zero cost.
+   */
+  feePaid?: string
+  /**
+   * WHICH side of the pair the fee came out of, for the venues that answer the
+   * currency question by naming a side: Kraken (via `oflags`), Coinbase (which
+   * settles every fee in quote), Bybit derivatives (settle coin) and Bybit
+   * spot (the asset received). Maps straight onto `deal.feePaid.{base,quote}`.
+   */
+  feeSide?: 'base' | 'quote'
+  /**
+   * The fee asset's TICKER, for the venues that name a currency instead of a
+   * side. It may be NEITHER side of the pair: an account paying fees in BNB,
+   * BGB or KCS is charged in an asset it did not trade. Resolving it is this
+   * side's job, because this is the side that knows the order's
+   * `baseAsset`/`quoteAsset`.
+   */
+  feeAsset?: string
+  /**
+   * Set INSTEAD of `feePaid`/`feeAsset` when one order was charged in more
+   * than one currency — a partial BNB/BGB deduction covering part of the fee
+   * with the rest taken in the quote asset. The legs are not summed by the
+   * producer because they are different currencies and adding them would mean
+   * inventing an FX rate.
+   */
+  feeBreakdown?: { asset: string; amount: string }[]
 }
 
 /**
@@ -3240,6 +3279,17 @@ export type OrderQuarantine = {
 
 export type Order = CommonOrder & {
   _id?: string
+  /**
+   * Highest venue trade id already folded into `feePaid`.
+   *
+   * The user stream reports a fee PER TRADE, so a partially filled order's fee
+   * has to be accumulated across several events. Venue trade ids increase
+   * monotonically per symbol, so keeping the high-water mark makes that
+   * accumulation idempotent: a replayed or duplicated report — after a stream
+   * reconnect, or a bot restart that refills the queue — cannot be counted
+   * twice, and a genuinely new trade always is.
+   */
+  feeTradeId?: number
   exchange: ExchangeEnum
   exchangeUUID: string
   typeOrder: TypeOrder
@@ -3450,6 +3500,23 @@ export interface SpotUpdate {
   symbol: string // Symbol
   totalQuoteTradeQuantity: string // Cumulative quote asset transacted quantity
   totalTradeQuantity: string // Cumulative filled quantity
+  /**
+   * The fee charged for THIS trade (Binance `n`) and the asset it was taken in
+   * (`N`), which may be neither side of the pair on a BNB-discount account.
+   *
+   * websocket-connector has always forwarded both — they are simply not
+   * per-order but per-TRADE, so a partially filled order emits several reports
+   * each carrying its own slice. That is why the consumer accumulates rather
+   * than overwrites, and why `tradeId` matters: it is what makes the
+   * accumulation safe against a replayed report.
+   *
+   * This is the ONLY fee source Binance has for an order that rests and fills
+   * later: neither `GET /api/v3/order` nor the futures order endpoint returns
+   * a commission at all.
+   */
+  commission?: string
+  commissionAsset?: string | null
+  tradeId?: number
 }
 export type ExecutionReport = (SpotUpdate | OrderUpdate) & {
   liquidation?: boolean

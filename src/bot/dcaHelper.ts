@@ -86,6 +86,7 @@ import {
   LWConditionEnum,
   DealStartBlock,
 } from '../../types'
+import { observedFeeSplit } from './orderFee'
 import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
@@ -2075,23 +2076,54 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * The deal's total fee, in the deal's profit currency.
+     *
+     * Per order this prefers the fee the VENUE reported over the
+     * `qty * price * storedFeeRate` estimate this method used to be built
+     * entirely from. The estimate remains the fallback for any order the venue
+     * did not report a fee for, or reported in an asset that is neither side
+     * of the pair — so a fee we could not observe still costs the deal
+     * something, rather than silently becoming free.
+     *
+     * The observed legs are expressed in whichever side the venue charged, so
+     * they have to be converted into the profit currency before summing. That
+     * conversion uses the deal's own `lastPrice`, the same price the callers
+     * of this method use to move between base and quote.
+     */
     async getCommDeal(findDeal: ExcludeDoc<Deal>) {
       const fee = await this.getUserFee(findDeal.symbol.symbol)
       const profitBase = await this.profitBase(findDeal)
+      const price = findDeal.lastPrice || findDeal.avgPrice || 0
       return this.getOrdersByStatusAndDealId({
         status: 'FILLED',
         dealId: `${findDeal._id}`,
-      }).reduce(
-        (acc, v) =>
+      }).reduce((acc, v) => {
+        const observed = price
+          ? observedFeeSplit(
+              v,
+              findDeal.symbol?.baseAsset,
+              findDeal.symbol?.quoteAsset,
+            )
+          : null
+        if (observed) {
+          return (
+            acc +
+            (profitBase
+              ? observed.base + observed.quote / price
+              : observed.base * price + observed.quote)
+          )
+        }
+        return (
           acc +
           (profitBase
             ? parseFloat(v.executedQty) *
               (v.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0))
             : parseFloat(v.executedQty) *
               parseFloat(v.price) *
-              (v.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0))),
-        0,
-      )
+              (v.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0)))
+        )
+      }, 0)
     }
     /**
      * Close deal when TP is filled
@@ -2165,6 +2197,29 @@ function createDCABotHelper<
           let feeBaseFull = 0
           let feeQuoteFull = 0
           for (const o of dealOrders) {
+            // Prefer what the VENUE said it charged. `deal.feePaid` was
+            // previously the sum of `qty * price * storedFeeRate` for every
+            // filled order — an estimate that is only as good as the stored
+            // rate, and therefore wrong for the whole deal whenever that rate
+            // has drifted from the venue's real schedule.
+            //
+            // The fallback is per ORDER, not per deal: a deal can mix orders
+            // the venue reported a fee for with orders it did not (a fee
+            // charged in BNB, an order that predates the capture, a paper
+            // leg). Estimating only the ones we could not observe keeps the
+            // total complete — and an unresolvable fee must never book as
+            // zero, which is why `observedFeeSplit` returns null rather than a
+            // zeroed split.
+            const observed = observedFeeSplit(
+              o,
+              findDeal.deal.symbol?.baseAsset,
+              findDeal.deal.symbol?.quoteAsset,
+            )
+            if (observed) {
+              feeBaseFull += observed.base
+              feeQuoteFull += observed.quote
+              continue
+            }
             if (o.side === OrderSideEnum.buy) {
               feeBaseFull +=
                 +o.executedQty *

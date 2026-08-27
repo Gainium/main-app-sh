@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.54.4] - 2026-08-27
+
+### Added
+
+- **`deal.feePaid` is now an OBSERVATION rather than a computation, wherever the venue reported one.** It was previously the sum of `qty * price * storedFeeRate` over every filled order — an estimate that is only ever as good as the stored rate, and therefore wrong for a whole deal whenever that rate has drifted from what the venue really charges. exchange-connector core 1.20.8 and paper-trading core 1.3.8 now report the fee each venue actually took, and `CommonOrder` mirrors their fields here (`feePaid`, `feeSide`, `feeAsset`, `feeBreakdown`) — all optional and additive. The captured fee is persisted on the order document.
+- The same observation now feeds `deal.commission` (`getCommDeal`) and the combo/grid transaction's `pureFeeBase`/`pureFeeQuote`, so the deal's cost basis, its P&L and its reported fee all come from one source.
+- **The user-stream commission is no longer discarded.** websocket-connector has always forwarded `commission` + `commissionAsset` on both `executionReport` and `ORDER_TRADE_UPDATE`, and `convertExecutionReportToOrder` threw them away. This matters most on Binance, whose order endpoints report no fee at all: for an order that rests and fills later, the stream is the only source there is. The stream reports per TRADE, so the fee is accumulated across slices, made idempotent against a replayed report by a `feeTradeId` high-water mark (venue trade ids increase monotonically, so a report at or below the mark is ignored, and a report with no id at all is ignored because a repeat could not be told from a new trade).
+
+### Notes
+
+- **`commission` remains the fallback, per ORDER rather than per deal**, and a fee that cannot be resolved is NEVER booked as zero. A zeroed fee is a claim that the fill was free, and replaces a roughly-right number with a definitely-wrong one. Three cases fall back: the venue reported nothing (paper legs from before core 1.3.8, an order with no fills, Binance futures order lookups, any order predating this change); the venue charged in an asset that is neither side of the pair (a BNB, BGB or KCS discount) — the amount is kept on the order but converting it needs an FX rate at the fill's timestamp that is not available here; or a multi-currency `feeBreakdown` where not every leg is on the pair. `observedFeeSplit` returns `null` rather than a zeroed split so this cannot be got wrong by accident.
+- An observed fee already on an order survives a later poll that reports none — `mergeCommonOrderWithOrder` rebuilds the order from the exchange payload, so without that the stream-captured Binance fee would be silently erased by the next order check.
+- Covered by a standalone ts-node check (`src/bot/orderFee.spec.ts`; this repo has no test runner).
+
 ## [1.54.3] - 2026-08-27
 
 ### Added
