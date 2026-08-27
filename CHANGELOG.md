@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.54.2] - 2026-08-27
+
+### Fixed
+
+- **A Kraken DCA deal opened with no safety orders on the exchange at all.** `placeOrders` looks the pair up with `getExchangeInfo`, which is keyed on the platform form (`ETH-EUR`), but callers that take the symbol off an exchange ORDER pass the venue's own spelling — on Kraken `ETHEUR`, `XBTUSD`, `XRPUSD`. The lookup missed, and the method returned before placing anything. Since the ladder is built when the base order fills and handed straight to `placeOrders` as `orderBo.symbol`, it was dropped on every deal open: the deal ran with only its base order, and the ladder reached the exchange only if something later reloaded the bot (a settings save, a restart, a worker recycle), because the restore path passes the deal's own symbol. Silent — the miss is a warning in the service log, with no bot message and nothing on the deal, so a user could only find it by looking at their exchange. Present daily in production as `Exchange info not found for XBTUSD` / `XRPUSD`. The pair is now resolved from the deal, with the argument kept as the fallback when the deal is not in memory; two combo callers carried the identical defect and are fixed by the same change. Venues whose native symbol already matches the platform form (most of them) were never affected.
+
 ## [1.54.1] - 2026-08-27
 
 ### Fixed

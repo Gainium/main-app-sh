@@ -12656,9 +12656,36 @@ function createDCABotHelper<
       orders: { new: Grid[]; cancel: Grid[] },
     ): Promise<void | Order> {
       const _id = this.startMethod('placeOrders')
-      const ed = await this.getExchangeInfo(symbol)
+      const deal = this.getDeal(dealId)
+      // `symbol` arrives here in two different alphabets. Callers holding a
+      // deal pass the platform pair (`ETH-EUR`); callers that take it off an
+      // exchange ORDER pass whatever the venue calls it — on Kraken that is
+      // `ETHEUR`, `XBTUSD`, `XRPUSD`. `getExchangeInfo` is keyed on the
+      // platform form, so the order-derived spelling missed, `ed` came back
+      // undefined, and this method returned before placing a single order.
+      //
+      // What that looked like in production: a Kraken DCA deal opened with NO
+      // safety orders on the book at all. The ladder is built when the base
+      // order fills and handed straight to this method as `orderBo.symbol`, so
+      // it was dropped here every single time; it only ever reached the
+      // exchange if something later reloaded the bot, because the restore path
+      // passes the deal's own symbol instead. Silent by construction — a
+      // handleWarn goes to the error log, not the bot's own timeline, and there
+      // is no bot message, so the deal just ran unprotected. Visible every day
+      // as `Exchange info not found for XBTUSD` / `XRPUSD`.
+      //
+      // Resolve from the deal, which is always the platform form. Every caller
+      // passes a real `dealId`, so this is the normal path; the argument stays
+      // as the fallback only for when the deal is not in memory to look up
+      // (mid-restore, or an id that has already been released).
+      //
+      // Combo shares this method and had the same defect on two of its callers
+      // (`order.symbol`, `orderBo.symbol` in comboHelper), so they are fixed by
+      // the same line rather than needing their own.
+      const pair = deal?.deal.symbol.symbol ?? symbol
+      const ed = await this.getExchangeInfo(pair)
       if (!ed) {
-        this.handleWarn(`Exchange info not found for ${symbol}`)
+        this.handleWarn(`Exchange info not found for ${pair}`)
         this.endMethod(_id)
         return
       }
@@ -12667,7 +12694,6 @@ function createDCABotHelper<
         this.endMethod(_id)
         return
       }
-      const deal = this.getDeal(dealId)
       if (deal?.closeBySl) {
         this.endMethod(_id)
         return this.handleLog(`Deal ${dealId} closing by SL. Skip place orders`)
