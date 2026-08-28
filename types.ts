@@ -2551,6 +2551,9 @@ export interface FeesSchema extends SchemaI {
   pair: string
   maker: number
   taker: number
+  /** See `UserFee.source`. Persisted so a fallback cannot overwrite a real
+   *  rate; absent on rows written before this existed. */
+  source?: 'venue' | 'ladder'
 }
 
 export type UserFee = {

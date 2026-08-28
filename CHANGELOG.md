@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.54.7] - 2026-08-28
+
+### Fixed
+
+- **A fallback fee rate could permanently overwrite an account's real one.** When a venue cannot say what an account pays, the connector answers with the published schedule's entry rung — a plausible number with `status: OK`, indistinguishable from a real rate at the call site — and the fee sweep wrote it straight over whatever was stored. On Kraken that rung matches NO tier in the live schedule (it reads 0.40%/0.25%; real Tier 1 is 0.80%/0.40%), so the replacement was not merely stale but a rate the venue offers nobody, understating the true cost by about half. Observed 2026-08-28: a transient `EGeneral:Temporary lockout` (#543) made TradeVolume fail for several accounts mid-sweep and 1341 of one account's 1615 pairs were overwritten in a single pass — 16 of 54 Kraken connections were left on it, 7 of them with live bots, some carrying rates last touched in April. These fees size the base-order gross-up and the take-profit, so the error is real money. A fallback may now only CREATE a row that does not exist yet; once any rate is stored, only the venue's own answer may replace it. `source` is persisted on the fee row so the two can be told apart. Poisoned accounts self-heal on their next successful lookup — verified on a live account, which went from the 0.40%/0.25% fallback to its real 0.60%/0.30% (Kraken Tier 2) across 1340 pairs.
+
 ## [1.54.6] - 2026-08-27
 
 ### Fixed

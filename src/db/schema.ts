@@ -1003,6 +1003,19 @@ const feesSchema: Schema<FeesSchema> = new Schema({
   userId: RequiredString,
   maker: RequiredNumber,
   taker: RequiredNumber,
+  /**
+   * Where this rate came from: `venue` = the exchange told us what THIS account
+   * pays; `ladder` = it could not, so this is the published schedule's entry
+   * rung. Optional with NO default — absent means "written before this existed",
+   * which must not be mistaken for either.
+   *
+   * Persisted so a fallback can never overwrite a real rate. On 2026-08-28 a
+   * transient Kraken `EGeneral:Temporary lockout` made TradeVolume fail for
+   * several accounts mid-sweep, and the ladder fallback was written straight
+   * over their true rates — baking a momentary outage into stored fees
+   * permanently. See the write guard in `updateUserFee`.
+   */
+  source: String,
   ...CreatedUpdated,
 })
 
