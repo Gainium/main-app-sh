@@ -126,6 +126,7 @@ import {
 } from '../../types'
 import { ExchangeIntervals } from '../../types'
 import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
+import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { tpPriceDisplacement, worstFee } from './dca/tpFees'
@@ -15106,7 +15107,7 @@ function createDCABotHelper<
     async getDealMoveSlPrice(d: FullDeal<ExcludeDoc<Deal>>) {
       const settings = await this.getAggregatedSettings(d.deal)
       const { avgPrice, moveSLTrigger } = settings
-      const avgToUse = avgPrice ?? d.deal.avgPrice
+      const avgToUse = dealRefPrice(avgPrice, d.deal.avgPrice)
       const feeFactor =
         ((await this.getUserFee(d.deal.symbol.symbol))?.taker ?? 0) * 2
       const trigger = +(moveSLTrigger ?? '0') / 100 + feeFactor
@@ -15222,7 +15223,7 @@ function createDCABotHelper<
         } else {
           const fee = await this.getUserFee(d.deal.symbol.symbol)
           const sellDisplacement = (fee?.taker ?? 0) * 2
-          const avgToUse = avgPrice ?? d.deal.avgPrice
+          const avgToUse = dealRefPrice(avgPrice, d.deal.avgPrice)
           const trigger = +(tpPerc ?? '0') / 100 + sellDisplacement
           trailingTpPrice = this.isLong
             ? avgToUse * (trigger + 1)
@@ -15491,7 +15492,7 @@ function createDCABotHelper<
       avgPrice?: number,
     ): Promise<number> {
       return (await this.baseSlOn(deal)) === BaseSlOnEnum.avg
-        ? (avgPrice ?? deal.avgPrice)
+        ? dealRefPrice(avgPrice, deal.avgPrice)
         : deal.initialPrice
     }
 
@@ -18321,6 +18322,13 @@ function createDCABotHelper<
       settings: Partial<Deal['settings']>,
       reset = false,
     ) {
+      // A settings patch must never zero the deal's reference price. Every
+      // percentage exit is measured from it, so a `0` does not weaken them —
+      // it removes them (see `dealRefPrice.ts`). Clients send one anyway: the
+      // dashboard's mass deal-edit diffs the bot-form defaults, which carry
+      // `avgPrice: 0`, against each selected deal. Drop it here so the fix
+      // holds for every caller and the zero is never persisted.
+      settings = withoutUnusableAvgPrice(settings)
       const keys = Object.keys(settings)
       if (keys.length > 0) {
         const findDeal = this.getDeal(dealId)

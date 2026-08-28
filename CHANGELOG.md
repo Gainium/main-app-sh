@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.55.3] - 2026-08-28
+
+### Fixed
+
+- **Trailing take profit could never arm on a deal whose settings had been edited, leaving it with no take profit at all.** `getTrailingSettings`, `getDealMoveSlPrice` and `getDealSlRefPrice` read the deal's reference price as `settings.avgPrice ?? deal.avgPrice`, while every other site in the file writes the same expression as `settings.avgPrice || deal.avgPrice`. `0 ?? x` is `0`, and an edited deal can carry `settings.avgPrice: 0` — the dashboard's mass deal-edit seeds its form from the bot-form defaults, which declare `avgPrice: 0`, then diffs that against each selected deal's real average and ships the difference, zeroing every deal in the selection at once. A zero reference does not weaken the exits, it removes them: `trailingTpPrice` becomes `0`, which `checkTrailing` gates the arm branch on as falsy, so trailing TP never armed however far price ran — and because `trailingTp` also suppresses the resting TP limit order, the deal had no take profit of any kind while `bestPrice` kept updating, so it still looked actively managed. The same zero put move SL's trigger at `0`, which `last >= required` satisfies on the first tick of a long, and the `baseSlOn: avg` stop at `0` — unreachable for a long, instantly hit for a short. All three now resolve through `dealRefPrice`, and `updateDealSettings` drops an unusable `avgPrice` from an incoming patch so the zero can no longer be persisted by any client (both dashboards, `/api/updateDeal`, the v2 API, the AI deal tools). Pinned by `src/bot/dealRefPrice.spec.ts`.
+
 ## [1.55.2] - 2026-08-28
 
 ### Added
@@ -13,7 +19,6 @@
   deals list, and the disagreement read as wrong data (bug #540: a bot whose stats counted 149 of
   its 353 closed deals). Additive and read-only: a new nullable `Float` on two existing types, no
   resolver change — `getBot` already returns the whole lean document.
-
 
 ## [1.55.1] - 2026-08-28
 
