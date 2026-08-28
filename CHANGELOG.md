@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.55.2] - 2026-08-28
+
+### Added
+
+- **`resetStatsAfter` is now readable over GraphQL** (`fullDCABot`, `fullComboBot`). The field
+  has existed on the bot document for years and drives real behaviour — changing order sizing
+  (`baseOrderSize`, `orderSize`, `ordersCount`, `volumeScale`, `orderSizeType`, `useDca`,
+  `maxNumberOfOpenDeals`) or `profitCurrency` clears `stats`/`symbolStats` and stamps it, after
+  which `botUpdateStats` skips every deal created before that instant. Nothing exposed it, so the
+  dashboards could not tell a user that a bot's Statistics tab describes a SHORTER window than its
+  deals list, and the disagreement read as wrong data (bug #540: a bot whose stats counted 149 of
+  its 353 closed deals). Additive and read-only: a new nullable `Float` on two existing types, no
+  resolver change — `getBot` already returns the whole lean document.
+
+
 ## [1.55.1] - 2026-08-28
 
 ### Fixed

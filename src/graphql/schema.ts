@@ -3595,6 +3595,16 @@ export const BotSchema = /* GraphQL */ `
     hodlIgnoreAt: Boolean
     stats: botStats
     symbolStats: [botSymbolsStats]
+    """
+    ms epoch of the last stats reset; null when stats were never reset.
+    Changing order sizing (baseOrderSize / orderSize / ordersCount /
+    volumeScale / orderSizeType / useDca / maxNumberOfOpenDeals) or
+    profitCurrency clears stats + symbolStats and stamps this, after which
+    botUpdateStats skips every deal created before it. So stats describe deals
+    SINCE this instant while the deals list still holds all of them — the
+    dashboards need it to say which sample the Statistics tab is reporting on.
+    """
+    resetStatsAfter: Float
     dealsReduceForBot: [dealsReduceForBot]
     notEnoughBalance: botNotEnoughBalance
     cost: Float
@@ -3726,6 +3736,11 @@ export const BotSchema = /* GraphQL */ `
     hodlIgnoreAt: Boolean
     stats: botStats
     symbolStats: [botSymbolsStats]
+    """
+    ms epoch of the last stats reset; see fullDCABot.resetStatsAfter. Combo
+    bots reset on the same settings changes (Bot.saveBot, combo branch).
+    """
+    resetStatsAfter: Float
     useAssets: Boolean
     notEnoughBalance: botNotEnoughBalance
     cost: Float
