@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.55.4] - 2026-08-28
+
+### Fixed
+
+- **`orders` had no `dealId` index, so every per-deal order lookup full-scanned the collection.** `registerIndexes` declared `userId`, `botId`, `clientOrderId`, `latestOrders_filled` and `fillFailsafe_resting` but nothing on `dealId`, and the deal-scoped queries are a family — `{dealId,typeOrder}`, `{dealId,status,typeOrder}` as both a find and a `$match/$group`, `{dealId,side}`, `{dealId}` sorted by `transactTime`, and `{created:{$gte,$lt},dealId,typeOrder}` — for which `dealId` equality is the only indexable predicate any of them has. On prod that last shape alone burned 72,735s of slow-op time over 18,556 ops in ~24h, 69% of all slow-query time on the database, examining ~220 billion documents in an 11.9M-doc collection to return ~429 rows (p50 3.9s, max 11.3s); the scans also evict everyone else's working set from the WiredTiger cache, so unrelated queries degrade with them. `orderSchema.index({ dealId: 1 })` is now declared, so `models.order.syncIndexes()` builds and keeps it at boot rather than relying on a hand-run `createIndex` — one such manual attempt reported success while building nothing, and the gap re-fired later at 20x the cost. Not compound with `status`/`typeOrder`: `status` is mutable and moving entries in an 11.9M-key index is the write regression the partial indexes beside it were shaped to avoid, whereas `dealId` is effectively write-once — rewritten with the same value on every fill event, and genuinely reassigned only by a deal merge. Measured on a seeded 300k-doc collection: 300,000 docsExamined → 1 returned at 249ms becomes an `IXSCAN dealId_1` at 2 docsExamined and 4ms, identical result sets, no measurable insert/update cost.
+
 ## [1.55.3] - 2026-08-28
 
 ### Fixed

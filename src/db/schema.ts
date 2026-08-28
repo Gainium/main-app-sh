@@ -3250,6 +3250,37 @@ export const registerIndexes = () => {
   orderSchema.index({ userId: 1 })
   orderSchema.index({ botId: 1 })
 
+  // Per-deal order lookups. `orders` had NO dealId index, so every
+  // deal-scoped question COLLSCANned the whole collection (11.9M docs on
+  // prod): {dealId,typeOrder}, {dealId,status,typeOrder} (find AND
+  // $match/$group), {dealId,side}, {dealId} sort={transactTime}, and
+  // {created:{$gte,$lt},dealId,typeOrder} are one family that a single
+  // {dealId:1} serves — dealId equality is the only indexable predicate any of
+  // them has. Measured on prod 2026-08-28: 72,735s of slow-op time over 18,556
+  // ops in ~24h, 69% of ALL slow-query time on the database, ~220 billion docs
+  // examined to return ~429 rows, p50 3.9s / max 11.3s. Reproduced on a seeded
+  // 300k-doc collection: 300,000 docsExamined -> 1 returned, 249ms, and
+  // rejectedPlans=0 — the planner is not choosing badly, it has no candidate.
+  //
+  // NOT compound with `status`/`typeOrder`. `status` is MUTABLE (NEW ->
+  // PARTIALLY_FILLED -> FILLED bumps it repeatedly while an order works) and
+  // indexing mutable order fields regressed writes badly once before (2026-07
+  // audit) because the entry MOVES in the btree on every change — the same
+  // reasoning that made latestOrders_filled and fillFailsafe_resting partial
+  // rather than compound. `dealId` is effectively write-once: it is set when
+  // the order doc is created, and `updateOrderOnDb` rewrites it with the SAME
+  // value on every fill event, which does not move a btree entry. The one real
+  // reassignment is `mergeDeals`, which re-points a handful of orders onto the
+  // merged deal — rare and user-initiated, not the per-fill churn path.
+  // A deal holds a handful of orders, so equality on dealId alone already takes
+  // the scan to those keys and the remaining predicates are cheap residuals.
+  //
+  // Declared here rather than created by hand on prod on purpose: a manual
+  // `createIndex` in 2026-08 reported success while building nothing and the
+  // gap re-fired at 20x the cost (#516 -> #557). syncIndexes()
+  // (core/src/db/model.ts) builds it at boot and keeps it.
+  orderSchema.index({ dealId: 1 })
+
   // Latest-orders list (getLatestOrders resolver: find({userId,status:'FILLED',
   // paperContext}).sort({updateTime:-1}).limit(10)). With only {userId:1} the planner
   // does SORT <- FETCH <- IXSCAN(userId_1): it pulls EVERY order the user ever filled
