@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.55.1] - 2026-08-28
+
+### Fixed
+
+- **A percentage add/reduce funds request was not a percentage of the position.** `addDealFunds` and `reduceDealFunds` sized a `perc` request as the deal's cost basis (`usage.current.quote`) divided by `deal.lastPrice`. `lastPrice` reads like a current price and is not one: `updateDeal` maintains it as a running MINIMUM of fill prices on a long and a MAXIMUM on a short. Cost basis over the *lowest* fill resolves to more base than the deal holds — by exactly the deal's drawdown ratio `avgPrice/lastPrice` — so the error was invisible on a deal that had not averaged down and widened with every safety order that filled: about +1.9% three levels deep and +8.0% eight levels deep. Beyond that the `tpQty` guard treats the request as covering the whole remaining position and CLOSES the deal instead of reducing it, so on a deep ladder a 93% reduce was a full exit. The divisor is now `avgPrice` — the deal's VWAP over its filled orders, which is what bought the cost basis, so cost basis over it is the base acquired by construction — falling back to `lastPrice` only for a deal with no fills, where the two coincide. This restores the documented behaviour: a long holding 1 ETH reduced by 20% sells 0.2 ETH. Futures shorts divided by the running maximum and so under-sized; they are corrected in the opposite direction. Spot short and coin-M deals carry a base amount and never divided by a price — those branches are unchanged. The two percentage branches were hand-maintained copies that had already drifted apart once, and now share a single `percentFundsBasis`.
+
 ## [1.54.7] - 2026-08-28
 
 ### Fixed

@@ -19069,6 +19069,47 @@ function createDCABotHelper<
       return result
     }
 
+    /**
+     * Base quantity that a 100% add/reduce-funds request resolves to — i.e.
+     * the position the deal currently holds.
+     *
+     * `usage.current.quote` is the deal's cost basis, accumulated as quote
+     * spent (net of realised profit). The only price that turns a cost basis
+     * back into the quantity it bought is the price it was bought at, so the
+     * divisor is `avgPrice` — the deal's VWAP over its filled orders — and
+     * `costBasis / avgPrice` is the base acquired, by construction.
+     *
+     * It used to divide by `deal.lastPrice`, which reads like a live price but
+     * is a running MINIMUM (long) / MAXIMUM (short) of fill prices — see the
+     * assignment in `updateDeal`. Cost basis over the *lowest* fill resolves to
+     * more base than the deal holds, by exactly the deal's drawdown ratio
+     * `avgPrice/lastPrice`, so a long over-sized further the deeper its ladder
+     * had filled and a futures short under-sized. That was never the intended
+     * quantity: the help article has documented this as "the percentage of the
+     * current position" — 1 ETH, 20% => 0.2 ETH — since 2024-10-08. It became
+     * wrong when `lastPrice` was redefined into an extreme (2025-01-08) without
+     * revisiting the consumers that were reading it as a price.
+     *
+     * The branches that hold a base amount already (spot short, coin-M) never
+     * needed a price and are unchanged.
+     *
+     * Shared by `addDealFunds` and `reduceDealFunds` deliberately: the two
+     * copies of this expression drifted apart for five months once already.
+     */
+    async percentFundsBasis(deal: ExcludeDoc<Deal>) {
+      // A deal with no filled orders has no avgPrice; it also has no position,
+      // so the caller's existing zero/finite guards reject it either way.
+      const costPrice = deal.avgPrice || deal.lastPrice
+      return this.futures
+        ? (this.coinm
+            ? deal.usage.current.base
+            : deal.usage.current.quote / costPrice) *
+            (await this.getLeverageMultipler(deal))
+        : this.isLong
+          ? deal.usage.current.quote / costPrice
+          : deal.usage.current.base
+    }
+
     async addFundsForAllDeals(
       qty: string,
       asset: OrderSizeTypeEnum,
@@ -19220,14 +19261,7 @@ function createDCABotHelper<
           ? this.math.round(price, ed.priceAssetPrecision)
           : price
       if (settings.type === AddFundsTypeEnum.perc) {
-        const qtyPerc = this.futures
-          ? (this.coinm
-              ? deal.deal.usage.current.base
-              : deal.deal.usage.current.quote / deal.deal.lastPrice) *
-            (await this.getLeverageMultipler(deal.deal))
-          : this.isLong
-            ? deal.deal.usage.current.quote / deal.deal.lastPrice
-            : deal.deal.usage.current.base
+        const qtyPerc = await this.percentFundsBasis(deal.deal)
         this.handleDebug(`Add funds | qtyPerc ${qtyPerc}`)
         origQty = `${this.math.round(
           qtyPerc * (+settings.qty / 100),
@@ -19419,14 +19453,7 @@ function createDCABotHelper<
           ? this.math.round(price, ed.priceAssetPrecision)
           : price
       if (settings.type === AddFundsTypeEnum.perc) {
-        const qtyPerc = this.futures
-          ? (this.coinm
-              ? deal.deal.usage.current.base
-              : deal.deal.usage.current.quote / deal.deal.lastPrice) *
-            (await this.getLeverageMultipler(deal.deal))
-          : this.isLong
-            ? deal.deal.usage.current.quote / deal.deal.lastPrice
-            : deal.deal.usage.current.base
+        const qtyPerc = await this.percentFundsBasis(deal.deal)
         this.handleDebug(`Reduce funds | qtyPerc ${qtyPerc}`)
         origQty = `${this.math.round(
           qtyPerc * (+settings.qty / 100),
