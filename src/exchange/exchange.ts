@@ -258,10 +258,17 @@ class Exchange extends AbstractExchange {
         return {
           data: {
             status: StatusEnum.ok as StatusEnum.ok,
+            // This rebuilds each entry as a literal rather than spreading, so
+            // ANY field the connector adds is silently dropped here unless it
+            // is named. `source` is carried because the fee sweep uses it to
+            // report which user got published-schedule rates instead of their
+            // account's real ones — without it that call is invisible, since
+            // the fallback returns a plausible number with status OK.
             data: fees.data.data.map((f) => ({
               pair: f.pair,
               maker: Math.max(0, +f.maker),
               taker: Math.max(0, +f.taker),
+              ...(f.source ? { source: f.source } : {}),
             })),
             reason: null,
           },

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.54.6] - 2026-08-27
+
+### Fixed
+
+- `getAllUserFees` dropped `UserFee.source` on the way through the exchange layer, so 1.54.3's fallback-attribution logging never fired. The mapper rebuilds each entry as a `{pair, maker, taker}` literal rather than spreading, which silently discards any field the connector adds unless it is named — the single-pair `getUserFees` returns its response unmapped and was unaffected. Verified against prod: the connector reported `EGeneral:Permission denied` for one account on every sweep while main-app logged zero fallback lines.
+
 ## [1.54.5] - 2026-08-27
 
 ### Fixed
