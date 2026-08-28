@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.55.5] - 2026-08-28
+
+### Fixed
+
+- **The Deal Returns scatter silently dropped every deal that was open when the bot's settings last changed.** `getBotProfitChartData` read `botProfitChart`, a denormalized one-row-per-closed-deal shadow that only `DCABotHelper.botUpdateStats` writes — and that method returns early, before the write, for any deal whose `createTime` predates the bot's `resetStatsAfter`. Changing order sizing (`baseOrderSize`/`orderSize`/`ordersCount`/`volumeScale`/`maxNumberOfOpenDeals`) stamps `resetStatsAfter`, which is right for the aggregate Statistics tab but permanently erased the straddling deals from this chart, while the deals table beside it still listed them. Because the deals open longest are the ones most likely to straddle a settings change, the points lost were the best ones: bug #564's bot had 212 rows for 363 closed deals and a scatter topping out at 1.77% against a real best deal of 8.14% — the reporter counted 10 deals above 1.3% in the table and 4 in the chart. The resolver now derives the series from the closed deals themselves (`$match` → small `$project` → `$sort closeTime` → `$limit 500`, same 500-point cap), using the new pure `dealReturnPercentage()` helper that mirrors `botUpdateStats`' `perc` expression over the settings snapshot frozen on each deal. This also repairs existing history — no backfill could reconstruct rows that were never written, but deals are never cold-archived (only orders and transactions are), so the full series is recomputable on the next read for every affected bot. Verified against the reporter's 363 real deals: 362 points (the 363rd is a zero-profit cancel, which `botUpdateStats` skipped too), max 8.14%, 10 points above 1.3%; 194 of the 209 pairable pre-existing rows reproduce bit-identically and the rest to float noise.
+
 ## [1.55.4] - 2026-08-28
 
 ### Fixed

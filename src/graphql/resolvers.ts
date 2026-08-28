@@ -100,7 +100,6 @@ import {
   dcaBacktestRequestDb,
   comboBacktestRequestDb,
   gridBacktestRequestDb,
-  botProfitChartDb,
   userProfitByHourDb,
   hedgeComboBotDb,
   globalVarsDb,
@@ -154,6 +153,7 @@ import {
   placeOrderOnExchange,
 } from './handlers/orders.handler'
 import { isCoinm, isServiceUnreachable } from '../utils'
+import { dealReturnPercentage, type DealReturnDeal } from '../utils/dealReturn'
 import {
   BACKTEST_SERVICE_TARGET,
   sendServerSideRequest,
@@ -290,24 +290,88 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const result = await botProfitChartDb.readData(
+      /*
+       * DERIVED FROM THE CLOSED DEALS, NOT FROM `botProfitChart`.
+       *
+       * `botProfitChart` is a denormalized one-row-per-closed-deal shadow that
+       * only `DCABotHelper.botUpdateStats` writes — and that method returns
+       * EARLY, before the write, for any deal whose `createTime` predates the
+       * bot's `resetStatsAfter`. Changing order sizing (baseOrderSize /
+       * orderSize / ordersCount / volumeScale / maxNumberOfOpenDeals) stamps
+       * `resetStatsAfter`, which is correct for the aggregate Statistics tab
+       * ("stats since the sizing changed") but silently and PERMANENTLY erased
+       * every deal that happened to be open at that instant from this chart —
+       * while the deals table next to it still listed all of them. Bug #564:
+       * a bot with 363 closed deals had 212 rows, and because the deals open
+       * longest are the ones most likely to straddle a settings change, the
+       * points it lost were the best ones — the scatter topped out at 1.77%
+       * against a real best deal of 8.14%.
+       *
+       * Deriving here fixes existing history too: no backfill can reconstruct
+       * rows that were never written, but the deals themselves were never lost
+       * (they are not cold-archived — only orders/transactions are), so the
+       * series is recomputable in full, for every bot, on the next read.
+       */
+      const combo =
+        input.type === BotType.combo || input.type === BotType.hedgeCombo
+      const dealsDb = combo ? comboDealsDb : dcaDealsDb
+      const result = await dealsDb.aggregate<
+        DealReturnDeal & { closeTime?: number; updateTime?: number }
+      >([
         {
-          userId: `${user.data._id}`,
-          botId: input.id,
-          type: input.type,
+          $match: {
+            userId: `${user.data._id}`,
+            botId: input.id,
+            // Same set the deals table calls "closed" (Bot.getBotDeals), so
+            // the chart and the table below it describe the same deals.
+            status: {
+              $in: [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],
+            },
+          },
         },
-        { value: 1, time: 1 },
-        { sort: { time: -1 }, limit: 500 },
-        true,
-      )
+        // Project BEFORE the sort: only these fields have to be held in memory
+        // to order a long-lived bot's whole deal history.
+        {
+          $project: {
+            _id: 0,
+            'profit.total': 1,
+            'usage.max.base': 1,
+            'usage.max.quote': 1,
+            'usage.current.base': 1,
+            'usage.current.quote': 1,
+            avgPrice: 1,
+            strategy: 1,
+            closeTime: 1,
+            updateTime: 1,
+            'settings.futures': 1,
+            'settings.coinm': 1,
+            'settings.profitCurrency': 1,
+            'settings.comboTpBase': 1,
+            'settings.useTp': 1,
+            'settings.useSl': 1,
+          },
+        },
+        { $sort: { closeTime: -1 } },
+        // Unchanged cap — the consumers (both dashboards' Deal Returns panel)
+        // have always plotted at most the newest 500 deals.
+        { $limit: 500 },
+      ])
+      if (result.status !== StatusEnum.ok) {
+        return {
+          status: result.status,
+          reason: `Cannot get profit chart data`,
+          data: null,
+        }
+      }
+      const data = (result.data?.result ?? []).flatMap((deal) => {
+        const value = dealReturnPercentage(deal, combo)
+        const time = deal.closeTime ?? deal.updateTime
+        return value === null || !time ? [] : [{ value, time }]
+      })
       return {
-        status: result.status,
-        reason:
-          result.status === StatusEnum.ok
-            ? null
-            : `Cannot get profit chart data`,
-        data:
-          result.status === StatusEnum.ok ? (result.data?.result ?? []) : null,
+        status: StatusEnum.ok,
+        reason: null,
+        data,
       }
     },
     getServerSideBacktestRequests: async (
