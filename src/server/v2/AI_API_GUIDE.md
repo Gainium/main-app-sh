@@ -25,7 +25,7 @@ All API requests require three headers:
 | Header | Description | Example |
 |--------|-------------|---------|
 | `token` | Public API key | `your-public-key` |
-| `time` | Request timestamp (ms) | `1775468598625` |
+| `time` | Request timestamp (ms) | `1787972126131` |
 | `signature` | HMAC-SHA256 signature | `calculated-signature` |
 
 ### Signature Calculation
@@ -291,6 +291,25 @@ For detailed schema references, see [SCHEMAS.md](./SCHEMAS.md).
 | POST | `/api/v2/bots/grid/{botId}/stop` | Query params only | Success response | Stop Grid Bot |
 | DELETE | `/api/v2/bots/grid/{botId}` | Query params only | Success response | Archive Grid Bot |
 
+### Bots - Hedge
+
+| Method | URL | Input Schema | Response | Description |
+|--------|-----|--------------|----------|-------------|
+| GET | `/api/v2/bots/hedgeCombo/details` | Query params | [HedgeBotExtended](./SCHEMAS.md#hedgebotextended) | Get HedgeCombo Bot by ID |
+| GET | `/api/v2/bots/hedgeCombo` | Query params | [HedgeBotListResponse](./SCHEMAS.md#hedgebotlistresponse) | Get HedgeCombo Bots |
+| GET | `/api/v2/bots/hedgeDca/details` | Query params | [HedgeBotExtended](./SCHEMAS.md#hedgebotextended) | Get HedgeDca Bot by ID |
+| GET | `/api/v2/bots/hedgeDca` | Query params | [HedgeBotListResponse](./SCHEMAS.md#hedgebotlistresponse) | Get HedgeDca Bots |
+| POST | `/api/v2/bots/hedgeCombo/{botId}/clone` | [HedgeCloneInput](./SCHEMAS.md#hedgecloneinput) | Success response | Clone HedgeCombo Bot |
+| POST | `/api/v2/bots/hedgeDca/{botId}/clone` | [HedgeCloneInput](./SCHEMAS.md#hedgecloneinput) | Success response | Clone HedgeDca Bot |
+| POST | `/api/v2/bots/hedgeCombo/{botId}/restore` | Query params only | Success response | Restore HedgeCombo Bot |
+| POST | `/api/v2/bots/hedgeDca/{botId}/restore` | Query params only | Success response | Restore HedgeDca Bot |
+| POST | `/api/v2/bots/hedgeCombo/{botId}/start` | [HedgeStartInput](./SCHEMAS.md#hedgestartinput) | Success response | Start HedgeCombo Bot |
+| POST | `/api/v2/bots/hedgeDca/{botId}/start` | [HedgeStartInput](./SCHEMAS.md#hedgestartinput) | Success response | Start HedgeDca Bot |
+| POST | `/api/v2/bots/hedgeCombo/{botId}/stop` | Query params | Success response | Stop HedgeCombo Bot |
+| POST | `/api/v2/bots/hedgeDca/{botId}/stop` | Query params | Success response | Stop HedgeDca Bot |
+| DELETE | `/api/v2/bots/hedgeCombo/{botId}` | Query params only | Success response | Archive HedgeCombo Bot |
+| DELETE | `/api/v2/bots/hedgeDca/{botId}` | Query params only | Success response | Archive HedgeDca Bot |
+
 ### General
 
 | Method | URL | Input Schema | Response | Description |
@@ -411,7 +430,7 @@ def get_all_bots():
 ---
 
 *This documentation is automatically generated from the OpenAPI specification.*  
-*Last updated: 2026-04-06T09:43:18.625Z*  
+*Last updated: 2026-08-29T02:55:26.133Z*  
 *For detailed schemas, see [SCHEMAS.md](./SCHEMAS.md)*
 
 ## Schemas

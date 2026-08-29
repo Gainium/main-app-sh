@@ -83,6 +83,55 @@ export const COMBO_BOT_EXTENDED_FIELDS = [
 ] as const
 
 /**
+ * Essential fields for hedge bots (hedgeCombo / hedgeDca) - minimal list data.
+ *
+ * A hedge bot is a WRAPPER over two child bots, so its field set looks nothing
+ * like the other three: there is no top-level `settings`, no `exchange`, and
+ * its stored `profit` is a permanent zero (the engine only ever writes `status`
+ * back to the wrapper). `name`, `profit`, `dealsInBot` and friends below are
+ * therefore aggregated from the legs at read time — see
+ * `core/src/bot/hedgeAggregate.ts`.
+ */
+export const HEDGE_BOT_ESSENTIAL_FIELDS = [
+  '_id',
+  'uuid',
+  'name',
+  'status',
+  'paperContext',
+] as const
+
+/**
+ * Standard fields for hedge bots
+ */
+export const HEDGE_BOT_STANDARD_FIELDS = [
+  ...HEDGE_BOT_ESSENTIAL_FIELDS,
+  'profit.total',
+  'profit.totalUsd',
+  'profitByAssets',
+  'profitBasis',
+  'dealsInBot.all',
+  'dealsInBot.active',
+  'created',
+  'updated',
+] as const
+
+/**
+ * Extended fields for hedge bots
+ */
+export const HEDGE_BOT_EXTENDED_FIELDS = [
+  ...HEDGE_BOT_STANDARD_FIELDS,
+  'sharedSettings',
+  'unrealizedProfit',
+  'profitToday',
+  'workingTimeNumber',
+  'cost',
+  'statusReason',
+  'flags',
+  'symbol',
+  'bots',
+] as const
+
+/**
  * Essential fields for Grid bots
  */
 export const GRID_BOT_ESSENTIAL_FIELDS = [
@@ -335,6 +384,18 @@ export const ENDPOINT_FIELD_CONFIG = {
     minimal: GRID_BOT_ESSENTIAL_FIELDS,
     standard: GRID_BOT_STANDARD_FIELDS,
     extended: GRID_BOT_EXTENDED_FIELDS,
+  },
+  // Both hedge bot types share one config: the wrapper document is identical
+  // for hedgeCombo and hedgeDca, only its legs differ (combo vs dca bots).
+  'bots.hedgeCombo': {
+    minimal: HEDGE_BOT_ESSENTIAL_FIELDS,
+    standard: HEDGE_BOT_STANDARD_FIELDS,
+    extended: HEDGE_BOT_EXTENDED_FIELDS,
+  },
+  'bots.hedgeDca': {
+    minimal: HEDGE_BOT_ESSENTIAL_FIELDS,
+    standard: HEDGE_BOT_STANDARD_FIELDS,
+    extended: HEDGE_BOT_EXTENDED_FIELDS,
   },
   'deals.dca': {
     minimal: DCA_DEAL_ESSENTIAL_FIELDS,

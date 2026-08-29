@@ -7,7 +7,7 @@ This document contains detailed schema definitions for all API endpoints.
 All schemas include field descriptions, types, validation rules, and examples.
 This documentation is automatically generated from the OpenAPI specification.
 
-**Last Updated:** 2026-04-06T09:43:18.628Z
+**Last Updated:** 2026-08-29T02:55:26.135Z
 
 ---
 
@@ -893,6 +893,7 @@ Minimal DCA deal representation
 | `status` | enum: `closed|open|start|error|canceled` | No | Deal status |
 | `symbol` | object | No |  |
 | `profit` | object | No |  |
+| `funding` | object | No | Funding fees accrued on the deal's futures position |
 | `created` | number | No | Deal creation timestamp |
 
 ### Example
@@ -906,6 +907,21 @@ Minimal DCA deal representation
   "profit": {
     "total": 0,
     "totalUsd": 0
+  },
+  "funding": {
+    "total": 0,
+    "totalUsd": 0,
+    "lastTime": "2024-01-15T10:30:00.000Z",
+    "history": [
+      {
+        "time": "2024-01-15T10:30:00.000Z",
+        "rate": 0,
+        "markPrice": "1234.56",
+        "qty": 0,
+        "feeQuote": 0,
+        "feeUsd": 0
+      }
+    ]
   },
   "created": 0
 }
@@ -1247,6 +1263,239 @@ Minimal Grid bot representation
 ```json
 {
   "exampleField": "example-value"
+}
+```
+
+
+---
+
+## HedgeBotExtended
+
+### Example
+
+```json
+{
+  "exampleField": "example-value"
+}
+```
+
+
+---
+
+## HedgeBotListResponse
+
+### Example
+
+```json
+{
+  "exampleField": "example-value"
+}
+```
+
+
+---
+
+## HedgeBotMinimal
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `_id` | string | No |  |
+| `uuid` | string | No |  |
+| `name` | string | No | The hedge wrapper has no name of its own; this is the long leg's name (falling back to the short leg's, then to "Hedge bot").
+ |
+| `status` | enum: `open|closed|error|archive|range|monitoring` | No |  |
+| `paperContext` | boolean | No |  |
+
+### Example
+
+```json
+{
+  "_id": "550e8400-e29b-41d4-a716-446655440000",
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "BTC/USDT",
+  "status": "open",
+  "paperContext": "2.5"
+}
+```
+
+
+---
+
+## HedgeBotProfit
+
+Realized profit, SUMMED FROM THE TWO LEGS at read time. The stored value on the hedge document itself is a permanent zero and is never returned. The `*Usd` fields are always exact. The native-unit fields are only meaningful when both legs settle in the same quote asset — check `profitBasis.native`, and prefer `profitByAssets` when it is `mixed`.
+
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `total` | number | No | Sum in the shared quote asset. 0 when `profitBasis.native` is `mixed`. |
+| `totalUsd` | number | No |  |
+| `freeTotal` | number | No |  |
+| `freeTotalUsd` | number | No |  |
+| `pureBase` | number | No |  |
+| `pureQuote` | number | No |  |
+
+### Example
+
+```json
+{
+  "total": 0,
+  "totalUsd": 0,
+  "freeTotal": 0,
+  "freeTotalUsd": 0,
+  "pureBase": 0,
+  "pureQuote": 0
+}
+```
+
+
+---
+
+## HedgeBotStandard
+
+### Example
+
+```json
+{
+  "exampleField": "example-value"
+}
+```
+
+
+---
+
+## HedgeCloneInput
+
+Overrides for a hedge clone. A hedge bot is two independent legs with their own pairs, exchanges and settings, so overrides are given PER LEG rather than as one flat object. A flat body is rejected with a 400 that says so, rather than being silently ignored. Any key you omit is copied from the source bot; leg names get " (clone)" appended unless you override `name`.
+
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `long` | object | No | Settings to override on the long leg. |
+| `short` | object | No | Settings to override on the short leg. |
+| `sharedSettings` | [HedgeSharedSettings](#hedgesharedsettings) | No |  |
+
+### Example
+
+```json
+{
+  "long": {},
+  "short": {},
+  "sharedSettings": {
+    "_id": "550e8400-e29b-41d4-a716-446655440000",
+    "exampleField": "Referenced HedgeSharedSettings schema"
+  }
+}
+```
+
+
+---
+
+## HedgeLegAction
+
+### Example
+
+```json
+"useBalance"
+```
+
+
+---
+
+## HedgeProfitBasis
+
+How far the native-unit numbers on `profit` can be trusted.
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `native` | enum: `exact|mixed` | No | `exact` — both legs settle in the same quote asset, so the native-unit sums on `profit` are meaningful. `mixed` — they do not; those fields are 0 and only the `*Usd` fields and `profitByAssets` are trustworthy.
+ |
+| `quoteAssets` | Array<string> | No | Distinct quote assets seen across both legs. |
+
+### Example
+
+```json
+{
+  "native": "exact",
+  "quoteAssets": [
+    "example-string"
+  ]
+}
+```
+
+
+---
+
+## HedgeSharedSettings
+
+Take-profit / stop-loss settings the hedge wrapper applies across both legs.
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `useTp` | boolean | No |  |
+| `tpPerc` | string | No |  |
+| `useSl` | boolean | No |  |
+| `slPerc` | string | No |  |
+| `comboTpBase` | string | No |  |
+| `comboTpLimit` | boolean | No |  |
+| `comboSlLimit` | boolean | No |  |
+| `dealCloseCondition` | string | No |  |
+| `dealCloseConditionSL` | string | No |  |
+
+### Example
+
+```json
+{
+  "useTp": true,
+  "tpPerc": "2.5",
+  "useSl": true,
+  "slPerc": "2.5",
+  "comboTpBase": "example-string",
+  "comboTpLimit": true,
+  "comboSlLimit": true,
+  "dealCloseCondition": "example-string",
+  "dealCloseConditionSL": "example-string"
+}
+```
+
+
+---
+
+## HedgeStartInput
+
+Optional per-leg instruction for what each leg should do with the position it is already holding when it starts. Omit to leave both legs' existing action untouched.
+
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `hedgeConfig` | object | No |  |
+
+### Example
+
+```json
+{
+  "hedgeConfig": {
+    "LONG": {
+      "_id": "550e8400-e29b-41d4-a716-446655440000",
+      "exampleField": "Referenced HedgeLegAction schema"
+    },
+    "SHORT": {
+      "_id": "550e8400-e29b-41d4-a716-446655440000",
+      "exampleField": "Referenced HedgeLegAction schema"
+    }
+  }
 }
 ```
 

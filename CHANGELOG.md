@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.56.0] - 2026-08-29
+
+### Added
+
+- **v2 REST API support for hedge bots (`hedgeCombo` / `hedgeDca`)** — community request "API Endpoints for Hedge Combo Bots". `GET /api/v2/bots/{hedgeCombo,hedgeDca}` and `.../details` list and fetch a hedge bot with both legs populated, and start / stop / restore / archive / clone now accept the two hedge types alongside `dca`, `combo` and `grid`. The engine already supported every one of these operations for hedge bots; only the REST layer refused the bot type.
+- **Hedge profit is aggregated server-side** (`bot/hedgeAggregate.ts`). A hedge bot is a WRAPPER over two child bots, and the wrapper's own `profit` / `profitToday` / `workingTimeNumber` are written once at creation and never updated — the engine only ever writes `status` back to it. The dashboard has always summed the legs client-side; without this, every hedge bot would have reported a flat 0 profit over REST. `profit`, `profitByAssets`, `profitToday`, `unrealizedProfit`, `workingTimeNumber` and `dealsInBot` are now summed from the legs at read time. The two legs are independent bots that may settle in DIFFERENT quote assets, so the `*Usd` fields and `profitByAssets` are always exact while the native-unit fields are only summed when the quote assets agree — `profitBasis.native` (`exact` | `mixed`) says which you got. Used by the REST layer only; the GraphQL/dashboard path is unchanged.
+- `POST /api/v2/bots/{hedgeType}/{botId}/start` accepts an optional `hedgeConfig: { LONG, SHORT }` body naming what each leg should do with a position it already holds, validated against the action enum before it can reach a leg's `action` field.
+- `POST /api/v2/bots/{hedgeType}/{botId}/clone` takes PER-LEG overrides — `{ long?, short?, sharedSettings? }` — because a hedge bot's two legs have their own pairs, exchanges and settings. A flat settings body (what the dca/combo/grid clone takes) is rejected with a 400 that explains the shape rather than being silently ignored. Legs are matched by their own `strategy`, never by position in `bots`.
+- `PUT /api/v2/bots/{hedgeType}/{botId}` and `.../pairs` still reject hedge bots — their settings and pair lists are per leg — but now say so instead of listing the accepted types.
+
 ## [1.55.5] - 2026-08-28
 
 ### Fixed
