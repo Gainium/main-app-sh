@@ -93,6 +93,7 @@ import MainBot, {
   isDefinitiveOrderNotFound,
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
+import { underfilledTpQty } from './dca/partialTp'
 import utils from '../utils'
 import {
   gt,
@@ -10112,21 +10113,12 @@ function createDCABotHelper<
           }
           if (!settings.useMultiTp && !settings.useMultiSl) {
             const tp = findFilledTp[0]
-            skip =
-              tp &&
-              !!(
-                this.data?.exchange === ExchangeEnum.bybit &&
-                tp.type === 'LIMIT' &&
-                tp.status === 'FILLED' &&
-                (d?.deal.tpHistory ?? []).find(
-                  (_tp) => _tp.id === tp.clientOrderId,
-                ) &&
-                !isNaN(+tp.executedQty) &&
-                isFinite(+tp.executedQty) &&
-                !isNaN(+tp.origQty) &&
-                isFinite(+tp.origQty) &&
-                +tp.executedQty < +tp.origQty
+            skip = !!tp && this.underfilledTpQty(tp) > 0
+            if (skip) {
+              this.handleLog(
+                `Deal ${d.deal._id} left open: TP ${tp.clientOrderId} is FILLED but sold only ${tp.executedQty} of ${tp.origQty}`,
               )
+            }
           }
           if (
             findFilledTp.length &&
@@ -14684,33 +14676,39 @@ function createDCABotHelper<
         await this.processPartiallyFilledOrder(order)
       }
     }
+    /**
+     * How much of a `FILLED` take-profit was never sold. Thin delegate; the
+     * predicate and its regression tests live in `./dca/partialTp`.
+     */
+    protected underfilledTpQty(order: Order): number {
+      return underfilledTpQty(order)
+    }
+
     override async setFilledInsteadOfCanceled(order: Order): Promise<boolean> {
       if (
         order.typeOrder === TypeOrderEnum.dealTP &&
+        // NOTE: this reads like an exclusion of D-SR (re-placed remainder) TPs
+        // but is always true — a clientOrderId cannot contain both patterns, so
+        // one disjunct always holds. Deliberately left as-is: "fixing" it to
+        // `&&` would genuinely exclude D-SR orders, and those are exactly the
+        // re-placed remainder TPs that underfill again and strand the rest.
         (order.clientOrderId.indexOf('D-SR') === -1 ||
           order.clientOrderId.indexOf('DSR') === -1) &&
         !order.tpSlTarget &&
         this.botType === BotType.dca
       ) {
-        const deal = this.getDeal(order.dealId)
-        const skip =
-          this.data?.exchange === ExchangeEnum.bybit &&
-          order.type === 'LIMIT' &&
-          order.status === 'FILLED' &&
-          (deal?.deal.tpHistory ?? []).find(
-            (tp) => tp.id === order.clientOrderId,
-          ) &&
-          !isNaN(+order.executedQty) &&
-          isFinite(+order.executedQty) &&
-          !isNaN(+order.origQty) &&
-          isFinite(+order.origQty) &&
-          +order.executedQty < +order.origQty
-        if (skip) {
-          this.handleDebug(
-            `TP order ${order.clientOrderId} FILLED, but executedQty(${order.executedQty}) < origQty(${order.origQty}) and order is in tpHistory. Will be skipped to prevent unexpected deal close`,
+        const unsold = this.underfilledTpQty(order)
+        if (unsold > 0) {
+          this.handleLog(
+            `TP order ${order.clientOrderId} reported FILLED but sold only ${order.executedQty} of ${order.origQty} (${unsold} unsold). Recording it as a partial fill instead of closing the deal.`,
           )
+          // Record what the venue should have told us, so the remainder is
+          // carried in tpHistory and a new TP is placed for it on the next
+          // cycle — the same path a PARTIALLY_FILLED event would have taken.
+          await this.updatePartiallyFilledTP(order)
+          return false
         }
-        return !!skip
+        return true
       }
       return true
     }
