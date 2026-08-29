@@ -1,5 +1,6 @@
 import {
   BotMarginTypeEnum,
+  CoinbaseKeysType,
   ExchangeDomain,
   ExchangeEnum,
   PositionSide_LT,
@@ -130,4 +131,46 @@ export const requiresPassphrase = (exchange: ExchangeEnum): boolean => {
     return false
   }
   return ['okx', 'kucoin', 'bitget'].some((venue) => name.startsWith(venue))
+}
+
+/**
+ * Correct the Coinbase key type when the submitted credentials plainly
+ * contradict it.
+ *
+ * Coinbase's two "key types" are two AUTH SCHEMES for the same account, not
+ * two products: the connector uses `keysType` only to choose between
+ * `{apiKey, apiSecret}` and `{cloudApiKeyName, cloudApiSecret}` when building
+ * its client. Picking the right one changes nothing about what the user can
+ * trade — which is why correcting it silently is safe here, and why the
+ * equivalent move for `okxSource` is NOT (that one selects a venue with a
+ * different tradable universe, so it is only ever reported, never adopted).
+ *
+ * The selector lives behind an "Advanced Settings" disclosure that defaults to
+ * Legacy, and getting it wrong produced the single largest verification-failure
+ * bucket in prod — with, until now, no diagnostic at all attached to it.
+ *
+ * Correction is one-directional and evidence-led. A Coinbase Developer Platform
+ * key is self-identifying: the key NAME is a resource path and the secret is a
+ * PEM private key, and cloud auth cannot work without them. Their absence is
+ * NOT equally strong evidence of a legacy key — a truncated paste looks the
+ * same — so `cloud` is never downgraded here. That direction is handled by the
+ * failure message instead, which can say what it suspects without acting on it.
+ */
+export const resolveCoinbaseKeysType = (
+  exchange: ExchangeEnum,
+  key: string | undefined,
+  secret: string | undefined,
+  selected: CoinbaseKeysType | undefined,
+): CoinbaseKeysType | undefined => {
+  if (!`${exchange}`.toLowerCase().startsWith('coinbase')) {
+    return selected
+  }
+  if (selected === CoinbaseKeysType.cloud) {
+    return selected
+  }
+  const looksCloud =
+    ((key ?? '').includes('organizations/') &&
+      (key ?? '').includes('/apiKeys/')) ||
+    /-----BEGIN (EC )?PRIVATE KEY-----/.test(secret ?? '')
+  return looksCloud ? CoinbaseKeysType.cloud : selected
 }

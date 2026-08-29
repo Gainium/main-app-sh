@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.56.4] - 2026-08-29
+
+### Added
+
+- **`exchange/helpers.ts` `resolveCoinbaseKeysType`** — corrects the Coinbase
+  key type when the submitted credentials plainly contradict it. A Coinbase
+  Developer Platform key is self-identifying (the key NAME is a resource path,
+  the secret is a PEM private key) and cloud auth cannot work without them, so
+  a CDP key submitted under "Legacy Keys" is now simply authenticated the right
+  way. The selector sits behind an Advanced Settings disclosure defaulting to
+  Legacy, and getting it wrong was the largest verification-failure bucket in
+  production.
+- Correcting this silently is safe in a way the OKX origin is NOT, and the
+  difference is the point: `keysType` only chooses between `{apiKey, apiSecret}`
+  and `{cloudApiKeyName, cloudApiSecret}` when building the client, so it
+  changes how we authenticate and nothing about what the account may trade.
+  `okxSource` selects a venue with a different tradable universe, which is why
+  that one is only ever reported.
+- The correction is one-directional. Absence of the CDP markers is not evidence
+  of a legacy key — a truncated paste looks identical — so `cloud` is never
+  downgraded; that direction stays a message. Paper providers are excluded:
+  their credentials are minted by paper-trading, not typed.
+
 ## [1.56.2] - 2026-08-29
 
 ### Added
