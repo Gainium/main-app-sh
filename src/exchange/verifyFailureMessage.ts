@@ -58,6 +58,12 @@ export type VerifyFailureContext = {
   secret?: string
   keysType?: CoinbaseKeysType
   okxSource?: OKXSource
+  /**
+   * The OKX platform the key was found to actually belong to, when the caller
+   * ran `probeOkxOrigins` after a key-not-found rejection. Turns the origin
+   * guidance from "check this dropdown" into "set it to this value".
+   */
+  detectedOkxSource?: OKXSource
 }
 
 /**
@@ -156,6 +162,36 @@ const okxOriginHost = (source?: OKXSource): string =>
       ? 'app.okx.com'
       : 'okx.com'
 
+/** How that platform is described in the dropdown, so the two agree. */
+const okxOriginLabel = (source: OKXSource): string =>
+  source === OKXSource.my
+    ? 'my.okx.com (OKX Europe)'
+    : source === OKXSource.app
+      ? 'app.okx.com (regional entities such as OKX US or Australia)'
+      : 'okx.com (global)'
+
+/**
+ * True when OKX refused the key in the way it refuses a key issued by one of
+ * its OTHER regional platforms.
+ *
+ * The caller uses this to decide whether sweeping the other origins is worth a
+ * round trip. It must stay narrow: a timeout or a rate-limit answer must NOT
+ * match, because re-probing a venue that is already failing to answer is how
+ * an OKX rate-limit pile-up starts.
+ */
+export const isOkxOriginSuspect = (
+  provider: ExchangeEnum,
+  reason?: string,
+): boolean => {
+  if (!family(provider).startsWith('okx')) {
+    return false
+  }
+  return matches(
+    extractExchangeReason(reason),
+    /api key doesn'?t exist|apikey does not exist|invalid ok-access-key/i,
+  )
+}
+
 /**
  * A Coinbase Developer Platform key is recognisable without asking Coinbase:
  * the key NAME is a resource path, and the secret is a PEM private key. Legacy
@@ -207,6 +243,21 @@ export const interpretVerifyFailure = (
         /api key doesn'?t exist|apikey does not exist|invalid ok-access-key/i,
       )
     ) {
+      // When the sweep found the issuing platform there is nothing left to
+      // guess — name it, and let the user change one dropdown. We stop short
+      // of switching it for them on purpose: addExchange derives the tradable
+      // universe from `okxSource` BEFORE verifying, and OKX Europe has no
+      // coin-margined product and beta-gates its X-Perps, so adopting an
+      // origin here would bypass those guards.
+      if (ctx.detectedOkxSource && ctx.detectedOkxSource !== ctx.okxSource) {
+        return `These credentials belong to ${okxOriginLabel(
+          ctx.detectedOkxSource,
+        )}, but this connection is set to ${okxOriginHost(
+          ctx.okxSource,
+        )}. OKX runs each region as a separate platform and a key only works on the one that issued it. Open Advanced Settings and set "OKX Origin" to ${okxOriginHost(
+          ctx.detectedOkxSource,
+        )}, then try again.`
+      }
       return `OKX does not recognise this API key on ${okxOriginHost(
         ctx.okxSource,
       )}. OKX runs each region as a separate platform and a key only works on the one that issued it. Open Advanced Settings and set "OKX Origin" to the site you were logged in to when you created the key — my.okx.com for OKX Europe (EEA), app.okx.com for regional entities such as OKX US or Australia, okx.com otherwise.`

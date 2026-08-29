@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.56.2] - 2026-08-29
+
+### Added
+
+- **`verify.probeOkxOrigins` — work out which OKX platform a key actually
+  belongs to.** OKX runs each region as a separate venue and a key only
+  authenticates against its issuer, so a perfectly good my.okx.com key and a
+  nonexistent one produce the same "API key doesn't exist" on okx.com. The
+  origin selector sits behind an "Advanced Settings" disclosure that defaults
+  to okx.com, so EU users — exactly the people who need to change it — often
+  never see it. This class was 18 of 39 OKX verification failures in
+  2026-08-04..28. On a key-not-found rejection the other origins are now swept
+  concurrently under an 8s deadline, and the failure message names the platform
+  that authenticated.
+- The sweep is narrowly gated by `isOkxOriginSuspect`: a timeout must never
+  reach it. 20 of those same 39 failures were the venue not answering in time,
+  and firing three more `sendtoall` fan-outs at an already-slow venue is how
+  the OKX rate-limit pile-up of bug #329 was built. A wrong-passphrase
+  rejection is excluded too — the key was found, so the origin is right.
+- The result NAMES the correct origin rather than switching to it. `addExchange`
+  derives the tradable universe from `okxSource` BEFORE it verifies — OKX
+  Europe has no coin-margined product and its X-Perps are beta-gated to the
+  Alpha group — so adopting an origin at this point would put the user on the
+  EU venue with none of those guards applied. Ambiguous or overrunning sweeps
+  resolve to "no answer" and the original failure is reported unchanged.
+
 ## [1.56.1] - 2026-08-29
 
 ### Fixed

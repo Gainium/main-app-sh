@@ -71,7 +71,10 @@ import {
   withdrawalRejectionReason,
 } from '../exchange/keyPermissionPolicy'
 import { getExchangeTradeType } from '../exchange/helpers'
-import { buildVerifyFailureReason } from '../exchange/verifyFailureMessage'
+import {
+  buildVerifyFailureReason,
+  isOkxOriginSuspect,
+} from '../exchange/verifyFailureMessage'
 import {
   snapshotReadSeries,
   snapshotReadPerExchange,
@@ -5775,6 +5778,25 @@ const resolvers = <
               // buildVerifyFailureReason unwraps the connector envelope and
               // prepends guidance when a rule recognises the error, while
               // always keeping the venue's own words underneath it.
+              // OKX refuses a key issued by one of its OTHER regional
+              // platforms exactly as it refuses a key that does not exist, and
+              // the origin selector sits behind an "Advanced Settings"
+              // disclosure defaulting to okx.com. Sweep the other origins and
+              // name the one that authenticates. Narrowly gated so a timeout
+              // never triggers a re-probe (see probeOkxOrigins).
+              const detectedOkxSource = isOkxOriginSuspect(
+                provider,
+                verifyResult.reason,
+              )
+                ? await verify.probeOkxOrigins(
+                    tt,
+                    provider,
+                    key,
+                    secret,
+                    passphrase || '',
+                    okxSource,
+                  )
+                : undefined
               return {
                 status: StatusEnum.notok,
                 reason: buildVerifyFailureReason({
@@ -5785,6 +5807,7 @@ const resolvers = <
                   secret,
                   keysType,
                   okxSource,
+                  detectedOkxSource,
                 }),
                 data: null,
               }

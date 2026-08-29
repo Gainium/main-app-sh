@@ -352,10 +352,111 @@ export const probeConnectionState = async (
   }
 }
 
+/**
+ * Cap on the whole alternate-origin sweep below.
+ *
+ * Deliberately much tighter than VERIFY_TIMEOUT_MS: this runs AFTER a
+ * verification has already failed, inside an `addExchange` that is still
+ * holding the user's browser against its own 30s ceiling. The sweep is a
+ * bonus diagnosis, never the answer the mutation owes the user — so if it
+ * cannot finish quickly it is dropped, and the failure is reported without it.
+ */
+const OKX_ORIGIN_PROBE_TIMEOUT_MS = 8_000
+
+/** Every OKX platform a key could have been issued on. */
+const OKX_ORIGINS: OKXSource[] = [OKXSource.com, OKXSource.my, OKXSource.app]
+
+/**
+ * Find which OKX platform a key actually belongs to, after it failed on the
+ * one the user picked.
+ *
+ * OKX runs each region as a separate venue and a key only authenticates
+ * against its issuer, so "API key doesn't exist" on okx.com and a perfectly
+ * good my.okx.com key are the same event. The origin lives behind an
+ * "Advanced Settings" disclosure that defaults to okx.com, so EU users — the
+ * ones who most need to change it — routinely never see it. In prod logs for
+ * 2026-08-04..28 this class accounted for 18 of 39 OKX verification failures.
+ *
+ * The caller uses the answer to NAME the right origin, not to switch to it.
+ * That restraint is deliberate: `addExchange` decides the tradable universe
+ * from `okxSource` BEFORE it verifies anything — OKX Europe has no
+ * coin-margined product and its X-Perps are beta-gated to the Alpha group —
+ * so adopting an origin here would land the user on the EU venue with none of
+ * those restrictions applied. Telling them which dropdown value is correct
+ * costs one click and keeps every existing guard in force.
+ *
+ * ONLY call this for a key-not-found style rejection. A timeout must never
+ * reach here: 20 of those same 39 failures were the venue not answering in
+ * time, and firing three more `sendtoall` fan-outs at a venue that is already
+ * too slow is how the OKX rate-limit pile-up of bug #329 got built.
+ *
+ * Resolves to `undefined` unless EXACTLY ONE alternate authenticates —
+ * nothing, several, or a sweep that overran its deadline all mean "no useful
+ * answer", and the caller simply reports the original failure.
+ */
+export const probeOkxOrigins = async (
+  tradeType: TradeTypeEnum,
+  provider: ExchangeEnum,
+  key: string,
+  secret: string,
+  passphrase: string | undefined,
+  selected: OKXSource | undefined,
+): Promise<OKXSource | undefined> => {
+  if (paperExchanges.includes(provider)) {
+    return undefined
+  }
+  const candidates = OKX_ORIGINS.filter(
+    (origin) => origin !== (selected ?? OKXSource.com),
+  )
+  // Concurrent: these are independent read-only probes of the same key and
+  // neither needs the other's answer, so the sweep costs one round trip of
+  // wall clock rather than one per origin.
+  const sweep = Promise.all(
+    candidates.map((origin) =>
+      verifyExchange(
+        tradeType,
+        provider,
+        key,
+        secret,
+        passphrase,
+        undefined,
+        origin,
+      )
+        .then((res) => (res.status ? origin : undefined))
+        // A probe that failed has told us nothing; only a success is evidence.
+        .catch(() => undefined),
+    ),
+  )
+
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), OKX_ORIGIN_PROBE_TIMEOUT_MS)
+  })
+  const settled = await Promise.race([sweep, deadline]).finally(() => {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  })
+  if (!settled) {
+    logger.warn(
+      `verify | OKX origin probe exceeded ${OKX_ORIGIN_PROBE_TIMEOUT_MS}ms, reporting the original failure`,
+    )
+    return undefined
+  }
+  const authenticated = settled.filter(
+    (origin): origin is OKXSource => !!origin,
+  )
+  // More than one would mean the same credentials work on two OKX platforms,
+  // which should be impossible. If it ever happens, naming one of them would
+  // be a guess, so say nothing.
+  return authenticated.length === 1 ? authenticated[0] : undefined
+}
+
 const verifiers = {
   verifyExchange: verifyExchange,
   verifyPaper: verifyPaper,
   probeConnectionState: probeConnectionState,
+  probeOkxOrigins: probeOkxOrigins,
 }
 
 export default verifiers
