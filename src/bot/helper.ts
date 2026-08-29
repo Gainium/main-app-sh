@@ -15,7 +15,10 @@ import {
   FuturesStrategyEnum,
   BotType,
 } from '../../types'
-import MainBot, { isDefinitiveOrderNotFound } from './main'
+import MainBot, {
+  isDefinitiveOrderNotFound,
+  reconcileLookupAttempts,
+} from './main'
 
 import type {
   BotData,
@@ -1160,13 +1163,16 @@ function createBotHelper<
       this.blockCheck = true
       try {
         this.handleLog('Check order after user stream reconnect')
+        await this.spreadReconcileStart()
         const filledOrders: Order[] = []
+        // See the DCA copy: aggregated at the end, and retried before it counts.
+        const unresolved: string[] = []
         for (const o of this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
         })) {
-          const getOrder = await this.getOrder(o.clientOrderId, o.symbol, false)
+          const getOrder = await this.getOrderForReconcile(o)
           if (!getOrder || !getOrder.data) {
-            this.handleWarn(`Not enough data to get order ${o.clientOrderId}`)
+            unresolved.push(o.clientOrderId)
             continue
           }
           if (getOrder.status === StatusEnum.notok) {
@@ -1195,6 +1201,13 @@ function createBotHelper<
               `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
             )
           }
+        }
+        if (unresolved.length) {
+          this.handleWarn(
+            `Reconcile could not read ${unresolved.length} order(s) after ${reconcileLookupAttempts} attempts: ${unresolved
+              .slice(0, 10)
+              .join(', ')}${unresolved.length > 10 ? ' …' : ''}`,
+          )
         }
         const [lastFilled] = filledOrders.sort(
           (a, b) => b.updateTime - a.updateTime,

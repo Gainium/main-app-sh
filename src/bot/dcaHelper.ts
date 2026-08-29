@@ -91,6 +91,7 @@ import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
   isDefinitiveOrderNotFound,
+  reconcileLookupAttempts,
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
 import { underfilledTpQty } from './dca/partialTp'
@@ -9313,14 +9314,19 @@ function createDCABotHelper<
       this.blockCheck = true
       try {
         this.handleLog('Check order after user stream reconnect')
+        await this.spreadReconcileStart()
         const filledOrders: Order[] = []
         const partiallyFilledOrders: Order[] = []
+        // Reported once at the end rather than per order: a bad window used to
+        // emit hundreds of identical warnings across the fleet, which buried
+        // the signal it was trying to raise.
+        const unresolved: string[] = []
         for (const o of this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
         })) {
-          const getOrder = await this.getOrder(o.clientOrderId, o.symbol, false)
+          const getOrder = await this.getOrderForReconcile(o)
           if (!getOrder || !getOrder.data) {
-            this.handleWarn(`Not enough data to get order ${o.clientOrderId}`)
+            unresolved.push(o.clientOrderId)
             continue
           }
           if (getOrder.status === StatusEnum.notok) {
@@ -9358,6 +9364,17 @@ function createDCABotHelper<
               `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
             )
           }
+        }
+        if (unresolved.length) {
+          // These orders were NOT checked. The fill-failsafe sweep is the net
+          // that re-raises them (it watches the price feed independently), so
+          // this is a health signal, not a dead end — but it is the fingerprint
+          // of a reconcile pass that could not see the venue.
+          this.handleWarn(
+            `Reconcile could not read ${unresolved.length} order(s) after ${reconcileLookupAttempts} attempts: ${unresolved
+              .slice(0, 10)
+              .join(', ')}${unresolved.length > 10 ? ' …' : ''}`,
+          )
         }
         if (this.reconcileViaSweep && filledOrders.length > 0) {
           // Greppable health signal: the periodic sweep (not a reconnect)

@@ -339,6 +339,21 @@ const orderQuarantineMinAgeMs = Number(
 )
 
 /**
+ * Reconcile-pass tunables. See {@link MainBot.getOrderForReconcile} and
+ * {@link MainBot.spreadReconcileStart} for why each exists.
+ *
+ * `SPREAD` is the width of the random start delay, not a fixed wait: the mean
+ * cost is half of it, and it only ever delays a backstop.
+ */
+export const reconcileLookupAttempts = Number(
+  process.env.BOT_RECONCILE_LOOKUP_ATTEMPTS ?? 3,
+)
+const reconcileLookupBackoffMs = Number(
+  process.env.BOT_RECONCILE_LOOKUP_BACKOFF_MS ?? 750,
+)
+const reconcileSpreadMs = Number(process.env.BOT_RECONCILE_SPREAD_MS ?? 15_000)
+
+/**
  * Does this failed lookup mean "the venue says this order does not exist", as
  * opposed to "the call did not succeed"?
  *
@@ -381,6 +396,43 @@ export function isDefinitiveOrderNotFound(res?: {
     /\border does not exist\b/.test(reason) ||
     reason === 'unknownoid'
   )
+}
+
+/**
+ * Retry policy for a reconcile-path order lookup. Pure but for the injected
+ * `fetch`/`sleep`, so the policy itself is testable without a live bot.
+ *
+ * Stops on the first of: a result carrying data (success), a definitive
+ * "no such order" from the venue (a retry asks the same question, and
+ * {@link isDefinitiveOrderNotFound} is what makes that safe to trust), or the
+ * attempt budget. Backoff is exponential with ±50% jitter — without the jitter
+ * a fleet-wide burst would retry in lockstep and re-create the congestion that
+ * caused the first failure.
+ *
+ * Returns the LAST result, so callers keep today's `!res?.data` handling.
+ */
+export async function reconcileLookup<
+  T extends { status: StatusEnum; reason?: string | null; data?: unknown },
+>(
+  fetch: () => Promise<T | undefined>,
+  opts: {
+    attempts: number
+    backoffMs: number
+    sleep: (ms: number) => Promise<void>
+    random?: () => number
+  },
+): Promise<T | undefined> {
+  const attempts = Math.max(1, opts.attempts)
+  const random = opts.random ?? Math.random
+  let last = await fetch()
+  for (let attempt = 1; attempt < attempts; attempt++) {
+    if (last?.data) break
+    if (isDefinitiveOrderNotFound(last ?? undefined)) break
+    const base = opts.backoffMs * 2 ** (attempt - 1)
+    await opts.sleep(Math.round(base * (0.5 + random())))
+    last = await fetch()
+  }
+  return last
 }
 /**
  * The placeholder an {@link Order} carries in `orderId` from the moment it is
@@ -800,6 +852,60 @@ class MainBot<T extends IMainBot> {
     order.quarantine = next
     this.setOrder(order)
     this.updateOrderOnDb(order)
+  }
+
+  /**
+   * Spread the start of a reconcile pass across the fleet.
+   *
+   * Every bot on an account reconciles when its user stream (re)subscribes, and
+   * a user-stream connector restart re-subscribes every account at once. On
+   * 2026-08-29 that put **5,319 DCA bots** into `checkOrdersAfterReconnect`
+   * inside a few seconds — 1,422 in one second — each then calling `getOrder`
+   * once per open order. 2,731 of those lookups failed over the following 8
+   * hours, and because the pass had no retry each failure silently dropped an
+   * order until the next restart. The burst was manufacturing the very failures
+   * the pass exists to catch.
+   *
+   * The pass is a backstop, not a hot path: nothing depends on it completing in
+   * the same second it was triggered, so a random delay is free. Applied after
+   * `blockCheck` is taken, so overlapping triggers still collapse to one run.
+   */
+  protected async spreadReconcileStart() {
+    if (!(reconcileSpreadMs > 0)) return
+    await utils.sleep(Math.floor(Math.random() * reconcileSpreadMs))
+  }
+
+  /**
+   * `getOrder` for the reconcile paths, with a bounded retry on a TRANSIENT
+   * failure.
+   *
+   * The reconcile loops treated "the call did not succeed" and "the venue says
+   * this order is gone" identically: one `Not enough data to get order` warning
+   * and `continue`, with nothing to re-check it. A rate-limited or timed-out
+   * lookup therefore cost a whole reconcile cycle — in the Kraken ETH/EUR case
+   * of 2026-08-28, the 00:30 pass looked straight at the filled order, failed
+   * to fetch it, skipped it, and the fill stayed unbooked for another 7½ hours.
+   *
+   * {@link isDefinitiveOrderNotFound} is what makes a retry safe to bound: when
+   * the venue has actually answered "no such order", retrying cannot change the
+   * answer and the quarantine path owns it, so we return immediately. Only the
+   * genuinely ambiguous failures are retried, with exponential backoff and
+   * ±50% jitter so a retry storm cannot re-synchronise.
+   */
+  protected async getOrderForReconcile(o: Order) {
+    // No exchange bound: retrying cannot fix that, and sleeping through it once
+    // per order turns a dead bot into a slow one.
+    if (!this.exchange || !this.data) {
+      return await this.getOrder(o.clientOrderId, o.symbol, false)
+    }
+    return await reconcileLookup(
+      () => this.getOrder(o.clientOrderId, o.symbol, false),
+      {
+        attempts: reconcileLookupAttempts,
+        backoffMs: reconcileLookupBackoffMs,
+        sleep: utils.sleep,
+      },
+    )
   }
 
   /**

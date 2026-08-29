@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.56.5] - 2026-08-29
+
+### Fixed
+
+- **Bots now reconcile their orders after a socket reconnect, not only after a
+  process restart.** `checkOrdersAfterReconnect` is triggered by a user-stream
+  (re)subscribe, but Kraken's and Binance's reconnect handlers never published
+  that signal — only bybit's and bitget's did. A Kraken ETH/EUR safety order
+  filled at 16:15 UTC on 2026-08-28 was therefore not booked until 07:52 the
+  next morning, when a deploy restarted the worker: 15h38m in which the deal
+  held twice the position the engine thought it had, with its take-profit
+  priced off a stale average. (Publisher side ships in websocket-connector.)
+- **A transient order lookup in the reconcile pass is retried instead of
+  silently dropping the order.** `!res.data` was treated the same as "the venue
+  says this order is gone": one warning, `continue`, nothing to re-check it.
+  2,731 lookups failed that way across 352 bots in 8 hours. `reconcileLookup`
+  now retries with exponential backoff and ±50% jitter, and stops immediately
+  on a definitive not-found so the quarantine path keeps owning that case.
+- **The reconcile pass no longer stampedes.** A user-stream connector restart
+  re-subscribes every account at once, which put 5,319 DCA bots into the pass
+  within seconds — 1,422 in a single second — each calling `getOrder` per open
+  order, manufacturing the very lookup failures the pass exists to catch. The
+  start is now spread over a random window (`BOT_RECONCILE_SPREAD_MS`).
+- Reconcile lookup failures are reported once per pass with a count instead of
+  one warning per order.
+
 ## [1.56.4] - 2026-08-29
 
 ### Added
