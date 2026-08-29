@@ -20,6 +20,10 @@ import swaggerUi from 'swagger-ui-express'
 import { apiReference } from '@scalar/express-api-reference'
 import cookieParser from 'cookie-parser'
 import logger from '../utils/logger'
+import {
+  mountTradeSignalParser,
+  tradeSignalSummary,
+} from './tradeSignalContract'
 import saveFileHelper, { isInsideUserFiles } from '../utils/files'
 import { checkToken } from '../backtest/utils/token'
 import { ExchangeEnum } from '../../types'
@@ -331,6 +335,11 @@ async function start() {
 
   app.use('/api/serverSideBacktestSaveFile', bodyParser.json({ limit: '2gb' }))
 
+  // Parses `/trade_signal` ahead of the shared mount below, so an unparsable
+  // body is logged and answered with a JSON reason instead of Express's bare
+  // HTML `Bad Request`. Shared with cloud — see the module for why.
+  mountTradeSignalParser(app, (message) => logger.warn(message))
+
   app.use('/', bodyParser.json({ limit: '512kb' }))
 
   // Add health endpoint
@@ -450,11 +459,22 @@ async function start() {
     )
   })
   app.post('/trade_signal', async (req, res) => {
+    // One line per inbound signal, keyed by the uuid the sender actually used.
+    // Without it, "my alert fired but the bot did nothing" could only be
+    // answered from the bot's silence, which cannot distinguish a signal that
+    // was rejected from one that never arrived.
+    const summary = tradeSignalSummary(req.body)
     const result = (await Bot.webhookProcess(req.body)) as {
       status?: StatusEnum
+      reason?: string
     }
     if (result && result.status && result.status === StatusEnum.notok) {
       res.status(400)
+      logger.warn(
+        `[trade_signal] 400 for ${summary}: ${result.reason ?? 'no reason given'}`,
+      )
+    } else {
+      logger.info(`[trade_signal] 200 for ${summary}`)
     }
     res.send(result)
   })

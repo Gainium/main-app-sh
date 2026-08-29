@@ -2,6 +2,10 @@ import DB from '../db'
 import { v4 } from 'uuid'
 import { Worker, isMainThread, threadId } from 'worker_threads'
 import logger from '../utils/logger'
+import {
+  missingWebhookFields,
+  missingWebhookFieldsReason,
+} from '../server/tradeSignalContract'
 import { isPaper } from '../utils'
 import { ProjectionFields, Types, type PipelineStage } from 'mongoose'
 import ExchangeChooser from '../exchange/exchangeChooser'
@@ -8781,11 +8785,24 @@ class Bot<T extends UserSchema = UserSchema> {
             BotType.hedgeDca,
             'webhookProcess',
             false,
-            hedgeCombos,
+            hedgeDcas,
             ignoreSettings,
           )
         }
-        return StatusEnum.ok
+        // Not one item resolved to a bot. This used to answer StatusEnum.ok,
+        // so /trade_signal replied 200 to a signal it then dropped on the
+        // floor — the single most misleading response the endpoint had, since
+        // the sender (TradingView, n8n, a script) reads 200 as "delivered".
+        // The overwhelmingly common cause is a payload carrying the bot's
+        // Mongo `_id` instead of its `uuid`; both are opaque ids, so nothing
+        // about the 200 told the user which one they had wrong.
+        this.handleWarn(
+          `Webhook signal for ${[data]
+            .flat()
+            .map((d) => d?.uuid ?? 'no-uuid')
+            .join(', ')} matched no bot`,
+        )
+        return this.entityNotFound('Bot')
       } catch (e) {
         if ((e as Error)?.message === notAvailable) {
           this.handleWarn(
@@ -8814,7 +8831,11 @@ class Bot<T extends UserSchema = UserSchema> {
     ignoreSettings = false,
   ) {
     if (!data) {
-      return
+      return {
+        status: StatusEnum.notok as const,
+        reason: 'Empty webhook payload',
+        data: null,
+      }
     }
     const {
       action,
@@ -8827,6 +8848,20 @@ class Bot<T extends UserSchema = UserSchema> {
       closeType,
       type,
     } = data
+    // A payload missing either field fell off the end of this method and
+    // returned undefined, which webhookProcess reads as StatusEnum.ok — the
+    // same silent 200 an unresolvable uuid used to get. Name the missing
+    // field instead; it is almost always a template that rendered empty.
+    const missing = missingWebhookFields(data)
+    if (missing.length) {
+      const reason = missingWebhookFieldsReason(missing)
+      this.handleWarn(reason)
+      return {
+        status: StatusEnum.notok as const,
+        reason,
+        data: null,
+      }
+    }
     if (action && uuid) {
       let call: (() => unknown) | undefined
       // The cold-start path posts to the worker directly instead of setting
