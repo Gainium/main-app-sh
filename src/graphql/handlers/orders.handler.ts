@@ -321,13 +321,30 @@ export const getAllOpenPositions = async (
         created: position.created,
         symbol: position.symbol,
         side: position.side,
-        botName: positionsBotData[position.positionId]?.name,
+        // Legacy scalar fields: the legacy dashboard reads these and knows
+        // nothing about `linkedBots`, so they must keep reporting exactly what
+        // they reported before. That was the LAST claim written — the map used
+        // to be single-valued and every later writer overwrote its predecessor
+        // (DCA deals, then combo deals, then grid bots). Taking the last entry
+        // reproduces that bit-for-bit, quirk included, rather than quietly
+        // changing which bot V1 shows on a shared position. Anything that needs
+        // the truth must read `linkedBots`.
+        botName: legacyClaim(positionsBotData[position.positionId])?.name,
         botId:
-          positionsBotData[position.positionId]?.parentBotId ||
-          positionsBotData[position.positionId]?.botId,
+          legacyClaim(positionsBotData[position.positionId])?.parentBotId ||
+          legacyClaim(positionsBotData[position.positionId])?.botId,
+        linkedBots: (positionsBotData[position.positionId] ?? []).map((b) => ({
+          botId: b.parentBotId || b.botId,
+          botName: b.name,
+          botType: getBotType(b.type, b.parentBotId),
+          dealId: b.dealId ?? null,
+          size: b.size ?? 0,
+          startCondition: b.startCondition ?? null,
+          botStatus: b.botStatus ?? null,
+        })),
         botType: getBotType(
-          positionsBotData[position.positionId]?.type,
-          positionsBotData[position.positionId]?.parentBotId,
+          legacyClaim(positionsBotData[position.positionId])?.type,
+          legacyClaim(positionsBotData[position.positionId])?.parentBotId,
         ),
         price: position.price,
         quantity: position.quantity,
@@ -650,14 +667,40 @@ const getImportedPositions = async (
   if (usersGridBots.status === StatusEnum.notok) {
     return usersGridBots
   }
+  // One venue position can be shared by several deals: `getFuturePositionId`
+  // is a VENUE identity (symbol + leverage + side + marginType + exchange), it
+  // carries no bot or deal. This used to be a single-value map assigned with
+  // `positionsBotsInfo[positionId] = ...`, so every claim after the first
+  // silently overwrote its predecessor and only one owner was ever reported —
+  // grid bots last, so a grid bot masked a DCA bot on the same position.
+  // Accumulate them instead, each with the size that deal actually holds, so
+  // callers can show who owns what and how much of the position nobody owns.
   const positionsBotsInfo: {
     [key: string]: {
       botId: string
       name: string
       type: string
       parentBotId?: string | null
-    }
+      dealId?: string
+      /** Base quantity this deal holds right now (`deal.size` while open). */
+      size?: number
+      /** Bot start condition — an ASAP bot re-opens as soon as a deal closes. */
+      startCondition?: string
+      /** Bot status, so callers can tell a running claim from a dormant one. */
+      botStatus?: string
+    }[]
   } = {}
+  const addClaim = (
+    positionId: string,
+    claim: (typeof positionsBotsInfo)[string][number],
+  ) => {
+    const list = positionsBotsInfo[positionId]
+    if (list) {
+      list.push(claim)
+    } else {
+      positionsBotsInfo[positionId] = [claim]
+    }
+  }
   const bots: ExcludeDoc<DCABotSchema<DCABotSettings>>[] = []
   for (const dcadeal of usersDcaDeals.data.result) {
     if (
@@ -692,12 +735,16 @@ const getImportedPositions = async (
           botPositionId.includes(id) || bot?.settings.importFrom?.includes(id),
       )
       if (positionId && bot) {
-        positionsBotsInfo[positionId] = {
+        addClaim(positionId, {
           botId: bot._id.toString(),
           name: bot.settings.name,
           type: bot.settings.type || '',
           parentBotId: bot.parentBotId,
-        }
+          dealId: dcadeal._id.toString(),
+          size: Math.abs(dcadeal.size ?? 0),
+          startCondition: bot.settings.startCondition,
+          botStatus: bot.status,
+        })
       }
     }
   }
@@ -736,12 +783,16 @@ const getImportedPositions = async (
           botPositionId.includes(id) || bot?.settings.importFrom?.includes(id),
       )
       if (positionId && bot) {
-        positionsBotsInfo[positionId] = {
+        addClaim(positionId, {
           botId: bot._id.toString(),
           name: bot.settings.name,
           type: 'combo',
           parentBotId: bot.parentBotId,
-        }
+          dealId: combodeal._id.toString(),
+          size: Math.abs(combodeal.size ?? 0),
+          startCondition: bot.settings.startCondition,
+          botStatus: bot.status,
+        })
       }
     }
   }
@@ -770,11 +821,16 @@ const getImportedPositions = async (
       })
       const positionId = postionIds.find((id) => botPositionId.includes(id))
       if (positionId) {
-        positionsBotsInfo[positionId] = {
+        addClaim(positionId, {
           botId: gridbot._id.toString(),
           name: gridbot.settings.name,
           type: '',
-        }
+          size: Math.abs(gridbot.position.qty ?? 0),
+          // Grid bots have no ASAP start condition — they hold a continuous
+          // position rather than re-opening a deal after each close, so there
+          // is nothing to warn about on that axis.
+          botStatus: gridbot.status,
+        })
       }
     }
   }
@@ -784,6 +840,14 @@ const getImportedPositions = async (
     data: positionsBotsInfo,
   }
 }
+
+/**
+ * The claim the pre-`linkedBots` single-value map would have ended up holding:
+ * the last one written. Only for the legacy scalar `botId`/`botName`/`botType`
+ * fields — never for new code.
+ */
+const legacyClaim = <T>(claims?: T[]): T | undefined =>
+  claims?.[claims.length - 1]
 
 const getBotType = (
   type?: string,

@@ -1277,10 +1277,41 @@ export const BotSchema = /* GraphQL */ `
     baseAssetName: String
     quoteAssetName: String
     positionId: String!
+    """
+    First claim only, kept for the legacy dashboard. Use linkedBots.
+    """
     botId: String
+    """
+    First claim only, kept for the legacy dashboard. Use linkedBots.
+    """
+    botName: String
+    """
+    First claim only, kept for the legacy dashboard. Use linkedBots.
+    """
+    botType: String
+    """
+    Every Gainium deal mapping onto this venue position, with the size each
+    one holds. A venue position is shared whenever more than one deal has the
+    same symbol/side/leverage/margin on the same exchange, and the remainder
+    (quantity - sum of sizes) is held outside Gainium.
+    """
+    linkedBots: [linkedPositionBot!]
+    marginType: BotMarginTypeEnum
+  }
+  type linkedPositionBot {
+    botId: String!
     botName: String
     botType: String
-    marginType: BotMarginTypeEnum
+    dealId: String
+    """
+    Base quantity this deal currently holds.
+    """
+    size: Float
+    """
+    ASAP bots re-open a deal as soon as one closes.
+    """
+    startCondition: String
+    botStatus: String
   }
   type openOrder {
     symbol: String!

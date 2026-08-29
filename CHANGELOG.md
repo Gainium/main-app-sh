@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.56.7] - 2026-08-29
+
+### Added
+
+- `getAllOpenPositions` now returns `linkedBots` on each position: every Gainium
+  deal mapping onto that venue position, with the size each one holds, the bot's
+  start condition and its status. A venue position is a single netted lot that
+  several deals can share, so the existing single-bot fields could only ever
+  describe one of them.
+
+### Fixed
+
+- Bot attribution for shared positions no longer discards all but one claim.
+  `getImportedPositions` assigned into a single-value map, so each later claim
+  overwrote its predecessor and only one bot was ever reported — grid bots were
+  evaluated last, so a grid bot masked a DCA bot on the same position. The
+  legacy `botId`/`botName`/`botType` fields deliberately still report that last
+  claim, so the existing dashboard sees exactly what it saw before.
+
 ## [1.56.5] - 2026-08-29
 
 ### Fixed
