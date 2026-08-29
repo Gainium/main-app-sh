@@ -109,3 +109,25 @@ export const removePaperFormExchangeName = (exchange: ExchangeEnum) => {
                                             ? ExchangeEnum.bitget
                                             : exchange
 }
+
+/**
+ * Whether a real (non-paper) connection on this venue is authenticated with a
+ * passphrase alongside the key and secret.
+ *
+ * Needed on the credential-WRITE paths, which cannot ask the dashboard: the
+ * edit form leaves the passphrase blank by design (we never send a stored
+ * secret back to a browser), so the resolver has to know for itself whether a
+ * blank field is "unchanged" or "missing".
+ *
+ * Mirrors `requiresPassphrase` in the dashboard's `exchangeConfig.ts`. Prefix
+ * matching covers the per-market variants (okxSpot / okxLinear / bitgetUsdm /
+ * …); paper providers are excluded because their credentials are minted by
+ * paper-trading, not typed by the user.
+ */
+export const requiresPassphrase = (exchange: ExchangeEnum): boolean => {
+  const name = `${exchange}`
+  if (name.startsWith('paper')) {
+    return false
+  }
+  return ['okx', 'kucoin', 'bitget'].some((venue) => name.startsWith(venue))
+}

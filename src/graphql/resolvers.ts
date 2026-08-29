@@ -71,6 +71,7 @@ import {
   withdrawalRejectionReason,
 } from '../exchange/keyPermissionPolicy'
 import { getExchangeTradeType } from '../exchange/helpers'
+import { buildVerifyFailureReason } from '../exchange/verifyFailureMessage'
 import {
   snapshotReadSeries,
   snapshotReadPerExchange,
@@ -5768,9 +5769,23 @@ const resolvers = <
               logger.error(
                 `Add exchange verify response ${verifyResult.reason}, user ${user.data._id} (${user.data.username}), key: "${key}", exchange: "${provider}" `,
               )
+              // The venue almost always says exactly what is wrong — wrong
+              // OKX origin, unmatched IP, missing spot permission — and all of
+              // it used to be discarded in favour of this one message.
+              // buildVerifyFailureReason unwraps the connector envelope and
+              // prepends guidance when a rule recognises the error, while
+              // always keeping the venue's own words underneath it.
               return {
                 status: StatusEnum.notok,
-                reason: `API keys not valid for ${tt}`,
+                reason: buildVerifyFailureReason({
+                  provider,
+                  tradeType: tt,
+                  reason: verifyResult.reason,
+                  key,
+                  secret,
+                  keysType,
+                  okxSource,
+                }),
                 data: null,
               }
             }

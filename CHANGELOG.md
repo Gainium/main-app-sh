@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.56.1] - 2026-08-29
+
+### Fixed
+
+- **A failed exchange-key verification now says what the exchange actually
+  refused.** The connector already reports the precise cause — "API key doesn't
+  exist" (wrong OKX regional origin), "Unmatched IP", "you are in unified
+  account mode", a Binance permission object naming the switch that is off —
+  but it arrives as `JSON.stringify(BaseReturn)`, and the resolver forwarded a
+  reason only when it contained no brace and no "catch". That discarded nearly
+  every venue error in favour of `API keys not valid for <tradeType>`. Over
+  2026-08-04..28 that single message covered 370 failures across 93 distinct
+  users, several of whom retried 8, 13 and 19 times. New
+  `exchange/verifyFailureMessage.ts` unwraps the envelope and, where a rule
+  recognises the error, prepends what to do about it. Interpretation is
+  strictly additive — the venue's own sentence is always kept underneath, so a
+  rule that is wrong or has gone stale can add noise but can never hide the
+  evidence. Guidance describes venue behaviour only and never names Gainium
+  egress IPs, because core also runs on self-hosted installs that call
+  exchanges from their own address.
+
+### Added
+
+- `exchange/helpers.ts` `requiresPassphrase(provider)` — okx / kucoin / bitget
+  and their per-market variants. The credential-write paths need this because
+  the edit form legitimately leaves the passphrase blank, so the resolver has
+  to decide for itself whether blank means "unchanged" or "missing".
+
 ## [1.56.0] - 2026-08-29
 
 ### Added
