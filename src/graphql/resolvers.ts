@@ -694,13 +694,21 @@ const resolvers = <
         return user
       }
       if (!input?.skipSnapshot) {
-        await userUtils.userSnapshots(
+        // Bounded wait: a venue that never answers must not hold this mutation
+        // past the dashboard's 30s client timeout, or the user gets a failed
+        // request instead of a slow one (#572 — 163s here). On the deadline we
+        // fall through and return the last STORED snapshot; the refresh keeps
+        // running and lands for the next read. See `awaitSnapshotRefresh`.
+        await userUtils.awaitSnapshotRefresh(
+          userUtils.userSnapshots(
+            user.data._id.toString(),
+            paperContext,
+            true,
+            undefined,
+            undefined,
+            input?.uuid,
+          ),
           user.data._id.toString(),
-          paperContext,
-          true,
-          undefined,
-          undefined,
-          input?.uuid,
         )
       }
       const result = await snapshotDb.readData(

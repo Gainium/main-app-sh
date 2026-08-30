@@ -1441,6 +1441,78 @@ const userSnapshots = async (
   }
 }
 
+/**
+ * Hard ceiling on an ON-DEMAND portfolio refresh (the `updateBalance` mutation
+ * the dashboard fires when a user opens/refreshes the portfolio).
+ *
+ * `userSnapshots` walks every one of the user's exchanges — `getAllPrices()`
+ * per venue, then `getBalance()` per venue through exchange-balancer — and none
+ * of those legs has a deadline, so the resolver waits for the slowest venue no
+ * matter how long that takes. The dashboard's own client aborts at 30s
+ * (`main-dash-redesign/core/src/lib/apiClient.ts` `timeout = 30000`), so past
+ * that the user does not see a slow refresh, they see a FAILED one — and the
+ * work already done is thrown away. Prod, 45 slow `updateBalance` ops over 25
+ * days: 43 of them landed between 5.2s and 22.7s, then two ran 126.8s
+ * (markuspfyl222@gmail.com) and 163.1s (wael.rashed@hotmail.com, 2026-08-30,
+ * bug #572) while the archive backfill sweep held the event loop.
+ *
+ * 25s sits above that healthy band and below the client ceiling: on the
+ * recorded 25 days it would have fired on exactly those two hangs and on none
+ * of the 43 legitimate refreshes.
+ *
+ * Same shape as the caps `updateStatus` (6s connection probe, `exchange/
+ * verify.ts`) and `getLeverageBracket` (10s + stale table, `leverageBracketCache
+ * .ts`) already carry — this was the one human-facing path still unbounded.
+ */
+const SNAPSHOT_REFRESH_DEADLINE_MS =
+  Number(process.env.SNAPSHOT_REFRESH_DEADLINE_MS ?? '') || 25_000
+
+/**
+ * Await an on-demand `userSnapshots` refresh, but never past the deadline.
+ *
+ * The refresh is deliberately left RUNNING when the deadline wins — it still
+ * writes its snapshot and balances, so the next read picks the fresh numbers
+ * up; abandoning it would only throw the venue round trips away. The caller
+ * then serves the last STORED snapshot, which turns this class of incident
+ * from a hung portfolio into a stale one.
+ *
+ * Never rejects: once we stop awaiting it, a rejection would otherwise surface
+ * as an unhandled rejection with no caller left to catch it.
+ *
+ * @returns true when the refresh finished inside the deadline.
+ */
+const awaitSnapshotRefresh = async (
+  refresh: Promise<unknown>,
+  userId: string,
+): Promise<boolean> => {
+  const settled = refresh.then(
+    () => true,
+    (e: unknown) => {
+      logger.error(
+        `Snapshot | ${userId} on-demand refresh failed: ${
+          (e as Error)?.message ?? e
+        }`,
+      )
+      return true
+    },
+  )
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), SNAPSHOT_REFRESH_DEADLINE_MS)
+  })
+  const inTime = await Promise.race([settled, deadline]).finally(() => {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  })
+  if (!inTime) {
+    logger.warn(
+      `Snapshot | ${userId} on-demand refresh exceeded ${SNAPSHOT_REFRESH_DEADLINE_MS}ms — serving the last stored snapshot; the refresh keeps running`,
+    )
+  }
+  return inTime
+}
+
 const checkTokens = async () => {
   const removeTokens = await userDb.updateManyData(
     {},
@@ -2055,6 +2127,7 @@ export default {
   connectUserBalance,
   updateUserFee,
   userSnapshots,
+  awaitSnapshotRefresh,
   disconnectUserBalance,
   checkTokens,
   resetUser,

@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.56.8] - 2026-08-30
+
+### Fixed
+
+- `updateBalance` (the dashboard's portfolio refresh) no longer waits on the
+  on-demand `userSnapshots` run without a deadline. One wedged venue could hold
+  it past the dashboard's own 30s client timeout — prod logged 163s and 127s —
+  so the user saw a failed request rather than a slow one. The refresh is now
+  capped at 25s (`SNAPSHOT_REFRESH_DEADLINE_MS`), after which the last stored
+  snapshot is served and the refresh keeps running in the background.
+
 ## [1.56.7] - 2026-08-29
 
 ### Added
