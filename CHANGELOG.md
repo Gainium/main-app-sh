@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.56.9] - 2026-08-30
+
+### Fixed
+
+- Reduce-only take-profits that underfill now get their remainder re-placed.
+  `buyRemainder` returned early on any `reduceOnly` order, so every futures
+  venue skipped remainder recovery entirely: measured over 8.4 days, 67 of 69
+  underfilled reduce-only TPs stranded (97.1%) against 54 of 670 non-reduce-only
+  ones (8.1%). The unsold residue sat on the venue untracked, with no TP and no
+  SL, consuming margin until base orders were rejected `Not enough balance`. The
+  narrow `kucoinFutures || okx || coinm` exclusion the early return had grown
+  around is kept.
+
+### Changed
+
+- `PARTIAL_TP_TOLERANCE` 0.1% -> 5%. Measured venue rounding dust reaches 0.93%
+  (median 0.196%), so the old threshold classified routine lot-size rounding as
+  stranding and would have held deals open for remainders below the venue's
+  minimum order size. Real strandings are 50-98% short.
+
 ## [1.56.8] - 2026-08-30
 
 ### Fixed

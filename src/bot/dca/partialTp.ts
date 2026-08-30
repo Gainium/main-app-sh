@@ -33,10 +33,23 @@ import { TypeOrderEnum } from '../../../types'
  * This is load-bearing in both directions. Too high and real remainders are
  * abandoned, which is the bug. Too low — or zero — and a venue that settles a
  * hair under the requested size holds the deal open forever, because the
- * remainder is too small to place a closing order for. Real strandings are
- * 50–98% short, real dust is orders of magnitude under 0.1%.
+ * remainder is too small to place a closing order for.
+ *
+ * The original 0.1% was set on the assumption that "real dust is orders of
+ * magnitude under 0.1%". Measured on prod 2026-08-30 it is not: on the one
+ * account that underfills steadily (bitget spot), 31 of 37 shortfalls in 24h
+ * sat in 0.10–0.50%, median 0.196%, minimum exactly 0.100% — routine lot-size
+ * rounding, landing right on the threshold. Had this guard been reachable it
+ * would have held ~36 deals a day open on that account alone, for remainders
+ * below the venue's own minimum order size, which is the wedge this constant
+ * exists to prevent.
+ *
+ * 5% separates the two populations cleanly: measured dust topped out at 0.93%,
+ * measured strandings are 50–98% short. Note the engine's own recovery
+ * (`buyRemainder`) already re-places any remainder above the exchange minimum,
+ * so dust below this threshold is handled there rather than abandoned.
  */
-export const PARTIAL_TP_TOLERANCE = 0.001
+export const PARTIAL_TP_TOLERANCE = 0.05
 
 /** The fields of an order this predicate reads. */
 export type PartialTpOrder = {

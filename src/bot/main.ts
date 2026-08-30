@@ -4820,7 +4820,32 @@ class MainBot<T extends IMainBot> {
       return order
     }
     if (order.reduceOnly) {
-      return order
+      // A reduce-only order is a position CLOSE. When one underfills, the unsold
+      // residue stays on the venue as a position no bot tracks, with no take
+      // profit and no stop loss, and its margin keeps consuming the account.
+      // Skipping remainder recovery here is why that happens: measured over
+      // 8.4 days, 67 of 69 reduce-only underfilled TPs stranded (97.1%) against
+      // 54 of 670 non-reduce-only ones (8.1%) — every futures venue at 94-100%,
+      // every spot venue in single digits.
+      //
+      // The blanket exclusion was added in 2024 with no accompanying note, one
+      // day after the KuCoin contract-multiplier problem it was presumably
+      // reacting to had already been fixed by the narrow
+      // `kucoinFutures || okx || coinm` guard that is still in force below and
+      // at the sendOrderToExchange call site. Keep that narrow guard; recover
+      // the rest.
+      //
+      // Deliberately scoped to take-profits: that is the population the
+      // stranding was measured on. Every other reduce-only order keeps the old
+      // behaviour until there is evidence for widening it.
+      if (
+        order.typeOrder !== TypeOrderEnum.dealTP ||
+        this.kucoinFutures ||
+        this.okx ||
+        this.coinm
+      ) {
+        return order
+      }
     }
     if (order.typeOrder === TypeOrderEnum.rebalance) {
       return order

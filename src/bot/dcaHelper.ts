@@ -14701,6 +14701,21 @@ function createDCABotHelper<
       return underfilledTpQty(order)
     }
 
+    /**
+     * ⚠️ The `underfilledTpQty` branch below CANNOT FIRE, verified against prod
+     * 2026-08-30. The only caller is `cancelOrderOnExchange`, which reaches it
+     * inside `if (+order.executedQty !== 0 && order.status === 'CANCELED')` and
+     * assigns `order.status = 'FILLED'` only *after* this returns — while
+     * `underfilledTpQty()` returns 0 unless `status === 'FILLED'`. So `unsold`
+     * is always 0 and this always returns `true`. Over 25.5h post-deploy the log
+     * line below appeared 0 times fleet-wide while underfilled TPs kept arriving,
+     * and dealTP orders left CANCELED-with-partial-fill went 23 (7.3d) -> 0.
+     *
+     * Left inert deliberately rather than "repaired": the actual stranding fix is
+     * `buyRemainder`'s reduce-only gate (`main.ts`), and making this branch live
+     * is a separate behaviour change that needs its own measurement first. Do not
+     * make it reachable without one.
+     */
     override async setFilledInsteadOfCanceled(order: Order): Promise<boolean> {
       if (
         order.typeOrder === TypeOrderEnum.dealTP &&

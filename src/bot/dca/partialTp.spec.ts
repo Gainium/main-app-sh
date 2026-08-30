@@ -92,12 +92,40 @@ expectStranding(
   false,
 )
 
-console.log('-- just past the tolerance; MUST be detected --')
-expectStranding('1.0 -> 0.9989 (0.11% short)', tp('1.0', '0.9989'), true)
+// Measured on prod 2026-08-30: the one account that underfills steadily (bitget
+// spot) produced 37 shortfalls in 24h, 31 of them in 0.10-0.50%, median 0.196%,
+// max 0.93% — routine lot-size rounding, not stranding. At the original 0.1%
+// tolerance every one of these would have held its deal open for a remainder
+// below the venue's minimum order size. They must all read as dust.
+console.log('-- measured venue rounding dust; MUST NOT be detected --')
+expectStranding(
+  'bitget 18.945 -> 18.926 (0.10% short)',
+  tp('18.945', '18.926'),
+  false,
+)
+expectStranding(
+  'bitget 357.14 -> 356.7 (0.12% short)',
+  tp('357.14', '356.7'),
+  false,
+)
+expectStranding(
+  'bitget 11.85 -> 11.8 (0.42% short)',
+  tp('11.85', '11.8'),
+  false,
+)
+expectStranding('bitget 3.6 -> 3.5 (2.78% short)', tp('3.6', '3.5'), false)
+expectStranding(
+  'widest measured dust 1.0 -> 0.9907 (0.93%)',
+  tp('1.0', '0.9907'),
+  false,
+)
 
-// The exact boundary is a float knife-edge (1.0 - 0.999 === 0.0010000000000000009)
-// and is deliberately not asserted either way.
-if (PARTIAL_TP_TOLERANCE !== 0.001) {
+console.log('-- just past the tolerance; MUST be detected --')
+expectStranding('1.0 -> 0.9489 (5.11% short)', tp('1.0', '0.9489'), true)
+
+// The exact boundary is a float knife-edge and is deliberately not asserted
+// either way.
+if (PARTIAL_TP_TOLERANCE !== 0.05) {
   console.log('*FAIL  PARTIAL_TP_TOLERANCE changed; revisit the cases above')
   failures++
 }
