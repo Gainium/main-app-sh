@@ -36,6 +36,62 @@ import { isAmbiguousOrderFailure } from '../utils/exchange'
 
 const { sleep } = utils
 
+/**
+ * In-flight `getAllPrices` connector calls, keyed by exchange.
+ *
+ * The Redis `allPrice` cache below only coalesces callers that arrive AFTER a
+ * table has been written. It does nothing for callers that miss at the same
+ * moment, and every price-driven caller in a bot process misses together: each
+ * grid bot runs its own `priceTimerFn` (`core/src/bot/helper.ts`) keyed by bot
+ * id, so N bots on one exchange fire N `getAllPrices` in the same tick. On
+ * Binance USDⓈ-M that is N x weight-10 `futures_getAllPrices` against a
+ * process-wide weight budget shared by every Binance user on that connector
+ * node, which parks their `openOrder`/`cancelOrder` behind the flood.
+ *
+ * Worse, the flood is self-sustaining: once the connector parks a call it
+ * answers `Response timeout` (NOTOK), and a NOTOK table is deliberately never
+ * cached — so the cache can never re-warm and 100% of subsequent ticks fan out
+ * again.
+ *
+ * The table is a function of the exchange alone (the `prices` endpoint is a
+ * public read whose only parameter is `exchange`), so one call safely serves
+ * every concurrent caller. Same single-flight shape as `fetchOnce` in
+ * `core/src/utils/leverageBracketCache.ts`, which fixed the same fan-out for
+ * the leverage-bracket table.
+ */
+const allPricesInFlight = new Map<
+  ExchangeEnum,
+  Promise<{
+    data: BaseReturn<AllPricesResponse[]>
+    timeProfile: ExchangeRequestTimeProfile
+  }>
+>()
+
+/**
+ * Run `fetchPrices` only if no call for `exchange` is already running;
+ * otherwise join the running one. Rejections still propagate to every caller,
+ * so each keeps its own `handleError` retry ladder.
+ */
+const fetchAllPricesOnce = (
+  exchange: ExchangeEnum,
+  fetchPrices: () => Promise<{
+    data: BaseReturn<AllPricesResponse[]>
+    timeProfile: ExchangeRequestTimeProfile
+  }>,
+) => {
+  const existing = allPricesInFlight.get(exchange)
+  if (existing) {
+    return existing
+  }
+  const pending = Promise.resolve()
+    .then(fetchPrices)
+    .finally(() => {
+      allPricesInFlight.delete(exchange)
+    })
+  allPricesInFlight.set(exchange, pending)
+  return pending
+}
+
 class Exchange extends AbstractExchange {
   /**
    * How many times a placement may be re-sent after the venue has CONFIRMED
@@ -783,38 +839,47 @@ class Exchange extends AbstractExchange {
       logger.error(`Error in getAllPrices redis cache: ${e}`)
     }
 
-    const result = await this.apiCall<AllPricesResponse[]>(
-      {
-        endpoint: 'prices',
-        method: 'get',
-        params: {
-          exchange: this.exchange,
+    const fetchAndCache = async () => {
+      const fresh = await this.apiCall<AllPricesResponse[]>(
+        {
+          endpoint: 'prices',
+          method: 'get',
+          params: {
+            exchange: this.exchange,
+          },
         },
-      },
-      timeProfile,
-    ).catch(this.handleError(this.getAllPrices, cache, timeProfile))
-    if (result.data.status === StatusEnum.ok && result.data.data?.length) {
-      try {
-        if (cache) {
-          const client = await RedisClient.getInstance()
-          if (client.isReady) {
-            await client.hSet(
-              'allPrice',
-              this.exchange,
-              JSON.stringify(result.data),
-            )
-            await sleep(50)
-            await client.hExpire(
-              'allPrice',
-              this.exchange,
-              this.allPricesCachePeriod / 1000,
-            )
+        timeProfile,
+      )
+      if (fresh.data.status === StatusEnum.ok && fresh.data.data?.length) {
+        try {
+          if (cache) {
+            const client = await RedisClient.getInstance()
+            if (client.isReady) {
+              await client.hSet(
+                'allPrice',
+                this.exchange,
+                JSON.stringify(fresh.data),
+              )
+              await sleep(50)
+              await client.hExpire(
+                'allPrice',
+                this.exchange,
+                this.allPricesCachePeriod / 1000,
+              )
+            }
           }
+        } catch (e) {
+          logger.error(`Error in getAllPrices redis cache: ${e}`)
         }
-      } catch (e) {
-        logger.error(`Error in getAllPrices redis cache: ${e}`)
       }
+      return fresh
     }
+
+    // Only the cached path coalesces: an explicit `cache: false` caller is
+    // asking for its own fresh read, and no caller does that today.
+    const result = await (
+      cache ? fetchAllPricesOnce(this.exchange, fetchAndCache) : fetchAndCache()
+    ).catch(this.handleError(this.getAllPrices, cache, timeProfile))
     this.saveTimeProfile(result.timeProfile)
     return result.data
   }

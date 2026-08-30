@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.56.10] - 2026-08-30
+
+### Fixed
+
+- Concurrent `getAllPrices` misses now share one exchange-connector round trip
+  instead of one each. The Redis `allPrice` cache only ever coalesced callers
+  arriving after a table was written; callers that missed together each made
+  their own call, and price-driven callers in a bot process always miss
+  together — every grid bot runs its own `priceTimerFn` keyed by bot id, so N
+  bots on one exchange fired N calls in the same tick. On Binance USDⓈ-M that
+  is N x weight-10 `futures_getAllPrices` against a process-wide weight budget
+  shared by every Binance user on that connector node, parking their
+  `openOrder`/`cancelOrder` behind the flood. The flood was self-sustaining: a
+  parked call answers `Response timeout` (NOTOK) and a NOTOK table is never
+  cached, so the cache could not re-warm and every later tick fanned out again.
+  Measured with 26 bots on one exchange: 26 connector calls -> 1 on a cold
+  cache, and 78 -> 3 across three ticks while the connector was congested.
+
 ## [1.56.9] - 2026-08-30
 
 ### Fixed
