@@ -4819,33 +4819,31 @@ class MainBot<T extends IMainBot> {
     if (count >= 20) {
       return order
     }
+    // ⚠️ DO NOT lift this for futures / reduce-only orders. It was tried and
+    // reverted; the reason it exists is real, it just was never written down.
+    //
+    // `diff` below is derived from the ORDER (`origQty - executedQty`) — spot
+    // semantics, per this method's original design ("difference between initial
+    // balances and current balances"). That quantity does NOT describe a futures
+    // POSITION. By the time the remainder order is sent the position is flat or
+    // smaller, so a reduce-only order for that qty is refused outright rather
+    // than clamped to what remains.
+    //
+    // Measured on prod 2026-08-30, with this gate narrowed to let `dealTP`
+    // through: 15 reduce-only remainder orders went out over 18.3h across
+    // binanceUsdm / krakenUsdm / bybitLinear / bitgetUsdm, and ALL 15 came back
+    // with `executedQty: 0` — `ReduceOnly Order is rejected.` on binanceUsdm,
+    // `wouldNotReducePosition` on krakenUsdm. Nothing was recovered; the only
+    // effect was ~20 futile orders a day.
+    //
+    // Recovering futures residue is still an open problem, but it needs the
+    // remainder derived from the open POSITION size, not from the order. Note
+    // also that the "97% of reduce-only underfills strand" statistic that
+    // motivated the attempt was computed from order-side BUY-minus-SELL sums,
+    // which do not net correctly on futures — size it from positions before
+    // trusting it.
     if (order.reduceOnly) {
-      // A reduce-only order is a position CLOSE. When one underfills, the unsold
-      // residue stays on the venue as a position no bot tracks, with no take
-      // profit and no stop loss, and its margin keeps consuming the account.
-      // Skipping remainder recovery here is why that happens: measured over
-      // 8.4 days, 67 of 69 reduce-only underfilled TPs stranded (97.1%) against
-      // 54 of 670 non-reduce-only ones (8.1%) — every futures venue at 94-100%,
-      // every spot venue in single digits.
-      //
-      // The blanket exclusion was added in 2024 with no accompanying note, one
-      // day after the KuCoin contract-multiplier problem it was presumably
-      // reacting to had already been fixed by the narrow
-      // `kucoinFutures || okx || coinm` guard that is still in force below and
-      // at the sendOrderToExchange call site. Keep that narrow guard; recover
-      // the rest.
-      //
-      // Deliberately scoped to take-profits: that is the population the
-      // stranding was measured on. Every other reduce-only order keeps the old
-      // behaviour until there is evidence for widening it.
-      if (
-        order.typeOrder !== TypeOrderEnum.dealTP ||
-        this.kucoinFutures ||
-        this.okx ||
-        this.coinm
-      ) {
-        return order
-      }
+      return order
     }
     if (order.typeOrder === TypeOrderEnum.rebalance) {
       return order

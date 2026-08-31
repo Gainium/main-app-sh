@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.56.11] - 2026-08-31
+
+### Fixed
+
+- Revert the 1.56.9 `buyRemainder` change: reduce-only orders are excluded from
+  remainder recovery again. Measured on prod over 18.3h, all 15 reduce-only
+  remainder orders it placed were rejected with `executedQty: 0`
+  (`ReduceOnly Order is rejected.` / `wouldNotReducePosition`) — the remainder is
+  derived from the order, not the open position, so the venue refuses it. Nothing
+  was recovered and the only effect was ~20 futile orders a day. The gate now
+  documents why, so it is not lifted a third time.
+
 ## [1.56.10] - 2026-08-30
 
 ### Fixed
