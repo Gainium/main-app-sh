@@ -5597,15 +5597,32 @@ class MainBot<T extends IMainBot> {
       }
     }
 
+    // An add-funds order carries the same intent as a deal-opening signal: it
+    // was asked for at a moment and a price, so re-sending it after a cooldown
+    // averages the deal into a position the instruction never described. One
+    // production account drives additions from TradingView webhooks, where a
+    // two-hour-late 1,529 USDT top-up is a trade nobody asked for.
+    //
+    // Keyed on `addFundsId` rather than on `typeOrder`: ordinary DCA safety
+    // orders are also `dealRegular`, but they are price-triggered rather than
+    // point-in-time and must keep their retry budget, or a refused safety order
+    // would silently never be placed.
+    const isAddFunds = !!order.addFundsId
     const budget = isDealStart
       ? await this.quantRulesRetryBudget(order)
-      : QUANT_RULES_RETRY_BUDGET_DEFAULT
+      : isAddFunds
+        ? 0
+        : QUANT_RULES_RETRY_BUDGET_DEFAULT
 
     // A deal whose entry was a point-in-time instruction has no business being
     // re-sent later, and every such re-send is both a stale trade and more
     // herd. Its own trigger will fire again when it means to.
     if (budget <= 0) {
-      await giveUp('this deal opens on its own trigger, which will fire again')
+      await giveUp(
+        isAddFunds
+          ? 'an add-funds order is a point-in-time instruction; a later re-send would average the deal at a price the signal never asked for'
+          : 'this deal opens on its own trigger, which will fire again',
+      )
       return
     }
     if (attempt > budget) {
