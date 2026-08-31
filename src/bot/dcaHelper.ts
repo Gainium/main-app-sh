@@ -9321,9 +9321,11 @@ function createDCABotHelper<
         // emit hundreds of identical warnings across the fleet, which buried
         // the signal it was trying to raise.
         const unresolved: string[] = []
-        for (const o of this.getOrdersByStatusAndDealId({
+        const toCheck = this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
-        })) {
+        })
+        await this.primeReconcileBatch(toCheck)
+        for (const o of toCheck) {
           const getOrder = await this.getOrderForReconcile(o)
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
@@ -9391,6 +9393,7 @@ function createDCABotHelper<
           `Check orders after reconnect failed: ${(e as Error).message}`,
         )
       } finally {
+        this.reconcileBatch = null
         this.blockCheck = false
         this.endMethod(_id)
       }

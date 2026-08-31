@@ -1167,9 +1167,11 @@ function createBotHelper<
         const filledOrders: Order[] = []
         // See the DCA copy: aggregated at the end, and retried before it counts.
         const unresolved: string[] = []
-        for (const o of this.getOrdersByStatusAndDealId({
+        const toCheck = this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
-        })) {
+        })
+        await this.primeReconcileBatch(toCheck)
+        for (const o of toCheck) {
           const getOrder = await this.getOrderForReconcile(o)
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
@@ -1240,6 +1242,7 @@ function createBotHelper<
           `Check orders after reconnect failed: ${(e as Error).message}`,
         )
       } finally {
+        this.reconcileBatch = null
         this.blockCheck = false
         this.endMethod(_id)
       }

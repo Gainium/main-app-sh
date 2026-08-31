@@ -445,6 +445,35 @@ class Exchange extends AbstractExchange {
     return result.data
   }
 
+  /**
+   * Resolve several orders in one connector call.
+   *
+   * Best-effort by contract: a venue with no multi-id lookup, and a transport
+   * with no such route at all (paper-trading), both answer NOTOK, and every
+   * caller must already own a per-order fallback. Nothing here decides
+   * correctness — it only decides how many round trips the fallback has to
+   * make.
+   */
+  override async getOrdersBatch(
+    data: { symbol: string; newClientOrderIds: string[] },
+    timeProfile = this.getEmptyTimeProfile('getOrdersBatch'),
+  ): Promise<BaseReturn<CommonOrder[]>> {
+    const result = await this.apiCall<CommonOrder[]>(
+      {
+        endpoint: 'orders/batch',
+        method: 'post',
+        body: {
+          symbol: data.symbol,
+          newClientOrderIds: data.newClientOrderIds,
+        },
+        isPrivate: true,
+      },
+      timeProfile,
+    ).catch(this.handleError(this.getOrdersBatch, data, timeProfile))
+    this.saveTimeProfile(result.timeProfile)
+    return result.data
+  }
+
   async getUserFees(
     _symbol: string,
     timeProfile = this.getEmptyTimeProfile('getUserFees'),

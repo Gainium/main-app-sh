@@ -221,6 +221,18 @@ abstract class AbsctractExchange implements Exchange {
       reason: null,
     })
   }
+  /**
+   * Resolve several orders in one venue call. Declines by default, so a
+   * transport that has no batch route — paper-trading, which mirrors the
+   * connector's endpoint surface and does not carry this one — needs no change
+   * and the caller keeps its per-order loop. Overridden by the HTTP client.
+   */
+  async getOrdersBatch(_data: {
+    symbol: string
+    newClientOrderIds: string[]
+  }): Promise<BaseReturn<CommonOrder[]>> {
+    return this.returnBad()(new Error('Batch order lookup not supported'))
+  }
   /** Function to handle and format error result */
   returnBad() {
     return (e: Error) => ({

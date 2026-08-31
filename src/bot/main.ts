@@ -456,6 +456,15 @@ const quantRulesRejection =
   'Futures Trading Quantitative Rules violated, only reduceOnly order is allowed, please try again later.'
 
 const noExchangeOrderId = '-1'
+
+/**
+ * Exchanges that have answered "no batch order lookup" once. Process-wide
+ * because the answer is a property of the venue's API, not of a bot: asking
+ * again per bot per pass would spend a round trip to learn the same thing.
+ * Reset only by a restart, which is also when a newly-deployed connector would
+ * start supporting it.
+ */
+const unsupportedOrderBatch = new Set<ExchangeEnum>()
 /**
  * How many times `_handleUnknownOrder` re-asks the venue about an order it
  * cannot resolve before it gives up and marks the local order CANCELED.
@@ -651,6 +660,14 @@ class MainBot<T extends IMainBot> {
    * {@link MainBot#_handleUnknownOrder}.
    */
   private unknownOrderInFlight: Map<string, Promise<null | Order>> = new Map()
+  /**
+   * Venue-side order rows prefetched for the reconcile pass currently running,
+   * keyed by the id {@link MainBot#getOrder} actually asks the venue for (the
+   * translated exchange order id, not our client id). Populated by
+   * {@link MainBot#primeReconcileBatch}, consumed once per entry, and dropped
+   * when the pass ends — see that method for why single-use matters.
+   */
+  protected reconcileBatch: Map<string, CommonOrder> | null = null
   /** Used pairs */
   pairs: Set<string> = new Set()
   /** Run after loading */
@@ -892,6 +909,111 @@ class MainBot<T extends IMainBot> {
    * genuinely ambiguous failures are retried, with exponential backoff and
    * ±50% jitter so a retry storm cannot re-synchronise.
    */
+  /**
+   * Ask the venue about every order this reconcile pass is about to walk, in
+   * one call, and hold the answers for {@link MainBot#getOrder} to consume.
+   *
+   * The reconcile loops are strictly serial — `for (…) await
+   * getOrderForReconcile(o)` — so on Kraken, whose private REST budget is 20
+   * tokens decaying at 0.5/s per account, a bot's pass arrives as a burst that
+   * drains the bucket and then parks every remaining call, the user's own
+   * `openOrder` included, for ~2.1s each. Measured 2026-08-31: 50.5% of all
+   * Kraken order placements queued, 72% of `openOrder`, while Kraken itself
+   * never rate-limited us once. One QueryOrders call answers up to 50 orders
+   * for the same single token.
+   *
+   * Strictly an optimisation. It resolves nothing the per-order path would not
+   * resolve, and every failure mode — an exchange with no batch lookup, a
+   * transport with no such route (paper-trading), a partial or empty answer —
+   * leaves `reconcileBatch` without that id and the loop does exactly what it
+   * does today. Ids are translated the same way {@link MainBot#getOrder}
+   * translates them, because that is the id the venue is asked for; an order
+   * whose translation says it never reached the exchange is left out entirely
+   * so that guard still fires on the normal path.
+   */
+  /**
+   * The id the VENUE knows this order by.
+   *
+   * Coinbase, KuCoin full-futures and Kraken cannot be asked about our client
+   * order id, so those are looked up in the local map and translated to the
+   * exchange's own id; every other venue answers to the client id directly.
+   * `null` means the order never reached the exchange — the caller must not ask
+   * the venue about it at all.
+   *
+   * Extracted so {@link MainBot#getOrder} and
+   * {@link MainBot#primeReconcileBatch} cannot disagree about what to ask for:
+   * the prefetch is keyed by this value, so if the two ever computed it
+   * differently the prefetch would silently never hit.
+   */
+  private venueOrderId(clientOrderId: string): string | null {
+    if (
+      this.data?.exchange === ExchangeEnum.coinbase ||
+      this.kucoinFullFutures ||
+      this.data?.exchange === ExchangeEnum.kraken
+    ) {
+      const local = this.getOrderFromMap(clientOrderId)
+      if (local) {
+        return local.orderId === noExchangeOrderId ? null : `${local.orderId}`
+      }
+    }
+    return clientOrderId
+  }
+
+  protected async primeReconcileBatch(orders: Order[]) {
+    this.reconcileBatch = null
+    if (!this.exchange || !this.data || orders.length < 2) {
+      return
+    }
+    if (unsupportedOrderBatch.has(this.data.exchange)) {
+      return
+    }
+    const ids: string[] = []
+    for (const o of orders) {
+      // Same translation `getOrder` applies, via the same method — the prefetch
+      // is keyed by the id the venue is actually asked for, and an order that
+      // never reached the exchange is left out so that guard still fires on the
+      // normal path.
+      const id = this.venueOrderId(o.clientOrderId)
+      if (id !== null) {
+        ids.push(id)
+      }
+    }
+    if (ids.length < 2) {
+      return
+    }
+    try {
+      const symbol = orders[0].symbol
+      const res = await this.exchange.getOrdersBatch({
+        symbol,
+        newClientOrderIds: ids,
+      })
+      if (res.status !== StatusEnum.ok || !res.data?.length) {
+        // A venue or transport that cannot batch says so once and is not asked
+        // again by this process. The reason is not inspected: every non-ok
+        // answer means "resolve these yourself", which the caller does anyway.
+        unsupportedOrderBatch.add(this.data.exchange)
+        return
+      }
+      const map = new Map<string, CommonOrder>()
+      for (const order of res.data) {
+        const key = order.clientOrderId || order.orderId
+        if (key) {
+          map.set(`${key}`, order)
+        }
+      }
+      this.reconcileBatch = map.size ? map : null
+      this.handleDebug(
+        `Reconcile prefetch resolved ${map.size}/${ids.length} orders in one call`,
+      )
+    } catch (e) {
+      // Never fatal: the pass proceeds one order at a time.
+      this.handleDebug(
+        `Reconcile prefetch failed, falling back per order: ${e}`,
+      )
+      this.reconcileBatch = null
+    }
+  }
+
   protected async getOrderForReconcile(o: Order) {
     // No exchange bound: retrying cannot fix that, and sleeping through it once
     // per order turns a dead bot into a slow one.
@@ -4101,26 +4223,35 @@ class MainBot<T extends IMainBot> {
       )
     }
     if (this.exchange && this.data) {
-      if (
-        this.data.exchange === ExchangeEnum.coinbase ||
-        this.kucoinFullFutures ||
-        this.data.exchange === ExchangeEnum.kraken
-      ) {
-        const local = this.getOrderFromMap(id)
-        if (local) {
-          if (local.orderId === noExchangeOrderId) {
-            this.endMethod(_id)
-            return this.exchange.returnBad()(
-              new Error(orderNeverReachedExchange),
-            )
-          }
-          id = `${local.orderId}`
-        }
+      const venueId = this.venueOrderId(id)
+      if (venueId === null) {
+        this.endMethod(_id)
+        return this.exchange.returnBad()(new Error(orderNeverReachedExchange))
       }
-      const result = await this.exchange.getOrder({
-        symbol,
-        newClientOrderId: id,
-      })
+      id = venueId
+      // Served from the reconcile prefetch when this pass already asked the
+      // venue about this id. Hooked HERE, at the transport call, rather than
+      // earlier in the method: everything above (the Kraken/Coinbase/KuCoin
+      // client-id -> exchange-id translation, the `noExchangeOrderId` guard)
+      // and everything below (executedQty conversion, the KuCoin price
+      // reconstruction, the CANCELED-with-fills promotion) must run exactly as
+      // it does on the uncached path, or a batched order would be a subtly
+      // different order. Single-use, so a prefetched row can never answer a
+      // question asked outside the pass that fetched it.
+      const prefetched = this.reconcileBatch?.get(id)
+      if (prefetched) {
+        this.reconcileBatch?.delete(id)
+      }
+      const result = prefetched
+        ? {
+            status: StatusEnum.ok as StatusEnum.ok,
+            data: prefetched,
+            reason: null,
+          }
+        : await this.exchange.getOrder({
+            symbol,
+            newClientOrderId: id,
+          })
       if (!result.data) {
         this.endMethod(_id)
         return result

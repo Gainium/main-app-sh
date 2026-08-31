@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.56.12] - 2026-08-31
+
+### Changed
+
+- **The reconcile pass asks the venue about all of a bot's orders in one call, where the venue supports it.** `checkOrdersAfterReconnect` is a strictly serial `for (…) await getOrderForReconcile(o)`, which on Kraken — 20 REST tokens decaying 0.5/s per API key — arrives as a burst that drains the budget and then parks every remaining call for ~2.1s, the user's own `openOrder` included. Measured on prod 2026-08-31: 50.5% of ALL Kraken order placements queued, 72% of `openOrder`, from an average load of just 2.5 calls/min (~8% of budget) delivered in bursts of up to 119 calls in 51s. `primeReconcileBatch` prefetches the pass in one `getOrdersBatch` call (exchange-connector core 1.20.13, up to 50 Kraken orders per call) and `getOrder` serves from it.
+
+  Strictly an optimisation, and the fallback is total: it resolves nothing the per-order path would not, and an exchange with no batch lookup, a transport with no such route (paper-trading mirrors the connector's endpoints and does not carry this one), a partial answer, an empty answer or a thrown error all leave the loop doing exactly what it does today. A venue that declines is memoed process-wide so it is asked once, not once per pass.
+
+  The prefetch is hooked at the transport call inside `getOrder`, not around it, so the client-id → exchange-id translation and the `noExchangeOrderId` guard before it, and the `executedQty` conversion, KuCoin price reconstruction and CANCELED-with-fills promotion after it, all still run exactly as on the uncached path — a batched order is the same order. Entries are single-use and the map is dropped when the pass ends, so a prefetched row can never answer a question asked outside the pass that fetched it. That id translation is now a single `venueOrderId` method shared by both, because a prefetch keyed differently from what `getOrder` asks for would silently never hit.
+
 ## [1.56.11] - 2026-08-31
 
 ### Fixed
