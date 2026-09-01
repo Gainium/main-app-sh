@@ -6358,6 +6358,7 @@ function createDCABotHelper<
           initialPrice: findDeal.deal.initialPrice,
           lastPrice: findDeal.deal.lastPrice,
           avgPrice: findDeal.deal.avgPrice,
+          displayAvg: findDeal.deal.displayAvg,
           'settings.avgPrice': findDeal.deal.settings.avgPrice,
           updateTime: findDeal.deal.updateTime,
           levels: findDeal.deal.levels,
@@ -6925,6 +6926,7 @@ function createDCABotHelper<
             lastPrice: findDeal.deal.lastPrice,
             updateTime: findDeal.deal.updateTime,
             avgPrice: findDeal.deal.avgPrice,
+            displayAvg: findDeal.deal.displayAvg,
             'settings.avgPrice': findDeal.deal.settings.avgPrice,
             levels: findDeal.deal.levels,
             currentBalances: findDeal.deal.currentBalances,
@@ -7208,6 +7210,7 @@ function createDCABotHelper<
           this.checkDealsPriceExtremum()
           this.saveDeal(findDeal, {
             avgPrice: findDeal.deal.avgPrice,
+            displayAvg: findDeal.deal.displayAvg,
             'settings.avgPrice': findDeal.deal.settings.avgPrice,
             currentBalances: findDeal.deal.currentBalances,
             updateTime: findDeal.deal.updateTime,
