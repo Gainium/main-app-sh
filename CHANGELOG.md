@@ -1,6 +1,10 @@
 # Changelog
 
-## [1.56.13] - 2026-09-01
+## [1.56.14] - 2026-09-01
+
+### Fixed
+
+- **A Coinbase Ed25519 API key now fails verification with instructions instead of a dead end.** The CDP portal creates Ed25519 keys BY DEFAULT, and our Coinbase SDK signs its JWTs with ES256 only, so such a key can never authenticate — with "Cloud Trading Keys" selected the user saw the raw jsonwebtoken refusal ("secretOrPrivateKey must be an asymmetric key when using ES256"), and under the default "Legacy Keys" an opaque 401. Worse, the cloud-type case fell into the key-type-mismatch rule, whose "switch to Legacy Keys" advice is the one change that cannot help. A new first-position Coinbase rule in `interpretVerifyFailure` recognises the key by its shape (raw 64-byte base64 secret, no PEM armour — checked before the key-type rules, under either Key Type) or by the ES256 signing error, and says what actually works: recreate the key at portal.cdp.coinbase.com with the ECDSA signature algorithm, and connect with the full `organizations/…/apiKeys/…` key name and the EC PEM secret. The venue's own message is still appended underneath, per this module's guidance-then-evidence rule.
 
 ### Fixed
 

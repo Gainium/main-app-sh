@@ -207,6 +207,23 @@ const looksLikeCloudCoinbaseKey = (key?: string, secret?: string): boolean => {
   )
 }
 
+/**
+ * An Ed25519 CDP key, which the portal now issues BY DEFAULT: the secret is
+ * the raw 64-byte private key as one line of base64 (86 chars, usually padded
+ * to 88) with no PEM armour, and the key id is a bare UUID. Our Coinbase SDK
+ * signs its JWTs with ES256 only, so this key can NEVER authenticate — with
+ * "Cloud Trading Keys" selected jsonwebtoken refuses to sign at all
+ * ("secretOrPrivateKey must be an asymmetric key when using ES256"), and under
+ * the default "Legacy Keys" it is HMAC-signed into a plain 401. Neither dead
+ * end names the actual problem, and the shape fails looksLikeCloudCoinbaseKey,
+ * so without its own rule the cloud-type case would fall into the "switch to
+ * Legacy Keys" advice — the one change that cannot help.
+ */
+const looksLikeEd25519CoinbaseSecret = (secret?: string): boolean => {
+  const s = (secret ?? '').trim()
+  return !s.includes('-----BEGIN') && /^[A-Za-z0-9+/]{86}(==)?$/.test(s)
+}
+
 /** The Binance permission flag this trade type actually needs. */
 const binanceRequiredFlag = (
   tradeType: TradeTypeEnum,
@@ -335,6 +352,16 @@ export const interpretVerifyFailure = (
   }
 
   if (provider.startsWith('coinbase')) {
+    // Checked before the key-type rules: the Ed25519 shape matches neither
+    // key type, and no Key Type toggle can make it work. The message-match
+    // arm is the belt to the shape check's braces — it fires on the ES256
+    // signing error even if Coinbase reshapes its key export.
+    if (
+      looksLikeEd25519CoinbaseSecret(ctx.secret) ||
+      matches(said, /asymmetric key when using es256/i)
+    ) {
+      return 'This is an Ed25519 API key, which Gainium cannot use yet. Create a new key at portal.cdp.coinbase.com and choose the ECDSA signature algorithm (Coinbase preselects Ed25519 — expand the key options to change it). Then connect with the key\'s full name ("organizations/…/apiKeys/…", not just the key id), its "-----BEGIN EC PRIVATE KEY-----" secret, and Key Type set to "Cloud Trading Keys" in Advanced Settings.'
+    }
     // Coinbase tells us nothing: `getApiPermission` catches its own error and
     // reports success-with-false. The key's SHAPE is the only evidence there
     // is, so lead with the mismatch when we can see one.
