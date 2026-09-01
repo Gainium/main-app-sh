@@ -65,6 +65,22 @@ const AMBIGUOUS_ORDER_FAILURE_MARKERS = [
   'service unavailable',
   // What `Exchange.apiCall` throws once its transport retry ladder is spent.
   'exchange connector |',
+  // Hyperliquid's `unknownOid`, which reaches a PLACEMENT result only after the
+  // venue has already accepted the order. The connector's own `openOrder` uses
+  // `unknownOid` as its "not a duplicate, go ahead and send" answer on the
+  // pre-flight lookup, so the only way the token can come back out of a
+  // placement is the post-acceptance status lookup — HL took the order, and
+  // then would not describe it. That is a lost answer, not a refusal, and it is
+  // exactly the shape that produced the orphan in forum #5097: BUY 1.18 HYPE
+  // accepted at 05:41:09 on 2026-08-26, written off at 05:41:20, filled at
+  // 06:13:32 into a position no bot was tracking.
+  //
+  // Note the deliberate asymmetry with `isDefinitiveOrderNotFound`, which also
+  // matches this token. There it describes an order nobody has touched for a
+  // day (the quarantine age floor is what makes that safe); here it describes
+  // one the venue was handed seconds ago. Same word, opposite meaning, and the
+  // caller's context is the only thing that can tell them apart.
+  'unknownoid',
 ]
 
 /**

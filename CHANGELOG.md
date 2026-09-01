@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.56.13] - 2026-09-01
+
+### Fixed
+
+- **A Hyperliquid order the venue had already accepted is no longer written off as CANCELED.** HL answers a status lookup for a brand-new order with `unknownOid` while it is still propagating, and the connector surfaces that as the placement's failure reason — but `unknownOid` can only escape `openOrder` AFTER the venue accepted the order, because the connector's pre-flight duplicate check uses the same token to mean "not a duplicate, go ahead". Classified as a refusal it reached the generic cleanup path and `deleteOrder`, which also unregisters the id from `SharedStream`, so the venue's later fill reached no bot at all. Forum #5097, 2026-08-26: BUY 1.18 HYPE accepted at 05:41:09.682, reported `open` on our OWN user stream at 05:41:09.994, written off at 05:41:20.743, filled at 06:13:32 into a position the bot could no longer see — the deal closed 1.18 HYPE short of the account.
+
+  Three changes, in order of how early they stop it. `sendOrderToExchange` now keeps any order it is still tracking whose `orderId` is no longer the `-1` placeholder, whatever the failure text said: only the venue can set that id, so it outranks any classification of the error string. `unknownOid` joins `AMBIGUOUS_ORDER_FAILURE_MARKERS`, so the #5025 guard asks the venue before writing off rather than not at all. And `_handleUnknownOrder` takes a `justPlaced` mode that suspends the two shortcuts written for a stale reconcile — the `orderId === '-1'` fast-fail, which reads "no exchange id" as proof the order never landed when for a just-placed order it only means the response was lost, and the exhaustion write-off, which now leaves the local record to the reconcile/quarantine path (age floor + strikes) instead of deleting it.
+
+  A definitive venue negative still writes off in both modes, and the placement resend loop cannot duplicate on this: `unknownOid` is ambiguous on the lookup too, so that loop returns the original failure and never re-sends.
+
 ## [1.56.12] - 2026-08-31
 
 ### Changed

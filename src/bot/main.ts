@@ -4294,10 +4294,18 @@ class MainBot<T extends IMainBot> {
    * Update order information in {@link MainBot#orders} and orders collection in DB, send update via {@link MainBot#ioUpdate}<br />
    *
    * @param {string} id id of the order that needed to find
+   * @param {string} symbol symbol of the order
+   * @param {boolean} justPlaced the order was handed to the venue seconds ago,
+   *   rather than being reconciled long after the fact — see
+   *   {@link MainBot#_runUnknownOrderLadder}
    * @returns {Promise<null | Order>} null or order
    */
 
-  async _handleUnknownOrder(id: string, symbol: string): Promise<null | Order> {
+  async _handleUnknownOrder(
+    id: string,
+    symbol: string,
+    justPlaced = false,
+  ): Promise<null | Order> {
     // Every caller is asking the same single question — "what actually happened
     // to this order?" — so concurrent entries for one client order id are
     // coalesced onto the ladder that is already asking it, the same
@@ -4322,7 +4330,7 @@ class MainBot<T extends IMainBot> {
       this.handleLog(`Unknown order lookup already running for ${id}, joining`)
       return running
     }
-    const ladder = this._runUnknownOrderLadder(id, symbol)
+    const ladder = this._runUnknownOrderLadder(id, symbol, justPlaced)
     this.unknownOrderInFlight.set(id, ladder)
     try {
       return await ladder
@@ -4335,10 +4343,35 @@ class MainBot<T extends IMainBot> {
    * The retry ladder itself. Private because re-entering it through
    * {@link MainBot#_handleUnknownOrder} would make its own recursion join the
    * in-flight entry it just registered, and deadlock.
+   *
+   * `justPlaced` marks the one caller that is asking about an order the venue
+   * was handed SECONDS ago — the write-off guard in `sendOrderToExchange`. Two
+   * of this ladder's shortcuts silently assume the opposite (a stale reconcile
+   * of an order nobody has touched in a while) and turn a propagation lag into
+   * a permanent orphan when they are wrong, so both are suspended for it:
+   *
+   *   - the `orderId === '-1'` fast-fail below, which reads "no exchange id" as
+   *     proof the order never landed. For a just-placed order there is no
+   *     exchange id precisely BECAUSE the response was lost, which is the case
+   *     where the venue is most likely to still have it.
+   *   - the exhaustion branch's write-off. Reconciling, running out of attempts
+   *     means the order is long gone; here it means we never got an answer at
+   *     all, and `deleteOrder` is not a recoverable way to be wrong — it also
+   *     unregisters the id from `SharedStream`, so the venue's later fills stop
+   *     reaching this bot entirely. Leaving the local record alone hands the
+   *     order to the reconcile/quarantine path (age floor + strikes), which is
+   *     built to retire an order the venue really does not have.
+   *
+   * A DEFINITIVE negative still writes off in either mode. The one exception is
+   * Hyperliquid's `unknownOid`, which {@link isDefinitiveOrderNotFound} matches
+   * and {@link isAmbiguousOrderFailure} also matches: HL uses that single token
+   * for "no such order" and for "not propagated yet", so for a just-placed
+   * order it is not an answer.
    */
   private async _runUnknownOrderLadder(
     id: string,
     symbol: string,
+    justPlaced = false,
   ): Promise<null | Order> {
     const origId = id
     if (this.data && this.exchange && this.orders) {
@@ -4351,6 +4384,12 @@ class MainBot<T extends IMainBot> {
         this.kucoinFullFutures
       if ((this.canceledMap.get(id) ?? 0) > unknownOrderMaxAttempts) {
         this.canceledMap.delete(id)
+        if (justPlaced) {
+          this.handleWarn(
+            `Order ${id} was accepted for placement but ${this.data.exchange} would not describe it after ${unknownOrderMaxAttempts} attempts — keeping it for the reconcile path instead of writing it off`,
+          )
+          return null
+        }
         const get = this.getOrderFromMap(id)
         let find = get && get.status === 'NEW' ? get : undefined
         if (find && this.orders) {
@@ -4428,16 +4467,22 @@ class MainBot<T extends IMainBot> {
         // client order id the order may exist there under that id even though
         // we never recorded the response, and that call is the only thing that
         // would find it. This drops the 5 redundant retries, not the lookup.
+        //
+        // For a just-placed order the venue's `unknownOid` is not definitive
+        // (see the method doc); anything else it says still is, and takes the
+        // fast path — recursing WITHOUT `justPlaced`, because from here on we
+        // do have an answer and the ordinary write-off is the right one.
         if (
           isDefinitiveOrderNotFound(request) &&
+          !(justPlaced && isAmbiguousOrderFailure(request.reason)) &&
           local?.orderId === noExchangeOrderId
         ) {
           this.canceledMap.set(origId, unknownOrderMaxAttempts)
-          return this._runUnknownOrderLadder(origId, symbol)
+          return this._runUnknownOrderLadder(origId, symbol, false)
         }
 
         await sleep(1000 * (getCount + 1))
-        return this._runUnknownOrderLadder(origId, symbol)
+        return this._runUnknownOrderLadder(origId, symbol, justPlaced)
       }
       if (request.status === StatusEnum.ok) {
         this.handleLog(`Real order ${origId} status: ${request.data.status}`)
@@ -7115,6 +7160,33 @@ class MainBot<T extends IMainBot> {
           // The local short-circuits are exempt — those rejections were served
           // by this process, the venue never saw the order, and there is nothing
           // to ask about.
+          //
+          // Before asking, honour the answer we may already hold. An order we
+          // are still tracking whose `orderId` is no longer the `-1` placeholder
+          // got that id from ONE place: the venue, either in a placement
+          // response or on the user stream. That is a stronger statement than
+          // any classification of the failure text, so it is checked first and
+          // without consulting `isAmbiguousOrderFailure` at all. The same
+          // predicate the duplicate and "not found after execution" branches
+          // above already use.
+          //
+          // This is the half of forum #5097 no error-string change can cover:
+          // on 2026-08-26 our own HL user stream reported the order `open` at
+          // 05:41:09.994 — 10.7s BEFORE the `unknownOid` placement result
+          // arrived at 05:41:20.743 — and we deleted it anyway.
+          const streamAcked = this.getOrderFromMap(order.clientOrderId)
+          if (
+            this.orders &&
+            this.orders.size > 0 &&
+            streamAcked &&
+            streamAcked.orderId !== noExchangeOrderId
+          ) {
+            this.handleWarn(
+              `Order ${order.clientOrderId} failed with "${request.reason}", but ${this.data.exchange} has already given it order id ${streamAcked.orderId} — keeping it instead of writing it off`,
+            )
+            this.endMethod(_id)
+            return streamAcked
+          }
           if (
             this.orders &&
             this.orders.size > 0 &&
@@ -7129,11 +7201,13 @@ class MainBot<T extends IMainBot> {
             const settled = await this._handleUnknownOrder(
               order.clientOrderId,
               order.symbol,
+              true,
             )
             // Held after the ladder means the venue answered that it HAS the
-            // order; the ladder has already reconciled its status. Anything else
-            // means the venue gave a definitive negative and the ladder recorded
-            // CANCELED itself.
+            // order, or never gave a definitive negative about an order it was
+            // handed seconds ago; either way the ladder left the local record
+            // alone. Anything else means the venue gave a definitive negative
+            // and the ladder recorded CANCELED itself.
             const stillHeld = this.getOrderFromMap(order.clientOrderId)
             if (settled || stillHeld) {
               this.handleLog(
