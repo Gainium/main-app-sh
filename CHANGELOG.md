@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.56.17] - 2026-09-02
+
+### Fixed
+
+- **The source build no longer breaks the moment `package-lock.json` is regenerated.** `@types/express@5.0.6` depends on `@types/express-serve-static-core: ^5.0.0`; the committed lockfile pins 5.0.6, so `npm ci` was clean — but any fresh `npm install` resolves 5.1.3, where `ParamsDictionary`'s index signature widened from `string` to `string | string[]` (a wildcard or repeated segment can match more than once). That produced 28 `tsc` errors, all in `src/server/v2/api.ts`, where ~24 handlers destructure `req.params` and pass the value on as a bare `string` — `dealType`, `botType`, `botId`, `dealId`, `id`, `sync`, `type` — plus two `.toUpperCase()` calls. Only self-hosted / from-source builders hit it, which is why bug #596 arrived from a source build rather than from prod; the deployed tree installs from the lockfile and was never affected.
+
+  Fixed at the origin rather than at the 24 call sites: the `APIMap` handler signature now reads `Request<Record<string, string>>`. Every v2 route uses only simple `:name` segments, and the 16 v1 routes folded in at the bottom of `v2API` carry no params at all, so the `string[]` arm is unreachable for every registered route — this narrows the type to what the router actually produces rather than casting over a case that can occur. The parent repo's `src/server/v2.ts` registers its agent/backtest handlers into this same map and is covered by the same one-line change. A wildcard route added later would invalidate the assumption, so the type carries a comment saying to type such a handler's params explicitly.
+
+  Belt-and-braces, as a second independent guard: an `overrides` entry pins the transitive `@types/express-serve-static-core` to 5.0.6, so a regenerated lockfile reproduces the tree `npm ci` already installs (verified: zero package-version changes). The two guards are each sufficient on their own — the source now typechecks clean under 5.0.6 *and* 5.1.3, so the pin can be lifted whenever the types are deliberately bumped.
+
 ## [1.56.16] - 2026-09-02
 
 ### Fixed

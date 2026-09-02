@@ -129,10 +129,19 @@ import {
   serializeHedgeBot,
 } from './hedge'
 
+/**
+ * Express 5 types every route param as `string | string[]`, because a wildcard
+ * or repeated segment can match more than once. Every route registered here —
+ * and every v1 route folded in at the bottom of `v2API` — uses only simple
+ * `:name` segments, which always resolve to a single string, so handlers narrow
+ * to `Record<string, string>` instead of guarding an array case that no
+ * registered route can produce. Adding a wildcard (`*rest`) or repeated segment
+ * would break that assumption: type its params explicitly at the handler.
+ */
 type APIMap = Map<
   string,
   {
-    handler: (req: Request, res: Response) => void
+    handler: (req: Request<Record<string, string>>, res: Response) => void
     middlewares: any[]
     ignoreMiddlewares?: any[]
   }

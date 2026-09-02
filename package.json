@@ -96,5 +96,8 @@
     "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0"
   },
-  "version": "1.56.16"
+  "overrides": {
+    "@types/express-serve-static-core": "5.0.6"
+  },
+  "version": "1.56.17"
 }
