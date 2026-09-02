@@ -19997,6 +19997,8 @@ function createDCABotHelper<
           duration: {
             maxDealDuration: 0,
             avgDealDuration: 0,
+            totalTime: 0,
+            measuredDeals: 0,
           },
           symbol,
         })),
@@ -20879,11 +20881,20 @@ function createDCABotHelper<
           findSymbol.duration.maxDealDuration = duration
         }
 
-        findSymbol.duration.avgDealDuration = isNaN(
-          findSymbol.duration.avgDealDuration,
-        )
-          ? findSymbol.duration.maxDealDuration
-          : findSymbol.duration.avgDealDuration
+        // Per-pair average deal duration. This used to be a self-assignment
+        // guarded by `isNaN`, which never fired because `getEmptyStats` seeds
+        // the field to 0 — so every pair of every multi-pair bot reported a
+        // 0 average while `maxDealDuration` right above filled in normally.
+        // Accumulate the same way the bot-wide block does, but against a
+        // counter of our own: `numerical.deals` predates `totalTime` on every
+        // bot already trading, so dividing by it would turn the first close
+        // after this ships into a fraction of the real average.
+        findSymbol.duration.totalTime =
+          (findSymbol.duration.totalTime ?? 0) + duration
+        findSymbol.duration.measuredDeals =
+          (findSymbol.duration.measuredDeals ?? 0) + 1
+        findSymbol.duration.avgDealDuration =
+          findSymbol.duration.totalTime / findSymbol.duration.measuredDeals
         symbolStats = symbolStats.filter((s) => s.symbol !== findSymbol?.symbol)
         symbolStats.push(findSymbol)
         symbolStats = symbolStats.sort((a, b) =>

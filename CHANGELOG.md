@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.56.16] - 2026-09-02
+
+### Fixed
+
+- **Per-pair "Avg. deal duration" is no longer 0 for every pair of every multi-pair bot.** `botUpdateStats` fills `symbolStats[].duration.maxDealDuration` and then, three lines later, "computed" the average with a self-assignment guarded by `isNaN` — which never fired, because `getEmptyStats` seeds the field to 0. Bug #604: the reporter's COINBASE bot had 108 pairs carrying a populated max and an average of exactly 0, including pairs whose single closed deal makes avg == max by definition, while the bot-wide `duration.general.avgDealDuration` (which does accumulate a `totalTime`) read a correct 14h. The pair block now accumulates its own `duration.totalTime` / `duration.measuredDeals` and divides them. Deliberately not `numerical.deals.profit + loss`: that count predates the new counters on every bot already trading, so dividing by it would have replaced the honest 0 with a fraction of the real average on the first close after this ships. Bots with history start averaging from their next closed deal per pair; new bots are exact from the first one.
+
 ## [1.56.15] - 2026-09-02
 
 ### Fixed

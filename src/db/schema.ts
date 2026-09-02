@@ -1748,6 +1748,8 @@ const botSymbolsStats: Schema<BotSymbolsStats> = new Schema({
   duration: {
     maxDealDuration: Number,
     avgDealDuration: Number,
+    totalTime: Number,
+    measuredDeals: Number,
   },
   symbol: String,
 })

@@ -2240,6 +2240,19 @@ export type BotSymbolsStats = {
   duration: {
     maxDealDuration: number
     avgDealDuration: number
+    /**
+     * Sum of `close - create` over the deals counted in {@link measuredDeals},
+     * the numerator of `avgDealDuration`. Optional: bots that traded before it
+     * existed have no history, and their averages start from the next close.
+     */
+    totalTime?: number
+    /**
+     * How many closed deals `totalTime` was accumulated from. Deliberately NOT
+     * `numerical.deals.profit + loss` — that count predates `totalTime` on
+     * every existing bot, so dividing by it would report a fraction of the
+     * real average rather than an average of the deals actually measured.
+     */
+    measuredDeals?: number
   }
   symbol: string
 }
