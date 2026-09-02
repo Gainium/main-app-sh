@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.56.15] - 2026-09-02
+
+### Fixed
+
+- **A reconcile order lookup no longer costs 18 connector round trips when the connector is failing.** `reconcileLookup` spends its 3-attempt budget on `MainBot.getOrder`, but `Exchange.apiCall` already retries a connector 5xx/timeout SIX times at 500ms before giving up — so each "attempt" was really six round trips over ~3s and the real ceiling was 3 x 6. Bug #599, 2026-09-02 01:21-01:23Z: one Kraken combo bot reconciling five resting orders against a connector answering HTTP 500 made 96 requests in ~100s (5 order ids x exactly 18, plus 6 for the `primeReconcileBatch` prefetch) and paged the operator as "86 transport failures ... likely wedged" — 6 logical questions rendered as 86 failures, into a connector that was already struggling. The retry budget now also stops on a failure the transport ladder has ALREADY been spent on, matched by the new `isTransportRetryExhausted` on the `Exchange connector | ` prefix that only `apiCall` throws, and only after those six attempts. Deliberately narrower than `isAmbiguousOrderFailure`: a transient reason carried in a NOTOK body on an HTTP 200 (`Response timeout`, a rate-limit) never sees the transport ladder, so it keeps the full 3 attempts. Measured against a fake 500-ing connector: 18 round trips -> 6, with success, definitive not-found, non-transport transient, and mid-ladder recovery all unchanged.
+
 ## [1.56.14] - 2026-09-01
 
 ### Fixed

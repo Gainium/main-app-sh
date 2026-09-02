@@ -32,6 +32,17 @@ export const isKraken = (exchange: ExchangeEnum) =>
   ].includes(exchange)
 
 /**
+ * The prefix `Exchange.apiCall` throws with once it has spent its OWN transport
+ * retry ladder — six attempts at 500ms against the connector, ~3s in total.
+ *
+ * Named rather than inlined because two different questions read it, and they
+ * must agree on the same string: {@link isAmbiguousOrderFailure} ("is the
+ * venue's state unknown?") and {@link isTransportRetryExhausted} ("has this
+ * call already been retried at the transport layer?").
+ */
+const TRANSPORT_RETRY_EXHAUSTED_MARKER = 'exchange connector |'
+
+/**
  * Transport/plumbing shapes that leave the VENUE'S state UNKNOWN.
  *
  * A venue rejection — min notional, tick size, insufficient funds, bad
@@ -64,7 +75,7 @@ const AMBIGUOUS_ORDER_FAILURE_MARKERS = [
   'bad gateway',
   'service unavailable',
   // What `Exchange.apiCall` throws once its transport retry ladder is spent.
-  'exchange connector |',
+  TRANSPORT_RETRY_EXHAUSTED_MARKER,
   // Hyperliquid's `unknownOid`, which reaches a PLACEMENT result only after the
   // venue has already accepted the order. The connector's own `openOrder` uses
   // `unknownOid` as its "not a duplicate, go ahead and send" answer on the
@@ -116,3 +127,24 @@ export const isAmbiguousOrderFailure = (reason?: string | null): boolean => {
     (marker) => lower.indexOf(marker) !== -1,
   )
 }
+
+/**
+ * Has this failure ALREADY been retried by `Exchange.apiCall`'s transport
+ * ladder?
+ *
+ * Deliberately much narrower than {@link isAmbiguousOrderFailure}, which is
+ * about what the VENUE did; this is about what WE already did. Only
+ * `Exchange.apiCall` throws this prefix, and only after six attempts over ~3s,
+ * so a caller-level retry policy that sees it is about to re-run that whole
+ * ladder against a connector that has just refused six times in a row.
+ *
+ * Every other ambiguous reason — a `Response timeout` or a rate-limit reason
+ * carried in a `notok` body on an HTTP 200, say — is NOT covered by the
+ * transport ladder, and a caller-level retry is the only retry those get. So
+ * they must keep it.
+ *
+ * @param reason the `reason` of a `notok` BaseReturn, or a thrown message
+ */
+export const isTransportRetryExhausted = (reason?: string | null): boolean =>
+  !!reason &&
+  `${reason}`.toLowerCase().indexOf(TRANSPORT_RETRY_EXHAUSTED_MARKER) !== -1

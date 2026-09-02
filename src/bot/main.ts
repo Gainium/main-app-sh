@@ -60,7 +60,10 @@ import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
 import utils, { isPaper } from '../utils'
 import { resolveConnection } from '../utils/credentials'
-import { isAmbiguousOrderFailure } from '../utils/exchange'
+import {
+  isAmbiguousOrderFailure,
+  isTransportRetryExhausted,
+} from '../utils/exchange'
 import logger from '../utils/logger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import * as crypto from 'crypto'
@@ -404,10 +407,26 @@ export function isDefinitiveOrderNotFound(res?: {
  *
  * Stops on the first of: a result carrying data (success), a definitive
  * "no such order" from the venue (a retry asks the same question, and
- * {@link isDefinitiveOrderNotFound} is what makes that safe to trust), or the
- * attempt budget. Backoff is exponential with ±50% jitter — without the jitter
- * a fleet-wide burst would retry in lockstep and re-create the congestion that
- * caused the first failure.
+ * {@link isDefinitiveOrderNotFound} is what makes that safe to trust), a
+ * failure `Exchange.apiCall` has ALREADY spent its own transport ladder on
+ * ({@link isTransportRetryExhausted}), or the attempt budget. Backoff is
+ * exponential with ±50% jitter — without the jitter a fleet-wide burst would
+ * retry in lockstep and re-create the congestion that caused the first failure.
+ *
+ * That third stop is what keeps this budget a budget. `fetch` here is
+ * `MainBot.getOrder` -> `Exchange.getOrder` -> `apiCall`, and `apiCall` retries
+ * a connector 5xx/timeout SIX times at 500ms before it gives up — so every
+ * attempt spent here is really six connector round trips over ~3s, and the
+ * ceiling multiplies out to `attempts x 6` instead of `attempts`. Bug #599,
+ * 2026-09-02 01:21-01:23Z: one Kraken combo bot reconciling five resting orders
+ * against a connector answering HTTP 500 cost 96 round trips (5 orders x 18,
+ * plus 6 for the `primeReconcileBatch` prefetch) in ~100s, and paged the
+ * operator as "86 transport failures ... likely wedged" — 6 logical questions
+ * rendered as 86 failures. Re-asking after the transport layer has just been
+ * refused six times in a row inside 3s cannot learn anything new; an unresolved
+ * order is a no-op that the next reconcile sweep picks up (it takes no
+ * quarantine strike — that needs a DEFINITIVE not-found), so stopping early
+ * costs nothing and the amplifier goes with it.
  *
  * Returns the LAST result, so callers keep today's `!res?.data` handling.
  */
@@ -428,6 +447,7 @@ export async function reconcileLookup<
   for (let attempt = 1; attempt < attempts; attempt++) {
     if (last?.data) break
     if (isDefinitiveOrderNotFound(last ?? undefined)) break
+    if (isTransportRetryExhausted(last?.reason)) break
     const base = opts.backoffMs * 2 ** (attempt - 1)
     await opts.sleep(Math.round(base * (0.5 + random())))
     last = await fetch()
