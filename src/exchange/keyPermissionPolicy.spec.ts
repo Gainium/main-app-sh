@@ -14,9 +14,10 @@ process.env.NODE_ENV = 'testing'
  * rejected**. `recordOnly` is the only entry point re-verification paths may
  * use, and it returns an observation, never a verdict.
  *
- * Run: npx ts-node --files --project tsconfig.json \
- *        core/src/exchange/keyPermissionPolicy.spec.ts
+ * Run: `npm test` (mocha).
  */
+import { describe, it } from 'mocha'
+import { expect } from 'chai'
 import {
   hasWithdrawalPermission,
   isRiskyConnection,
@@ -26,15 +27,6 @@ import {
 } from './keyPermissionPolicy'
 import type { ExchangeKeyPermissions } from '../../types'
 
-let failures = 0
-function expect(label: string, actual: unknown, want: unknown) {
-  const ok = JSON.stringify(actual) === JSON.stringify(want)
-  if (!ok) failures++
-  console.log(
-    `${ok ? 'PASS' : 'FAIL'}  ${label}: got ${JSON.stringify(actual)} want ${JSON.stringify(want)}`,
-  )
-}
-
 const perms = (p: Partial<ExchangeKeyPermissions>): ExchangeKeyPermissions => ({
   withdraw: 'unknown',
   transfer: 'unknown',
@@ -43,177 +35,160 @@ const perms = (p: Partial<ExchangeKeyPermissions>): ExchangeKeyPermissions => ({
   ...p,
 })
 
-function main() {
-  // ── Rejecting a NEW connection ────────────────────────────────────────────
-  expect(
-    'new connection with withdrawal is rejected',
-    shouldRejectNewConnection(perms({ withdraw: 'yes' })),
-    true,
-  )
-  expect(
-    'new connection without withdrawal is accepted',
-    shouldRejectNewConnection(perms({ withdraw: 'no' })),
-    false,
-  )
-  // The whole point of the tri-state. We do not fail a user because a
-  // permissions lookup timed out or because the exchange does not tell us.
-  expect(
-    'unknown is NOT a rejection',
-    shouldRejectNewConnection(perms({ withdraw: 'unknown' })),
-    false,
-  )
-  expect(
-    'absent permissions (exchange cannot answer) is NOT a rejection',
-    shouldRejectNewConnection(undefined),
-    false,
-  )
-  // The rule was deliberately widened from "can withdraw" to "can move funds
-  // at all": Gainium calls no transfer endpoint on any exchange, so the
-  // capability is pure downside. This is knowingly aggressive — nearly every
-  // real Bybit key carries Wallet:[AccountTransfer], so ticking Assets at all
-  // trips it. Existing connections are still only ever flagged, so no live bot
-  // stops because of the widening.
-  expect(
-    'transfer permission alone IS grounds for rejecting a new connection',
-    shouldRejectNewConnection(perms({ withdraw: 'no', transfer: 'yes' })),
-    true,
-  )
-  expect(
-    'an unrestricted IP is a risk signal, not a rejection',
-    shouldRejectNewConnection(perms({ withdraw: 'no', ipRestricted: 'no' })),
-    false,
-  )
-  expect(
-    'hasWithdrawalPermission agrees',
-    [
-      hasWithdrawalPermission(perms({ withdraw: 'yes' })),
-      hasWithdrawalPermission(perms({ withdraw: 'no' })),
-      hasWithdrawalPermission(perms({ withdraw: 'unknown' })),
-      hasWithdrawalPermission(undefined),
-    ],
-    [true, false, false, false],
-  )
-
-  // ── EXISTING connections: record, never reject ────────────────────────────
-  // recordOnly returns an observation. There is deliberately no API here that
-  // can turn an existing connection's withdrawal permission into a failure.
-  const withdrawal = perms({
-    withdraw: 'yes',
-    detail: 'enableWithdrawals=true',
+describe('keyPermissionPolicy', () => {
+  describe('rejecting a NEW connection', () => {
+    it('new connection with withdrawal is rejected', () => {
+      expect(shouldRejectNewConnection(perms({ withdraw: 'yes' }))).to.equal(
+        true,
+      )
+    })
+    it('new connection without withdrawal is accepted', () => {
+      expect(shouldRejectNewConnection(perms({ withdraw: 'no' }))).to.equal(
+        false,
+      )
+    })
+    // The whole point of the tri-state. We do not fail a user because a
+    // permissions lookup timed out or because the exchange does not tell us.
+    it('unknown is NOT a rejection', () => {
+      expect(
+        shouldRejectNewConnection(perms({ withdraw: 'unknown' })),
+      ).to.equal(false)
+    })
+    it('absent permissions (exchange cannot answer) is NOT a rejection', () => {
+      expect(shouldRejectNewConnection(undefined)).to.equal(false)
+    })
+    // The rule was deliberately widened from "can withdraw" to "can move funds
+    // at all": Gainium calls no transfer endpoint on any exchange, so the
+    // capability is pure downside. This is knowingly aggressive — nearly every
+    // real Bybit key carries Wallet:[AccountTransfer], so ticking Assets at all
+    // trips it. Existing connections are still only ever flagged, so no live bot
+    // stops because of the widening.
+    it('transfer permission alone IS grounds for rejecting a new connection', () => {
+      expect(
+        shouldRejectNewConnection(perms({ withdraw: 'no', transfer: 'yes' })),
+      ).to.equal(true)
+    })
+    it('an unrestricted IP is a risk signal, not a rejection', () => {
+      expect(
+        shouldRejectNewConnection(perms({ withdraw: 'no', ipRestricted: 'no' })),
+      ).to.equal(false)
+    })
+    it('hasWithdrawalPermission agrees', () => {
+      expect([
+        hasWithdrawalPermission(perms({ withdraw: 'yes' })),
+        hasWithdrawalPermission(perms({ withdraw: 'no' })),
+        hasWithdrawalPermission(perms({ withdraw: 'unknown' })),
+        hasWithdrawalPermission(undefined),
+      ]).to.deep.equal([true, false, false, false])
+    })
   })
-  expect(
-    'a withdrawal-enabled existing key is recorded, not rejected',
-    recordOnly(withdrawal, undefined),
-    withdrawal,
-  )
-  expect(
-    'a clean reading overwrites an older one',
-    recordOnly(
-      perms({ withdraw: 'no', checkedAt: 2 }),
-      perms({ withdraw: 'yes' }),
-    )?.withdraw,
-    'no',
-  )
-  expect(
-    'first-ever reading is stored even if wholly unknown',
-    recordOnly(perms({}), undefined)?.withdraw,
-    'unknown',
-  )
-  // The important failure mode: a transient outage must not erase a known-bad
-  // reading. Otherwise a flaky exchange quietly launders a withdrawal-enabled
-  // key back to "we have no concerns".
-  expect(
-    'an all-unknown reading does NOT overwrite a known withdrawal-enabled one',
-    recordOnly(perms({}), perms({ withdraw: 'yes' })),
-    undefined,
-  )
-  expect(
-    'an all-unknown reading does NOT overwrite a known-clean one either',
-    recordOnly(perms({}), perms({ withdraw: 'no' })),
-    undefined,
-  )
-  expect(
-    'a partially-known reading DOES overwrite',
-    recordOnly(perms({ ipRestricted: 'no' }), perms({ withdraw: 'yes' }))
-      ?.ipRestricted,
-    'no',
-  )
-  expect(
-    'no reading at all writes nothing',
-    recordOnly(undefined, perms({ withdraw: 'yes' })),
-    undefined,
-  )
 
-  // ── Admin reporting ───────────────────────────────────────────────────────
-  expect(
-    'risky = withdrawal enabled OR no IP allowlist',
-    [
-      isRiskyConnection(perms({ withdraw: 'yes' })),
-      isRiskyConnection(perms({ withdraw: 'no', ipRestricted: 'no' })),
-      isRiskyConnection(perms({ withdraw: 'no', ipRestricted: 'yes' })),
-      isRiskyConnection(perms({})),
-      isRiskyConnection(undefined),
-    ],
-    [true, true, false, false, false],
-  )
+  describe('EXISTING connections: record, never reject', () => {
+    // recordOnly returns an observation. There is deliberately no API here that
+    // can turn an existing connection's withdrawal permission into a failure.
+    const withdrawal = perms({
+      withdraw: 'yes',
+      detail: 'enableWithdrawals=true',
+    })
+    it('a withdrawal-enabled existing key is recorded, not rejected', () => {
+      expect(recordOnly(withdrawal, undefined)).to.deep.equal(withdrawal)
+    })
+    it('a clean reading overwrites an older one', () => {
+      expect(
+        recordOnly(
+          perms({ withdraw: 'no', checkedAt: 2 }),
+          perms({ withdraw: 'yes' }),
+        )?.withdraw,
+      ).to.equal('no')
+    })
+    it('first-ever reading is stored even if wholly unknown', () => {
+      expect(recordOnly(perms({}), undefined)?.withdraw).to.equal('unknown')
+    })
+    // The important failure mode: a transient outage must not erase a known-bad
+    // reading. Otherwise a flaky exchange quietly launders a withdrawal-enabled
+    // key back to "we have no concerns".
+    it('an all-unknown reading does NOT overwrite a known withdrawal-enabled one', () => {
+      expect(
+        recordOnly(perms({}), perms({ withdraw: 'yes' })),
+      ).to.equal(undefined)
+    })
+    it('an all-unknown reading does NOT overwrite a known-clean one either', () => {
+      expect(recordOnly(perms({}), perms({ withdraw: 'no' }))).to.equal(
+        undefined,
+      )
+    })
+    it('a partially-known reading DOES overwrite', () => {
+      expect(
+        recordOnly(perms({ ipRestricted: 'no' }), perms({ withdraw: 'yes' }))
+          ?.ipRestricted,
+      ).to.equal('no')
+    })
+    it('no reading at all writes nothing', () => {
+      expect(recordOnly(undefined, perms({ withdraw: 'yes' }))).to.equal(
+        undefined,
+      )
+    })
+  })
 
-  // ── The message ───────────────────────────────────────────────────────────
-  // The message must name the capability actually found. It is only reached
-  // when shouldRejectNewConnection() was true, so `permissions` is always
-  // available — and must always be passed.
-  const wd = withdrawalRejectionReason('kraken', perms({ withdraw: 'yes' }))
-  expect(
-    'withdrawal rejection names withdrawal, the exchange and the fix',
-    [
-      wd.includes('withdrawal permission'),
-      wd.includes('kraken'),
-      wd.includes('read and trade'),
-      // The Bybit hint is about a Bybit control; it must not appear here.
-      wd.includes('Assets → Wallet'),
-    ],
-    [true, true, true, false],
-  )
-  const tf = withdrawalRejectionReason(
-    'bybit',
-    perms({ withdraw: 'no', transfer: 'yes' }),
-  )
-  expect(
-    'transfer rejection names transfer and offers the Bybit control',
-    [
-      tf.includes('transfer funds between accounts'),
-      tf.includes('Assets → Wallet'),
-    ],
-    [true, true],
-  )
-  expect(
-    'the Bybit-specific hint is not offered on other exchanges',
-    withdrawalRejectionReason(
-      'binance',
-      perms({ withdraw: 'no', transfer: 'yes' }),
-    ).includes('Assets → Wallet'),
-    false,
-  )
-  // REGRESSION: a caller that omits `permissions` used to get the transfer
-  // wording plus the Bybit hint regardless of what was actually found.
-  const bare = withdrawalRejectionReason('kraken')
-  expect(
-    'without permissions the message claims neither capability',
-    [
-      bare.includes('withdrawal permission'),
-      bare.includes('transfer funds between accounts'),
-      bare.includes('Assets → Wallet'),
-      bare.includes('move your funds'),
-    ],
-    [false, false, false, true],
-  )
-  expect(
-    'message works without an exchange name',
-    withdrawalRejectionReason().includes('undefined'),
-    false,
-  )
+  describe('admin reporting', () => {
+    it('risky = withdrawal enabled OR no IP allowlist', () => {
+      expect([
+        isRiskyConnection(perms({ withdraw: 'yes' })),
+        isRiskyConnection(perms({ withdraw: 'no', ipRestricted: 'no' })),
+        isRiskyConnection(perms({ withdraw: 'no', ipRestricted: 'yes' })),
+        isRiskyConnection(perms({})),
+        isRiskyConnection(undefined),
+      ]).to.deep.equal([true, true, false, false, false])
+    })
+  })
 
-  console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS')
-  process.exit(failures ? 1 : 0)
-}
-
-main()
+  describe('the message', () => {
+    // The message must name the capability actually found. It is only reached
+    // when shouldRejectNewConnection() was true, so `permissions` is always
+    // available — and must always be passed.
+    it('withdrawal rejection names withdrawal, the exchange and the fix', () => {
+      const wd = withdrawalRejectionReason('kraken', perms({ withdraw: 'yes' }))
+      expect([
+        wd.includes('withdrawal permission'),
+        wd.includes('kraken'),
+        wd.includes('read and trade'),
+        // The Bybit hint is about a Bybit control; it must not appear here.
+        wd.includes('Assets → Wallet'),
+      ]).to.deep.equal([true, true, true, false])
+    })
+    it('transfer rejection names transfer and offers the Bybit control', () => {
+      const tf = withdrawalRejectionReason(
+        'bybit',
+        perms({ withdraw: 'no', transfer: 'yes' }),
+      )
+      expect([
+        tf.includes('transfer funds between accounts'),
+        tf.includes('Assets → Wallet'),
+      ]).to.deep.equal([true, true])
+    })
+    it('the Bybit-specific hint is not offered on other exchanges', () => {
+      expect(
+        withdrawalRejectionReason(
+          'binance',
+          perms({ withdraw: 'no', transfer: 'yes' }),
+        ).includes('Assets → Wallet'),
+      ).to.equal(false)
+    })
+    // REGRESSION: a caller that omits `permissions` used to get the transfer
+    // wording plus the Bybit hint regardless of what was actually found.
+    it('without permissions the message claims neither capability', () => {
+      const bare = withdrawalRejectionReason('kraken')
+      expect([
+        bare.includes('withdrawal permission'),
+        bare.includes('transfer funds between accounts'),
+        bare.includes('Assets → Wallet'),
+        bare.includes('move your funds'),
+      ]).to.deep.equal([false, false, false, true])
+    })
+    it('message works without an exchange name', () => {
+      expect(withdrawalRejectionReason().includes('undefined')).to.equal(
+        false,
+      )
+    })
+  })
+})

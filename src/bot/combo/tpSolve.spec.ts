@@ -26,9 +26,10 @@ process.env.NODE_ENV = 'testing'
  *     code" from "changed the answer", and only the second is a behaviour
  *     change.
  *
- * Run: npx ts-node --files --project tsconfig.json \
- *        core/src/bot/combo/tpSolve.spec.ts
+ * Run: `npm test` (mocha).
  */
+import { describe, it } from 'mocha'
+import { expect } from 'chai'
 import {
   comboPercentAtPrice,
   comboPnlAtPrice,
@@ -36,25 +37,8 @@ import {
   type ComboTpSolveInput,
 } from './tpSolve'
 
-let failures = 0
-
-function check(name: string, actual: number, expected: number, eps = 1e-12) {
-  const ok = Math.abs(actual - expected) < eps
-  if (!ok) {
-    failures++
-  }
-  console.log(
-    `${ok ? 'PASS' : 'FAIL'}  ${name}` +
-      (ok ? '' : `\n      expected ${expected}, got ${actual}`),
-  )
-}
-
-function checkTruthy(name: string, ok: boolean) {
-  if (!ok) {
-    failures++
-  }
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`)
-}
+const closeTo = (actual: number, expected: number, eps = 1e-12) =>
+  expect(Math.abs(actual - expected) < eps).to.equal(true)
 
 // ---------------------------------------------------------------------------
 // The pre-funding formulas, transcribed verbatim from `comboHelper` as they
@@ -136,114 +120,107 @@ const SHORT_BALANCES = {
   currentBalances: { base: 0, quote: 8772.4637 },
 }
 
-console.log('--- round-trip: solved price must land on the target ---')
-for (const isLong of [true, false]) {
-  for (const profitBase of [false, true]) {
-    for (const funding of [0, -48.3325, 12.7]) {
-      const i = deal({
-        isLong,
-        profitBase,
-        funding,
-        ...(isLong ? {} : SHORT_BALANCES),
-      })
-      const price = comboPriceForTarget(i, TARGET)
-      checkTruthy(
-        `${isLong ? 'long ' : 'short'} profitBase=${profitBase ? 'Y' : 'N'} funding=${funding} → price is finite`,
-        price !== null && Number.isFinite(price),
-      )
-      if (price !== null && Number.isFinite(price)) {
-        check(
-          `  round-trip back to ${TARGET_LABEL}%`,
-          comboPercentAtPrice(i, price),
-          TARGET,
-        )
+describe('tpSolve', () => {
+  describe('round-trip: solved price must land on the target', () => {
+    for (const isLong of [true, false]) {
+      for (const profitBase of [false, true]) {
+        for (const funding of [0, -48.3325, 12.7]) {
+          const label = `${isLong ? 'long ' : 'short'} profitBase=${profitBase ? 'Y' : 'N'} funding=${funding}`
+          it(`${label} → price is finite and rounds back to ${TARGET_LABEL}%`, () => {
+            const i = deal({
+              isLong,
+              profitBase,
+              funding,
+              ...(isLong ? {} : SHORT_BALANCES),
+            })
+            const price = comboPriceForTarget(i, TARGET)
+            expect(price !== null && Number.isFinite(price)).to.equal(true)
+            if (price !== null && Number.isFinite(price)) {
+              closeTo(comboPercentAtPrice(i, price), TARGET)
+            }
+          })
+        }
       }
     }
-  }
-}
+  })
 
-console.log('\n--- equivalence with the pre-funding formulas (funding: 0) ---')
-for (const isLong of [true, false]) {
-  for (const profitBase of [false, true]) {
-    const i = deal({
-      isLong,
-      profitBase,
-      funding: 0,
-      ...(isLong ? {} : SHORT_BALANCES),
+  describe('equivalence with the pre-funding formulas (funding: 0)', () => {
+    for (const isLong of [true, false]) {
+      for (const profitBase of [false, true]) {
+        const label = `${isLong ? 'long ' : 'short'} profitBase=${profitBase ? 'Y' : 'N'}`
+        const i = deal({
+          isLong,
+          profitBase,
+          funding: 0,
+          ...(isLong ? {} : SHORT_BALANCES),
+        })
+        it(`${label} percent at 2262.74`, () => {
+          closeTo(
+            comboPercentAtPrice(i, 2262.7445371420145),
+            legacyPercent(i, 2262.7445371420145),
+          )
+        })
+        it(`${label} price for ${TARGET_LABEL}%`, () => {
+          closeTo(
+            comboPriceForTarget(i, TARGET) as number,
+            legacyPrice(i, TARGET),
+          )
+        })
+      }
+    }
+  })
+
+  describe('funding moves the target in the right direction', () => {
+    const flat = deal({ funding: 0 })
+    const paid = deal({ funding: -48.3325 })
+    const earned = deal({ funding: 12.7 })
+    const pFlat = comboPriceForTarget(flat, TARGET) as number
+    const pPaid = comboPriceForTarget(paid, TARGET) as number
+    const pEarned = comboPriceForTarget(earned, TARGET) as number
+
+    // A long that paid funding has to sell higher to clear the same target, by
+    // exactly the funding spread over the position net of the exit fee.
+    it('long: paying 48.3325 raises the required exit by funding / (qty · (1 − fee))', () => {
+      closeTo(pPaid - pFlat, 48.3325 / (2.8 * (1 - 0.0002)), 1e-9)
     })
-    check(
-      `${isLong ? 'long ' : 'short'} profitBase=${profitBase ? 'Y' : 'N'} percent at 2262.74`,
-      comboPercentAtPrice(i, 2262.7445371420145),
-      legacyPercent(i, 2262.7445371420145),
-    )
-    check(
-      `${isLong ? 'long ' : 'short'} profitBase=${profitBase ? 'Y' : 'N'} price for ${TARGET_LABEL}%`,
-      comboPriceForTarget(i, TARGET) as number,
-      legacyPrice(i, TARGET),
-    )
-  }
-}
+    it('long: earning funding lowers the required exit', () => {
+      expect(pEarned < pFlat).to.equal(true)
+    })
+  })
 
-console.log('\n--- funding moves the target in the right direction ---')
-{
-  const flat = deal({ funding: 0 })
-  const paid = deal({ funding: -48.3325 })
-  const earned = deal({ funding: 12.7 })
-  const pFlat = comboPriceForTarget(flat, TARGET) as number
-  const pPaid = comboPriceForTarget(paid, TARGET) as number
-  const pEarned = comboPriceForTarget(earned, TARGET) as number
+  describe('the shape of deal that produced this fix', () => {
+    // A deep-laddered deal that has been open long enough for funding to reach
+    // the same order of magnitude as the target itself. This is the regime the
+    // bug lived in: the target is a percentage of *usage*, so once a deal has
+    // laddered in it is a small absolute number, while funding keeps accruing
+    // for as long as the position is held.
+    const flat = deal()
+    const tp = comboPriceForTarget(flat, TARGET) as number
 
-  // A long that paid funding has to sell higher to clear the same target, by
-  // exactly the funding spread over the position net of the exit fee.
-  check(
-    'long: paying 48.3325 raises the required exit by funding / (qty · (1 − fee))',
-    pPaid - pFlat,
-    48.3325 / (2.8 * (1 - 0.0002)),
-    1e-9,
-  )
-  checkTruthy('long: earning funding lowers the required exit', pEarned < pFlat)
-}
+    it('target is a percentage of usage, not of price', () => {
+      closeTo(TARGET * flat.denominator, 55.0607838, 1e-6)
+    })
+    const withFunding = deal({ funding: -48.3325 })
+    it('funding here is most of the target', () => {
+      expect(48.3325 > 0.75 * TARGET * flat.denominator).to.equal(true)
+    })
+    it('once funding counts, the old price no longer reaches the target', () => {
+      expect(comboPercentAtPrice(withFunding, tp) < TARGET).to.equal(true)
+    })
+    it('and the shortfall is exactly the funding paid', () => {
+      closeTo(
+        comboPnlAtPrice(flat, tp) - comboPnlAtPrice(withFunding, tp),
+        48.3325,
+        1e-9,
+      )
+    })
+  })
 
-console.log('\n--- the shape of deal that produced this fix ---')
-{
-  // A deep-laddered deal that has been open long enough for funding to reach
-  // the same order of magnitude as the target itself. This is the regime the
-  // bug lived in: the target is a percentage of *usage*, so once a deal has
-  // laddered in it is a small absolute number, while funding keeps accruing
-  // for as long as the position is held.
-  const flat = deal()
-  const tp = comboPriceForTarget(flat, TARGET) as number
-
-  check(
-    'target is a percentage of usage, not of price',
-    TARGET * flat.denominator,
-    55.0607838,
-    1e-6,
-  )
-  const withFunding = deal({ funding: -48.3325 })
-  checkTruthy(
-    'funding here is most of the target',
-    48.3325 > 0.75 * TARGET * flat.denominator,
-  )
-  checkTruthy(
-    'once funding counts, the old price no longer reaches the target',
-    comboPercentAtPrice(withFunding, tp) < TARGET,
-  )
-  check(
-    'and the shortfall is exactly the funding paid',
-    comboPnlAtPrice(flat, tp) - comboPnlAtPrice(withFunding, tp),
-    48.3325,
-    1e-9,
-  )
-}
-
-console.log('\n--- no usage means no level to place ---')
-checkTruthy(
-  'denominator 0 → null rather than Infinity',
-  comboPriceForTarget(deal({ denominator: 0 }), TARGET) === null,
-)
-
-console.log(
-  failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`,
-)
-process.exit(failures === 0 ? 0 : 1)
+  describe('no usage means no level to place', () => {
+    it('denominator 0 → null rather than Infinity', () => {
+      expect(comboPriceForTarget(deal({ denominator: 0 }), TARGET)).to.equal(
+        null,
+      )
+    })
+  })
+})
