@@ -9462,10 +9462,14 @@ function createDCABotHelper<
             for (const activeTPSLOrder of activeTPSLOrders) {
               if (this.isOrderQuarantined(activeTPSLOrder)) continue
               if (this.restartProbeExhausted()) continue
-              const tpslOrderData = await this.getOrder(
-                activeTPSLOrder.clientOrderId,
-                activeTPSLOrder.symbol,
-                true,
+              // Bounded retry on a transient, exactly as the reconnect pass
+              // does. This loop was a single shot: one lookup blip rendered
+              // as "not found" skipped the order for the whole restart, and
+              // a FILLED order is the one most likely to be reported that
+              // way (see `isDefinitiveOrderNotFound`).
+              const tpslOrderData = await this.getOrderForReconcile(
+                activeTPSLOrder,
+                { fromCache: true },
               )
               // `notok` is tested BEFORE `!data`: every failed lookup nulls
               // `data`, so testing `!data` first made this branch unreachable
@@ -9622,11 +9626,13 @@ function createDCABotHelper<
               for (const o of activeRegularOrders) {
                 if (this.isOrderQuarantined(o)) continue
                 if (this.restartProbeExhausted()) continue
-                const exchangeData = await this.getOrder(
-                  o.clientOrderId,
-                  o.symbol,
-                  true,
-                )
+                // Same bounded retry as the TP/SL loop above, and for the
+                // same reason: this is where three filled safety orders were
+                // skipped on a restart because one transient miss each was
+                // read as the venue's answer.
+                const exchangeData = await this.getOrderForReconcile(o, {
+                  fromCache: true,
+                })
                 if (isDefinitiveOrderNotFound(exchangeData)) {
                   this.handleWarn(
                     `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,

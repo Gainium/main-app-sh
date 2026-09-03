@@ -384,7 +384,9 @@ export function isDefinitiveOrderNotFound(res?: {
   if (!reason) return false
   // Coinbase: "Coinbase order not found after execution."
   // OKX / Bitget: "Order not found"   Bybit: "Order not found after execution"
-  // Kraken: "Order not found in active orders" / "in history" / "in open orders"
+  // Kraken futures: "Order not found in active orders" / "in history"
+  // Kraken spot: "Order not found in open orders" is deliberately NOT matched —
+  // see below.
   // Binance passes through -2013 "Order does not exist".
   // Hyperliquid: the raw `unknownOid` status, via `HyperliquidError`.
   //
@@ -394,6 +396,21 @@ export function isDefinitiveOrderNotFound(res?: {
   // retries `unknownOid` four times when it knows an order was just placed; the
   // reconcile path gets no such retry, so age is what separates the two cases.
   // Matched exactly rather than as a substring — it is a bare status token.
+  //
+  // Kraken spot's "Order not found in open orders" is ambiguous, and it is the
+  // worst kind of ambiguous: it LOOKS definitive. The connector resolves a spot
+  // order by its txid through QueryOrders — the one exact lookup, and the only
+  // one that can see a closed order — and emits this string only after that
+  // lookup failed for ANY reason and it fell through to a userref scan of the
+  // open-orders list, which cannot resolve a txid at all. So the string means
+  // "QueryOrders did not answer", and absence from the open list is exactly
+  // where a FILLED order lives. On a bot-worker restart the single-shot probe
+  // in `checkOrders` took a transient miss on three filled safety orders, read
+  // it as a venue denial, and left the deal one level deep — the position on
+  // the venue was ~12x what the deal said until the next reconnect pass
+  // re-asked seven minutes later and booked them. Treated as "the call did not
+  // succeed": the caller retries and the quarantine takes no strike.
+  if (/\border not found in open orders\b/.test(reason)) return false
   return (
     /\border not found\b/.test(reason) ||
     /\border does not exist\b/.test(reason) ||
@@ -1034,14 +1051,26 @@ class MainBot<T extends IMainBot> {
     }
   }
 
-  protected async getOrderForReconcile(o: Order) {
+  /**
+   * `opts` exists for the restart probes in `checkOrders`, which read the
+   * redis order cache first and, for grid, ask by the bot's pair rather than
+   * the order's symbol. Both are passed through unchanged, so moving those
+   * loops onto this retry changed nothing about WHAT they ask — only that a
+   * transient miss is re-asked instead of being read as the venue's answer.
+   */
+  protected async getOrderForReconcile(
+    o: Order,
+    opts: { fromCache?: boolean; symbol?: string } = {},
+  ) {
+    const symbol = opts.symbol ?? o.symbol
+    const fromCache = opts.fromCache ?? false
     // No exchange bound: retrying cannot fix that, and sleeping through it once
     // per order turns a dead bot into a slow one.
     if (!this.exchange || !this.data) {
-      return await this.getOrder(o.clientOrderId, o.symbol, false)
+      return await this.getOrder(o.clientOrderId, symbol, fromCache)
     }
     return await reconcileLookup(
-      () => this.getOrder(o.clientOrderId, o.symbol, false),
+      () => this.getOrder(o.clientOrderId, symbol, fromCache),
       {
         attempts: reconcileLookupAttempts,
         backoffMs: reconcileLookupBackoffMs,

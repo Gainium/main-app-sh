@@ -1445,11 +1445,14 @@ function createBotHelper<
             )) {
               if (this.isOrderQuarantined(o)) continue
               if (this.restartProbeExhausted()) continue
-              const exchangeData = await this.getOrder(
-                o.clientOrderId,
-                pair,
-                true,
-              )
+              // Bounded retry on a transient, as the reconnect pass already
+              // does — a single-shot probe here reads one lookup blip as the
+              // venue's answer and skips the order for the whole restart
+              // (see `isDefinitiveOrderNotFound`).
+              const exchangeData = await this.getOrderForReconcile(o, {
+                fromCache: true,
+                symbol: pair,
+              })
               if (isDefinitiveOrderNotFound(exchangeData)) {
                 this.handleWarn(
                   `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
