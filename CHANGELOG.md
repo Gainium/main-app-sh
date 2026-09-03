@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.57.1] - 2026-09-03
+
+### Fixed
+
+- A streamed balance item with no `locked` field no longer writes `locked: 0` over the stored hold. Kraken spot v2 (`websocket-connector-sh` ≥ 1.14.11) reports the total balance with no hold figure; zeroing `locked` on every event overstated "available" and undid the REST refresh within seconds. `AssetBalance.locked` is now optional; `core/src/utils/balanceWrite.ts` (`lockedUpdateFields` / `lockedInsertValue`, with spec) sets it on update only when present and defaults it to 0 only when the row is created.
+
+### Added
+
+- `getBalances` returns `updated` (ISO) per row — the oldest row's time when an asset is summed across exchanges — so the dashboard can mark a stale balance and offer a refresh (spec: main-app 002).
+
 ## [1.57.0] - 2026-09-03
 
 ### Fixed

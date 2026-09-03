@@ -105,6 +105,9 @@ export const getBalances = async (
       if (find) {
         find.free += b.free
         find.locked += b.locked
+        if (b.updated && (!find.updated || b.updated < find.updated)) {
+          find.updated = b.updated
+        }
         final = [...final.filter((f) => f.asset !== b.asset), find]
       }
     })
@@ -130,6 +133,10 @@ export const getBalances = async (
         asset: d.asset,
         free: `${d.free}`,
         locked: `${d.locked}`,
+        // When the row was last written by a stream event or a REST refresh.
+        // For a summed asset this is the OLDEST of its rows, so the dashboard
+        // staleness marker reflects the least fresh venue behind the figure.
+        updated: d.updated ? new Date(d.updated).toISOString() : null,
         exchange: shouldSumBalance ? '' : outExchange,
         exchangeUUID: shouldSumBalance ? '' : outUuid,
         exchangeName: shouldSumBalance

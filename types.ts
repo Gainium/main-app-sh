@@ -3380,7 +3380,12 @@ export type UnPromise<T> = T extends Promise<infer U> ? U : T
 export interface AssetBalance {
   asset: string
   free: string
-  locked: string
+  /**
+   * Absent when the producing stream reports no hold figure (Kraken spot v2,
+   * websocket-connector-sh ≥ 1.14.11). Consumers must then leave the stored
+   * `locked` untouched — see `core/src/utils/balanceWrite.ts`.
+   */
+  locked?: string
   /**
    * The venue's own spendable figure for this asset, when the producing stream
    * publishes one. Mirrors `AssetBalance.venueAvailable` in

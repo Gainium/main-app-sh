@@ -717,6 +717,10 @@ export const UserSchema = /* GraphQL */ `
     asset: String
     free: String
     locked: String
+    # ISO time of the last write to this balance (stream event or REST
+    # refresh); the oldest row when the asset is summed across exchanges.
+    # Null only for rows that predate the field.
+    updated: String
     exchange: String
     exchangeUUID: String
     exchangeName: String

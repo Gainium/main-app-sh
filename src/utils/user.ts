@@ -84,8 +84,11 @@ const { getTimezoneOffset, findUSDRate } = utils
  * `balances` collection, so the displayed "available" reads wrong. Clamp at the
  * write boundary so the collection can never store a negative locked amount.
  */
-const normalizeLocked = (locked: number): number =>
-  Number.isFinite(locked) && locked > 0 ? locked : 0
+import {
+  lockedInsertValue,
+  lockedUpdateFields,
+  normalizeLocked,
+} from './balanceWrite'
 
 /**
  * The venue's own spendable figure, as fields to merge into the balance write.
@@ -213,7 +216,7 @@ const processBalanceUpdate = async () => {
                 {
                   ...d,
                   free: parseFloat(d.free),
-                  locked: normalizeLocked(parseFloat(d.locked)),
+                  locked: lockedInsertValue(d),
                   // After the spread, so the raw string from the event never
                   // reaches the doc.
                   ...venueAvailableFields(d.venueAvailable),
@@ -239,7 +242,10 @@ const processBalanceUpdate = async () => {
                   $set: {
                     ...d,
                     free: parseFloat(d.free),
-                    locked: normalizeLocked(parseFloat(d.locked)),
+                    // Absent `locked` (Kraken spot v2) leaves the stored hold
+                    // alone: `...d` carries no such key then, and the helper
+                    // adds none (core spec 003 §4.2).
+                    ...lockedUpdateFields(d),
                     // After the spread, so the raw string from the event never
                     // reaches the doc.
                     ...venueAvailableFields(d.venueAvailable),
