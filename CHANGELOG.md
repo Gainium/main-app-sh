@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.57.0] - 2026-09-03
+
+### Fixed
+
+- **A bot could hold resting orders while deaf to its account's `userStreamInfo` channel — no fills, no reconcile sweeps, no error, no retry.** Thirteen DCA bots of one user on one Kraken account were loaded on the same worker within 10 ms of a process restart on 2026-09-02 and never received another message on that channel until the next restart 20 h later: seven connector reconnects and twelve `RECONCILE VIA SWEEP` publishes went unheard while the worker delivered hundreds of other accounts' messages. `setExchangeCredentials` ran `unsubscribe(ch, cb)` before `subscribe(ch, cb)` for a callback it had never registered; in node-redis 5 that puts a real `UNSUBSCRIBE` on the wire behind a sibling's still-pending `SUBSCRIBE` (its local entry only exists once the reply is in), and every later `subscribe` is then deduplicated client-side. Client: thirteen listeners. Server: nothing. Reproduced deterministically in `src/db/redisPubSub.spec.ts` against a fake that mirrors `@redis/client` 5.10 `pub-sub.js`. `RedisWrapper` now serialises `subscribe`/`unsubscribe` per channel, never sends a command for a listener it did not register, and gains `resubscribe(channel)` (one wire `UNSUBSCRIBE` + `SUBSCRIBE` for every registered callback) to repair a channel the client believes it holds. The redundant pre-subscribe unsubscribe is gone from both `setExchangeCredentials` implementations. Spec: `specs/002.user-stream-channel-lost-on-concurrent-subscribe.md`.
+- A DCA bot stopped while a deal was open never released its user-stream listeners when that deal later closed (`stop()` only tore the stream down when no deal was open at stop time); the instance was dropped by the worker with live callbacks. `SharedStream.addListener` no longer skips the Redis subscribe silently when the first listener of a fresh worker arrives before the client connected.
+
+### Added
+
+- **User-stream liveness (spec 002 §4.5–4.6).** Every bot acknowledges any message on `userStreamInfo<uuid>` with `HSET gainium:userStreamAck:<uuid> <botId> <ms>` so the fill-failsafe can tell a deaf bot from a quiet one, and treats a `PING <ms>` probe as such (acked, never logged at info). On its 30 s consumer heartbeat a bot holding resting orders that heard nothing for `USER_STREAM_SILENCE_MS` (default 6 min) while the failsafe prober is alive (`gainium:failsafe:heartbeat` fresh with `pingMs > 0`) logs `USER-STREAM REPAIR`, runs `resubscribeUserStream()` (info channel, account event channel, fresh `open stream`), reconciles once the channel delivers again, and after two silent repairs raises a visible, non-stopping bot error. Pure decision module `src/bot/userStreamLiveness.ts` with its spec. Bot host internal-API method `resubscribeUserStream(exchangeUUID)` fans the repair out to every hosted bot on an account.
+
 ## [1.56.18] - 2026-09-03
 
 ### Fixed

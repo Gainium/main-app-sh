@@ -5738,6 +5738,55 @@ class Bot<T extends UserSchema = UserSchema> {
     return await this.getBot(type, userId, id, undefined, paperContext)
   }
 
+  /**
+   * Re-establish the user-stream subscriptions of every bot this host runs
+   * on one exchange account (core spec 002 §4.3). Internal-API method: the
+   * fill-failsafe calls it over the bot-service rabbit queues when a
+   * `RECONCILE VIA SWEEP` it published was not acknowledged by any bot on
+   * the account. Returns the number of bots asked to resubscribe.
+   */
+  public async resubscribeUserStream(exchangeUUID: string): Promise<number> {
+    if (!exchangeUUID) {
+      return 0
+    }
+    if (!this.useBots) {
+      return (
+        (await this.callExternalBotService<number>(
+          'allWithHedge',
+          'resubscribeUserStream',
+          false,
+          exchangeUUID,
+        )) ?? 0
+      )
+    }
+    const targets = [
+      ...this.bots,
+      ...this.dcaBots,
+      ...this.comboBots,
+      ...this.hedgeComboBots,
+      ...this.hedgeDcaBots,
+    ].filter((b) => b.uuid === exchangeUUID)
+    let sent = 0
+    for (const b of targets) {
+      const worker = this.getWorkerById(b.worker)
+      if (!worker) {
+        continue
+      }
+      worker.postMessage({
+        do: 'method',
+        botType: b.type,
+        botId: b.id,
+        method: 'resubscribeUserStream',
+        args: ['sweep unacknowledged'],
+      })
+      sent += 1
+    }
+    this.handleLog(
+      `Resubscribe user stream requested for ${exchangeUUID}: ${sent} bot(s)`,
+    )
+    return sent
+  }
+
   public async restartBot(
     userId: string,
     input: {

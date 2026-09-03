@@ -81,6 +81,14 @@ export class RedisWrapper {
   private timers: Map<string, NodeJS.Timeout> = new Map()
   private id: string | null = null
   private isSub = false
+  /**
+   * Serialises subscribe / unsubscribe / resubscribe PER CHANNEL. Without it
+   * two bots joining one channel inside a single round trip could put
+   * `UNSUBSCRIBE` on the wire behind a sibling's pending `SUBSCRIBE` and end
+   * up with listeners registered locally and no subscription on the server
+   * (spec 002 §3). The lock is held until the command's reply is in.
+   */
+  private channelMutex = new IdMutex()
   constructor() {
     this.subscribeAll = this.subscribeAll.bind(this)
     this.ping = this.ping.bind(this)
@@ -346,21 +354,56 @@ export class RedisWrapper {
         }, 5000),
       )
     }
-    if (this._instance && this._instance.isReady) {
-      const get = this.subscribeMap.get(key) ?? new Set()
-      get.add(cb)
-      this.subscribeMap.set(key, get)
-      return await this._instance.subscribe(key, cb).catch((e) => {
-        logger.error(
-          `${prefix} Redis subscribe Error: ${e}, retry subscribe in 5s`,
-        )
-        get.delete(cb)
-        setTimer.bind(this)()
-      })
+    await this.channelMutex.lock(key)
+    try {
+      if (this._instance && this._instance.isReady) {
+        const get = this.subscribeMap.get(key) ?? new Set()
+        get.add(cb)
+        this.subscribeMap.set(key, get)
+        return await this._instance.subscribe(key, cb).catch((e) => {
+          logger.error(
+            `${prefix} Redis subscribe Error: ${e}, retry subscribe in 5s`,
+          )
+          get.delete(cb)
+          setTimer.bind(this)()
+        })
+      }
+      if (this._instance && !this._instance.isReady) {
+        logger.error(`${prefix} Redis is not ready yet, retry subscribe in 5s`)
+        setTimer()
+      }
+    } finally {
+      this.channelMutex.release(key)
     }
-    if (this._instance && !this._instance.isReady) {
-      logger.error(`${prefix} Redis is not ready yet, retry subscribe in 5s`)
-      setTimer()
+  }
+
+  /**
+   * Force the server subscription for `key` back in line with the listeners
+   * this wrapper registered: one wire `UNSUBSCRIBE` (drops node-redis's local
+   * entry too, so the next subscribe cannot be deduplicated away) followed by
+   * a `SUBSCRIBE` re-adding every registered callback. Used to repair a
+   * channel the client believes it holds while the server does not (spec
+   * 002 §4.3). Returns the number of listeners re-registered; 0 when nothing
+   * is registered for `key`, in which case no command is sent.
+   */
+  public async resubscribe(key: string): Promise<number> {
+    await this.channelMutex.lock(key)
+    try {
+      const cbs = [...(this.subscribeMap.get(key) ?? [])]
+      if (!cbs.length || !this._instance || !this._instance.isReady) {
+        return 0
+      }
+      await this._instance.unsubscribe(key).catch((e) => {
+        logger.error(`${prefix} Redis resubscribe unsubscribe Error: ${e}`)
+      })
+      for (const cb of cbs) {
+        await this._instance.subscribe(key, cb).catch((e) => {
+          logger.error(`${prefix} Redis resubscribe subscribe Error: ${e}`)
+        })
+      }
+      return cbs.length
+    } finally {
+      this.channelMutex.release(key)
     }
   }
   public async pSubscribe(
@@ -384,9 +427,22 @@ export class RedisWrapper {
     key: string,
     cb?: (msg: string, channel: string) => void,
   ) {
-    if (this._instance && this._instance.isReady) {
+    await this.channelMutex.lock(key)
+    try {
+      if (!this._instance || !this._instance.isReady) {
+        return
+      }
       if (cb) {
-        const get = this.subscribeMap.get(key) ?? new Set()
+        const get = this.subscribeMap.get(key)
+        if (!get || !get.has(cb)) {
+          // Not ours: node-redis would still put an UNSUBSCRIBE on the wire
+          // for a channel it has no local entry for, which is exactly how a
+          // sibling's in-flight SUBSCRIBE got cancelled (spec 002 §3).
+          logger.debug(
+            `${prefix} Redis unsubscribe skipped for ${key}: listener not registered`,
+          )
+          return
+        }
         get.delete(cb)
         if (get.size === 0) {
           this.subscribeMap.delete(key)
@@ -399,6 +455,8 @@ export class RedisWrapper {
       return await this._instance.unsubscribe(key, cb).catch((e) => {
         logger.error(`${prefix} Redis unsubscribe Error: ${e}`)
       })
+    } finally {
+      this.channelMutex.release(key)
     }
   }
   public async quit() {

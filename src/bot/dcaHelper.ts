@@ -16873,6 +16873,7 @@ function createDCABotHelper<
             }
           }
         }
+        let userStreamClosed = false
         if (!closeType || openDeals.length === 0) {
           if (this.redisSubGlobal) {
             for (const pair of await this.redisSubKeys([...this.pairs])) {
@@ -16880,6 +16881,7 @@ function createDCABotHelper<
             }
           }
           this.closeUserStream()
+          userStreamClosed = true
           this.deals = new Map()
           for (const i of this.indicators.values()) {
             await this.sendIndicatorUnsubscribeEvent(i.id, i.room, i.cb, false)
@@ -16905,6 +16907,14 @@ function createDCABotHelper<
           this.data?.status === BotStatusEnum.closed &&
           openDeals.length === 0
         ) {
+          if (!userStreamClosed) {
+            // The bot had an open deal when it was stopped, so the branch
+            // above skipped the stream teardown; the deal has now closed and
+            // the instance is about to be dropped by the worker. Release the
+            // account channel listeners with it (core spec 002 §4.7).
+            this.closeUserStream()
+            userStreamClosed = true
+          }
           for (const pair of this.pairs) {
             await this.unsubscribeFromExchangeInfo(pair)
             await this.unsubscribeFromUserFee(pair)

@@ -38,8 +38,28 @@ class SharedStream {
     this.initRedis()
   }
 
+  private initPromise: Promise<void> | null = null
+
   private async initRedis() {
-    this.redis = await RedisClient.getInstance(true, 'global')
+    if (!this.initPromise) {
+      this.initPromise = RedisClient.getInstance(true, 'global').then((r) => {
+        this.redis = r
+      })
+    }
+    return this.initPromise
+  }
+
+  /**
+   * Re-establish the server subscription for one account channel (spec 002
+   * §4.3): `RedisWrapper.resubscribe` puts a real UNSUBSCRIBE + SUBSCRIBE on
+   * the wire for our `redisCb`. No-op when nothing is subscribed for `key`.
+   */
+  public async resubscribe(key: string): Promise<number> {
+    await this.initRedis()
+    if (!this.subscribers.has(key)) {
+      return 0
+    }
+    return (await this.redis?.resubscribe(key)) ?? 0
   }
 
   private log(...msg: unknown[]) {
@@ -79,6 +99,11 @@ class SharedStream {
     this.log(`${loggerPrefix} Adding listener for ${key} | ${botId}`)
     if (!this.subscribers.has(key)) {
       this.log(`${loggerPrefix} Subscribing to ${key}`)
+      // The constructor kicks off the connection without awaiting it; the
+      // first listener of a fresh worker used to hit `this.redis === null`
+      // and skip the subscribe silently while still being recorded as a
+      // subscriber (spec 002 §4.8).
+      await this.initRedis()
       await this.redis?.subscribe(key, this.redisCb)
     }
     this.subscribers.set(

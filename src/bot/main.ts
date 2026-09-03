@@ -148,6 +148,14 @@ import Rabbit from '../db/rabbit'
 import { RunWithDelay } from '../utils/delay'
 import BotSharedData, { type StreamData } from './shared'
 import SharedStream from './sharedStream'
+import {
+  assessUserStreamLiveness,
+  FAILSAFE_HEARTBEAT_KEY,
+  isPingMessage,
+  parseProberHeartbeat,
+  userStreamAckKey,
+  USER_STREAM_ACK_TTL_SEC,
+} from './userStreamLiveness'
 import FundingStream, { fundingChannel } from './fundingStream'
 import FundingStore from './fundingStore'
 import {
@@ -227,6 +235,18 @@ const mutex = new IdMutex()
 const mutexEmit = new IdMutex(30)
 
 const loggerPrefix = `${isMainThread ? 'Main thread' : `Worker ${threadId}`} |`
+
+/**
+ * How long the account's `userStreamInfo` channel may stay silent — while the
+ * fill-failsafe prober is alive — before a bot holding resting orders treats
+ * itself as deaf and re-subscribes (core spec 002 §4.6). Default 6 min = three
+ * probe periods.
+ */
+const userStreamSilenceMs =
+  Number(process.env.USER_STREAM_SILENCE_MS) > 0
+    ? Number(process.env.USER_STREAM_SILENCE_MS)
+    : 6 * 60_000
+const proberStaleMs = 3 * 60_000
 
 type AllowedMethods =
   | 'checkClosedDeals'
@@ -719,6 +739,16 @@ class MainBot<T extends IMainBot> {
   callbackAfterUserStream: ((botId: string) => Promise<void>) | null = null
   /** User stream initial start */
   userStreamInitialStart = true
+  /** Last message received on `userStreamInfo<uuid>` (spec 002 §4.6). */
+  lastUserStreamInfoAt = 0
+  /** When the current `userStreamInfo<uuid>` subscription was requested. */
+  userStreamSubscribedAt = 0
+  /** When the last channel repair was attempted. */
+  userStreamLastRepairAt = 0
+  /** Repairs that were followed by continued silence. */
+  userStreamSilentRepairs = 0
+  /** A repair happened and the channel has not delivered since. */
+  userStreamRepairPending = false
   /** Hedge mode */
   hedge = false
   /** pairs not found during load */
@@ -1678,6 +1708,8 @@ class MainBot<T extends IMainBot> {
 
   closeUserStream() {
     const uuid = this.data?.exchangeUUID
+    this.userStreamSubscribedAt = 0
+    this.userStreamRepairPending = false
     this.rabbitClient?.send(rabbitUsersStreamKey, {
       event: 'close stream',
       uuid,
@@ -1791,7 +1823,32 @@ class MainBot<T extends IMainBot> {
   }
 
   protected userStreamInfoCb(msg: string) {
+    const now = Date.now()
+    this.lastUserStreamInfoAt = now
+    this.ackUserStreamInfo(now)
+    const repaired = this.userStreamRepairPending
+    if (repaired) {
+      this.userStreamRepairPending = false
+      this.userStreamSilentRepairs = 0
+      this.handleLog(`User stream channel delivering again after repair`)
+    }
+    if (isPingMessage(msg)) {
+      // Fleet-wide probe every couple of minutes: ack (above), never log at
+      // info. A probe is also the first thing a repaired channel hears, so it
+      // is where the post-repair reconcile is triggered.
+      if (repaired) {
+        this.reconcileAfterUserStreamRepair()
+      }
+      return
+    }
     this.handleLog(`${msg}`)
+    if (
+      repaired &&
+      !(msg ?? '').includes('Subscribed to user') &&
+      !(msg ?? '').includes('RECONCILE VIA SWEEP')
+    ) {
+      this.reconcileAfterUserStreamRepair()
+    }
     if ((msg ?? '').includes('Subscribed to user')) {
       if (
         this.callbackAfterUserStream &&
@@ -1839,6 +1896,121 @@ class MainBot<T extends IMainBot> {
           }
         })
     }
+  }
+
+  /**
+   * Acknowledge a receipt on the account channel so the fill-failsafe can
+   * tell a deaf bot from a quiet one (spec 002 §4.5). Fire and forget.
+   */
+  private ackUserStreamInfo(now: number) {
+    const uuid = this.data?.exchangeUUID
+    if (!uuid || !this.redisDb?.isReady) {
+      return
+    }
+    const key = userStreamAckKey(uuid)
+    void this.redisDb
+      .hSet(key, this.botId, `${now}`)
+      .then(() => this.redisDb?.expire(key, USER_STREAM_ACK_TTL_SEC))
+      .catch(() => undefined)
+  }
+
+  private reconcileAfterUserStreamRepair() {
+    void Promise.resolve(this.callbackAfterUserStream?.(this.botId)).catch(
+      (e) =>
+        this.handleWarn(
+          `reconcile after user stream repair failed: ${(e as Error).message}`,
+        ),
+    )
+  }
+
+  /** Resting orders this bot currently holds on the venue. */
+  protected countRestingOrders(): number {
+    let n = 0
+    for (const o of this.orders.values()) {
+      if (o.status === 'NEW' || o.status === 'PARTIALLY_FILLED') {
+        n += 1
+      }
+    }
+    return n
+  }
+
+  /**
+   * Re-establish every server-side subscription behind this bot's user
+   * stream (spec 002 §4.3, §4.6): the `userStreamInfo<uuid>` info channel,
+   * the account event channel routed by {@link SharedStream}, and a fresh
+   * `open stream` to the connector. Safe to call at any time; also exposed
+   * to the bot host so the fill-failsafe can trigger it for an account whose
+   * reconcile sweep went unacknowledged.
+   */
+  public async resubscribeUserStream(reason = 'requested'): Promise<void> {
+    const uuid = this.data?.exchangeUUID
+    if (!uuid || !this.cbFunctions) {
+      return
+    }
+    this.handleWarn(`USER-STREAM REPAIR: resubscribing ${uuid} (${reason})`)
+    this.userStreamLastRepairAt = Date.now()
+    this.userStreamRepairPending = true
+    const infoChannel = `userStreamInfo${uuid}`
+    const relisted = (await this.redisSubGlobal?.resubscribe(infoChannel)) ?? 0
+    if (!relisted) {
+      this.redisSubGlobal?.subscribe(infoChannel, this.userStreamInfoCb)
+    }
+    const account = await this.sharedStream.resubscribe(uuid)
+    if (!account) {
+      this.userStreamChannel = uuid
+      await this.sharedStream.addListener(
+        uuid,
+        this.botId,
+        this.accountCallback,
+      )
+    }
+    this.userStreamSubscribedAt = Date.now()
+    this.connectRabbitUserStream()
+  }
+
+  /**
+   * Silence check, run from the 30 s consumer heartbeat (spec 002 §4.6). A
+   * bot holding resting orders that has heard nothing on its channel for
+   * `USER_STREAM_SILENCE_MS` while the fill-failsafe prober is alive is deaf:
+   * repair it, and after two silent repairs tell the user as well.
+   */
+  private async checkUserStreamLiveness() {
+    if (!this.data || !this.redisDb?.isReady) {
+      return
+    }
+    // A pending repair that is still followed by silence counts against it.
+    const silentRepairs = this.userStreamRepairPending
+      ? this.userStreamSilentRepairs + 1
+      : this.userStreamSilentRepairs
+    const raw = await this.redisDb.get(FAILSAFE_HEARTBEAT_KEY).catch(() => null)
+    const verdict = assessUserStreamLiveness({
+      now: Date.now(),
+      lastHeardAt: this.lastUserStreamInfoAt,
+      subscribedAt: this.userStreamSubscribedAt,
+      lastRepairAt: this.userStreamLastRepairAt,
+      silentRepairs,
+      restingOrders: this.countRestingOrders(),
+      prober: parseProberHeartbeat(raw ?? null),
+      silenceMs: userStreamSilenceMs,
+      proberStaleMs,
+    })
+    if (verdict.action === 'none') {
+      return
+    }
+    this.userStreamSilentRepairs = silentRepairs
+    if (verdict.action === 'repair-and-error') {
+      // Visible to the user, does not flip the bot into error status: the bot
+      // keeps trading and keeps repairing; the user learns fills may book late.
+      void this.handleErrors(
+        `Gainium is not receiving live updates for this exchange connection (${verdict.reason}). Order fills may be booked with a delay while we keep reconnecting automatically.`,
+        'userStreamLiveness',
+        '',
+        false,
+        true,
+        true,
+      )
+    }
+    await this.resubscribeUserStream(verdict.reason)
   }
 
   public async setExchangeCredentials(
@@ -1889,14 +2061,15 @@ class MainBot<T extends IMainBot> {
         if (!this.redisSubGlobal) {
           this.redisSubGlobal = await RedisClient.getInstance(true, 'global')
         }
-        await this.redisSubGlobal.unsubscribe(
-          `userStreamInfo${exchangeUUID}`,
-          this.userStreamInfoCb,
-        )
+        // No unsubscribe-before-subscribe here: the callback is a per-instance
+        // bound function, node-redis dedups a repeat subscribe of the same
+        // listener, and the pre-unsubscribe is what cancelled a sibling's
+        // in-flight SUBSCRIBE on the shared account channel (core spec 002).
         this.redisSubGlobal?.subscribe(
           `userStreamInfo${exchangeUUID}`,
           this.userStreamInfoCb,
         )
+        this.userStreamSubscribedAt = Date.now()
         this.sharedStream.addListener(
           this.userStreamChannel,
           this.botId,
@@ -5440,6 +5613,11 @@ class MainBot<T extends IMainBot> {
   }
 
   private async heartbeatConsumer() {
+    void this.checkUserStreamLiveness().catch((e) =>
+      this.handleWarn(
+        `user stream liveness check failed: ${(e as Error)?.message ?? e}`,
+      ),
+    )
     try {
       if (!this.redisDb || !this.data) {
         return
