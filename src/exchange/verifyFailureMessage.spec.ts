@@ -9,23 +9,15 @@ process.env.NODE_ENV = 'testing'
  * fall through to the key-type-mismatch rules, whose "switch to Legacy Keys"
  * advice is the one change that cannot help.
  *
- * Run: npx ts-node --files --project tsconfig.json \
- *        core/src/exchange/verifyFailureMessage.spec.ts
+ * Run: `npm test` (mocha).
  */
+import { describe, it } from 'mocha'
+import { expect } from 'chai'
 import {
   buildVerifyFailureReason,
   interpretVerifyFailure,
 } from './verifyFailureMessage'
 import { CoinbaseKeysType, ExchangeEnum, TradeTypeEnum } from '../../types'
-
-let failures = 0
-function expect(label: string, actual: unknown, want: unknown) {
-  const ok = JSON.stringify(actual) === JSON.stringify(want)
-  if (!ok) failures++
-  console.log(
-    `${ok ? 'PASS' : 'FAIL'}  ${label}: got ${JSON.stringify(actual)} want ${JSON.stringify(want)}`,
-  )
-}
 
 // 88 chars of base64 with '==' padding — the shape of a CDP Ed25519 export.
 const ED25519_SECRET = `${'A'.repeat(43)}${'b'.repeat(43)}==`
@@ -47,110 +39,102 @@ const coinbaseCtx = (over: {
 
 const isEd25519Guidance = (s?: string) => !!s && /Ed25519/.test(s)
 
-// The rule fires on the secret's shape alone, under either Key Type.
-expect(
-  'ed25519 shape, cloud selected → ECDSA guidance',
-  isEd25519Guidance(
-    interpretVerifyFailure(
+describe('verifyFailureMessage', () => {
+  // The rule fires on the secret's shape alone, under either Key Type.
+  it('ed25519 shape, cloud selected → ECDSA guidance', () => {
+    expect(
+      isEd25519Guidance(
+        interpretVerifyFailure(
+          coinbaseCtx({
+            reason: ES256_REASON,
+            key: 'a1b2c3d4-0000-0000-0000-000000000000',
+            secret: ED25519_SECRET,
+            keysType: CoinbaseKeysType.cloud,
+          }),
+        ),
+      ),
+    ).to.equal(true)
+  })
+  it('ed25519 shape, legacy default, opaque 401 → ECDSA guidance', () => {
+    expect(
+      isEd25519Guidance(
+        interpretVerifyFailure(
+          coinbaseCtx({
+            reason: 'Coinbase catch {"status":"NOTOK","reason":"401","data":null}',
+            key: 'a1b2c3d4-0000-0000-0000-000000000000',
+            secret: ED25519_SECRET,
+            keysType: CoinbaseKeysType.legacy,
+          }),
+        ),
+      ),
+    ).to.equal(true)
+  })
+  it('unpadded 86-char base64 and surrounding whitespace still match', () => {
+    expect(
+      isEd25519Guidance(
+        interpretVerifyFailure(
+          coinbaseCtx({ secret: ` ${ED25519_SECRET.slice(0, 86)}\n` }),
+        ),
+      ),
+    ).to.equal(true)
+  })
+
+  // Belt and braces: the ES256 signing error alone triggers it, so the guidance
+  // survives Coinbase reshaping its key export.
+  it('ES256 error without the shape → ECDSA guidance', () => {
+    expect(
+      isEd25519Guidance(
+        interpretVerifyFailure(coinbaseCtx({ reason: ES256_REASON, secret: 'short' })),
+      ),
+    ).to.equal(true)
+  })
+
+  // Non-Ed25519 shapes must keep today's answers.
+  it('EC PEM secret with legacy selected → key-type mismatch, not Ed25519', () => {
+    expect(
+      interpretVerifyFailure(
+        coinbaseCtx({
+          key: 'organizations/x/apiKeys/y',
+          secret: EC_PEM_SECRET,
+          keysType: CoinbaseKeysType.legacy,
+        }),
+      )?.includes('Cloud Trading Keys'),
+    ).to.equal(true)
+  })
+  it('short legacy secret with cloud selected → not-a-CDP-key advice', () => {
+    expect(
+      interpretVerifyFailure(
+        coinbaseCtx({
+          key: 'a1b2c3d4e5f6',
+          secret: 'abc123DEF456ghi789JKL012',
+          keysType: CoinbaseKeysType.cloud,
+        }),
+      )?.includes('does not look like a Coinbase Developer Platform key'),
+    ).to.equal(true)
+  })
+  it('ordinary 64-char secret does not look Ed25519', () => {
+    expect(
+      isEd25519Guidance(
+        interpretVerifyFailure(coinbaseCtx({ secret: 'a'.repeat(64) })),
+      ),
+    ).to.equal(false)
+  })
+
+  describe('the full reason', () => {
+    // The full reason keeps the venue's own words underneath the guidance.
+    const full = buildVerifyFailureReason(
       coinbaseCtx({
         reason: ES256_REASON,
         key: 'a1b2c3d4-0000-0000-0000-000000000000',
         secret: ED25519_SECRET,
         keysType: CoinbaseKeysType.cloud,
       }),
-    ),
-  ),
-  true,
-)
-expect(
-  'ed25519 shape, legacy default, opaque 401 → ECDSA guidance',
-  isEd25519Guidance(
-    interpretVerifyFailure(
-      coinbaseCtx({
-        reason: 'Coinbase catch {"status":"NOTOK","reason":"401","data":null}',
-        key: 'a1b2c3d4-0000-0000-0000-000000000000',
-        secret: ED25519_SECRET,
-        keysType: CoinbaseKeysType.legacy,
-      }),
-    ),
-  ),
-  true,
-)
-expect(
-  'unpadded 86-char base64 and surrounding whitespace still match',
-  isEd25519Guidance(
-    interpretVerifyFailure(
-      coinbaseCtx({ secret: ` ${ED25519_SECRET.slice(0, 86)}\n` }),
-    ),
-  ),
-  true,
-)
-
-// Belt and braces: the ES256 signing error alone triggers it, so the guidance
-// survives Coinbase reshaping its key export.
-expect(
-  'ES256 error without the shape → ECDSA guidance',
-  isEd25519Guidance(
-    interpretVerifyFailure(
-      coinbaseCtx({ reason: ES256_REASON, secret: 'short' }),
-    ),
-  ),
-  true,
-)
-
-// Non-Ed25519 shapes must keep today's answers.
-expect(
-  'EC PEM secret with legacy selected → key-type mismatch, not Ed25519',
-  interpretVerifyFailure(
-    coinbaseCtx({
-      key: 'organizations/x/apiKeys/y',
-      secret: EC_PEM_SECRET,
-      keysType: CoinbaseKeysType.legacy,
-    }),
-  )?.includes('Cloud Trading Keys'),
-  true,
-)
-expect(
-  'short legacy secret with cloud selected → not-a-CDP-key advice',
-  interpretVerifyFailure(
-    coinbaseCtx({
-      key: 'a1b2c3d4e5f6',
-      secret: 'abc123DEF456ghi789JKL012',
-      keysType: CoinbaseKeysType.cloud,
-    }),
-  )?.includes('does not look like a Coinbase Developer Platform key'),
-  true,
-)
-expect(
-  'ordinary 64-char secret does not look Ed25519',
-  isEd25519Guidance(
-    interpretVerifyFailure(coinbaseCtx({ secret: 'a'.repeat(64) })),
-  ),
-  false,
-)
-
-// The full reason keeps the venue's own words underneath the guidance.
-const full = buildVerifyFailureReason(
-  coinbaseCtx({
-    reason: ES256_REASON,
-    key: 'a1b2c3d4-0000-0000-0000-000000000000',
-    secret: ED25519_SECRET,
-    keysType: CoinbaseKeysType.cloud,
-  }),
-)
-expect(
-  'full reason leads with the guidance',
-  /^This is an Ed25519/.test(full),
-  true,
-)
-expect(
-  'full reason keeps the ES256 evidence',
-  full.includes('asymmetric key when using ES256'),
-  true,
-)
-
-if (failures) {
-  console.error(`\n${failures} failure(s)`)
-  process.exit(1)
-}
-console.log('\nAll passed')
+    )
+    it('leads with the guidance', () => {
+      expect(/^This is an Ed25519/.test(full)).to.equal(true)
+    })
+    it('keeps the ES256 evidence', () => {
+      expect(full.includes('asymmetric key when using ES256')).to.equal(true)
+    })
+  })
+})

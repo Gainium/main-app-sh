@@ -19,12 +19,11 @@ process.env.NODE_ENV = 'testing'
  *   - full fills and rounding dust MUST NOT be, or a deal can never close and
  *     the silent stranding is merely traded for a silently wedged deal.
  *
- * Run: npx ts-node --files --project tsconfig.json \
- *        src/bot/dca/partialTp.spec.ts
+ * Run: `npm test` (mocha).
  */
+import { describe, it } from 'mocha'
+import { expect } from 'chai'
 import { underfilledTpQty, PARTIAL_TP_TOLERANCE } from './partialTp'
-
-let failures = 0
 
 const tp = (origQty: string, executedQty: string, over: object = {}) => ({
   typeOrder: 'dealTP',
@@ -34,101 +33,101 @@ const tp = (origQty: string, executedQty: string, over: object = {}) => ({
   ...over,
 })
 
-function expectStranding(name: string, order: object, shouldDetect: boolean) {
+const expectStranding = (order: object, shouldDetect: boolean) => {
   const unsold = underfilledTpQty(order)
-  const detected = unsold > 0
-  const ok = detected === shouldDetect
-  if (!ok) failures++
-  console.log(
-    `${ok ? ' PASS' : '*FAIL'}  ${name.padEnd(50)} unsold=${unsold} detected=${detected}`,
-  )
+  expect(unsold > 0).to.equal(shouldDetect)
 }
 
-console.log('-- real stranded TPs; each MUST be detected --')
-// deal 6a140f941af32681aa9ee80d: bought 0.1065 BTC over six orders, TP sold 0.0023
-expectStranding(
-  'BTC 0.1065 -> 0.0023 (MARKET, krakenUsdm)',
-  tp('0.1065', '0.0023'),
-  true,
-)
-// its re-placed remainder, a D-SR order, underfilled again
-expectStranding(
-  'BTC 0.1042 -> 0.0011 (D-SR remainder)',
-  tp('0.1042', '0.0011'),
-  true,
-)
-expectStranding('BTC 0.0908 -> 0.0377', tp('0.0908', '0.0377'), true)
-expectStranding('XAUT 0.09 -> 0.008', tp('0.09', '0.008'), true)
-expectStranding('XRP 589 -> 4', tp('589', '4'), true)
-expectStranding(
-  'nothing sold at all: 1.0 -> "0.00000000"',
-  tp('1.0', '0.00000000'),
-  true,
-)
+describe('partialTp', () => {
+  describe('real stranded TPs; each MUST be detected', () => {
+    // deal 6a140f941af32681aa9ee80d: bought 0.1065 BTC over six orders, TP sold 0.0023
+    it('BTC 0.1065 -> 0.0023 (MARKET, krakenUsdm)', () => {
+      expectStranding(tp('0.1065', '0.0023'), true)
+    })
+    // its re-placed remainder, a D-SR order, underfilled again
+    it('BTC 0.1042 -> 0.0011 (D-SR remainder)', () => {
+      expectStranding(tp('0.1042', '0.0011'), true)
+    })
+    it('BTC 0.0908 -> 0.0377', () => {
+      expectStranding(tp('0.0908', '0.0377'), true)
+    })
+    it('XAUT 0.09 -> 0.008', () => {
+      expectStranding(tp('0.09', '0.008'), true)
+    })
+    it('XRP 589 -> 4', () => {
+      expectStranding(tp('589', '4'), true)
+    })
+    it('nothing sold at all: 1.0 -> "0.00000000"', () => {
+      expectStranding(tp('1.0', '0.00000000'), true)
+    })
+  })
 
-console.log('-- clean closes; MUST NOT be detected --')
-expectStranding(
-  'exact full fill 0.0612 -> 0.0612',
-  tp('0.0612', '0.0612'),
-  false,
-)
-// a real row: the venue settled a hair OVER the requested size
-expectStranding(
-  'venue settled over 0.0604 -> 0.0605',
-  tp('0.0604', '0.0605'),
-  false,
-)
+  describe('clean closes; MUST NOT be detected', () => {
+    it('exact full fill 0.0612 -> 0.0612', () => {
+      expectStranding(tp('0.0612', '0.0612'), false)
+    })
+    // a real row: the venue settled a hair OVER the requested size
+    it('venue settled over 0.0604 -> 0.0605', () => {
+      expectStranding(tp('0.0604', '0.0605'), false)
+    })
+  })
 
-console.log('-- wedge guards; MUST NOT be detected or deals never close --')
-expectStranding('dust 1.0 -> 0.9995 (0.05% short)', tp('1.0', '0.9995'), false)
-expectStranding('dust 1.0 -> 0.9992 (0.08% short)', tp('1.0', '0.9992'), false)
-expectStranding('origQty zero', tp('0', '0'), false)
-expectStranding('non-numeric quantities', tp('abc', 'xyz'), false)
-expectStranding('negative executedQty', tp('1', '-1'), false)
-expectStranding('not FILLED', tp('1', '0', { status: 'NEW' }), false)
-expectStranding(
-  'not a take-profit',
-  tp('1', '0', { typeOrder: 'dealStart' }),
-  false,
-)
+  describe('wedge guards; MUST NOT be detected or deals never close', () => {
+    it('dust 1.0 -> 0.9995 (0.05% short)', () => {
+      expectStranding(tp('1.0', '0.9995'), false)
+    })
+    it('dust 1.0 -> 0.9992 (0.08% short)', () => {
+      expectStranding(tp('1.0', '0.9992'), false)
+    })
+    it('origQty zero', () => {
+      expectStranding(tp('0', '0'), false)
+    })
+    it('non-numeric quantities', () => {
+      expectStranding(tp('abc', 'xyz'), false)
+    })
+    it('negative executedQty', () => {
+      expectStranding(tp('1', '-1'), false)
+    })
+    it('not FILLED', () => {
+      expectStranding(tp('1', '0', { status: 'NEW' }), false)
+    })
+    it('not a take-profit', () => {
+      expectStranding(tp('1', '0', { typeOrder: 'dealStart' }), false)
+    })
+  })
 
-// Measured on prod 2026-08-30: the one account that underfills steadily (bitget
-// spot) produced 37 shortfalls in 24h, 31 of them in 0.10-0.50%, median 0.196%,
-// max 0.93% — routine lot-size rounding, not stranding. At the original 0.1%
-// tolerance every one of these would have held its deal open for a remainder
-// below the venue's minimum order size. They must all read as dust.
-console.log('-- measured venue rounding dust; MUST NOT be detected --')
-expectStranding(
-  'bitget 18.945 -> 18.926 (0.10% short)',
-  tp('18.945', '18.926'),
-  false,
-)
-expectStranding(
-  'bitget 357.14 -> 356.7 (0.12% short)',
-  tp('357.14', '356.7'),
-  false,
-)
-expectStranding(
-  'bitget 11.85 -> 11.8 (0.42% short)',
-  tp('11.85', '11.8'),
-  false,
-)
-expectStranding('bitget 3.6 -> 3.5 (2.78% short)', tp('3.6', '3.5'), false)
-expectStranding(
-  'widest measured dust 1.0 -> 0.9907 (0.93%)',
-  tp('1.0', '0.9907'),
-  false,
-)
+  // Measured on prod 2026-08-30: the one account that underfills steadily (bitget
+  // spot) produced 37 shortfalls in 24h, 31 of them in 0.10-0.50%, median 0.196%,
+  // max 0.93% — routine lot-size rounding, not stranding. At the original 0.1%
+  // tolerance every one of these would have held its deal open for a remainder
+  // below the venue's minimum order size. They must all read as dust.
+  describe('measured venue rounding dust; MUST NOT be detected', () => {
+    it('bitget 18.945 -> 18.926 (0.10% short)', () => {
+      expectStranding(tp('18.945', '18.926'), false)
+    })
+    it('bitget 357.14 -> 356.7 (0.12% short)', () => {
+      expectStranding(tp('357.14', '356.7'), false)
+    })
+    it('bitget 11.85 -> 11.8 (0.42% short)', () => {
+      expectStranding(tp('11.85', '11.8'), false)
+    })
+    it('bitget 3.6 -> 3.5 (2.78% short)', () => {
+      expectStranding(tp('3.6', '3.5'), false)
+    })
+    it('widest measured dust 1.0 -> 0.9907 (0.93%)', () => {
+      expectStranding(tp('1.0', '0.9907'), false)
+    })
+  })
 
-console.log('-- just past the tolerance; MUST be detected --')
-expectStranding('1.0 -> 0.9489 (5.11% short)', tp('1.0', '0.9489'), true)
+  describe('just past the tolerance; MUST be detected', () => {
+    it('1.0 -> 0.9489 (5.11% short)', () => {
+      expectStranding(tp('1.0', '0.9489'), true)
+    })
+  })
 
-// The exact boundary is a float knife-edge and is deliberately not asserted
-// either way.
-if (PARTIAL_TP_TOLERANCE !== 0.05) {
-  console.log('*FAIL  PARTIAL_TP_TOLERANCE changed; revisit the cases above')
-  failures++
-}
-
-console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
-process.exit(failures === 0 ? 0 : 1)
+  // The exact boundary is a float knife-edge and is deliberately not asserted
+  // either way.
+  it('PARTIAL_TP_TOLERANCE has not silently changed (revisit the cases above if it has)', () => {
+    expect(PARTIAL_TP_TOLERANCE).to.equal(0.05)
+  })
+})
