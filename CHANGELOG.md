@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.56.18] - 2026-09-03
+
+### Fixed
+
+- **A krakenUsdm take-profit the venue only partly fills no longer strands the remainder as an untracked position.** Kraken futures has no true market order — its `mkr` type is IOC with a 1% price-protection band, so a close that can't fill within the band at send time comes back `FILLED` for whatever the band allowed, with the rest cancelled by the venue itself, never `PARTIALLY_FILLED`. `buyRemainder`'s blanket `reduceOnly` exclusion (added when a broader carve-out was reverted in 1.56.11 after binanceUsdm/bybitLinear/bitgetUsdm all rejected every reduce-only remainder outright) meant this venue got no recovery attempt at all, even though its rejection reason in that same measurement (`wouldNotReducePosition`) is consistent with "the ask was bigger than the open position" rather than "reduce-only is refused outright" — recoverable by asking for less, which `buyRemainder`'s existing recursion already does.
+
+  Two changes, both confined to `main.ts` (the class both grid and DCA bots share, so the fix covers both without a bot-type-specific patch): `buyRemainder` now lets krakenUsdm MARKET orders through instead of bailing on `reduceOnly`, and the `sendOrderToExchange` hook that recovers a bybit CANCELED-with-partial-fill on the spot (previously bybit-only) now also recognizes krakenUsdm's FILLED-with-shortfall shape. The second change closes a race the first alone would not: the synchronous placement-response path (`closeDealById` et al.) decides deal closure directly off the venue's response without going through the WS-driven consumer, so without widening this hook, whichever of the two paths saw the order first would still close on the unrecovered shortfall.
+
+  No position-size lookup is needed: the remainder recovery order stays derived from `origQty - executedQty` as before, and a reduce-only ask larger than the real position simply comes back rejected — `buyRemainder`'s existing fall-through returns whatever was recovered by earlier, successful attempts rather than erroring. binanceUsdm/bybitLinear/bitgetUsdm remain excluded per the 1.56.11 measurement. See `specs/002.krakenusdm-tp-remainder-recovery.md`.
+
 ## [1.56.17] - 2026-09-02
 
 ### Fixed

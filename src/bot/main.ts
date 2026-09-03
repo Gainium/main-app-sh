@@ -55,6 +55,10 @@ import {
   getSellBuyCountReturn,
 } from '../../types'
 import { accrueStreamFee, hasObservedFee, observedFeeOf } from './orderFee'
+import {
+  canRecoverReduceOnlyRemainder,
+  isKrakenUsdmUnderfilledReduceOnlyClose,
+} from './reduceOnlyRemainder'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
@@ -5044,30 +5048,47 @@ class MainBot<T extends IMainBot> {
     if (count >= 20) {
       return order
     }
-    // ⚠️ DO NOT lift this for futures / reduce-only orders. It was tried and
-    // reverted; the reason it exists is real, it just was never written down.
+    // ⚠️ DO NOT lift this for futures / reduce-only orders in general. It was
+    // tried and reverted; the reason it exists is real, it just was never
+    // written down.
     //
     // `diff` below is derived from the ORDER (`origQty - executedQty`) — spot
     // semantics, per this method's original design ("difference between initial
     // balances and current balances"). That quantity does NOT describe a futures
-    // POSITION. By the time the remainder order is sent the position is flat or
-    // smaller, so a reduce-only order for that qty is refused outright rather
-    // than clamped to what remains.
+    // POSITION, so a reduce-only remainder order for it can be refused outright
+    // rather than clamped to what remains.
     //
     // Measured on prod 2026-08-30, with this gate narrowed to let `dealTP`
     // through: 15 reduce-only remainder orders went out over 18.3h across
     // binanceUsdm / krakenUsdm / bybitLinear / bitgetUsdm, and ALL 15 came back
-    // with `executedQty: 0` — `ReduceOnly Order is rejected.` on binanceUsdm,
-    // `wouldNotReducePosition` on krakenUsdm. Nothing was recovered; the only
-    // effect was ~20 futile orders a day.
+    // with `executedQty: 0`. But the rejection reasons split in a way that
+    // matters: binanceUsdm/bybitLinear/bitgetUsdm said `ReduceOnly Order is
+    // rejected.` — refused outright, no carve-out helps. krakenUsdm said
+    // `wouldNotReducePosition` — consistent with "the ask was bigger than the
+    // open position", which IS recoverable by asking for less. Kraken futures
+    // has no true market order; its `mkr` type is IOC with a 1% price-protection
+    // band, so a close that can't fill within the band at send time comes back
+    // `FILLED` for whatever the band allowed, with the rest cancelled by the
+    // venue itself — never `PARTIALLY_FILLED`, so this recovery path is the only
+    // one that ever sees the shortfall (spec 002).
     //
-    // Recovering futures residue is still an open problem, but it needs the
-    // remainder derived from the open POSITION size, not from the order. Note
-    // also that the "97% of reduce-only underfills strand" statistic that
-    // motivated the attempt was computed from order-side BUY-minus-SELL sums,
-    // which do not net correctly on futures — size it from positions before
-    // trusting it.
-    if (order.reduceOnly) {
+    // No position lookup needed: `canRecoverReduceOnlyRemainder` only lets
+    // krakenUsdm MARKET orders through, and `diff` stays order-derived as
+    // above. If that ask is still bigger than the real position, the venue
+    // rejects it, `buyRemainderOrder` below comes back falsy, and the
+    // `if (buyRemainderOrder && ...)` gate simply doesn't fire — the function
+    // falls through to `return order`, which already carries every quantity
+    // recovered by earlier, successful iterations. The other three venues stay
+    // excluded per the measurement above.
+    //
+    // The "97% of reduce-only underfills strand" statistic that motivated the
+    // original, broader attempt was computed from order-side BUY-minus-SELL
+    // sums, which do not net correctly on futures — do not trust it without
+    // re-deriving it from positions.
+    if (
+      order.reduceOnly &&
+      !canRecoverReduceOnlyRemainder(order.exchange, order)
+    ) {
       return order
     }
     if (order.typeOrder === TypeOrderEnum.rebalance) {
@@ -7465,10 +7486,26 @@ class MainBot<T extends IMainBot> {
         if (
           !skipBr &&
           !(this.kucoinFutures || this.okx || (this.coinm && !this.isBitget)) &&
-          [ExchangeEnum.bybit].includes(this.data.exchange) &&
           requestData.type === 'MARKET' &&
-          ['CANCELED'].includes(processedOrder.status) &&
-          +processedOrder.price * +processedOrder.executedQty > 0
+          (([ExchangeEnum.bybit].includes(this.data.exchange) &&
+            ['CANCELED'].includes(processedOrder.status) &&
+            +processedOrder.price * +processedOrder.executedQty > 0) ||
+            // Kraken's `mkr` order is IOC with a 1% price-protection band: a
+            // close that can't fill within it comes back FILLED for whatever
+            // the band allowed rather than PARTIALLY_FILLED, with the venue
+            // cancelling the rest itself. Route it through the same recovery
+            // as bybit's CANCELED-with-partial-fill shape above, so this
+            // synchronous response path gives `buyRemainder` the same chance
+            // the WS-driven order-status consumer already has unconditionally
+            // (spec 002 — without this, the two paths race with neither one
+            // attempting recovery).
+            isKrakenUsdmUnderfilledReduceOnlyClose(this.data.exchange, {
+              reduceOnly: order.reduceOnly,
+              type: requestData.type,
+              status: processedOrder.status,
+              executedQty: processedOrder.executedQty,
+              origQty: order.origQty,
+            }))
         ) {
           const origExecutedQty = +processedOrder.executedQty
           processedOrder = await this.fillPartiallyFilledOrder({
