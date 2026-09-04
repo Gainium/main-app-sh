@@ -3159,8 +3159,19 @@ export const registerIndexes = () => {
   // recovery) `$unset` `bucket`. That is load-bearing: it drops the dismissed row
   // out of this index so the next occurrence inserts a fresh, visible row instead
   // of silently incrementing a tombstone the user can no longer see.
+  // `symbol` is LAST and is only in the upsert filter for the per-contract
+  // subTypes (`isPerSymbolSubType`); every other subType keys on the prefix
+  // exactly as before, finds its one row by that prefix, and `$set`s `symbol`
+  // on it. Without `symbol` here the second contract's row cannot be inserted
+  // at all — it collides on the prefix and gets folded into the first
+  // contract's row, which is the defect (spec 007).
+  //
+  // Widening the spec of a named index makes `syncIndexes()` drop and rebuild
+  // it on the next boot. Cheap here and deliberately kept so: the partial
+  // filter covers only rows that carry a `bucket` (49,429 of 108,655 on prod
+  // at the time of writing), not the whole collection.
   botMessageSchema.index(
-    { userId: 1, botId: 1, subType: 1, showUser: 1, bucket: 1 },
+    { userId: 1, botId: 1, subType: 1, showUser: 1, bucket: 1, symbol: 1 },
     {
       name: 'botMessageCoalesceKey',
       unique: true,

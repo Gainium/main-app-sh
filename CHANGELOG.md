@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.9] - 2026-09-04
+
+### Fixed
+
+- A bot blocked on several contracts at once now gets a message for each of them. When an exchange refuses an order until the user signs that contract's agreement, the refusal was recorded against the bot rather than against the contract: every blocked contract shared one notification row, whose pair name was overwritten by whichever contract failed most recently, and only the very first one was ever announced. One production bot was refused on 21 different contracts — 16 of the refusal windows overlapping — and the user was told about one. Each contract now gets its own message and its own notification, while conditions that belong to the bot or the account (a rejected API key, a plan limit) keep the single message per bot they had.
+
 ## [1.57.8] - 2026-09-04
 
 ### Fixed

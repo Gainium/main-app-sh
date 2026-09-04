@@ -58,6 +58,8 @@ export interface SubtypeBehavior {
   userMessage?: string
   logMode?: SubtypeLogMode
   logWindowSec?: number
+  /** See {@link isPerSymbolSubType}. Optional in `boterrorsubtypes`. */
+  perSymbol?: boolean
 }
 
 /** `coalesce` with no explicit window. */
@@ -203,6 +205,7 @@ async function loadSubtypes(): Promise<void> {
         logMode: d.logMode || undefined,
         logWindowSec:
           typeof d.logWindowSec === 'number' ? d.logWindowSec : undefined,
+        perSymbol: typeof d.perSymbol === 'boolean' ? d.perSymbol : undefined,
       })
     }
     subtypeMap = next
@@ -311,6 +314,39 @@ export function getSubTypeLogPolicy(
         ? sec * 1000
         : DEFAULT_COALESCE_WINDOW_MS,
   }
+}
+
+/**
+ * SubTypes whose condition belongs to ONE CONTRACT rather than to the bot or
+ * the account, and whose messages must therefore coalesce per contract.
+ *
+ * `Agreement required` is the case this exists for: a venue refuses the order
+ * until the user signs that contract's agreement, and signing for `MSTRUSDT`
+ * does nothing for `SNOWUSDT`. Keyed per bot, a bot blocked on six contracts
+ * owns one row that names whichever failed last and raises one notification
+ * ever, so five of the six are invisible (spec 007).
+ *
+ * Deliberately a SHORT allowlist, not "any occurrence that carries a symbol".
+ * Most per-order failures — a balance shortfall, a rejected key, a plan limit —
+ * are one condition the bot hits on every pair it tries, and splitting those
+ * per pair would hand a 50-pair bot 50 rows and 50 notifications for one
+ * problem, which is the flood the coalescing exists to stop.
+ *
+ * Static rather than seeded into `boterrorsubtypes`, so it needs no admin-app
+ * change to work; an admin can still override it per subType by setting
+ * `perSymbol` on the row.
+ */
+const DEFAULT_PER_SYMBOL_SUBTYPES = new Set<string>(['Agreement required'])
+
+/** Does this subType describe one contract rather than the whole bot? */
+export function isPerSymbolSubType(
+  subType: string | null | undefined,
+): boolean {
+  if (!subType) return false
+  return (
+    getSubTypeBehavior(subType)?.perSymbol ??
+    DEFAULT_PER_SYMBOL_SUBTYPES.has(subType)
+  )
 }
 
 /**

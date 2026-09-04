@@ -83,6 +83,7 @@ import {
 import {
   getSubTypeBehavior,
   getSubTypeLogPolicy,
+  isPerSymbolSubType,
   logPolicyBucket,
   noteErrorRuleHit,
 } from './errorRulesCache'
@@ -2316,6 +2317,37 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * What the re-raise cooldown for this occurrence is keyed on — i.e. what the
+   * window is a window *of*.
+   *
+   * Three cases, all the same question answered about a different subject:
+   *
+   * - a TERMINAL deal has one throwaway bot per deal, so `messageBotId` is
+   *   never the same twice and a per-bot window suppresses nothing. Key on the
+   *   constraint that is stable across those bots: user + subType + symbol.
+   * - a PER-CONTRACT subType ({@link isPerSymbolSubType}) is one condition per
+   *   contract, not per bot. Without the symbol the first blocked contract's
+   *   window swallows the FIRST report of every other one, so the user is told
+   *   about one of N contracts they each have to act on separately (spec 007).
+   * - everything else is a property of the bot, and keeps the bot-wide window
+   *   it has always had.
+   */
+  private buildCooldownKey(
+    terminal: boolean,
+    messageBotId: string,
+    subType: string,
+    symbol?: string,
+  ): string[] {
+    if (terminal) {
+      return [this.userId, subType, symbol ?? '']
+    }
+    if (symbol && isPerSymbolSubType(subType)) {
+      return [messageBotId, subType, symbol]
+    }
+    return [messageBotId, subType]
+  }
+
+  /**
    * May this occurrence raise a USER-FACING alert, or has one already gone out
    * for this account's current hard-auth cooldown window?
    *
@@ -2465,17 +2497,17 @@ class MainBot<T extends IMainBot> {
       // `force` (user-initiated actions) is never suppressed.
       //
       // Keyed per (bot, subType) for a bot the user keeps — which is what makes
-      // the window mean anything: the bot is the thing they are watching. A
-      // terminal deal is not that. It is one bot per deal, created by the
-      // request that starts it, so `messageBotId` is never the same twice and a
-      // per-bot cooldown can suppress nothing at all: every occurrence is the
-      // first for its bot, and a caller looping on a condition that will not
-      // clear collects one notification per attempt. For those, key on what
-      // actually identifies the constraint and is stable across the bots — the
-      // user, the subType, and the symbol it keeps failing on.
-      const cooldownKey = terminal
-        ? [this.userId, subType, symbol ?? '']
-        : [messageBotId, subType]
+      // the window mean anything: the bot is the thing they are watching, and a
+      // terminal deal or a per-contract refusal is not. See
+      // {@link MainBot#buildCooldownKey} for why each of those keys on
+      // something else instead.
+      const perSymbol = !!symbol && isPerSymbolSubType(subType)
+      const cooldownKey = this.buildCooldownKey(
+        terminal,
+        messageBotId,
+        subType,
+        symbol,
+      )
       let raise = sendError
       if (raise && !force) {
         const cooldown = await errorRaiseBackoff.check(cooldownKey)
@@ -2554,6 +2586,13 @@ class MainBot<T extends IMainBot> {
           subType,
           showUser: raise,
           bucket,
+          // A per-contract subType gets one row per contract, so the user is
+          // told about each one they have to act on separately rather than
+          // about whichever failed last. `symbol` is in `$set` either way, so
+          // for every other subType this is the same single row it always was —
+          // the field just moves under the row instead of over it.
+          // `botMessageCoalesceKey` carries `symbol` for this to be insertable.
+          ...(perSymbol ? { symbol } : {}),
         }
         // `$inc` makes "is this the first occurrence in this window?" a property
         // of the write itself rather than of a separate read: count===1 means
