@@ -25,7 +25,11 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import { tpPriceDisplacement, worstFee } from './tpFees'
+import {
+  quantityFeeIsThirdAssetOnly,
+  tpPriceDisplacement,
+  worstFee,
+} from './tpFees'
 
 // Binance USD-M standard tier.
 const futuresFee = { maker: 0.0002, taker: 0.0005 }
@@ -90,6 +94,43 @@ describe('tpFees', () => {
       const uncompensated =
         avg * (1 + tpPerc) * tpPriceDisplacement(zeroedFee, true)
       closeTo(uncompensated, 100.12)
+    })
+  })
+
+  // Spec 007 §2: a deal whose fees have ALL been paid in a third asset
+  // (BNB/BGB/KCS) never had base or quote debited for a fee — the same
+  // precondition that already zeroes the quantity fee for futures (file
+  // header) happens to also hold here, for an unrelated reason. This is
+  // deliberately narrower than "use the real fee" — see spec 007 §4 for why
+  // a per-order real-fee swap is out of scope.
+  describe('quantityFeeIsThirdAssetOnly: the ONE case safe to zero the quantity gross-up for', () => {
+    it('every observed fee off-pair, none on-pair → true', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(
+          [{ asset: 'BNB', total: 0.001, totalUsd: 0.25 }],
+          0,
+          { base: 0, quote: 0 },
+        ),
+      ).to.equal(true)
+    })
+    it('an on-pair fee alongside an off-pair one → false (mixed, keep the gross-up)', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(
+          [{ asset: 'BNB', total: 0.001, totalUsd: 0.25 }],
+          0,
+          { base: 0.00002, quote: 0 },
+        ),
+      ).to.equal(false)
+    })
+    it('commission already booked (from an earlier on-pair fee), no feeByAsset → false', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(undefined, 0.05, { base: 0, quote: 0.05 }),
+      ).to.equal(false)
+    })
+    it('nothing observed yet (no fills) → false, not vacuously true', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(undefined, 0, { base: 0, quote: 0 }),
+      ).to.equal(false)
     })
   })
 })
