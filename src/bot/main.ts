@@ -2422,12 +2422,19 @@ class MainBot<T extends IMainBot> {
         ? MessageTypeEnum.error
         : MessageTypeEnum.warning
       // The pair that actually errored, when the occurrence carried one. The
-      // fallback is `settings.pair[0]`, which used to be applied
+      // fallback is the bot's first configured pair, which used to be applied
       // unconditionally: on a multi-pair bot that made EVERY notification name
       // the bot's first pair regardless of which pair failed, so a row could
       // say `BTC-USDC` above a message about AIOZ (community #5069). Only a
       // caller with no symbol to give still lands on the fallback.
-      const symbol = _symbol ?? this.data?.settings.pair[0]
+      //
+      // `settings.pair` is NOT one shape across bot types: DCA/combo store an
+      // ARRAY (`schema.ts` `pair: [RequiredString]`) but grid stores a plain
+      // STRING (`botSettingsCommon` `pair: RequiredString`). Indexing `[0]`
+      // therefore returned the first CHARACTER on every grid bot — `TONUSDT`
+      // was reported as `T` — so use the same flatten idiom the user-stream
+      // filter below already applies to this field.
+      const symbol = _symbol ?? [this.data?.settings.pair ?? []].flat()[0]
       const exchange = this.data?.exchange
 
       // Re-raise backoff. The rate limit lives on the RAISE, not on the row:
@@ -4289,6 +4296,12 @@ class MainBot<T extends IMainBot> {
         false,
         false,
         false,
+        false,
+        // The pair we actually asked the venue for. Without it the message
+        // falls back to the bot's first configured pair, so a 356-pair bot
+        // reported every "Not supported symbols" against `BTCUSDT` — a symbol
+        // the venue does list — and the failing pair was unrecoverable.
+        symbol,
       )
     }
     return 0

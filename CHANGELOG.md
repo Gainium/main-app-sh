@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.5] - 2026-09-04
+
+### Fixed
+
+- Bot messages named the wrong pair. Grid bots store `settings.pair` as a plain string while DCA/combo bots store an array, and the message writer indexed `[0]` unconditionally — so every grid bot's notification reported the first *character* of its pair (`TONUSDT` shown as `T`) across all error types. 2,060 records on 591 bots for 118 users carry a one-letter pair, 758 of them live and visible today. Separately, `getLatestPrice()` did not pass the pair it had just failed on, so the message fell back to the bot's first configured pair: a 356-pair bot filed all 1,607 of its "Not supported symbols" occurrences against `BTCUSDT`, a pair the venue does list, hiding the pair that actually failed.
+
 ## [1.57.4] - 2026-09-04
 
 ### Fixed
