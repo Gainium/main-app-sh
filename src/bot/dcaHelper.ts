@@ -137,6 +137,11 @@ import {
   dealLeftOpenSize,
   leftOpenPositionMessage,
 } from './dca/dealOutcome'
+import {
+  classifyTpCloseAttempt,
+  tpCloseBlockedMessage,
+} from './dca/tpCloseOutcome'
+import RetryBackoff from './retryBackoff'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
 import { removePaperFormExchangeName } from '../exchange/helpers'
@@ -185,6 +190,25 @@ const mutexDCAOrdersByIndicator = new IdMutex(100)
 const mutexPriceConcurrently = new IdMutex(30)
 
 const mutexOpenDealBySignal = new IdMutex(15)
+
+/**
+ * How long a deal waits before re-attempting a market take-profit close the
+ * venue has REFUSED as un-reducible (`Futures position` — "Reduce order is
+ * rejected", "current position is zero…"). `checkTPLevel` fires on the price
+ * tick, so without this the identical reduce-only order goes back to the venue
+ * roughly twice a second for as long as the divergence lasts.
+ *
+ * Deliberately a shorter ladder than the 5 min → 1 h siblings (`nb`, `cr`,
+ * `er`): this one gates a CLOSE, and a position-sync blip that clears must not
+ * cost the user a quarter-hour of unrealised profit. 1 → 2 → 4 → 8 → 15 min
+ * takes the observed 1031 attempts in ~2 h down to 6, and any accepted close
+ * clears it outright.
+ */
+const tpCloseBackoff = new RetryBackoff({
+  namespace: 'tpc',
+  minMs: 60 * 1000,
+  maxMs: 15 * 60 * 1000,
+})
 
 /**
  * Exchange rejections that mean "this order's notional is under the venue
@@ -17638,6 +17662,27 @@ function createDCABotHelper<
             `Checking TP level for deal ${deal.deal._id}: price ${price}, target ${v}, trigger ${trigger}`,
           )
           if (trigger) {
+            // A terminal refusal of the last close on this deal (the venue
+            // saying the position is not there) puts the whole trigger behind a
+            // growing cooldown. Without it the next price tick — throttled only
+            // to 2/s per symbol — re-sends the identical reduce-only order, and
+            // production ran one order id 1031 times in ~2h that way. Checked
+            // before the log line on purpose: all three lines an attempt writes
+            // are inside this block, and the log flood is the same flood.
+            const tpCooldown = await tpCloseBackoff.check([
+              this.botId,
+              `${deal.deal._id}`,
+            ])
+            if (tpCooldown.suppressed) {
+              this.handleDebug(
+                `Deal ${deal.deal._id} TP level close suppressed until ${new Date(
+                  tpCooldown.until,
+                ).toISOString()} (attempt ${tpCooldown.attempt}) — exchange refused it: ${
+                  tpCooldown.reason
+                }`,
+              )
+              continue
+            }
             this.handleLog(
               `Deal: ${deal.deal._id} adding TP order by TP level check`,
             )
@@ -17685,8 +17730,15 @@ function createDCABotHelper<
             // this attempt actually left one in flight.
             let closeInFlight = false
             let outcome = 'no exchange info'
+            let terminalRejection: string | null = null
             if (ed) {
-              const result = await this.sendGridToExchange(
+              // `returnError: true` so a venue refusal comes back as its own
+              // text instead of collapsing to `undefined`. Everything below is
+              // what `sendGridToExchange` does internally — split apart only to
+              // hold the prepared order, which `handleOrderErrors` needs and
+              // which `returnError` suppresses inside `sendOrderToExchange`.
+              // Same idiom as the sibling `checkDCAByMarketLevel` above.
+              const orderPrepared = this.convertGridToOrder(
                 order,
                 {
                   dealId: deal.deal._id,
@@ -17700,27 +17752,57 @@ function createDCABotHelper<
                 },
                 ed,
               )
-              outcome = result ? result.status : 'not placed'
-              if (result && result.status === 'FILLED') {
-                if (
-                  this.processedFilled
-                    .get(deal.deal._id)
-                    ?.has(result.clientOrderId)
-                ) {
-                  // The venue echoed a target that was already filled and
-                  // booked — `processFilledOrder` will short-circuit it as
-                  // "already processed" and never reach the reset below.
-                  outcome = 'already processed'
-                } else {
-                  closeInFlight = true
-                  this.processFilledOrder(result)
-                }
-              } else if (
-                result &&
-                (result.status === 'NEW' || result.status === 'PARTIALLY_FILLED')
-              ) {
-                closeInFlight = true
+              const result = orderPrepared
+                ? await this.sendOrderToExchange(orderPrepared, true)
+                : undefined
+              const decision = classifyTpCloseAttempt(
+                typeof result === 'string'
+                  ? { kind: 'refused', reason: result }
+                  : result
+                    ? {
+                        kind: 'order',
+                        status: result.status,
+                        // The venue echoed a target that was already filled and
+                        // booked — `processFilledOrder` would short-circuit it
+                        // as "already processed" and never reach the reset
+                        // below.
+                        alreadyProcessed: !!this.processedFilled
+                          .get(deal.deal._id)
+                          ?.has(result.clientOrderId),
+                      }
+                    : { kind: 'nothing' },
+                (reason) => this.getErrorSubType(reason),
+              )
+              outcome = decision.outcome
+              closeInFlight = decision.inFlight
+              if (decision.bookFill && result && typeof result !== 'string') {
+                this.processFilledOrder(result)
               }
+              if (typeof result === 'string' && orderPrepared) {
+                if (decision.terminal) {
+                  terminalRejection = result
+                }
+                // `returnError: true` returns before `sendOrderToExchange`'s own
+                // reporting, so the refusal has to be raised here or it stops
+                // being visible at all. Same call, same arguments as the branch
+                // it bypassed.
+                const setError = this.needToSendOrder(orderPrepared)
+                // Not awaited, exactly as the branch it replaces: reporting must
+                // not add a round trip to the price-tick path.
+                this.handleOrderErrors(
+                  result,
+                  orderPrepared,
+                  'limitOrders()',
+                  `Send new order request ${orderPrepared.clientOrderId}, qty ${orderPrepared.origQty}, price ${orderPrepared.price}, side ${orderPrepared.side}`,
+                  setError,
+                  setError,
+                )
+              }
+            }
+            if (closeInFlight) {
+              // A close the venue accepted proves the position is there again,
+              // so no stale cooldown may outlive it.
+              await tpCloseBackoff.clear([this.botId, `${deal.deal._id}`])
             }
             if (!closeInFlight) {
               // Nothing is in flight, so a `closeByTp` left true here is a
@@ -17730,14 +17812,54 @@ function createDCABotHelper<
               // the remaining take-profit targets can never arm until an
               // unrelated fill or a worker restart clears it. Seen in
               // production for 2h56m on a Coinbase multi-TP deal after a
-              // re-send of an already-filled target. Release the flag and
-              // re-arm the level check on the targets that are still open, so
-              // the stale one cannot re-fire on the next tick.
+              // re-send of an already-filled target. Release the flag either
+              // way — re-latching it is the #617 defect, and the cooldown
+              // below, not the flag, is what stops the resend loop.
+              deal.closeByTp = false
+              this.saveDeal(deal)
+              if (terminalRejection) {
+                // The venue did not miss the order, it answered it: there is
+                // no position to reduce. Re-arming against the price tick asks
+                // the same impossible question ~2x/second forever (1031 sends
+                // of one client order id in ~2h on deal
+                // 69f1b27faeba7a4880365abb). Back off instead, and — because
+                // `Futures position` is `showUser: false` and so reaches the
+                // user nowhere — say it on the deal, once per run of refusals.
+                const state = await tpCloseBackoff.record(
+                  [this.botId, `${deal.deal._id}`],
+                  terminalRejection,
+                )
+                this.handleLog(
+                  `Deal ${deal.deal._id} TP level close ${outcome} — position not reducible on ${this.data?.exchange}; backing off until ${new Date(
+                    state.until,
+                  ).toISOString()} (attempt ${state.attempt}) instead of re-arming on the next tick`,
+                )
+                if (state.attempt === 1 && this.shouldProceed()) {
+                  this.botEventDb.createData({
+                    userId: this.userId,
+                    botId: this.botId,
+                    event: 'Deal',
+                    botType: this.botType,
+                    description: tpCloseBlockedMessage({
+                      dealId: `${deal.deal._id}`,
+                      symbol: deal.deal.symbol.symbol,
+                      reason: terminalRejection,
+                      retryAfter: state.until,
+                    }),
+                    paperContext: !!this.data?.paperContext,
+                    deal: `${deal.deal._id}`,
+                    symbol: deal.deal.symbol.symbol,
+                    type: MessageTypeEnum.warning,
+                  })
+                }
+                continue
+              }
+              // Anything else may genuinely succeed next tick — keep the #617
+              // immediate re-arm on the targets that are still open, so the
+              // stale one cannot re-fire.
               this.handleLog(
                 `Deal ${deal.deal._id} TP level close left nothing in flight (${outcome}) — releasing closeByTp and re-arming TP level check`,
               )
-              deal.closeByTp = false
-              this.saveDeal(deal)
               await this.checkDealSlMethods(deal)
               this.checkDealsPriceExtremum()
             }

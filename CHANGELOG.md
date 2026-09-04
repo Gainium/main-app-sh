@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.6] - 2026-09-04
+
+### Fixed
+
+- Market take profit: when the exchange refuses the closing order because the position is not there to reduce (`Reduce order is rejected`, `ReduceOnly Order`, `current position is zero…`), the deal now backs off instead of re-sending the identical order on every price update, and says so on the deal. The refusal was discarded unread — it was logged only as `not placed` — so every outcome was treated as a transient miss and re-armed against the price tick: one production deal sent one client order id 1,031 times in about two hours and the user was told nothing, because that rejection class is deliberately invisible at bot level. Retries now wait 1 → 2 → 4 → 8 → 15 minutes, an accepted close clears the wait immediately, and genuinely transient outcomes keep retrying at once as before.
+
 ## [1.57.5] - 2026-09-04
 
 ### Fixed
