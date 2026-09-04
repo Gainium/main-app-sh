@@ -1757,6 +1757,21 @@ class MainBot<T extends IMainBot> {
   }
 
   async connectRabbitUserStream() {
+    // Same guard `resubscribeUserStream()` already uses: with no connection on
+    // the doc there is nothing to open a stream for. The `restart: 'userStream'`
+    // broadcast handled in `processServiceLog` reaches EVERY bot instance in the
+    // worker, including ones whose `this.data` is still null — a bot mid
+    // `loadData()`, and an archive bot that `loadData()` filters out
+    // (`status: {$ne: archive}`) and `sendBotClosed()` therefore never
+    // unsubscribes. Those reached `getExchangeData()` and logged
+    // `No exchange data in connect rabbit undefined` — the literal string — with
+    // an empty `userId`, because `this.userId` is only assigned once `loadData()`
+    // has the doc, so the record could not even be attributed to a user (165 bots
+    // in 7 days). A bot still loading connects anyway: `loadData()` reaches here
+    // via `setExchangeCredentials()` once it has the doc.
+    if (!this.data?.exchangeUUID) {
+      return
+    }
     const exchangeData = await this.getExchangeData()
     if (!exchangeData) {
       return

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.3] - 2026-09-04
+
+### Fixed
+
+- Bot messaging: a `userStream` service restart no longer records `No exchange data in connect rabbit undefined` against bots that have no exchange connection loaded. The restart broadcast reaches every bot instance in a worker and `connectRabbitUserStream` ran unguarded, so a bot still loading — or an archived one whose instance was never unsubscribed — looked up an `undefined` connection and logged the failure with an empty `userId`, leaving the record impossible to attribute to a user. It now returns early exactly as `resubscribeUserStream` already did; a bot that is still loading connects when its load finishes.
+
 ## [1.57.2] - 2026-09-04
 
 ### Fixed
