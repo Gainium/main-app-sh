@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.4] - 2026-09-04
+
+### Fixed
+
+- Bot stats: a deal canceled before its base order filled no longer stops a bot from saving its statistics. Such a deal carries no price at all, and the stats seed divided by it — producing `NaN` for the USD start balance on spot bots and pinning the buy & hold reference price to 0 for the rest of the bot's life. Mongo rejected the whole stats write on that `NaN`, so profit, drawdown, per-pair figures and the equity chart silently stopped updating. The seed now ignores a priceless deal, an already-zeroed buy & hold reference re-seeds itself from the next real deal, and a chart point that was poisoned before this fix heals instead of carrying the bad value forward.
+
 ## [1.57.3] - 2026-09-04
 
 ### Fixed

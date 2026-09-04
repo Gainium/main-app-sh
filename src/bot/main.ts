@@ -6255,6 +6255,13 @@ class MainBot<T extends IMainBot> {
           ],
           this.data?.exchange,
         )
+        // `findUSDRate` returns `Number(undefined)` = NaN when it is handed no
+        // exchange, and every caller multiplies the result straight into a
+        // persisted USD figure. Fall back to the same `return 1` the misses
+        // below use rather than letting a NaN rate out.
+        if (!Number.isFinite(rate)) {
+          return 1
+        }
         if (rate) {
           this.setLastUsdData(key, { price: rate, time: +new Date() })
         }

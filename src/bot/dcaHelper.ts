@@ -20275,10 +20275,17 @@ function createDCABotHelper<
           time: +time,
           equity: equity,
           buyAndHold: bnh * bnhUsdRate,
+          // `??` only skips null/undefined, so a point that was once written
+          // with a NaN realized profit carried that NaN forward on every later
+          // tick and blocked the whole stats write for good. `equity` above is
+          // recomputed from scratch each tick and self-heals; make this do the
+          // same by falling through a non-finite carry-forward.
           realizedProfit:
-            current?.realizedProfit ??
-            prev?.realizedProfit ??
-            stats.numerical.general.startBalance.usd,
+            [
+              current?.realizedProfit,
+              prev?.realizedProfit,
+              stats.numerical.general.startBalance.usd,
+            ].find((v) => Number.isFinite(v)) ?? 0,
         })
       }
       if (stats.chart.length > 90) {
@@ -20496,7 +20503,18 @@ function createDCABotHelper<
           : profitBase
             ? 1
             : 1 / deal.initialPrice
-      if (!stats.numerical.general.startBalance.asset) {
+      // A deal canceled before its base order ever filled carries no price:
+      // `initialPrice`, `lastPrice` and `usage.max` are all 0. There is nothing
+      // to seed a start balance from, and seeding anyway poisons the stats —
+      // `use` is 0 while `multiply` is `1 / deal.initialPrice` = Infinity on a
+      // spot SHORT bot taking profit in quote, so `startBalance.usd` becomes
+      // `0 * Infinity` = NaN (spot LONG taking profit in base divides by the
+      // same 0 and lands on the same NaN). Mongoose rejects the whole `$set` on
+      // that NaN, so the bot silently stops persisting ANY stats until its
+      // process restarts.
+      const dealHasPrice =
+        Number.isFinite(deal.initialPrice) && deal.initialPrice > 0
+      if (dealHasPrice && !stats.numerical.general.startBalance.asset) {
         const maxDeals = Math.max(
           1,
           settings.maxNumberOfOpenDeals &&
@@ -20859,27 +20877,41 @@ function createDCABotHelper<
         stats.duration.general.dealsPerDay = totalDeals / workingDays
       }
       stats.duration.general.workingTime = workingTime
-      if (!stats.numerical.ratios.buyAndHold.symbol) {
+      // The buy & hold reference is seeded once and never revisited, so a
+      // priceless deal (see `dealHasPrice` above) pinned `startPrice` to 0 for
+      // the rest of the bot's life — `startBalance.asset / 0` is Infinity, and
+      // Infinity times a 0 rate is the NaN that blocked every later stats
+      // write. Take the reference only from a deal that has a price, and
+      // re-seed a `startPrice` an earlier run already zeroed.
+      if (
+        dealHasPrice &&
+        (!stats.numerical.ratios.buyAndHold.symbol ||
+          !(stats.numerical.ratios.buyAndHold.startPrice > 0))
+      ) {
         stats.numerical.ratios.buyAndHold.symbol = deal.symbol.symbol
         stats.numerical.ratios.buyAndHold.startPrice = deal.initialPrice
       }
-      const bnhUsdRate =
-        deal.symbol.symbol === stats.numerical.ratios.buyAndHold.symbol
-          ? _usdRate
-          : await this.getUsdRate(stats.numerical.ratios.buyAndHold.symbol)
-      const bnhRate =
-        deal.symbol.symbol === stats.numerical.ratios.buyAndHold.symbol
-          ? deal.lastPrice
-          : await this.getLatestPrice(stats.numerical.ratios.buyAndHold.symbol)
-      stats.numerical.ratios.buyAndHold.result =
-        ((stats.numerical.general.startBalance.asset /
-          stats.numerical.ratios.buyAndHold.startPrice) *
-          bnhRate -
-          stats.numerical.general.startBalance.asset) *
-        bnhUsdRate
-      stats.numerical.ratios.buyAndHold.perc =
-        stats.numerical.ratios.buyAndHold.result /
-        stats.numerical.general.startBalance.usd
+      if (stats.numerical.ratios.buyAndHold.startPrice > 0) {
+        const bnhUsdRate =
+          deal.symbol.symbol === stats.numerical.ratios.buyAndHold.symbol
+            ? _usdRate
+            : await this.getUsdRate(stats.numerical.ratios.buyAndHold.symbol)
+        const bnhRate =
+          deal.symbol.symbol === stats.numerical.ratios.buyAndHold.symbol
+            ? deal.lastPrice
+            : await this.getLatestPrice(
+                stats.numerical.ratios.buyAndHold.symbol,
+              )
+        stats.numerical.ratios.buyAndHold.result =
+          ((stats.numerical.general.startBalance.asset /
+            stats.numerical.ratios.buyAndHold.startPrice) *
+            bnhRate -
+            stats.numerical.general.startBalance.asset) *
+          bnhUsdRate
+        stats.numerical.ratios.buyAndHold.perc =
+          stats.numerical.ratios.buyAndHold.result /
+          stats.numerical.general.startBalance.usd
+      }
       const chartTime = new Date(end)
       chartTime.setHours(0, 0, 0, 0)
       if (!stats.chart.length) {
@@ -20892,7 +20924,11 @@ function createDCABotHelper<
       }
       const find = stats.chart.find((c) => c.time === +chartTime)
       if (find) {
-        find.realizedProfit = (find.realizedProfit ?? 0) + deal.profit.totalUsd
+        // `??` lets a NaN through, and NaN + anything is NaN forever after —
+        // same self-healing rule as the equity chart point above.
+        find.realizedProfit =
+          (Number.isFinite(find.realizedProfit) ? find.realizedProfit : 0) +
+          deal.profit.totalUsd
         find.equity = find.equity + deal.profit.totalUsd
         stats.chart = stats.chart.filter((c) => c.time !== +chartTime)
         stats.chart.push(find)
@@ -20926,7 +20962,9 @@ function createDCABotHelper<
         if (isLoss) {
           findSymbol.numerical.deals.loss += 1
         }
-        if (!findSymbol.numerical.general.startBalance.asset) {
+        // Same `use * multiply` arithmetic as the bot-wide start balance, so
+        // the same priceless deal turns this into NaN too.
+        if (dealHasPrice && !findSymbol.numerical.general.startBalance.asset) {
           const maxDeals = Math.max(
             1,
             settings.maxDealsPerPair &&
