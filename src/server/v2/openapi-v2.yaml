@@ -3570,6 +3570,7 @@ components:
             - OBFVG
             - SESSION
             - LW
+            - MG
           example: regular
         indicatorLength:
           type: number

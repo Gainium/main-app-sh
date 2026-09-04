@@ -7,7 +7,7 @@ This document contains detailed schema definitions for all API endpoints.
 All schemas include field descriptions, types, validation rules, and examples.
 This documentation is automatically generated from the OpenAPI specification.
 
-**Last Updated:** 2026-08-29T02:55:26.135Z
+**Last Updated:** 2026-09-04T12:22:14.312Z
 
 ---
 
@@ -1813,7 +1813,7 @@ SettingsIndicators configuration
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|BullBear|UO|IC|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW` | No | Bot or indicator type |
+| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|BullBear|UO|IC|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|MG` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
 | `indicatorCondition` | enum: `cd|cu|gt|lt` | No | Comparison condition |

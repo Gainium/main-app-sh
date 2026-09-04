@@ -4646,6 +4646,13 @@ function createDCABotHelper<
                   prev = prevData.value
                 }
                 if (
+                  lastData.type === IndicatorEnum.mg &&
+                  prevData?.type === IndicatorEnum.mg
+                ) {
+                  last = lastData.value
+                  prev = prevData.value
+                }
+                if (
                   lastData.type === IndicatorEnum.ath &&
                   prevData.type === IndicatorEnum.ath
                 ) {
