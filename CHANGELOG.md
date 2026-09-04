@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.8] - 2026-09-04
+
+### Fixed
+
+- A bot's Buy & Hold comparison no longer reads −100% when its reference pair cannot be priced. The comparison is pinned to the pair the bot started on, and that pair can later be delisted and dropped from the bot's settings; the price lookup then failed and the failure was used as if it were a price of zero — so the ratio showed a total loss and the benchmark line on the equity chart sat flat at zero, while the bot kept asking the exchange for the delisted pair and logging the rejection on every stats update. The last valid comparison is now kept until the pair can be priced again.
+
 ## [1.57.7] - 2026-09-04
 
 ### Fixed

@@ -133,6 +133,10 @@ import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { tpPriceDisplacement, worstFee } from './dca/tpFees'
 import {
+  buyAndHoldOutcome,
+  carryForwardBenchmark,
+} from './dca/buyAndHoldBenchmark'
+import {
   dealCloseEventDescription,
   dealLeftOpenSize,
   leftOpenPositionMessage,
@@ -20358,6 +20362,31 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * Latest price of the buy & hold REFERENCE pair, or 0 when there is none.
+     *
+     * The reference is pinned once and never revisited, so it routinely
+     * outlives the bot's interest in the pair: `checkSettingsPairs()` prunes a
+     * delisted pair out of `settings.pair`, and the benchmark keeps pointing at
+     * it. Asking the venue for a pair the platform has no exchange info for
+     * cannot return a price — it returns a rejection, once per stats tick, for
+     * the life of the bot (`Not supported symbols` on `XIONUSDT`, 1619 times on
+     * one bot; spec 006).
+     *
+     * So gate on exchange info first, the same way `placeOrders` does. A
+     * transient miss costs nothing here: the caller keeps the previous
+     * benchmark instead of writing a wrong one, which is why this uses the
+     * plain cached read rather than `confirmPairMissing`'s forced re-reads —
+     * those exist for the destructive "drop the pair and stop the bot"
+     * decision, not for skipping one benchmark tick.
+     */
+    private async benchmarkRate(pair: string): Promise<number> {
+      if (!pair || !(await this.getExchangeInfo(pair))) {
+        return 0
+      }
+      return await this.getLatestPrice(pair)
+    }
+
     @IdMute(mutex, (botId: string) => `${botId}updateBotStats`)
     @IdMute(mutexConcurrently, () => 'updateEquityStats')
     async updateEquityStats(_botId: string) {
@@ -20510,31 +20539,46 @@ function createDCABotHelper<
               this.data.profit.total * usdRate
         equity = balanceUsd + equity
         let bnhUsdRate = 1
+        let bnhPriced = false
         if (
           stats.numerical.ratios.buyAndHold.startPrice &&
           stats.numerical.general.startBalance.usd
         ) {
-          const bnhRate = await this.getLatestPrice(pairToUse)
+          const bnhRate = await this.benchmarkRate(pairToUse)
           bnhUsdRate = await this.getUsdRate(
             pairToUse,
             (await this.profitBase()) ? 'base' : 'quote',
           )
-          bnh =
-            (stats.numerical.general.startBalance.asset /
-              stats.numerical.ratios.buyAndHold.startPrice) *
-            bnhRate
-          stats.numerical.ratios.buyAndHold.result =
-            (bnh - stats.numerical.general.startBalance.asset) * bnhUsdRate
-          stats.numerical.ratios.buyAndHold.perc =
-            stats.numerical.ratios.buyAndHold.result /
-            stats.numerical.general.startBalance.usd
+          const outcome = buyAndHoldOutcome({
+            startBalanceAsset: stats.numerical.general.startBalance.asset,
+            startBalanceUsd: stats.numerical.general.startBalance.usd,
+            startPrice: stats.numerical.ratios.buyAndHold.startPrice,
+            rate: bnhRate,
+            usdRate: bnhUsdRate,
+          })
+          if (outcome) {
+            bnhPriced = true
+            bnh = outcome.asset
+            stats.numerical.ratios.buyAndHold.result = outcome.result
+            stats.numerical.ratios.buyAndHold.perc = outcome.perc
+          }
         }
         const current = stats.chart.find((c) => c.time === +time)
         stats.chart = stats.chart.filter((c) => c.time !== +time)
         stats.chart.push({
           time: +time,
           equity: equity,
-          buyAndHold: bnh * bnhUsdRate,
+          // Without a rate there is no benchmark to plot. Writing `0 * 1` here
+          // is what flattened the buy & hold line to zero for the whole 90-day
+          // window while equity moved normally — carry the last point forward
+          // instead, same rule as `realizedProfit` below.
+          buyAndHold: bnhPriced
+            ? bnh * bnhUsdRate
+            : carryForwardBenchmark(
+                current?.buyAndHold,
+                prev?.buyAndHold,
+                stats.numerical.general.startBalance.usd,
+              ),
           // `??` only skips null/undefined, so a point that was once written
           // with a NaN realized profit carried that NaN forward on every later
           // tick and blocked the whole stats write for good. `equity` above is
@@ -21159,18 +21203,22 @@ function createDCABotHelper<
         const bnhRate =
           deal.symbol.symbol === stats.numerical.ratios.buyAndHold.symbol
             ? deal.lastPrice
-            : await this.getLatestPrice(
-                stats.numerical.ratios.buyAndHold.symbol,
-              )
-        stats.numerical.ratios.buyAndHold.result =
-          ((stats.numerical.general.startBalance.asset /
-            stats.numerical.ratios.buyAndHold.startPrice) *
-            bnhRate -
-            stats.numerical.general.startBalance.asset) *
-          bnhUsdRate
-        stats.numerical.ratios.buyAndHold.perc =
-          stats.numerical.ratios.buyAndHold.result /
-          stats.numerical.general.startBalance.usd
+            : await this.benchmarkRate(stats.numerical.ratios.buyAndHold.symbol)
+        // No rate means no answer: keep the last computable benchmark rather
+        // than booking `getLatestPrice`'s 0-on-failure as the reference price,
+        // which reads as a flat -100% and is indistinguishable from the asset
+        // genuinely going to zero.
+        const outcome = buyAndHoldOutcome({
+          startBalanceAsset: stats.numerical.general.startBalance.asset,
+          startBalanceUsd: stats.numerical.general.startBalance.usd,
+          startPrice: stats.numerical.ratios.buyAndHold.startPrice,
+          rate: bnhRate,
+          usdRate: bnhUsdRate,
+        })
+        if (outcome) {
+          stats.numerical.ratios.buyAndHold.result = outcome.result
+          stats.numerical.ratios.buyAndHold.perc = outcome.perc
+        }
       }
       const chartTime = new Date(end)
       chartTime.setHours(0, 0, 0, 0)
