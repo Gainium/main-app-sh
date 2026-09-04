@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.57.2] - 2026-09-04
+
+### Fixed
+
+- Multi take-profit: a target that fires but books no new fill no longer strands the deal. `checkTPLevel` set `closeByTp` before sending the market close and only the fill-processing paths ever cleared it, so an attempt that placed nothing — no exchange info, a send that failed, or a re-send of a target that had already filled and came back "already processed" — latched the flag true. While latched, every later price tick skipped the deal ("already closing by TP") and every deal-settings edit was refused ("closing by TP. Skip place orders"), so the remaining targets could not arm until an unrelated fill or a worker restart. The flag is now released whenever nothing is left in flight, and the level check is re-armed on the targets that are still open.
+- A filled take-profit target is now disarmed as soon as it fills: the `dealTP` fill branch re-runs `checkDealSlMethods` / `checkDealsPriceExtremum` for every target, not only multi-SL ones. Previously `dealsForTPLevelCheck` kept pointing at the target that had just filled, and the next tick above that price re-sent the same `clientOrderId` — the trigger for the latch above.
+- Editing a live deal's take-profit target now re-runs the TP level check immediately instead of waiting for the next price tick. The check only runs from `priceUpdateCallback`, and that cadence belongs to the venue's price feed, so a target moved below the market could sit armed but unevaluated for minutes.
+
+### Changed
+
+- `checkTPLevel`'s "already closing by TP" skip and `getDealTPLevelToCheck`'s armed-target/filled-ids line are logged at info instead of debug — debug is off on prod, which is why the latch above was invisible in every archived log.
+
 ## [1.57.1] - 2026-09-03
 
 ### Fixed

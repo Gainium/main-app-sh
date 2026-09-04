@@ -6986,7 +6986,6 @@ function createDCABotHelper<
           )
           this.updateUserProfitStep()
           let reopen = false
-          let isSl = false
           if (!isReduce) {
             if (
               order.tpSlTarget &&
@@ -7016,7 +7015,6 @@ function createDCABotHelper<
                 .map((tp) => tp.uuid)
                 .includes(order.tpSlTarget)
             ) {
-              isSl = true
               findDeal.previousOrders = findDeal.currentOrders
               findDeal.currentOrders = await this.createCurrentDealOrders(
                 findDeal.deal.symbol.symbol,
@@ -7063,15 +7061,24 @@ function createDCABotHelper<
             tpHistory: findDeal.deal.tpHistory,
             reduceFunds: findDeal.deal.reduceFunds,
             pendingReduceFunds: findDeal.deal.pendingReduceFunds,
-          }).then(() => {
+          }).then(async () => {
             if (isReduce) {
               this.updateUsage(dealId)
               this.updateAssets(dealId)
               this.sendDealClosedAlert(findDeal.deal, order, true)
             }
-            if (isSl) {
-              this.checkDealSlMethods(findDeal)
-            }
+            // A take-profit target that just filled has to be disarmed, not
+            // only the multi-SL one. `dealsForTPLevelCheck` and the price
+            // extremum still hold the target that filled; `getDealTPLevelToCheck`
+            // drops it only when it is recomputed against `tpFilledHistory`.
+            // Until then the next tick above that price re-fires `checkTPLevel`
+            // for a target that is already done — it re-sends the same
+            // clientOrderId, which comes back "already processed", and the
+            // `closeByTp` flag it set on the way in is never cleared. That is
+            // what stranded the remaining targets of a live Coinbase multi-TP
+            // deal for nearly three hours.
+            await this.checkDealSlMethods(findDeal)
+            this.checkDealsPriceExtremum()
           })
 
           this.updateAssets(dealId, findDeal)
@@ -15912,8 +15919,12 @@ function createDCABotHelper<
         .sort((a, b) =>
           this.isLong ? +a.price - +b.price : +b.price - +a.price,
         )[0]?.price
-      this.handleDebug(
-        `Deal ${d.deal._id} TP Level Check Price: ${tpPrice}, Filled IDs: ${filledIds.join(', ')}`,
+      // Info, not debug: which target the level check is armed on — and which
+      // ones it considers already filled — is the other half of the picture,
+      // and it was equally absent from prod. It rides the same trigger as the
+      // `Lowest high` / `Highest low` pair logged just after it.
+      this.handleLog(
+        `Deal ${d.deal._id} TP Level Check Price: ${tpPrice || def}, Filled IDs: ${filledIds.join(', ')}`,
       )
       return tpPrice || def
     }
@@ -17612,7 +17623,13 @@ function createDCABotHelper<
           continue
         }
         if (deal.closeByTp) {
-          this.handleDebug(`Deal ${deal.deal._id} already closing by TP`)
+          // Info, not debug: this is the line that names a stuck `closeByTp`,
+          // and debug is off on prod — the latch below was invisible in every
+          // archived log. It only fires once the price has reached the target,
+          // so the volume is bounded by real trigger events.
+          this.handleLog(
+            `Deal ${deal.deal._id} already closing by TP, skip TP level ${v} at price ${price}`,
+          )
           continue
         }
         if (v) {
@@ -17663,6 +17680,11 @@ function createDCABotHelper<
             deal.closeByTp = true
             this.saveDeal(deal)
             const ed = await this.getExchangeInfo(deal.deal.symbol.symbol)
+            // `closeByTp` means "a close is in flight in this process" and is
+            // cleared only by the fill-processing paths, so track here whether
+            // this attempt actually left one in flight.
+            let closeInFlight = false
+            let outcome = 'no exchange info'
             if (ed) {
               const result = await this.sendGridToExchange(
                 order,
@@ -17678,9 +17700,46 @@ function createDCABotHelper<
                 },
                 ed,
               )
+              outcome = result ? result.status : 'not placed'
               if (result && result.status === 'FILLED') {
-                this.processFilledOrder(result)
+                if (
+                  this.processedFilled
+                    .get(deal.deal._id)
+                    ?.has(result.clientOrderId)
+                ) {
+                  // The venue echoed a target that was already filled and
+                  // booked — `processFilledOrder` will short-circuit it as
+                  // "already processed" and never reach the reset below.
+                  outcome = 'already processed'
+                } else {
+                  closeInFlight = true
+                  this.processFilledOrder(result)
+                }
+              } else if (
+                result &&
+                (result.status === 'NEW' || result.status === 'PARTIALLY_FILLED')
+              ) {
+                closeInFlight = true
               }
+            }
+            if (!closeInFlight) {
+              // Nothing is in flight, so a `closeByTp` left true here is a
+              // one-way latch: every later tick skips this deal at the
+              // `already closing by TP` guard above and `placeOrders` refuses
+              // every settings edit ("closing by TP. Skip place orders"), so
+              // the remaining take-profit targets can never arm until an
+              // unrelated fill or a worker restart clears it. Seen in
+              // production for 2h56m on a Coinbase multi-TP deal after a
+              // re-send of an already-filled target. Release the flag and
+              // re-arm the level check on the targets that are still open, so
+              // the stale one cannot re-fire on the next tick.
+              this.handleLog(
+                `Deal ${deal.deal._id} TP level close left nothing in flight (${outcome}) — releasing closeByTp and re-arming TP level check`,
+              )
+              deal.closeByTp = false
+              this.saveDeal(deal)
+              await this.checkDealSlMethods(deal)
+              this.checkDealsPriceExtremum()
             }
           }
         }
@@ -18567,6 +18626,24 @@ function createDCABotHelper<
             this.updateUsage(dealId)
             this.updateAssets(dealId)
             await this.setCloseByTimer(findDeal.deal)
+            // Re-arming above only updates the price the level check watches.
+            // The check itself runs from `priceUpdateCallback`, so a target the
+            // user has just moved below the market sits armed but unevaluated
+            // until the next price tick — and that cadence is the venue's, not
+            // ours: Coinbase pairs tick once every five minutes, which is how
+            // an already-in-the-money target went unfilled for minutes after
+            // the edit that put it in the money. Evaluate it against the last
+            // known price straight away.
+            const lastPrice =
+              this.getLastStreamData(findDeal.deal.symbol.symbol)?.price ||
+              findDeal.deal.lastPrice
+            if (lastPrice) {
+              await this.checkTPLevel(
+                this.botId,
+                lastPrice,
+                findDeal.deal.symbol.symbol,
+              )
+            }
           })
 
           if (findDeal.deal.status !== DCADealStatusEnum.start) {
