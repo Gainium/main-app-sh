@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.7] - 2026-09-04
+
+### Fixed
+
+- Deals no longer stay open forever against a position the exchange no longer holds. When a take profit is reached and the closing order cannot be placed, the bot now asks the exchange whether the position is still there; if it is not, the deal is closed with the profit it had already realised and a message explaining why, instead of re-arming the same impossible close on every price update. Three deals on one bot had been open since April re-trying roughly every 15 seconds against positions the exchange closed the day they opened. The check is throttled to one lookup per deal per 5 minutes, only applies to futures deals, and never closes a deal when the exchange could not be reached.
+
 ## [1.57.6] - 2026-09-04
 
 ### Fixed

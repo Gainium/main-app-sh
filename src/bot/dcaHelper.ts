@@ -141,6 +141,10 @@ import {
   classifyTpCloseAttempt,
   tpCloseBlockedMessage,
 } from './dca/tpCloseOutcome'
+import {
+  dealPositionGoneMessage,
+  reconcileDealAgainstVenue,
+} from './dca/positionReconcile'
 import RetryBackoff from './retryBackoff'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
@@ -208,6 +212,23 @@ const tpCloseBackoff = new RetryBackoff({
   namespace: 'tpc',
   minMs: 60 * 1000,
   maxMs: 15 * 60 * 1000,
+})
+
+/**
+ * How often a deal that reached its take profit and failed to close may ask the
+ * venue whether it still holds the position (spec 005 / issue #630).
+ *
+ * A throttle, not a rejection ladder: the price tick fires ~2/s per symbol and a
+ * positions round trip must not ride it. Wider than `tpCloseBackoff` because
+ * nothing is waiting on the answer — a deal whose position really is gone has
+ * already been gone for months, and five minutes more costs nothing, while a
+ * position that is merely mid-sync gets several chances to reappear before
+ * anything is settled.
+ */
+const positionProbeBackoff = new RetryBackoff({
+  namespace: 'dpp',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
 })
 
 /**
@@ -17625,6 +17646,110 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * Settle a deal whose venue position has vanished. Spec
+     * `specs/005.zombie-deal-venue-position-reconciliation.md` (issue #630).
+     *
+     * `closeDealById` has reconciled this since the combo base-minigrid case
+     * (the `isPositionAlreadyClosedReason` branch below), but a multi-TP deal
+     * never goes through it — it closes target by target from `checkTPLevel`,
+     * which could only ever schedule another attempt. Three deals on bot
+     * 69de6e9e10716872ece23ce8 stayed `open` from 2026-04-29 to 2026-09-04 that
+     * way, re-arming every ~15 s against positions `paperFutures` had closed on
+     * the day they opened.
+     *
+     * @returns true when the deal was booked closed and the caller must stop
+     *   working it.
+     */
+    private async reconcileDealPosition(
+      deal: FullDeal<ExcludeDoc<Deal>>,
+      outcome: string,
+    ): Promise<boolean> {
+      const dealId = `${deal.deal._id}`
+      const symbol = deal.deal.symbol.symbol
+      if (!this.futures || !this.exchange) {
+        // Spot has no position to reconcile against.
+        return false
+      }
+      // One venue round trip per deal per cooldown, and only for a deal sitting
+      // at a take-profit level it could not close. The probe — not a rejection —
+      // is what opens the window here; that is safe because the window gates no
+      // order, and a probe that finds the position clears it below.
+      const probeCooldown = await positionProbeBackoff.check([
+        this.botId,
+        dealId,
+      ])
+      if (probeCooldown.suppressed) {
+        return false
+      }
+      const probe = await positionProbeBackoff.record(
+        [this.botId, dealId],
+        outcome,
+      )
+      const positions = await this.exchange.futures_getPositions(symbol)
+      const verdict = reconcileDealAgainstVenue(
+        positions?.status === StatusEnum.ok && positions.data
+          ? { kind: 'positions', positions: positions.data }
+          : // A venue that did not answer must never settle a deal: closing one
+            // whose position is in fact still open abandons it with no take
+            // profit and no stop loss, which is worse than the deal being stuck.
+            { kind: 'unavailable' },
+        symbol,
+        this.isLong ? 'LONG' : 'SHORT',
+        !!this.hedge,
+      )
+      if (!verdict.closeDeal) {
+        if (positions?.status === StatusEnum.ok) {
+          // The position is there — any window opened by an earlier probe is
+          // stale, so this cannot slide forward forever.
+          await positionProbeBackoff.clear([this.botId, dealId])
+        }
+        this.handleDebug(
+          `Deal ${dealId} TP level close ${outcome}; ${verdict.verdict} — leaving the deal open`,
+        )
+        return false
+      }
+      if (probe.attempt < 2) {
+        // Two agreeing probes, five minutes apart, before booking a deal
+        // closed. The cost is asymmetric: these deals have been gone for
+        // months, so waiting one more window costs nothing, while acting on a
+        // single `{status: ok, data: []}` from a venue mid-outage would abandon
+        // a live position with no take profit and no stop loss. `clear()` above
+        // resets the count the moment the position is seen again, so a real
+        // divergence still converges on the next window.
+        this.handleLog(
+          `Deal ${dealId} TP level close ${outcome} and ${verdict.verdict} on ${this.data?.exchange} — waiting for a second reading before closing the deal`,
+        )
+        return false
+      }
+      this.handleLog(
+        `Deal ${dealId} TP level close ${outcome} and ${verdict.verdict} on ${this.data?.exchange} (${probe.attempt} readings) — closing the deal instead of re-arming against a position that is gone`,
+      )
+      if (this.shouldProceed()) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: dealPositionGoneMessage({
+            dealId,
+            symbol,
+            exchange: `${this.data?.exchange ?? ''}`,
+          }),
+          paperContext: !!this.data?.paperContext,
+          deal: dealId,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
+      }
+      await positionProbeBackoff.clear([this.botId, dealId])
+      // The same primitive `closeDealById` uses for this condition: books the
+      // deal closed keeping the P&L the filled targets already realised, with
+      // no closing order — there is nothing to send one for.
+      await this.closeDeal(this.botId, dealId)
+      return true
+    }
+
     @IdMute(mutex, (botId: string) => `${botId}checkTPLevel`)
     public async checkTPLevel(_botId: string, price: number, symbol: string) {
       if (!this.allowedMethods.has('checkTPLevel')) {
@@ -17817,6 +17942,19 @@ function createDCABotHelper<
               // below, not the flag, is what stops the resend loop.
               deal.closeByTp = false
               this.saveDeal(deal)
+              // Neither ending below can terminate: the backoff retries to 15
+              // min forever, and everything else re-arms on the next tick. So
+              // before choosing between them, settle whether there is anything
+              // left to close at all — the question nothing in this engine ever
+              // asked, which left deal 69f1b27faeba7a4880365abb open from April
+              // to September against a position the venue closed on day one.
+              // Driven from "nothing in flight" rather than from the refusal
+              // text on purpose: the loop actually running in production today
+              // reports `not placed` and never reaches the venue, so a guard
+              // hung off `terminalRejection` would miss exactly these deals.
+              if (await this.reconcileDealPosition(deal, outcome)) {
+                continue
+              }
               if (terminalRejection) {
                 // The venue did not miss the order, it answered it: there is
                 // no position to reduce. Re-arming against the price tick asks
