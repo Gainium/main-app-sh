@@ -41,3 +41,21 @@ export function worstFee(fee: MaybeFee): number {
 export function tpPriceDisplacement(fee: MaybeFee, long: boolean): number {
   return 1 + (long ? 1 : -1) * worstFee(fee) * 2
 }
+
+/**
+ * Whether a deal's fees so far were ALL paid in a third asset — meaning
+ * nothing base/quote-denominated has been taken out of the quantity, the
+ * same precondition that already zeroes the fee for futures (see file
+ * header). Only true once at least one fee has actually been observed;
+ * a deal with no fills yet is not "all third-asset," it's "unknown."
+ */
+export function quantityFeeIsThirdAssetOnly(
+  feeByAsset: { asset: string; total: number; totalUsd?: number }[] | undefined,
+  commission: number,
+  feePaid: { base: number; quote: number } | undefined,
+): boolean {
+  const hasThirdAssetFee = (feeByAsset?.length ?? 0) > 0
+  const hasOnPairFee =
+    commission > 0 || (feePaid?.base ?? 0) > 0 || (feePaid?.quote ?? 0) > 0
+  return hasThirdAssetFee && !hasOnPairFee
+}
