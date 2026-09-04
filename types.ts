@@ -3720,6 +3720,7 @@ export enum IndicatorEnum {
   obfvg = 'OBFVG',
   session = 'SESSION',
   lw = 'LW',
+  mg = 'MG',
 }
 
 export enum MAEnum {
@@ -3808,6 +3809,7 @@ export type IndicatorHistory = { time: number } & (
   | { type: IndicatorEnum.psar; value: { psar: number; price: number } }
   | { type: IndicatorEnum.lw; value: LongWickResult }
   | { type: IndicatorEnum.session; value: boolean }
+  | { type: IndicatorEnum.mg; value: number }
 )
 
 type Percentile = {
@@ -3991,6 +3993,10 @@ export type IndicatorConfig =
       type: IndicatorEnum.lw
       lwThreshold: number
       lwMaxDuration: number
+    }
+  | {
+      type: IndicatorEnum.mg
+      interval: number
     }
 
 export type Prices = {

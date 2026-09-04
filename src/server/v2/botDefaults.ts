@@ -559,6 +559,11 @@ export const indicatorConfigDefaults: {
     indicatorLength: 14,
     indicatorValue: '0',
   },
+  [IndicatorEnum.mg]: {
+    ...base,
+    indicatorLength: 14,
+    indicatorValue: '0',
+  },
   [IndicatorEnum.ath]: {
     ...base,
     indicatorValue: '10',

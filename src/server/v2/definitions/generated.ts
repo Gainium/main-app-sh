@@ -163,6 +163,7 @@ export const indicatorCoreFieldDefinitions: FieldDefinition[] = [
       'OBFVG',
       'SESSION',
       'LW',
+      'MG',
     ],
   },
   {
@@ -3178,6 +3179,51 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       uuid: '<indicator-uuid>',
     },
   },
+  {
+    type: 'MG',
+    name: 'McGinley Dynamic (MG)',
+    description:
+      'A self-adjusting moving average that speeds up in fast markets and slows down in flat ones, tracking price more closely than a fixed-period moving average.',
+    coreFields: indicatorCoreFieldDefinitions,
+    typeSpecificFields: [
+      {
+        name: 'section',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['tp', 'sl', 'dca', 'controller'],
+      },
+      {
+        name: 'minPercFromLast',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber'],
+      },
+      {
+        name: 'keepConditionBars',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber', 'mustBeInteger'],
+      },
+    ],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'MG',
+      indicatorLength: 14,
+      indicatorValue: '0',
+      indicatorCondition: 'gt',
+      indicatorInterval: '1h',
+      indicatorAction: 'startDeal',
+      groupId: '<group-uuid>',
+      uuid: '<indicator-uuid>',
+    },
+  },
 ]
 
 // -----------------------------------------------------------------------
@@ -4521,8 +4567,8 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           type: 'number',
           required: true,
           validators: ['mustBeNumber', 'mustBePositive'],
-          default: 1775509200000,
-          example: 1775509200000,
+          default: 1788555600000,
+          example: 1788555600000,
         },
         {
           name: 'hodlHourly',

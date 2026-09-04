@@ -4596,6 +4596,7 @@ export const BotSchema = /* GraphQL */ `
     OBFVG
     LW
     SESSION
+    MG
   }
   enum BBCrossingEnum {
     middle

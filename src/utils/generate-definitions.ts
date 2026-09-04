@@ -1648,6 +1648,27 @@ const INDICATOR_META: Record<
       indicatorAction: 'startDeal',
     },
   },
+  MG: {
+    name: 'McGinley Dynamic (MG)',
+    description:
+      'A self-adjusting moving average that speeds up in fast markets and slows down in flat ones, tracking price more closely than a fixed-period moving average.',
+    typeSpecificFields: [],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'MG',
+      indicatorLength: 14,
+      indicatorValue: '0',
+      indicatorCondition: 'gt',
+      indicatorInterval: '1h',
+      indicatorAction: 'startDeal',
+    },
+  },
   PP: {
     name: 'Market Structure',
     description:
