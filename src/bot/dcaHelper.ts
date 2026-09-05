@@ -91,7 +91,7 @@ import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
   isDefinitiveOrderNotFound,
-  reconcileLookupAttempts,
+  reconcileUnresolvedWarn,
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
 import { underfilledTpQty } from './dca/partialTp'
@@ -9388,14 +9388,22 @@ function createDCABotHelper<
         // emit hundreds of identical warnings across the fleet, which buried
         // the signal it was trying to raise.
         const unresolved: string[] = []
+        // Attempts actually spent on the orders in `unresolved` — the warn used
+        // to print the budget constant instead, which reads as a retry storm
+        // when the ladder in fact stopped on its first answer (#676).
+        let unresolvedLookupAttempts = 0
         const toCheck = this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
         })
         await this.primeReconcileBatch(toCheck)
         for (const o of toCheck) {
-          const getOrder = await this.getOrderForReconcile(o)
+          let attemptsForOrder = 0
+          const getOrder = await this.getOrderForReconcile(o, {
+            onAttempts: (n) => (attemptsForOrder = n),
+          })
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
+            unresolvedLookupAttempts += attemptsForOrder
             continue
           }
           if (getOrder.status === StatusEnum.notok) {
@@ -9440,9 +9448,7 @@ function createDCABotHelper<
           // this is a health signal, not a dead end — but it is the fingerprint
           // of a reconcile pass that could not see the venue.
           this.handleWarn(
-            `Reconcile could not read ${unresolved.length} order(s) after ${reconcileLookupAttempts} attempts: ${unresolved
-              .slice(0, 10)
-              .join(', ')}${unresolved.length > 10 ? ' …' : ''}`,
+            reconcileUnresolvedWarn(unresolved, unresolvedLookupAttempts),
           )
         }
         if (this.reconcileViaSweep && filledOrders.length > 0) {

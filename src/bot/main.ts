@@ -483,6 +483,14 @@ export function isDefinitiveOrderNotFound(res?: {
  * costs nothing and the amplifier goes with it.
  *
  * Returns the LAST result, so callers keep today's `!res?.data` handling.
+ *
+ * `opts.onAttempts` reports how many `fetch` calls were actually spent — an
+ * OPTIONAL, additive channel precisely because the return type is a shared
+ * `*-sh` export (Danger List #11) that must not change. It exists because the
+ * three early stops above make the budget a poor proxy for the spend, and the
+ * callers were logging the budget as though it were the spend: bug #676, where
+ * 853 prod warns all read "after 3 attempts" on passes far too fast to have
+ * slept even once. See `reconcileUnresolvedWarn`.
  */
 export async function reconcileLookup<
   T extends { status: StatusEnum; reason?: string | null; data?: unknown },
@@ -493,10 +501,12 @@ export async function reconcileLookup<
     backoffMs: number
     sleep: (ms: number) => Promise<void>
     random?: () => number
+    onAttempts?: (spent: number) => void
   },
 ): Promise<T | undefined> {
   const attempts = Math.max(1, opts.attempts)
   const random = opts.random ?? Math.random
+  let spent = 1
   let last = await fetch()
   for (let attempt = 1; attempt < attempts; attempt++) {
     if (last?.data) break
@@ -505,8 +515,35 @@ export async function reconcileLookup<
     const base = opts.backoffMs * 2 ** (attempt - 1)
     await opts.sleep(Math.round(base * (0.5 + random())))
     last = await fetch()
+    spent++
   }
+  opts.onAttempts?.(spent)
   return last
+}
+
+/**
+ * The reconcile pass's aggregate "could not read these orders" warn.
+ *
+ * One function for both `checkOrdersAfterReconnect` copies (grid in
+ * `helper.ts`, DCA/combo in `dcaHelper.ts`) — they carried the same template
+ * literal verbatim, which is how they came to print the same wrong number in
+ * two places (#676).
+ *
+ * `attemptsSpent` is the total actually spent on the UNRESOLVED orders, not on
+ * the whole pass: the message is about those orders, and summing the resolved
+ * ones in would re-create the ambiguity this wording exists to remove. The
+ * budget is printed too, labelled, so a reader can tell at a glance whether
+ * the ladder ran (`N orders / N attempts` = one look each, it stopped early)
+ * or was exhausted (`N orders / 3N attempts`).
+ */
+export function reconcileUnresolvedWarn(
+  unresolved: string[],
+  attemptsSpent: number,
+  budget: number = reconcileLookupAttempts,
+): string {
+  return `Reconcile could not read ${unresolved.length} order(s) after ${attemptsSpent} lookup attempt(s) (budget ${budget}/order): ${unresolved
+    .slice(0, 10)
+    .join(', ')}${unresolved.length > 10 ? ' …' : ''}`
 }
 /**
  * The placeholder an {@link Order} carries in `orderId` from the moment it is
@@ -1115,13 +1152,20 @@ class MainBot<T extends IMainBot> {
    */
   protected async getOrderForReconcile(
     o: Order,
-    opts: { fromCache?: boolean; symbol?: string } = {},
+    opts: {
+      fromCache?: boolean
+      symbol?: string
+      onAttempts?: (spent: number) => void
+    } = {},
   ) {
     const symbol = opts.symbol ?? o.symbol
     const fromCache = opts.fromCache ?? false
     // No exchange bound: retrying cannot fix that, and sleeping through it once
     // per order turns a dead bot into a slow one.
     if (!this.exchange || !this.data) {
+      // Still exactly one lookup — reported so a caller counting attempts sees
+      // this branch as the single attempt it is, not as zero.
+      opts.onAttempts?.(1)
       return await this.getOrder(o.clientOrderId, symbol, fromCache)
     }
     return await reconcileLookup(
@@ -1130,6 +1174,7 @@ class MainBot<T extends IMainBot> {
         attempts: reconcileLookupAttempts,
         backoffMs: reconcileLookupBackoffMs,
         sleep: utils.sleep,
+        onAttempts: opts.onAttempts,
       },
     )
   }

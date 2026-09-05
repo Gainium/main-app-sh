@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.14] - 2026-09-05
+
+### Fixed
+
+- The reconcile pass's "could not read N order(s)" warning now reports how many exchange lookups it actually spent instead of the configured per-order retry budget. The budget was printed unconditionally, so the line always read "after 3 attempts" even when every order was answered on the first look and the retry ladder never ran — which is the usual case, because a definitive "no such order" from the exchange stops the ladder immediately. Reading that number as work performed makes a quiet pass look like a retry storm, and it already caused a defect to be filed against a code path that was behaving correctly. The line now names the lookups spent and the budget separately. Log wording only: reconcile does exactly the same work, in the same order, as before.
+
 ## [1.57.13] - 2026-09-05
 
 ### Fixed

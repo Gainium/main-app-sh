@@ -17,7 +17,7 @@ import {
 } from '../../types'
 import MainBot, {
   isDefinitiveOrderNotFound,
-  reconcileLookupAttempts,
+  reconcileUnresolvedWarn,
 } from './main'
 
 import type {
@@ -1167,14 +1167,22 @@ function createBotHelper<
         const filledOrders: Order[] = []
         // See the DCA copy: aggregated at the end, and retried before it counts.
         const unresolved: string[] = []
+        // Attempts actually spent on the orders in `unresolved` — the warn used
+        // to print the budget constant instead, which reads as a retry storm
+        // when the ladder in fact stopped on its first answer (#676).
+        let unresolvedLookupAttempts = 0
         const toCheck = this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
         })
         await this.primeReconcileBatch(toCheck)
         for (const o of toCheck) {
-          const getOrder = await this.getOrderForReconcile(o)
+          let attemptsForOrder = 0
+          const getOrder = await this.getOrderForReconcile(o, {
+            onAttempts: (n) => (attemptsForOrder = n),
+          })
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
+            unresolvedLookupAttempts += attemptsForOrder
             continue
           }
           if (getOrder.status === StatusEnum.notok) {
@@ -1206,9 +1214,7 @@ function createBotHelper<
         }
         if (unresolved.length) {
           this.handleWarn(
-            `Reconcile could not read ${unresolved.length} order(s) after ${reconcileLookupAttempts} attempts: ${unresolved
-              .slice(0, 10)
-              .join(', ')}${unresolved.length > 10 ? ' …' : ''}`,
+            reconcileUnresolvedWarn(unresolved, unresolvedLookupAttempts),
           )
         }
         const [lastFilled] = filledOrders.sort(
