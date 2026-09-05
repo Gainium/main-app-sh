@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.13] - 2026-09-05
+
+### Fixed
+
+- Cancelling an order that never reached the exchange no longer asks the exchange about it. On Kraken spot, Coinbase and KuCoin futures an order is addressed by the exchange's own order id, and an order the exchange refused at placement has none — the cancel sent the placeholder "-1" instead, spending a rate-limited private call to be told, correctly, that no such order exists. The order is now retired straight away from what Gainium already knows, exactly as the order-lookup path has done since August. If that wasted call happened to time out, the bot was also put into an error state over an order that had never existed, and the stale order stayed on the books until the next attempt; neither can happen now. Every other exchange, and any order that does hold a real exchange order id, is unaffected.
+
 ## [1.57.12] - 2026-09-05
 
 ### Fixed

@@ -7952,31 +7952,50 @@ class MainBot<T extends IMainBot> {
   ) {
     const _id = this.startMethod('cancelOrderOnExchange')
     if (this.exchange) {
-      const request = await this.exchange.cancelOrder({
-        symbol: order.symbol,
-        // Address the venue by the id it can resolve UNAMBIGUOUSLY. Kraken
-        // spot has no client-order-id lookup at all: the connector falls back
-        // to `userref = parseInt(clientOrderId.substring(0, 8), 16)`, and every
-        // Gainium client id starts with a shared non-hex prefix, so parseInt
-        // stops at the first `-` and ALL `D-*` ids collapse to userref 13 (all
-        // `CMB-*` to 12). `getOrder()` then returns whichever same-userref
-        // order the account happens to list first and we cancel THAT one —
-        // a cancel aimed at order A silently cancels order B. Bug #535: 41
-        // distinct `D-RO-*` cancels on one ETHEUR DCA bot all resolved to the
-        // single stale txid ONK6O3-BF63X-24VAON, so not one of the intended
-        // orders was ever cancelled. The stored `orderId` IS the Kraken txid,
-        // which the connector routes through its exact `isKrakenSpotTxid()` ->
-        // `getSpotOrderByTxid()` lookup. This is the same swap
-        // `_handleUnknownOrder` already makes for kraken in its `byId` set —
-        // v1.32.4 added it there and to nothing else, leaving the cancel that
-        // feeds it still addressed by client id.
-        newClientOrderId:
-          this.data?.exchange === ExchangeEnum.coinbase ||
-          this.data?.exchange === ExchangeEnum.kraken ||
-          this.kucoinFullFutures
-            ? `${order.orderId}`
-            : order.clientOrderId,
-      })
+      // Address the venue by the id it can resolve UNAMBIGUOUSLY. Kraken
+      // spot has no client-order-id lookup at all: the connector falls back
+      // to `userref = parseInt(clientOrderId.substring(0, 8), 16)`, and every
+      // Gainium client id starts with a shared non-hex prefix, so parseInt
+      // stops at the first `-` and ALL `D-*` ids collapse to userref 13 (all
+      // `CMB-*` to 12). `getOrder()` then returns whichever same-userref
+      // order the account happens to list first and we cancel THAT one —
+      // a cancel aimed at order A silently cancels order B. Bug #535: 41
+      // distinct `D-RO-*` cancels on one ETHEUR DCA bot all resolved to the
+      // single stale txid ONK6O3-BF63X-24VAON, so not one of the intended
+      // orders was ever cancelled. The stored `orderId` IS the Kraken txid,
+      // which the connector routes through its exact `isKrakenSpotTxid()` ->
+      // `getSpotOrderByTxid()` lookup. This is the same swap
+      // `_handleUnknownOrder` already makes for kraken in its `byId` set —
+      // v1.32.4 added it there and to nothing else, leaving the cancel that
+      // feeds it still addressed by client id.
+      const byExchangeId =
+        this.data?.exchange === ExchangeEnum.coinbase ||
+        this.data?.exchange === ExchangeEnum.kraken ||
+        this.kucoinFullFutures
+      // …and when that id is still the `-1` placeholder there IS no venue-side
+      // identifier, so there is nothing to ask. Both siblings that build this
+      // same id already say so — `venueOrderId()` returns null, the unknown-order
+      // ladder sets `neverReachedExchange` — and this was the last path left
+      // spending a rate-limited private call to learn what the local row says.
+      // Bug #671: 39 Kraken grid orders (all refused at placement with
+      // `EAccount:Invalid permissions`) plus 27k Coinbase rows each sent the
+      // literal `'-1'` as the order id. The answer is the same either way — this
+      // message contains `Order not found`, so `unknownOrderMessages` below
+      // still routes it to `_handleUnknownOrder` and the order is retired — but
+      // the venue's answer is not GUARANTEED to be that: a timeout or rate-limit
+      // on the wasted call matches nothing, error-states the bot over an order
+      // that provably never existed, and leaves the phantom row NEW.
+      // Substituted as a response rather than returned early so the routing
+      // below stays the single place that decides what "not found" means.
+      const request =
+        byExchangeId && order.orderId === noExchangeOrderId
+          ? this.exchange.returnBad()(new Error(orderNeverReachedExchange))
+          : await this.exchange.cancelOrder({
+              symbol: order.symbol,
+              newClientOrderId: byExchangeId
+                ? `${order.orderId}`
+                : order.clientOrderId,
+            })
       if (request.status === StatusEnum.notok) {
         for (const m of unknownOrderMessages) {
           if (request.reason.toLowerCase().indexOf(m.toLowerCase()) !== -1) {
