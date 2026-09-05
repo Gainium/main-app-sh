@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.12] - 2026-09-05
+
+### Fixed
+
+- Kraken spot orders are now given a client order id Kraken itself can carry. Kraken accepts a client order id only as a UUID or as free text of at most 18 characters, and Gainium's was 35, so the exchange connector had to hash it before sending — which worked, but meant the id shown on the order was not the id Kraken knew it by, and anyone looking at the order on Kraken had no way back to the Gainium order. Kraken spot ids are now generated inside that 18-character budget and are sent through untouched. Orders placed before this change are unaffected and keep resolving the way they always did; every other exchange keeps the id it has today.
+
 ## [1.57.11] - 2026-09-05
 
 ### Fixed

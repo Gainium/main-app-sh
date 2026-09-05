@@ -184,6 +184,17 @@ type AccountCBFunctions = {
 const { findUSDRate, sleep, id } = utils
 
 /**
+ * Kraken's ceiling on a free-text `cl_ord_id`, in characters.
+ *
+ * Kraken accepts a client order id in exactly three forms: long UUID
+ * (8-4-4-4-12 hex), short UUID (32 hex, no dashes), or free ASCII text of at
+ * most 18 characters. Only the last one can carry an id we chose, so it is the
+ * budget {@link MainBot#getOrderId} generates a Kraken spot id inside.
+ * `specs/010.kraken-spot-client-order-id-length.md`.
+ */
+export const KRAKEN_CL_ORD_ID_MAX_LENGTH = 18
+
+/**
  * Return from findDiff function
  */
 type findDiffReturn = {
@@ -5188,11 +5199,44 @@ class MainBot<T extends IMainBot> {
     }
   }
 
+  /**
+   * A client order id the venue can actually carry.
+   *
+   * Each arm is a venue's own ceiling, not a preference. Kraken SPOT's is the
+   * tightest: Kraken accepts a native `cl_ord_id` in exactly three forms — long
+   * UUID (8-4-4-4-12 hex), short UUID (32 hex, no dashes), or FREE ASCII TEXT
+   * of at most 18 characters. The default 35-character id is none of them, 17
+   * over the free-text ceiling, so the connector had to hash it to
+   * `sha256(id).slice(0,32)` before it could be sent — which resolves fine, but
+   * means the id on our order row is NOT the id Kraken holds, and every call
+   * site that wants to address the order has to re-derive the encoding. Fitting
+   * the id inside 18 characters removes the encoding: what we store is what the
+   * venue was told.
+   *
+   * The random tail is `18 - prefix.length - 1`, so the longest prefix in the
+   * codebase (`GRID-STAB`) still gets 8 characters out of `utils.id()`'s
+   * 62-character alphabet — 62^8 ≈ 2.2e14, against the tens of orders a bot
+   * holds at once. That bound is asserted over the prefixes actually in use by
+   * `krakenOrderId.spec.ts`, so a longer prefix fails the suite instead of
+   * silently eating the entropy. Spot only: Kraken futures and every paper
+   * variant have no such limit.
+   *
+   * See `specs/010.kraken-spot-client-order-id-length.md` and the connector's
+   * `specs/003.kraken-spot-native-cl-ord-id.md` (the three-way discriminator
+   * that reads this length back).
+   */
   getOrderId(prefix: string) {
     if (this.hyperliquid) {
       return '0x' + crypto.randomBytes(16).toString('hex')
     }
-    const maxLength = this.okx || this.mexc ? 32 : 36
+    // `maxLength` is a budget the id stops one character short of — the tail is
+    // `maxLength - prefix.length - 2` — so the 36 default yields 35 characters.
+    // Kraken spot therefore asks for its 18-character ceiling plus one.
+    const maxLength = this.krakenSpot
+      ? KRAKEN_CL_ORD_ID_MAX_LENGTH + 1
+      : this.okx || this.mexc
+        ? 32
+        : 36
     const exchangePrefix =
       this.okx ||
       this.data?.exchange === ExchangeEnum.binance ||
