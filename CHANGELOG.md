@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.10] - 2026-09-04
+
+### Fixed
+
+- A bot that cannot afford to start a new deal now says so once, instead of once a minute for as long as the shortfall lasts. The balance check runs on a loop and the account behind it does not change between runs, but every refusal was recorded as a fresh warning — so a bot's event history filled with hundreds of identical entries a day and real events were buried. 56% of all bot events written in a day were this one warning, across 915 bots. The shortfall is now reported when it starts, again if it clears and comes back, and once a day while it persists. Terminal deals are unaffected and still report every time. Applies to DCA and Combo bots.
+- `Deal symbol <X> not in pairs` moved from the error log to debug — the same loop subscribes the symbol immediately afterwards, so it was never a condition anyone could act on.
+
 ## [1.57.9] - 2026-09-04
 
 ### Fixed

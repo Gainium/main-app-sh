@@ -126,6 +126,7 @@ const QUANT_RULES_VIOLATION_HEADROOM = 3
 import ComplianceGuard from './complianceGuard'
 import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
 import RetryBackoff from './retryBackoff'
+import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
 import { updateUserSteps } from '../utils/user'
@@ -769,6 +770,14 @@ class MainBot<T extends IMainBot> {
    * @param {boolean} [log=true] Set logging. Default = true
    */
   private errorsMap: Map<string, number> = new Map()
+  /**
+   * Conditions that are a standing STATE rather than an event, so each one is
+   * reported when it starts holding instead of on every re-evaluation of it.
+   * See {@link ConditionLatch} — and note the gate belongs at the call site,
+   * which knows when the condition ends; `handleErrors` cannot tell a standing
+   * state from a genuine repeat.
+   */
+  standingConditionLatch = new ConditionLatch(STANDING_CONDITION_REARM_MS)
   partiallyFilledFilledSet: Set<string> = new Set()
   allowedMethods: Set<AllowedMethods> = new Set()
   redisDb: RedisWrapper | null = null

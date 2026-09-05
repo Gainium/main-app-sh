@@ -169,6 +169,7 @@ import {
 } from '@gainium/indicators'
 import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
 import { getSubTypeBehavior } from './errorRulesCache'
+import { notEnoughBalanceNewDeal, standingConditionKey } from './conditionLatch'
 
 export type PercentileResult = {
   percentile?: number
@@ -1551,7 +1552,13 @@ function createDCABotHelper<
             toSearch.add(d.deal.symbol.symbol)
           }
           if (!this.pairs.has(d.deal.symbol.symbol)) {
-            this.handleWarn(`Deal symbol ${d.deal.symbol.symbol} not in pairs`)
+            // Debug, not warn: the loop below immediately subscribes every
+            // symbol collected here, so this is an internal observation about
+            // work in progress, never a condition anyone needs to act on. At
+            // warn level it was 110 k lines/day in the DCA error stream —
+            // `loadOrders` re-runs periodically and re-announces the same deals
+            // every time (spec 008 §2.4).
+            this.handleDebug(`Deal symbol ${d.deal.symbol.symbol} not in pairs`)
             newSymbols.push(d.deal.symbol.symbol)
           }
         }
@@ -12370,6 +12377,13 @@ function createDCABotHelper<
             checkBalance = await this.checkBalance(symbol)
           }
           if (checkBalance.status) {
+            // The shortfall cleared — re-arm, so if it returns the user is told
+            // again. Keyed on the balance condition alone; whether a deal
+            // actually opens below (cooldowns can still decline) is a different
+            // question.
+            this.standingConditionLatch.clear(
+              standingConditionKey(notEnoughBalanceNewDeal, symbol),
+            )
             if (!(skip && !dynamic)) {
               const cooldownStart = await this.checkCooldownStart(
                 this.botId,
@@ -12527,7 +12541,24 @@ function createDCABotHelper<
                 ? `, price: ${checkBalance.price} ${ed.quoteAsset.name}`
                 : ''
             }`
-            this.handleErrors(msg, 'openNewDeal', '', false, true)
+            // Report the shortfall once per (pair, condition) rather than on
+            // every cycle. `openNewDeal` re-runs about once a minute and the
+            // account balance behind the refusal does not change between runs,
+            // so this was 8.3 M log lines and 56 % of all `botevents` written in
+            // a day (spec 008). The latch keys on the CONDITION, not on `msg` —
+            // `required`/`price` are recomputed from the live price every cycle,
+            // so the text differs each time while the condition is identical.
+            // Terminal deals are exempt: that is a one-shot the user just asked
+            // for, it stops the bot below, and it must always be answered.
+            if (
+              settings.type === DCATypeEnum.terminal ||
+              this.standingConditionLatch.shouldReport(
+                standingConditionKey(notEnoughBalanceNewDeal, symbol),
+                +new Date(),
+              )
+            ) {
+              this.handleErrors(msg, 'openNewDeal', '', false, true)
+            }
             this.resetPending(this.botId, symbol)
             if (cbIfNotOpened) {
               cbIfNotOpened()

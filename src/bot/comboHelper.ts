@@ -67,6 +67,7 @@ import {
   comboSolveParts,
 } from './combo/tpSolve'
 import type { ComboTpSolveInput } from './combo/tpSolve'
+import { notEnoughBalanceNewDeal, standingConditionKey } from './conditionLatch'
 
 const mutex = new IdMutex()
 const mutexConcurrently = new IdMutex(300)
@@ -5088,6 +5089,10 @@ function createComboBotHelper<
             checkBalance = await this.checkBalance(symbol)
           }
           if (checkBalance.status) {
+            // The shortfall cleared — re-arm so a return of it is reported.
+            this.standingConditionLatch.clear(
+              standingConditionKey(notEnoughBalanceNewDeal, symbol),
+            )
             if (!(skip && !dynamic)) {
               const cooldownStart = await this.checkCooldownStart(
                 this.botId,
@@ -5177,7 +5182,18 @@ function createComboBotHelper<
                 ? `, price: ${checkBalance.price} ${ed.quoteAsset.name}`
                 : ''
             }`
-            this.handleErrors(msg, 'openNewDeal', '', false, true)
+            // Once per (pair, condition), not once per cycle — same defect and
+            // same reasoning as the DCA path; see `dcaHelper.openNewDeal` and
+            // spec 008. Combo has no terminal deal type, so there is no
+            // one-shot exemption here.
+            if (
+              this.standingConditionLatch.shouldReport(
+                standingConditionKey(notEnoughBalanceNewDeal, symbol),
+                +new Date(),
+              )
+            ) {
+              this.handleErrors(msg, 'openNewDeal', '', false, true)
+            }
             this.resetPending(this.botId, symbol)
             if (cbIfNotOpened) {
               cbIfNotOpened()
