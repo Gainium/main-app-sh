@@ -149,6 +149,7 @@ import {
   dealPositionGoneMessage,
   reconcileDealAgainstVenue,
 } from './dca/positionReconcile'
+import { shouldRearmTpTargets } from './dca/multiTpCompletion'
 import RetryBackoff from './retryBackoff'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
@@ -14844,6 +14845,47 @@ function createDCABotHelper<
       return true
     }
     /**
+     * Base quantity this deal still has to close, or `null` when it could not
+     * be determined. Spec `specs/009…` (issue #658).
+     *
+     * `getTPOrder`'s `aggregate` mode is the un-split take-profit — the whole
+     * remaining position — and is the same code that sizes the orders the deal
+     * actually places, so the two answers cannot drift. Returning `undefined`
+     * there means an exchange-info or fee lookup came back empty, which is not
+     * a deal that holds nothing: it maps to `null`, and the caller re-arms.
+     *
+     * `order` is subtracted only when the order map has not already booked it.
+     * `getOrders`' stream path calls `setOrder` before `onFilled`, but
+     * `checkTPLevel` hands its own close straight to `processFilledOrder`, and
+     * an uncounted fill would over-state what is left by exactly the amount
+     * that just closed the position — the one case this whole check exists for.
+     */
+    private async remainingCloseQty(
+      deal: FullDeal<ExcludeDoc<Deal>>,
+      order: Order,
+    ): Promise<number | null> {
+      const dealId = `${deal.deal._id}`
+      const aggregate = await this.getTPOrder(
+        deal.deal.symbol.symbol,
+        deal.deal.lastPrice,
+        deal.initialOrders,
+        deal.deal.avgPrice,
+        deal.deal.initialPrice,
+        dealId,
+        deal.deal,
+        true,
+      )
+      const qty = aggregate?.[0]?.qty
+      if (typeof qty !== 'number' || !Number.isFinite(qty)) {
+        return null
+      }
+      const counted = this.getOrdersByStatusAndDealId({
+        status: 'FILLED',
+        dealId,
+      }).some((o) => o.clientOrderId === order.clientOrderId)
+      return counted ? qty : qty - (+order.executedQty || 0)
+    }
+    /**
      * Process filled order from queue<br />
      *
      * @param {Order} order Order data
@@ -14908,7 +14950,20 @@ function createDCABotHelper<
                   : useMultiTp && !order.sl
                     ? (multiTp ?? []).length
                     : 0
-              if (total > filled) {
+              // `total` counts the targets the user CONFIGURED, and the engine
+              // cannot always arm one order per target: `getTPOrder`'s splitter
+              // rounds each slice up to the venue's minimum, so five 20 %
+              // targets on a 0.02 XAUTUSDT position arm exactly two orders of
+              // 0.01. Once both filled the deal held nothing and still waited
+              // for three more fills — see spec 009 / issue #658. Ask how much
+              // is actually left to close before re-arming.
+              if (
+                shouldRearmTpTargets({
+                  configuredTargets: total,
+                  filledTargets: filled,
+                  remainingQty: await this.remainingCloseQty(deal, order),
+                })
+              ) {
                 const price = +order.price
                 const { symbol } = deal.deal.symbol
                 if (!isNaN(price)) {

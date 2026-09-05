@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.11] - 2026-09-05
+
+### Fixed
+
+- A DCA deal with several take-profit targets now closes when its position is fully sold, instead of waiting for targets it could never fill. When a target's share of the position is smaller than the exchange's minimum order size the engine rounds it up, so a position only a couple of steps wide is exhausted by the first one or two targets — after which the deal stayed open indefinitely, re-sending take-profit orders the exchange rejects, with its funds still counted as in use.
+
 ## [1.57.10] - 2026-09-04
 
 ### Fixed
