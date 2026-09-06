@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.17] - 2026-09-06
+
+### Added
+
+- DCA deals are now checked, on each reconcile pass, that their resting take-profit still covers the position the deal is tracking. Deals whose take-profit stopped covering their position before 1.57.15 shipped stayed that way, because coverage is only ever re-established when a safety order fills — a market event that may never arrive. Three deals across three users were sitting like that, one with 110,493 base carrying no take-profit at all and two resting a duplicate take-profit that offered more base than the deal owned. The check reports each such deal once; the correction that cancels the stale take-profit and re-arms it is opt-in, behind BOT_TP_COVERAGE_REPAIR, since it cancels and places real orders.
+
 ## [1.57.16] - 2026-09-06
 
 ### Fixed

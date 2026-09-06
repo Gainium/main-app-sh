@@ -78,6 +78,18 @@ export function standingConditionKey(reason: string, symbol?: string): string {
 export const notEnoughBalanceNewDeal = 'notEnoughBalanceNewDeal'
 
 /**
+ * A deal's resting take-profit no longer covers the position it tracks
+ * (issue #696, spec `013.tp-coverage-drift-after-partial-tp`).
+ *
+ * Standing by nature: the drift does not change between reconcile passes and
+ * nothing but this check or a safety-order fill will clear it, so reporting it
+ * per pass would put a warning per drifted deal per pass into the fleet log —
+ * the shape spec 008 exists to prevent. Keyed by DEAL rather than by pair: two
+ * deals on the same pair drift independently.
+ */
+export const tpCoverageDrift = 'tpCoverageDrift'
+
+/**
  * How long a standing condition may hold before it is reported again. Matches
  * the `logWindowSec: 86400` the `Cannot start deal` subType is already
  * configured with, so the user's existing daily reminder is unchanged while the

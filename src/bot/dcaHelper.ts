@@ -150,6 +150,13 @@ import {
   reconcileDealAgainstVenue,
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
+import {
+  reconcileTpCoverage,
+  tpCoverageDriftWarn,
+  trackedPosition,
+  type LiveTpOrder,
+  type TpCoverageProbe,
+} from './dca/tpCoverageReconcile'
 import RetryBackoff from './retryBackoff'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
@@ -170,7 +177,11 @@ import {
 } from '@gainium/indicators'
 import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
 import { getSubTypeBehavior } from './errorRulesCache'
-import { notEnoughBalanceNewDeal, standingConditionKey } from './conditionLatch'
+import {
+  notEnoughBalanceNewDeal,
+  standingConditionKey,
+  tpCoverageDrift,
+} from './conditionLatch'
 
 export type PercentileResult = {
   percentile?: number
@@ -178,6 +189,20 @@ export type PercentileResult = {
 }
 
 const { sleep, checkNumber, mapToArray } = utils
+
+/**
+ * Arms the take-profit coverage CORRECTION (issue #696, spec
+ * `013.tp-coverage-drift-after-partial-tp` §4.2).
+ *
+ * Detection is unconditional and only ever logs. This flag gates the part that
+ * cancels a resting order and places a new one on a live venue with real money,
+ * so it is deliberately opt-in: deploying the fix must not, by itself, start
+ * trading against anyone's account. An operator arms it once, deliberately,
+ * having read the `tp-coverage drift` lines the detection pass emits.
+ */
+const tpCoverageRepairArmed = /^(1|true|yes)$/i.test(
+  process.env.BOT_TP_COVERAGE_REPAIR ?? '',
+)
 
 export type FullDeal<Deal extends CleanDCADealsSchema> = {
   deal: Deal
@@ -9392,6 +9417,27 @@ function createDCABotHelper<
         // to print the budget constant instead, which reads as a retry storm
         // when the ladder in fact stopped on its first answer (#676).
         let unresolvedLookupAttempts = 0
+        // Take-profit coverage (#696) is decided on what the VENUE says is
+        // resting, never on our copy — the `orders` collection keeps long-dead
+        // `NEW` rows, and a deal read from it can appear to hold tens of
+        // thousands of live take-profits. This pass already asks the venue
+        // about every open order, so the answers are collected here rather
+        // than re-fetched. A deal with even one unanswered order is recorded
+        // as unresolved and skipped entirely: a missing answer could be a live
+        // order, and a coverage sum missing one is not a coverage sum.
+        const venueConfirmed = new Map<string, Order[]>()
+        const coverageUnresolved = new Set<string>()
+        const noteVenueAnswer = (o: Order, answered: boolean) => {
+          const dealId = `${o.dealId}`
+          if (!dealId) return
+          if (!answered) {
+            coverageUnresolved.add(dealId)
+            return
+          }
+          const list = venueConfirmed.get(dealId) ?? []
+          list.push(o)
+          venueConfirmed.set(dealId, list)
+        }
         const toCheck = this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
         })
@@ -9404,16 +9450,21 @@ function createDCABotHelper<
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
             unresolvedLookupAttempts += attemptsForOrder
+            noteVenueAnswer(o, false)
             continue
           }
           if (getOrder.status === StatusEnum.notok) {
             this.handleWarn(`Cannot get order ${getOrder.reason}`)
+            noteVenueAnswer(o, false)
             continue
           }
           const mergedOrder = await this.mergeCommonOrderWithOrder(
             getOrder.data,
             o,
           )
+          // The venue answered for this one, whether or not the answer differed
+          // from our copy — an unchanged resting order is confirmation too.
+          noteVenueAnswer(mergedOrder, true)
           if (mergedOrder.status !== o.status) {
             this.emit('bot update', mergedOrder)
             this.deleteOrder(mergedOrder.clientOrderId)
@@ -9460,6 +9511,14 @@ function createDCABotHelper<
           this.recordReconcileSweepCatch(filledOrders.length)
         }
         this.processOrdersAfterCheck(filledOrders, partiallyFilledOrders)
+        // Last, and never fatal: the fills above are this pass's job, and a
+        // coverage check that threw must not cost the bot its reconcile.
+        await this.checkTpCoverage(venueConfirmed, coverageUnresolved).catch(
+          (e) =>
+            this.handleWarn(
+              `tp-coverage check failed: ${(e as Error).message}`,
+            ),
+        )
       } catch (e) {
         // Never leave blockCheck stuck on a throw (see grid checkOrdersAfterReconnect).
         this.handleWarn(
@@ -9469,6 +9528,181 @@ function createDCABotHelper<
         this.reconcileBatch = null
         this.blockCheck = false
         this.endMethod(_id)
+      }
+    }
+
+    /**
+     * Does every open deal's resting take-profit still cover the position it
+     * tracks? Issue #696, spec `013.tp-coverage-drift-after-partial-tp`.
+     *
+     * #694 stopped this drift being created; it could not repair the deals
+     * already drifted, because coverage is only ever re-established as a side
+     * effect of `placeOrders` and `placeOrders` runs on a fill. So a deal whose
+     * take-profit stopped covering its position while that path was broken
+     * stays that way until its next safety order happens to fill — a market
+     * event that may never arrive. Three production deals were sitting like
+     * that across three users on 2026-09-06, one of them with 110,493 B3
+     * carrying no take-profit at all.
+     *
+     * Detection is unconditional and only reads. The CORRECTION cancels a
+     * resting order and places a new one with real money, and is armed only by
+     * `BOT_TP_COVERAGE_REPAIR` (§4.2) — deploying this must not, by itself,
+     * trade on anyone's account.
+     */
+    private async checkTpCoverage(
+      venueConfirmed: Map<string, Order[]>,
+      unresolvedDeals: Set<string>,
+    ) {
+      const openDeals = this.getDealsByStatusAndSymbol({
+        status: DCADealStatusEnum.open,
+      })
+      for (const findDeal of openDeals) {
+        const deal = findDeal.deal
+        const dealId = `${deal._id}`
+        const symbol = deal.symbol?.symbol
+        if (!symbol) continue
+        const settings = await this.getAggregatedSettings(deal)
+        const { useTp, trailingTp, dealCloseCondition } = settings
+        // Only deals that are supposed to hold ONE resting take-profit. A
+        // multi-TP ladder has its own completion accounting (§4.3), and a
+        // trailing, non-TP-close or externally-managed deal is *correct* with
+        // no resting take-profit — reading those as uncovered would report the
+        // whole fleet as broken.
+        if (
+          settings.useMultiTp ||
+          !useTp ||
+          trailingTp ||
+          dealCloseCondition !== CloseConditionEnum.tp ||
+          this.data?.flags?.includes(BotFlags.externalTp)
+        ) {
+          continue
+        }
+        const confirmed = (venueConfirmed.get(dealId) ?? []).filter(
+          (o) => o.typeOrder === TypeOrderEnum.dealTP,
+        )
+        // A deal holding NO live take-profit is out of scope. It is a routine
+        // transient — every deal is in that state between its base order
+        // filling and its take-profit being armed — and treating it as
+        // uncovered would report a large part of the fleet on every pass. The
+        // defect this check exists for always leaves at least the stale order
+        // resting; `reconcileTpCoverage` still answers for the empty case, but
+        // deciding it is not this caller's business.
+        if (!confirmed.length && !unresolvedDeals.has(dealId)) continue
+        const probe: TpCoverageProbe = unresolvedDeals.has(dealId)
+          ? { kind: 'unavailable' }
+          : {
+              kind: 'orders',
+              orders: confirmed.map(
+                (o): LiveTpOrder => ({
+                  clientOrderId: o.clientOrderId,
+                  status: o.status,
+                  origQty: o.origQty,
+                  executedQty: o.executedQty,
+                }),
+              ),
+            }
+        const ed = await this.getExchangeInfo(symbol)
+        if (!ed) continue
+        // The same terms `getTPOrder` sizes a replacement from, so a healthy
+        // deal cannot read as drifted: `tpHistory` minus the entries already
+        // booked as filled closes, minus base withdrawn by reduce funds.
+        const filledCloseOrders = this.getOrdersByStatusAndDealId({
+          status: 'FILLED',
+          dealId,
+        }).filter(
+          (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
+        )
+        const pendingReduce = this.getPendingReduceFunds(findDeal)
+        const tracked = trackedPosition({
+          size: deal.size ?? 0,
+          tpHistory: deal.tpHistory ?? [],
+          filledCloseOrders,
+          reduceFundsBase: (deal.reduceFunds ?? []).reduce(
+            (acc, v) => acc + v.qty,
+            0,
+          ),
+          pendingReduceFundsBase: pendingReduce.base,
+        })
+        const verdict = reconcileTpCoverage(probe, tracked, {
+          baseMinAmount: ed.baseAsset.minAmount,
+          quoteMinAmount: ed.quoteAsset.minAmount,
+          price: deal.lastPrice || deal.avgPrice || 0,
+        })
+        const latchKey = standingConditionKey(tpCoverageDrift, dealId)
+        if (verdict.state === 'covered' || verdict.state === 'unknown') {
+          // Covered again — a later recurrence is news and reports afresh.
+          // `unknown` deliberately does not clear: the venue said nothing, so
+          // nothing is known to have changed.
+          if (verdict.state === 'covered') {
+            this.standingConditionLatch.clear(latchKey)
+          }
+          continue
+        }
+        // The drift is standing: it does not change between passes, and only
+        // this check or a safety-order fill will move it. Reporting per pass
+        // would be one warning per drifted deal per pass across the fleet
+        // (spec 008). The correction rides the same latch so an armed engine
+        // that cannot fix a deal retries it on that cadence rather than
+        // cancelling and re-placing orders on every reconcile.
+        if (!this.standingConditionLatch.shouldReport(latchKey, +new Date())) {
+          continue
+        }
+        this.handleWarn(tpCoverageDriftWarn({ dealId, symbol, verdict }))
+        if (!tpCoverageRepairArmed) {
+          // The whole point of the flag. Say so once, with what WOULD happen,
+          // so the log is enough for an operator to decide on.
+          this.handleLog(
+            `tp-coverage drift | deal ${dealId} left as is — correction is not armed ` +
+              `(set BOT_TP_COVERAGE_REPAIR to cancel ${
+                verdict.staleTps.length
+              } stale take-profit(s) and re-arm)`,
+          )
+          continue
+        }
+        for (const stale of verdict.staleTps) {
+          const order = confirmed.find(
+            (o) => o.clientOrderId === stale.clientOrderId,
+          )
+          if (!order) continue
+          this.handleLog(
+            `tp-coverage drift | deal ${dealId} cancelling stale take-profit ${order.clientOrderId}`,
+          )
+          // `promotePartialToFilled: false` — NOT optional. Every order here is
+          // PARTIALLY_FILLED by construction, and the default path promotes a
+          // cancelled order carrying fills to FILLED, which reaches
+          // `processFilledOrder` -> `closeDeal`. That would close the deal on
+          // whatever fraction had sold and strand the rest: the very bug being
+          // repaired, inflicted on more deals. Same reasoning, same opt-out as
+          // `placeOrders` (spec `007.tp-resize-cancel-must-never-promote`) —
+          // this cancel is a re-size, not a close, and the fills it carries are
+          // a partial take profit `tpHistory` already accounts for.
+          await this.cancelOrderOnExchange(order, true, true, false)
+        }
+        if (!verdict.rearm) continue
+        const tpOrders = await this.getTPOrder(
+          symbol,
+          deal.lastPrice,
+          findDeal.initialOrders,
+          deal.avgPrice,
+          deal.initialPrice,
+          dealId,
+          deal,
+        )
+        if (!tpOrders?.length) {
+          this.handleWarn(
+            `tp-coverage drift | deal ${dealId} has nothing to re-arm with`,
+          )
+          continue
+        }
+        this.handleLog(
+          `tp-coverage drift | deal ${dealId} re-arming take-profit ${tpOrders
+            .map((o) => o.qty)
+            .join(', ')}`,
+        )
+        await this.placeOrders(this.botId, symbol, dealId, {
+          new: tpOrders,
+          cancel: [],
+        })
       }
     }
 
