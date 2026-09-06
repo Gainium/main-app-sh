@@ -13012,11 +13012,35 @@ function createDCABotHelper<
                 // `cancelOrderOnExchange` promote the cancel to FILLED would
                 // send it to `closeDeal` and close the deal on whatever
                 // fraction had sold — 6% of the position, in #694.
+                //
+                // The argument is the CALLER'S INTENT and is therefore a
+                // constant: reaching this line means the deal has an open
+                // position, a safety order just filled, and the only reason we
+                // are cancelling is to send a bigger replacement. That is never
+                // a close, whatever our own copy of the order happens to say.
+                //
+                // It used to be `!(parseFloat(tp[0].executedQty) > 0)`, and
+                // that re-read the one field `cancelOrderOnExchange` overwrites
+                // from the venue's response two statements before it consults
+                // this flag — the guard computed from the pre-cancel snapshot,
+                // the promotion decided from the post-cancel answer, and the
+                // fill appearing in the window between them. It also could not
+                // ever be usefully `true`: the flag is only reachable inside
+                // `+order.executedQty !== 0`, by which point `executedQty` IS
+                // the venue's number, so the condition was either ignored (the
+                // venue reports no fills) or wrong. Bug #694 follow-up, spec
+                // `007.tp-resize-cancel-must-never-promote`: on 2026-09-06 at
+                // 07:13:22Z — 83 minutes after #694 shipped — a worker restart
+                // rebuilt D-TP-EaREzp4M… from Redis without its 03:43 partial
+                // fill, the venue answered the re-size cancel with `base: 6012`,
+                // the deal was closed on those 6,012, and `buyRemainder` then
+                // market-sold the remaining 159,944 TURBO 3.06% under the
+                // 0.0010254 take-profit it had been waiting for.
                 const result = await this.cancelOrderOnExchange(
                   tp[0],
                   true,
                   true,
-                  !(parseFloat(tp[0].executedQty) > 0),
+                  false,
                 )
                 if (result && result.status === 'FILLED') {
                   this.handleUnknownOrder(result)

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.16] - 2026-09-06
+
+### Fixed
+
+- A DCA take-profit that is cancelled only in order to re-size it is no longer reported as a completed take-profit. The opt-out added in 1.57.15 was passed as a condition on the engine's own copy of the resting order, read before the cancel; the exchange's reply to that cancel then overwrites the very field the condition tested, so whenever the engine's copy had fallen behind the exchange — after a restart, or on a venue that does not report partial fills — the deal was closed on whatever fraction had sold and the untouched remainder of the position was immediately market-sold below the take-profit price. The cancel now always states its intent, so a re-size can never close a deal.
+
 ## [1.57.15] - 2026-09-06
 
 ### Fixed
