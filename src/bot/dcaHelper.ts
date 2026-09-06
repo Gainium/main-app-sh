@@ -12971,20 +12971,53 @@ function createDCABotHelper<
           }
           if (!this.isOrderExistInDeal(order, order.type, dealId)) {
             if (order.type === TypeOrderEnum.dealTP) {
+              // A take-profit that has already taken some size is still LIVE on
+              // the venue and still locks its unfilled remainder, so the
+              // replacement cannot be funded until it is cancelled. This lookup
+              // used to ask for status 'NEW' only — which is exactly the status
+              // such an order no longer has — so neither branch below could
+              // fire and the replacement was sent on top of the live order.
+              // Bug #694, deal 6a90e161a76e7fe63ea3118f (B3-USDC, Coinbase):
+              // D-TP-TNTUX… sat PARTIALLY_FILLED 54,103 of 878,966 from
+              // 2026-08-31 with no cancel line in nine days of logs, and every
+              // replacement was refused `free 110,493 / required 934,119` —
+              // 110,493 plus the 824,863 that order still held being the whole
+              // wallet. The deal could not close.
               const tp = this.getOrdersByStatusAndDealId({
                 dealId,
-                status: 'NEW',
+                status: ['NEW', 'PARTIALLY_FILLED'],
               }).filter((o) => o.typeOrder === TypeOrderEnum.dealTP)
+              // Compare on what the resting order can still SELL, not on the
+              // size it was created for. `getTPOrder` already subtracts the
+              // executed part (via `tpHistory`) from the replacement it sizes,
+              // so `origQty` and `order.qty` are two different measures the
+              // moment a TP takes a partial fill. For a NEW order
+              // `executedQty` is 0 and this is the original test.
+              const restingTpQty = tp.length
+                ? parseFloat(tp[0].origQty) -
+                  (parseFloat(tp[0].executedQty) || 0)
+                : 0
               if (
-                tp &&
                 tp.length > 0 &&
-                parseFloat(tp[0].origQty) < order.qty &&
+                restingTpQty < order.qty &&
                 !settings.useMultiTp
               ) {
                 this.handleLog(
                   `Deal already has a TP order with lower qty. Wait until cancel the order ${tp[0].clientOrderId}`,
                 )
-                const result = await this.cancelOrderOnExchange(tp[0])
+                // The fills on a TP we are cancelling in order to RE-SIZE it
+                // are a partial take profit, not a close: `tpHistory` already
+                // carries them and the venue's CANCELED event books anything
+                // it does not (`processCanceledOrder`). Letting
+                // `cancelOrderOnExchange` promote the cancel to FILLED would
+                // send it to `closeDeal` and close the deal on whatever
+                // fraction had sold — 6% of the position, in #694.
+                const result = await this.cancelOrderOnExchange(
+                  tp[0],
+                  true,
+                  true,
+                  !(parseFloat(tp[0].executedQty) > 0),
+                )
                 if (result && result.status === 'FILLED') {
                   this.handleUnknownOrder(result)
                   this.endMethod(_id)
@@ -12992,9 +13025,8 @@ function createDCABotHelper<
                 }
               }
               if (
-                tp &&
                 tp.length > 0 &&
-                parseFloat(tp[0].origQty) > order.qty &&
+                restingTpQty > order.qty &&
                 !settings.useMultiTp
               ) {
                 this.handleLog('Deal already has a TP order with higher qty')

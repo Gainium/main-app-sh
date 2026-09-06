@@ -7988,12 +7988,22 @@ class MainBot<T extends IMainBot> {
 
   /**
    * Cancel order on exchange
+   *
+   * @param promotePartialToFilled When the venue reports the cancelled order
+   * carried fills, treat it as `FILLED` (the default, and what every close /
+   * teardown caller wants). Pass `false` when the cancel is a deliberate
+   * RE-SIZE of a still-live order — a DCA take-profit being replaced after a
+   * safety order filled. There the fills are a partial take profit, already
+   * carried in `tpHistory`; calling it `FILLED` sends it to
+   * `processFilledOrder` -> `closeDeal`, which would close the deal on
+   * whatever fraction happened to have sold and strand the rest. See
+   * `dcaHelper.placeOrders` and spec `006.dca-tp-replace-partially-filled`.
    */
-
   async cancelOrderOnExchange(
     order: Order,
     setErrors = true,
     removeFromLocal = true,
+    promotePartialToFilled = true,
   ) {
     const _id = this.startMethod('cancelOrderOnExchange')
     if (this.exchange) {
@@ -8094,7 +8104,10 @@ class MainBot<T extends IMainBot> {
             }
           })
           if (+order.executedQty !== 0 && order.status === 'CANCELED') {
-            if (await this.setFilledInsteadOfCanceled(order)) {
+            if (
+              promotePartialToFilled &&
+              (await this.setFilledInsteadOfCanceled(order))
+            ) {
               order.status = 'FILLED'
             }
             order.executedQty = await this.convertOrderExecutedQty(order)

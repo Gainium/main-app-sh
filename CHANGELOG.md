@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.15] - 2026-09-06
+
+### Fixed
+
+- A DCA deal whose take-profit had already sold part of the position could no longer arm a new take-profit. When a safety order fills the engine re-sizes the take-profit, and the check for "does this deal already have one resting?" only looked at orders with status NEW — which is exactly the status a partially-filled take-profit no longer has. Nothing cancelled it, the replacement was sent on top of a live order, and the venue refused it for the amount that order was still holding: the deal was left with a take-profit sized for an older, smaller position and no way to close at its target. The lookup now also sees PARTIALLY_FILLED take-profits, compares the replacement against what the resting order can still sell rather than the size it was created for, and cancels it before placing the replacement. `cancelOrderOnExchange` gained an opt-out (`promotePartialToFilled`, default unchanged) so that this one re-size cancel is not mistaken for a completed take-profit and does not close the deal on the fraction that happened to have sold.
+
 ## [1.57.14] - 2026-09-05
 
 ### Fixed
