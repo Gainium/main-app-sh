@@ -4286,6 +4286,7 @@ function createBotHelper<
       const symbol = this.data.symbol.symbol
       const lastStreamData = this.getLastStreamData(symbol)
       if (+new Date() - (lastStreamData?.time ?? 0) < this.priceTimeout) {
+        this.trackPriceStreamHealth(symbol, false)
         return
       }
       const needPrice =
@@ -4295,6 +4296,11 @@ function createBotHelper<
       if (!needPrice) {
         return
       }
+      // Info-level, state-change only: see MainBot#trackPriceStreamHealth. A
+      // grid bot on a symbol with no live stream evaluates its TP/SL on this
+      // timer's cadence, not the market's. Logged only for bots that actually
+      // depend on the price, and only after the gate above.
+      this.trackPriceStreamHealth(symbol, true)
       if (this.exchange) {
         this.handleDebug(`Grid Required prices for ${symbol} in price timer`)
         const allPrices = await this.exchange?.getAllPrices(true)

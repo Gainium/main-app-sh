@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.57.20] - 2026-09-07
+
+### Fixed
+
+- `npm run lint` failed on a clean checkout again, so husky's pre-commit hook rejected every commit in this repo and sessions were committing with `--no-verify`. The take-profit coverage harness (1.57.17, Claus #696) re-loads `dcaHelper` with a fresh module cache so each arming state of `BOT_TP_COVERAGE_REPAIR` gets its own build of the helper, and did so through a bare `require()`, which `@typescript-eslint/no-require-imports` forbids. The harness now goes through a dedicated `createRequire(__filename)` loader, which keeps the cache-busting re-import and satisfies the rule; the file was also brought in line with the repo's prettier settings. Test behaviour is unchanged.
+
+## [1.57.19] - 2026-09-07
+
+### Added
+
+- Bot logs now say, once, when a symbol stops receiving live price ticks and falls back to the periodic REST price poll — and say so again when live ticks return. The poll is only a fallback for the `trade@` price stream, but it is also what drives every price-triggered decision (take-profit level check, stop loss, trailing, DCA level), so a symbol stuck on it evaluates those on a ~5-minute cadence instead of per tick. That state was previously visible only at debug level, which is off in production, so an exchange whose price stream was never enabled looked from the bot's side exactly like a quiet market. Claus #617.
+
+## [1.57.18] - 2026-09-07
+
+### Fixed
+
+- A DCA deal whose base order is refused because the venue's book is in limit-only mode is no longer left with no order on the exchange at all. The limit fallback used to require the bot to be configured for LIMIT entry, so a MARKET-entry bot — whose base order is a market order from the outset — still fell through to the generic error handler and sat in `start` with nothing on the book. The fallback now re-sends the base order with an explicit force-limit flag, which covers both entry types and still terminates after exactly one re-send. Claus #505.
+
 ## [1.57.17] - 2026-09-06
 
 ### Added

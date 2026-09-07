@@ -127,6 +127,7 @@ import ComplianceGuard from './complianceGuard'
 import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
 import RetryBackoff from './retryBackoff'
 import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
+import { PriceStreamGapTracker } from './priceStreamGap'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
 import { updateUserSteps } from '../utils/user'
@@ -246,6 +247,13 @@ const unknownOrderMessages = [
 const mutex = new IdMutex()
 
 const mutexEmit = new IdMutex(30)
+
+/**
+ * How often to repeat the "still no live price stream" line for one symbol.
+ * The condition it reports usually lasts for the life of the process, so the
+ * first line carries the information and the repeats only prove it persists.
+ */
+const PRICE_STREAM_GAP_LOG_EVERY_MS = 60 * 60 * 1000
 
 const loggerPrefix = `${isMainThread ? 'Main thread' : `Worker ${threadId}`} |`
 
@@ -4323,6 +4331,65 @@ class MainBot<T extends IMainBot> {
 
   getLastStreamData(symbol: string) {
     return this.lastStreamData.get(symbol)
+  }
+
+  /**
+   * Symbols currently being served by the REST price poll instead of the
+   * `trade@<symbol>@<exchange>` stream. See {@link MainBot#trackPriceStreamHealth}.
+   */
+  private priceStreamGaps = new PriceStreamGapTracker(
+    PRICE_STREAM_GAP_LOG_EVERY_MS,
+  )
+
+  /**
+   * State-change logging for "this symbol has no live price stream".
+   *
+   * `priceTimerFn` (DCA/Combo and Grid both) is a FALLBACK, not the primary
+   * price path: it only fetches over REST for symbols whose last stream update
+   * is older than {@link MainBot#priceTimeout} (2.5 min), and it re-injects the
+   * result through `priceUpdateCallback`, which is what drives `checkTPLevel`,
+   * `checkDealsStopLoss`, trailing and the DCA level checks. So a symbol whose
+   * stream is dead is not merely stale — every price-triggered decision on it
+   * runs on a ~5-minute grid (the 2.5-min timer, skipping every other tick
+   * because the previous REST injection is itself only 2.5 min old) rather than
+   * per tick.
+   *
+   * That state was invisible: the fallback logged at debug, and debug is off in
+   * production. A whole exchange missing from the price connector's enabled set
+   * therefore looked, from the bot's side, exactly like a normal quiet market.
+   *
+   * Bounded on purpose — one line when a symbol enters the gap, one every
+   * {@link PRICE_STREAM_GAP_LOG_EVERY_MS} while it persists, one when live
+   * ticks come back. Nothing per tick, nothing per timer run.
+   *
+   * `servedLastRun` is how a genuine tick is told apart from our own REST
+   * injection: after a fallback fetch the symbol looks "fresh" on the very next
+   * run because we wrote that freshness ourselves, so recovery is only declared
+   * on a run that finds it fresh without having served it the run before.
+   */
+  protected trackPriceStreamHealth(symbol: string, stale: boolean) {
+    const event = this.priceStreamGaps.note(symbol, stale, +new Date())
+    if (!event) {
+      return
+    }
+    const where = `${symbol} on ${this.data?.exchange ?? 'unknown exchange'}`
+    if (event.kind === 'entered') {
+      this.handleLog(
+        `No live price stream for ${where} — falling back to REST price polling every ${
+          this.priceTimeout / 1000 / 60
+        }m. Price-triggered checks (TP level, SL, trailing, DCA level) run at that cadence until ticks return.`,
+      )
+      return
+    }
+    if (event.kind === 'persisting') {
+      this.handleLog(
+        `Still no live price stream for ${where} after ${event.minutes}m — still REST polling.`,
+      )
+      return
+    }
+    this.handleLog(
+      `Live price stream resumed for ${where} after ${event.minutes}m of REST polling.`,
+    )
   }
 
   setLastStreamData(symbol: string, data: StreamData) {
