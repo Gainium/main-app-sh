@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.4] - 2026-09-07
+
+### Fixed
+
+- Hyperliquid bots (spot and perpetuals, including builder-dex markets such as `xyz:NVDA-USDC`) never received live price ticks. The bot subscribed to its price channel by Hyperliquid's wire code while the price stream publishes by display pair, so the channel it listened on had no publisher and every price-triggered check ran on the REST fallback's cadence instead of per tick. The bot now subscribes by display pair, as the candle channel already did. Paper Hyperliquid bots were not affected.
+- Paper Bitget spot bots never received live price ticks either: the paper-to-real exchange mapping had no entry for paper Bitget spot, so the bot listened on a paper-named price channel nothing publishes to (its cached-price lookups were keyed the same way). Paper Bitget spot now maps to Bitget like every other paper variant.
+
 ## [1.58.3] - 2026-09-07
 
 ### Fixed

@@ -3297,15 +3297,15 @@ class MainBot<T extends IMainBot> {
     )
   }
 
+  /**
+   * Redis price channels for these pairs. Always the display pair, never the
+   * Hyperliquid wire code: websocket-connector publishes `trade@` by display
+   * pair (it translates wire codes internally), so a channel keyed by wire
+   * code (`BTC@hyperliquidLinear`, `xyz:NVDA@hyperliquidLinear`) has no
+   * publisher and the bot never ticks. Same fix as the candle channel in
+   * indicators/service.ts.
+   */
   async redisSubKeys(pairs: string[]) {
-    if (this.hyperliquid) {
-      pairs = await Promise.all(
-        pairs.map(async (p) => {
-          const find = await this.getExchangeInfo(p)
-          return this.isKraken ? p : (find?.code ?? p)
-        }),
-      )
-    }
     return pairs.map(
       (p) =>
         `trade@${p}@${removePaperFormExchangeName(
