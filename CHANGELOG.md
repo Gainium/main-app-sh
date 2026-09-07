@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.18] - 2026-09-07
+
+### Fixed
+
+- A DCA deal whose base order is refused because the venue's book is in limit-only mode is no longer left with no order on the exchange at all. The limit fallback used to require the bot to be configured for LIMIT entry, so a MARKET-entry bot — whose base order is a market order from the outset — still fell through to the generic error handler and sat in `start` with nothing on the book. The fallback now re-sends the base order with an explicit force-limit flag, which covers both entry types and still terminates after exactly one re-send. Claus #505.
+
 ## [1.57.17] - 2026-09-06
 
 ### Added

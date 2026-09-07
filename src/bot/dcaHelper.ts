@@ -95,6 +95,7 @@ import MainBot, {
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
 import { underfilledTpQty } from './dca/partialTp'
+import { normalizeReason, shouldFallBackToLimitEntry } from './limitOnlyEntry'
 import utils from '../utils'
 import {
   gt,
@@ -301,30 +302,6 @@ const positionAlreadyClosedReasons = [
   'wouldNotReducePosition',
   'no position to close',
 ]
-
-/**
- * Exchange rejections that mean "this book is only accepting LIMIT orders right
- * now". Coinbase puts a product into limit-only mode during a volatility
- * auction; a MARKET order can never be accepted while that holds, but a LIMIT
- * one still can. So this is not a fatal entry error — the base order must fall
- * BACK to limit rather than be abandoned. Kept deliberately narrow: post-only
- * rejections ("order would immediately match and take") are a *limit* order
- * being refused and must NOT match here, or the limit fallback would loop.
- */
-const limitOnlyReasons = [
-  // Coinbase Advanced Trade — observed verbatim as
-  // "Orderbook is in limit only mode - please use limit order type".
-  // Matched via normalizeReason, so "limit-only" spells the same.
-  'limit only',
-]
-
-/**
- * Venues word the same condition as prose or as a camelCase/hyphenated code
- * ("no position to close" vs "wouldNotReducePosition", "limit only mode" vs
- * "limit-only"), so compare on letters and digits only — one list entry then
- * covers every spelling.
- */
-const normalizeReason = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
 
 const maxTimeout = 2 ** 31 - 1
 
@@ -5503,16 +5480,6 @@ function createDCABotHelper<
       return false
     }
 
-    private isLimitOnlyReason(text: string): boolean {
-      const haystack = normalizeReason(text)
-      for (const r of limitOnlyReasons) {
-        if (haystack.indexOf(normalizeReason(r)) !== -1) {
-          return true
-        }
-      }
-      return false
-    }
-
     async prepareTpOrder(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       slSource = false,
@@ -7508,9 +7475,9 @@ function createDCABotHelper<
             // deadlocks). A venue refusal therefore latched the flag on a deal
             // whose resting base order had just been cancelled to make room for
             // the market entry, leaving it in `start` with no order on the book
-            // and no path back — see bug #505, deal 6a8db1f2271530b06e5360a6 on
-            // a Coinbase book in limit-only mode. The latch now lives in
-            // `placeBaseOrder`, where the venue's answer is known.
+            // and no path back — see Claus #505, on a Coinbase book in
+            // limit-only mode. The latch now lives in `placeBaseOrder`, where
+            // the venue's answer is known.
             this.placeBaseOrder(
               this.botId,
               symbol,
@@ -7539,6 +7506,7 @@ function createDCABotHelper<
       fixSize = 0,
       sizes?: Sizes | null,
       _override_orderSizeType?: OrderSizeTypeEnum,
+      forceLimit = false,
     ) {
       const fee = await this.getUserFee(symbol)
       const ed = await this.getExchangeInfo(symbol)
@@ -7605,7 +7573,15 @@ function createDCABotHelper<
           return
         }
         const baseOrderType = settings.startOrderType ?? OrderTypeEnum.market
-        const type = forceMarket ? OrderTypeEnum.market : baseOrderType
+        // `forceLimit` wins over `forceMarket`: it is only ever set by the
+        // limit-only fallback in `placeBaseOrder`, which exists precisely
+        // because the venue has just refused the market order this would
+        // otherwise re-derive. Claus #505.
+        const type = forceLimit
+          ? OrderTypeEnum.limit
+          : forceMarket
+            ? OrderTypeEnum.market
+            : baseOrderType
         const slippage =
           (settings.type === DCATypeEnum.terminal ? 0 : 0.005) *
           (1 + count / 10)
@@ -7932,6 +7908,7 @@ function createDCABotHelper<
       dynamicAr: DynamicArPrices[] = [],
       sizes?: Sizes | null,
       orderSizeType?: OrderSizeTypeEnum,
+      forceLimit = false,
     ) {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('place base order'))
@@ -8019,6 +7996,7 @@ function createDCABotHelper<
           fixSize,
           sizes,
           orderSizeType,
+          forceLimit,
         )
         if (forceMarket && sizes && this.useCompountReduce && baseOrder) {
           const deal = this.getDeal(dealId)
@@ -8219,29 +8197,29 @@ function createDCABotHelper<
             }
             if (typeof result === 'string') {
               if (
-                forceMarket &&
-                startOrderType === OrderTypeEnum.limit &&
-                sentType === OrderTypeEnum.market &&
-                this.isLimitOnlyReason(result)
+                shouldFallBackToLimitEntry({
+                  sentType,
+                  forceLimit,
+                  reason: result,
+                })
               ) {
                 // The book is in limit-only mode, so this market entry can
-                // never be accepted, however many times we retry it. The
-                // caller (`checkBaseOrder`'s enter-market path) has already
-                // cancelled the resting LIMIT base order to make room for it,
-                // so giving up here leaves the deal in `start` with nothing on
-                // the book at all. Re-place as a LIMIT — the same order the
-                // ladder was resting before the fallback fired — instead of
-                // abandoning the entry. Not awaited and `count` is not
-                // advanced: this is the same rung retried in a different order
-                // type, and awaiting would deadlock on our own mutex.
+                // never be accepted, however many times we retry it. Giving up
+                // here leaves the deal in `start` with nothing on the book at
+                // all — either because the caller (`checkBaseOrder`'s
+                // enter-market path) had just cancelled the resting limit base
+                // order to make room for the market entry, or because this WAS
+                // the deal's first order on a market-entry bot. Re-place as a
+                // LIMIT instead of abandoning the entry. Not awaited and
+                // `count` is not advanced: this is the same rung retried in a
+                // different order type, and awaiting would deadlock on our own
+                // mutex.
                 //
-                // The `startOrderType` guard is what makes this terminate:
-                // `getBaseOrder` derives the type as
-                // `forceMarket ? market : (startOrderType ?? market)`, so the
-                // re-place below only actually produces a LIMIT for a
-                // limit-entry bot. Without it, a MARKET-entry bot whose last
-                // slippage rung happened to arm the enter-market timer would
-                // re-send a market order into the same refusal, forever.
+                // `forceLimit` is what makes this terminate — it forces
+                // `getBaseOrder` to derive a LIMIT regardless of the bot's
+                // `startOrderType`, so the re-sent order is a limit, and a
+                // limit send can never re-enter this branch (see
+                // `shouldFallBackToLimitEntry`). Claus #505.
                 this.handleLog(
                   `${symbol} book is in limit only mode, cannot enter at market. Re-placing base order as limit`,
                 )
@@ -8259,6 +8237,7 @@ function createDCABotHelper<
                   dynamicAr,
                   sizes,
                   orderSizeType,
+                  true,
                 )
               } else if (
                 this.isNotionalReason(result) &&
