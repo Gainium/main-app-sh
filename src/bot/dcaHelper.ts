@@ -137,7 +137,7 @@ import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import {
   tpPriceDisplacement,
   worstFee,
-  quantityFeeIsThirdAssetOnly,
+  ordersFeeIsThirdAssetOnly,
 } from './dca/tpFees'
 import {
   buyAndHoldOutcome,
@@ -5606,6 +5606,45 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec 015 §2/§3 correction (post-review): whether every fee observed so
+     * far on this deal was third-asset, computed LIVE from every currently
+     * filled order rather than the deal's persisted `feeByAsset`/
+     * `commission`/`feePaid` fields.
+     *
+     * Those fields are only written when `closeDeal` runs (spec 014 §2.2) —
+     * a TP fill — which happens AFTER the TP this predicate gates has
+     * already been sized and sent. For a deal's first (and for a
+     * non-multi-TP deal, only) TP, the persisted fields are always empty
+     * regardless of what the base order actually paid, so the original
+     * persisted-field check could never fire for the common case. Cheap:
+     * `getOrdersByStatusAndDealId` is the same in-memory index
+     * `getCommDeal` already scans fresh on every call, no DB round trip.
+     *
+     * Still gated on the new-deal flag (014 §3) — an existing deal without
+     * it never has this predicate return true, same as before.
+     */
+    private currentDealFeeIsThirdAssetOnly(
+      dealId: string,
+      baseAsset?: string,
+      quoteAsset?: string,
+    ): boolean {
+      if (
+        !this.getDeal(dealId)?.deal.flags?.includes(DCADealFlags.feeByAsset)
+      ) {
+        return false
+      }
+      const dealOrders = this.getOrdersByStatusAndDealId({
+        status: ['FILLED', 'CANCELED'],
+        dealId,
+      }).filter(
+        (o) =>
+          +o.executedQty > 0 &&
+          ![TypeOrderEnum.br, TypeOrderEnum.rebalance].includes(o.typeOrder),
+      )
+      return ordersFeeIsThirdAssetOnly(dealOrders, baseAsset, quoteAsset)
+    }
+
+    /**
      * Spec 015 §7: `rejectedOrder` — a TP built at the §2-zeroed (real-fee)
      * size — was just rejected as `rejectionReason`, already classified by
      * the caller as `isFeeSizingRejection`.
@@ -6136,10 +6175,10 @@ function createDCABotHelper<
                 !this.combo &&
                 !this.futures &&
                 findDeal.deal.feeSizingFallback?.status !== 'confirmed' &&
-                quantityFeeIsThirdAssetOnly(
-                  findDeal.deal.feeByAsset,
-                  findDeal.deal.commission,
-                  findDeal.deal.feePaid,
+                this.currentDealFeeIsThirdAssetOnly(
+                  findDeal.deal._id,
+                  findDeal.deal.symbol?.baseAsset,
+                  findDeal.deal.symbol?.quoteAsset,
                 )
               const sendOptions: OrderAdditionalParams = {
                 dealId: findDeal.deal._id,
@@ -7925,15 +7964,15 @@ function createDCABotHelper<
         // denominated left the quantity" precondition that already zeroes
         // this for futures/short, so it zeroes the same way. Gated on the
         // new-deal flag (014 §3) via feeByAsset only being populated there.
-        const feeDeal = dealId ? this.getDeal(dealId)?.deal : undefined
         const feeFactor =
           this.futures ||
           short ||
-          quantityFeeIsThirdAssetOnly(
-            feeDeal?.feeByAsset,
-            feeDeal?.commission ?? 0,
-            feeDeal?.feePaid,
-          )
+          (dealId &&
+            this.currentDealFeeIsThirdAssetOnly(
+              dealId,
+              ed.baseAsset.name,
+              ed.quoteAsset.name,
+            ))
             ? 1
             : settings.terminalDealType === TerminalDealTypeEnum.simple
               ? 1
@@ -13589,10 +13628,10 @@ function createDCABotHelper<
               !this.combo &&
               !this.futures &&
               deal.deal.feeSizingFallback?.status !== 'confirmed' &&
-              quantityFeeIsThirdAssetOnly(
-                deal.deal.feeByAsset,
-                deal.deal.commission,
-                deal.deal.feePaid,
+              this.currentDealFeeIsThirdAssetOnly(
+                deal.deal._id,
+                deal.deal.symbol?.baseAsset,
+                deal.deal.symbol?.quoteAsset,
               )
             // Spec 015 §7.1 — mark the real-fee attempt distinguishable in
             // logs/on the venue, mirroring the `...ac`/`...ef` suffixes.
@@ -13968,10 +14007,10 @@ function createDCABotHelper<
         const tpQuantityFeeIsThirdAssetOnly =
           !forceFullFeeSizing &&
           tpFeeDeal?.feeSizingFallback?.status !== 'confirmed' &&
-          quantityFeeIsThirdAssetOnly(
-            tpFeeDeal?.feeByAsset,
-            tpFeeDeal?.commission ?? 0,
-            tpFeeDeal?.feePaid,
+          this.currentDealFeeIsThirdAssetOnly(
+            dealId,
+            tpFeeDeal?.symbol?.baseAsset,
+            tpFeeDeal?.symbol?.quoteAsset,
           )
         let qty =
           _qty *
