@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.1] - 2026-09-07
+
+### Changed
+
+- `POST /api/v2/backtest/{botType}/request/sync` now keeps its connection alive while it waits. That wait is by design up to an hour, and a proxy or CDN in front of the API will not sit through it in silence — Cloudflare gives up at about 100 seconds — so the caller lost a response for a backtest that was still running fine. Existing clients are unaffected: the JSON response is byte-compatible, the heartbeat being insignificant whitespace ahead of the document. Callers who send `Accept: text/event-stream` instead get the same result as Server-Sent Events, with the request id delivered up front, before the wait — so if the connection does drop, the run can still be collected from `GET /api/v2/backtest/{botType}/requests/{id}`.
+
 ## [1.58.0] - 2026-09-07
 
 ### Added

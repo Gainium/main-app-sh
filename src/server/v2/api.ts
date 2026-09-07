@@ -11,6 +11,7 @@
  */
 
 import type { Request, Response } from 'express'
+import { openSyncStream, syncStreamMode } from './syncStream'
 import { Types, isValidObjectId } from 'mongoose'
 import {
   StatusEnum,
@@ -4683,19 +4684,44 @@ const v2API = <R extends UserSchema = UserSchema>(
 
       const requestId = result.data!.requestId
 
-      // Sync mode: wait for terminal status and return the full request item
+      // Sync mode: wait for terminal status and return the full request item.
+      // The wait can legitimately run for up to an hour, which no CDN will sit
+      // through in silence, so the response head is committed now and the
+      // connection is kept warm until the run finishes. See ./syncStream.ts.
       if (sync === 'sync') {
-        const itemResult = await waitForBacktestCompletion(
-          botType!,
+        const stream = openSyncStream(res, {
+          mode: syncStreamMode(req),
           requestId,
-          user.id,
-          rawFields,
-        )
-        return res.status(200).json({
-          status: StatusEnum.ok,
-          reason: null,
-          data: itemResult.data,
+          onClientGone: () =>
+            console.log(
+              `[backtest:sync] client disconnected botType=${botType} requestId=${requestId} userId=${user.id} — run continues`,
+            ),
         })
+        try {
+          const itemResult = await waitForBacktestCompletion(
+            botType!,
+            requestId,
+            user.id,
+            rawFields,
+          )
+          stream.finish({
+            status: StatusEnum.ok,
+            reason: null,
+            data: itemResult.data,
+          })
+        } catch (e) {
+          // The head is already sent, so a late failure cannot change the
+          // status code — it is reported in the envelope instead. The request
+          // id goes with it so the caller can still collect the result.
+          stream.finish({
+            status: StatusEnum.notok,
+            reason: `Backtest submitted but its result could not be read: ${
+              (e as Error)?.message || e
+            }`,
+            data: { requestId },
+          })
+        }
+        return
       }
 
       return res.status(200).json({

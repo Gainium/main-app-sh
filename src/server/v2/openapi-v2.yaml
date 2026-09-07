@@ -8022,6 +8022,27 @@ paths:
         - **1-hour timeout exceeded** — returns `{ requestId, message }` so the client can
           poll `GET /api/v2/backtest/dca/requests/{id}` manually when ready.
 
+
+        The connection is kept alive while it waits, so a proxy or CDN in front of the API does
+        not cut it off for being idle (Cloudflare, for one, gives up at ~100 seconds). Two
+        formats, chosen by the `Accept` header:
+
+        - **`Accept: application/json`** (the default, and what every existing client gets) —
+          the response is unchanged. A newline is emitted every 20 seconds while waiting; that
+          is insignificant whitespace ahead of the JSON document, so parsers skip it and no
+          client change is needed.
+        - **`Accept: text/event-stream`** — the same result delivered as Server-Sent Events.
+          `event: accepted` carries `{ requestId }` immediately, *before* the wait, then
+          `: ping` comments every 20 seconds, then `event: result` with the same envelope the
+          JSON form returns. Use this if you want the request id up front: should the connection
+          drop mid-run, the backtest keeps going and you can still collect it from
+          `GET /api/v2/backtest/{botType}/requests/{id}`. Served over POST, so browser
+          `EventSource` cannot consume it — read the response body as a stream.
+
+        Because the response head is sent before the outcome is known, the status code is always
+        `200` once the wait has begun; a failure after that point is reported in the body as
+        `status: "notok"` with `data: { requestId }`.
+
         If the backtest fails, credits are already unlocked server-side.
 
         Requires write permission of API keys.
@@ -8166,6 +8187,27 @@ paths:
         - **1-hour timeout exceeded** — returns `{ requestId, message }` so the client can
           poll `GET /api/v2/backtest/dca/requests/{id}` manually when ready.
 
+
+        The connection is kept alive while it waits, so a proxy or CDN in front of the API does
+        not cut it off for being idle (Cloudflare, for one, gives up at ~100 seconds). Two
+        formats, chosen by the `Accept` header:
+
+        - **`Accept: application/json`** (the default, and what every existing client gets) —
+          the response is unchanged. A newline is emitted every 20 seconds while waiting; that
+          is insignificant whitespace ahead of the JSON document, so parsers skip it and no
+          client change is needed.
+        - **`Accept: text/event-stream`** — the same result delivered as Server-Sent Events.
+          `event: accepted` carries `{ requestId }` immediately, *before* the wait, then
+          `: ping` comments every 20 seconds, then `event: result` with the same envelope the
+          JSON form returns. Use this if you want the request id up front: should the connection
+          drop mid-run, the backtest keeps going and you can still collect it from
+          `GET /api/v2/backtest/{botType}/requests/{id}`. Served over POST, so browser
+          `EventSource` cannot consume it — read the response body as a stream.
+
+        Because the response head is sent before the outcome is known, the status code is always
+        `200` once the wait has begun; a failure after that point is reported in the body as
+        `status: "notok"` with `data: { requestId }`.
+
         If the backtest fails, credits are already unlocked server-side.
 
         Requires write permission of API keys.
@@ -8306,6 +8348,27 @@ paths:
           field selection.
         - **1-hour timeout exceeded** — returns `{ requestId, message }` so the client can
           poll `GET /api/v2/backtest/dca/requests/{id}` manually when ready.
+
+
+        The connection is kept alive while it waits, so a proxy or CDN in front of the API does
+        not cut it off for being idle (Cloudflare, for one, gives up at ~100 seconds). Two
+        formats, chosen by the `Accept` header:
+
+        - **`Accept: application/json`** (the default, and what every existing client gets) —
+          the response is unchanged. A newline is emitted every 20 seconds while waiting; that
+          is insignificant whitespace ahead of the JSON document, so parsers skip it and no
+          client change is needed.
+        - **`Accept: text/event-stream`** — the same result delivered as Server-Sent Events.
+          `event: accepted` carries `{ requestId }` immediately, *before* the wait, then
+          `: ping` comments every 20 seconds, then `event: result` with the same envelope the
+          JSON form returns. Use this if you want the request id up front: should the connection
+          drop mid-run, the backtest keeps going and you can still collect it from
+          `GET /api/v2/backtest/{botType}/requests/{id}`. Served over POST, so browser
+          `EventSource` cannot consume it — read the response body as a stream.
+
+        Because the response head is sent before the outcome is known, the status code is always
+        `200` once the wait has begun; a failure after that point is reported in the body as
+        `status: "notok"` with `data: { requestId }`.
 
         If the backtest fails, credits are already unlocked server-side.
 
