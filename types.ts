@@ -1051,6 +1051,7 @@ export type BotData = {
   flags?: string[]
   feeByAsset?: { asset: string; total: number; totalUsd: number }[]
   feePaid?: { base: number; quote: number }
+  feeSizingFallback?: FeeSizingFallback
 }
 export type DCABotData = {
   _id: string
@@ -1397,6 +1398,33 @@ export interface DCADealsSchema extends SchemaI {
    * re-hitting the venue during a restriction escalates the penalty.
    */
   startBlocked?: DealStartBlock
+  /**
+   * Spec 015 §7 — set only for a deal that zeroed its TP quantity gross-up
+   * (spec §2, `quantityFeeIsThirdAssetOnly`) and had that real-fee-sized TP
+   * rejected by the venue in a way that looks size-shaped. `pending` is
+   * diagnostic only (does not change any TP's size yet); `confirmed` — set
+   * only once the SAME TP resent at the account-rate size then succeeds —
+   * is the one piece of evidence the real-fee assumption, not something
+   * else, was the problem, and gates every subsequent TP build for this
+   * deal straight to the account-rate size.
+   */
+  feeSizingFallback?: FeeSizingFallback
+}
+
+/**
+ * Spec 015 §7.3. Sibling to `DealStartBlock`, not a reuse of it — that field
+ * is hard-scoped to the opening order by its own comment.
+ */
+export type FeeSizingFallback = {
+  status: 'pending' | 'confirmed'
+  /** ms epoch when the real-fee attempt was first rejected and classified. */
+  since: number
+  /** ms epoch when the estimated-fee resend then succeeded. */
+  confirmedAt?: number
+  /** The classified rejection reason, verbatim. */
+  reason: string
+  /** clientOrderId of the real-fee attempt that got rejected. */
+  triggeredByOrderId: string
 }
 
 /**
@@ -2041,6 +2069,8 @@ export interface BotSchema extends MainBot<BotSettings> {
    *  §2.5) — grid has no "close" to finalize a total at the way DCA/combo
    *  deals do, so this stays live for as long as the bot runs. */
   feePaid?: { base: number; quote: number }
+  /** Spec 015 §7.3 — bot-level (grid has no deal to hang this on). */
+  feeSizingFallback?: FeeSizingFallback
   initialPrice: number
   initialPriceFrom?: InitialPriceFromEnum
   initialPriceStart?: number

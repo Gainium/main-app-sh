@@ -2875,7 +2875,10 @@ class MainBot<T extends IMainBot> {
     )
   }
 
-  private isErrorNotEnoughBalance(errorString: string): boolean {
+  // `protected`, not `private`: spec 015 §7.2's isFeeSizingRejection
+  // (dcaHelper.ts) is a subclass method that needs to compose this with
+  // isNotionalReason. No behavior change — same body, wider visibility.
+  protected isErrorNotEnoughBalance(errorString: string): boolean {
     for (const e of notEnoughErrors) {
       if (errorString.toLowerCase().indexOf(e.toLowerCase()) !== -1) {
         return true

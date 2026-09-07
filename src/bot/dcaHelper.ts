@@ -85,6 +85,8 @@ import {
   ComboBotSchema,
   LWConditionEnum,
   DealStartBlock,
+  ClearPairsSchema,
+  OrderAdditionalParams,
 } from '../../types'
 import { observedFeeSplit } from './orderFee'
 import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
@@ -276,7 +278,7 @@ const positionProbeBackoff = new RetryBackoff({
  * never accept an order for. Anything not listed here falls through to the
  * generic handler, which classifies it as `Order params` and stops the bot.
  */
-const notionalReasons = [
+export const notionalReasons = [
   // KuCoin
   'The order funds should be more than',
   // Binance NOTIONAL / MIN_NOTIONAL filter
@@ -5585,6 +5587,129 @@ function createDCABotHelper<
       return false
     }
 
+    /**
+     * Spec 015 §7.2 — whether a TP rejection LOOKS shaped like "this order
+     * was too small," which is what a missing fee gross-up would produce.
+     * Deliberately wider than just a balance rejection: a too-small
+     * quantity can just as plausibly be rejected as invalid-quantity/
+     * lot-size if the venue rounds it below its step before ever reaching a
+     * balance check (`isErrorNotEnoughBalance` alone would miss that shape
+     * — confirmed, it's substring-matched against `notEnoughErrors` only).
+     * A private method composing two other private methods, same shape as
+     * its siblings — see plans/015.md's "§7 solution" for why this can't be
+     * a freestanding pure function.
+     */
+    private isFeeSizingRejection(reason: string): boolean {
+      return (
+        this.isErrorNotEnoughBalance(reason) || this.isNotionalReason(reason)
+      )
+    }
+
+    /**
+     * Spec 015 §7: `rejectedOrder` — a TP built at the §2-zeroed (real-fee)
+     * size — was just rejected as `rejectionReason`, already classified by
+     * the caller as `isFeeSizingRejection`.
+     *
+     * Sequence: write the sticky flag PENDING (before anything else is sent
+     * — §7.3) → check the real-fee attempt's own venue fate (§8 item 3 —
+     * never fires blind; only a confirmed-NOT-live outcome proceeds) →
+     * rebuild the SAME TP at today's account-rate size and resend once,
+     * suffixed `...ef` → on THAT resend's own success, confirm the flag and
+     * surface a bot error (the one signal an operator actually sees); on
+     * failure, leave it pending and do not attempt a third size.
+     *
+     * Returns the resend's own outcome so the caller falls through to its
+     * existing success/failure handling using it, or `undefined` if the
+     * ambiguous-outcome check aborted this fallback for the current tick —
+     * the caller should keep treating its ORIGINAL rejection as
+     * authoritative; nothing here touched the exchange.
+     */
+    private async runFeeSizingFallback(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      slSource: boolean,
+      sl: boolean,
+      rejectedOrder: { newClientOrderId: string },
+      rejectionReason: string,
+      symbol: ClearPairsSchema,
+      sendOptions: OrderAdditionalParams,
+    ): Promise<Order | string | undefined> {
+      const dealId = findDeal.deal._id
+      const since = +new Date()
+      await this.saveDeal(findDeal, {
+        feeSizingFallback: {
+          status: 'pending',
+          since,
+          reason: rejectionReason,
+          triggeredByOrderId: rejectedOrder.newClientOrderId,
+        },
+      })
+      // §8 item 3 — never fire blind. A network timeout on the real-fee
+      // attempt (request sent, response lost) is not the same as a clean
+      // rejection; resending unconditionally risks a second live TP landing
+      // on top of one that actually reached the venue. getOrderForReconcile
+      // (not a bare getOrder) so a single transient lookup blip cannot be
+      // misread as "confirmed not found" either.
+      const lookup = await this.getOrderForReconcile(
+        { clientOrderId: rejectedOrder.newClientOrderId } as Order,
+        { symbol: symbol.pair, fromCache: false },
+      )
+      if (!isDefinitiveOrderNotFound(lookup)) {
+        this.handleDebug(
+          `Fee-sizing fallback for deal ${dealId} aborted this tick: real-fee attempt ${
+            rejectedOrder.newClientOrderId
+          }'s own fate is not confirmed-not-live (status ${lookup?.status}, reason ${lookup?.reason})`,
+        )
+        return undefined
+      }
+      const refreshedDeal = this.getDeal(dealId) ?? findDeal
+      const fullSizeOrder = await this.prepareTpOrder(
+        refreshedDeal,
+        slSource,
+        sl,
+        true,
+      )
+      if (!fullSizeOrder) {
+        return undefined
+      }
+      const resendOrder = {
+        ...fullSizeOrder,
+        newClientOrderId: `${rejectedOrder.newClientOrderId.slice(
+          0,
+          rejectedOrder.newClientOrderId.length - 2,
+        )}ef`,
+      }
+      const resendResult = await this.sendGridToExchange(
+        resendOrder,
+        sendOptions,
+        symbol,
+        true,
+      )
+      if (resendResult && typeof resendResult !== 'string') {
+        await this.saveDeal(this.getDeal(dealId) ?? refreshedDeal, {
+          feeSizingFallback: {
+            status: 'confirmed',
+            since,
+            confirmedAt: +new Date(),
+            reason: rejectionReason,
+            triggeredByOrderId: rejectedOrder.newClientOrderId,
+          },
+        })
+        await this.handleErrors(
+          `Fee-sizing assumption confirmed wrong for deal ${dealId}: real-fee TP ${
+            rejectedOrder.newClientOrderId
+          } rejected (${rejectionReason}), estimated-fee resend ${
+            resendOrder.newClientOrderId
+          } succeeded. Future TPs for this deal use the account-rate size.`,
+          'runFeeSizingFallback()',
+          'confirm fee-sizing fallback',
+          false,
+          true,
+          true,
+        )
+      }
+      return resendResult ?? undefined
+    }
+
     private isPositionAlreadyClosedReason(text: string): boolean {
       const haystack = normalizeReason(text)
       for (const r of positionAlreadyClosedReasons) {
@@ -5609,6 +5734,8 @@ function createDCABotHelper<
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       slSource = false,
       sl = false,
+      // Spec 015 §7 — see getTPOrder's own param doc.
+      forceFullFeeSizing = false,
     ) {
       const symbol = await this.getExchangeInfo(findDeal.deal.symbol.symbol)
       const priceRequest = await this.getLatestPrice(symbol?.pair ?? '')
@@ -5634,6 +5761,7 @@ function createDCABotHelper<
           !slSource,
           slSource,
           priceRequest,
+          forceFullFeeSizing,
         )
       )?.sort((a, b) =>
         this.isLong ? b.price - a.price : a.price - b.price,
@@ -6002,33 +6130,77 @@ function createDCABotHelper<
               findDeal.deal.symbol.symbol,
             )
             if (symbol) {
+              // Spec 015 §7.4 Chain B. Combo excluded — §4's TP path is
+              // untraced for combo and out of scope here, same as §2/§3.
+              const isZeroedFeeSizeTp =
+                !this.combo &&
+                !this.futures &&
+                findDeal.deal.feeSizingFallback?.status !== 'confirmed' &&
+                quantityFeeIsThirdAssetOnly(
+                  findDeal.deal.feeByAsset,
+                  findDeal.deal.commission,
+                  findDeal.deal.feePaid,
+                )
+              const sendOptions: OrderAdditionalParams = {
+                dealId: findDeal.deal._id,
+                type:
+                  count === this.slippageRetry
+                    ? OrderTypeEnum.limit
+                    : forceMarket
+                      ? OrderTypeEnum.market
+                      : closeType === CloseDCATypeEnum.closeByLimit
+                        ? OrderTypeEnum.limit
+                        : OrderTypeEnum.market,
+                reduceOnly: !!this.futures,
+                positionSide: this.hedge
+                  ? this.isLong
+                    ? PositionSide.LONG
+                    : PositionSide.SHORT
+                  : PositionSide.BOTH,
+              }
+              // Spec 015 §7.1 — mark the real-fee attempt distinguishable in
+              // logs/on the venue, mirroring the existing `...ac` suffix.
+              const realFeeOrder = isZeroedFeeSizeTp
+                ? {
+                    ...tpOrder,
+                    newClientOrderId: `${tpOrder.newClientOrderId.slice(
+                      0,
+                      tpOrder.newClientOrderId.length - 2,
+                    )}rf`,
+                  }
+                : tpOrder
               let result = await this.sendGridToExchange(
                 {
-                  ...tpOrder,
+                  ...realFeeOrder,
                   price: price
                     ? this.math.round(+price, symbol.priceAssetPrecision)
-                    : tpOrder.price,
+                    : realFeeOrder.price,
                 },
-                {
-                  dealId: findDeal.deal._id,
-                  type:
-                    count === this.slippageRetry
-                      ? OrderTypeEnum.limit
-                      : forceMarket
-                        ? OrderTypeEnum.market
-                        : closeType === CloseDCATypeEnum.closeByLimit
-                          ? OrderTypeEnum.limit
-                          : OrderTypeEnum.market,
-                  reduceOnly: !!this.futures,
-                  positionSide: this.hedge
-                    ? this.isLong
-                      ? PositionSide.LONG
-                      : PositionSide.SHORT
-                    : PositionSide.BOTH,
-                },
+                sendOptions,
                 symbol,
                 true,
               )
+              if (
+                isZeroedFeeSizeTp &&
+                typeof result === 'string' &&
+                this.isFeeSizingRejection(result)
+              ) {
+                // Spec 015 §7.4 — checked BEFORE the adaptive-close/notional
+                // branches below: those would just recompute the same
+                // too-small size again without this running first.
+                const fallbackResult = await this.runFeeSizingFallback(
+                  findDeal,
+                  slSource,
+                  sl,
+                  realFeeOrder,
+                  result,
+                  symbol,
+                  sendOptions,
+                )
+                if (fallbackResult !== undefined) {
+                  result = fallbackResult
+                }
+              }
               if (result) {
                 if (
                   typeof result === 'string' &&
@@ -13395,24 +13567,114 @@ function createDCABotHelper<
                 continue
               }
             }
-            const result = await this.sendGridToExchange(
-              order,
-              {
-                dealId,
-                type: order.market ? 'MARKET' : 'LIMIT',
-                reduceOnly: this.futures
-                  ? (this.isLong && order.side === OrderSideEnum.sell) ||
-                    (!this.isLong && order.side === OrderSideEnum.buy)
-                  : undefined,
-                positionSide: this.hedge
-                  ? this.isLong
-                    ? PositionSide.LONG
-                    : PositionSide.SHORT
-                  : PositionSide.BOTH,
-              },
-              ed,
-            )
-            if (result && result.status === 'FILLED') {
+            const sendOptions: OrderAdditionalParams = {
+              dealId,
+              type: order.market ? 'MARKET' : 'LIMIT',
+              reduceOnly: this.futures
+                ? (this.isLong && order.side === OrderSideEnum.sell) ||
+                  (!this.isLong && order.side === OrderSideEnum.buy)
+                : undefined,
+              positionSide: this.hedge
+                ? this.isLong
+                  ? PositionSide.LONG
+                  : PositionSide.SHORT
+                : PositionSide.BOTH,
+            }
+            // Spec 015 §7.4 Chain A — the routine per-fill/per-tick path.
+            // Combo excluded (§4/§7.4, "shares this method" per the comment
+            // above — same exclusion as Chain B).
+            const isZeroedFeeSizeTp =
+              order.type === TypeOrderEnum.dealTP &&
+              !!deal &&
+              !this.combo &&
+              !this.futures &&
+              deal.deal.feeSizingFallback?.status !== 'confirmed' &&
+              quantityFeeIsThirdAssetOnly(
+                deal.deal.feeByAsset,
+                deal.deal.commission,
+                deal.deal.feePaid,
+              )
+            // Spec 015 §7.1 — mark the real-fee attempt distinguishable in
+            // logs/on the venue, mirroring the `...ac`/`...ef` suffixes.
+            const realFeeOrder = isZeroedFeeSizeTp
+              ? {
+                  ...order,
+                  newClientOrderId: `${order.newClientOrderId.slice(
+                    0,
+                    order.newClientOrderId.length - 2,
+                  )}rf`,
+                }
+              : order
+            let result: Order | string | void
+            if (isZeroedFeeSizeTp) {
+              result = await this.sendGridToExchange(
+                realFeeOrder,
+                sendOptions,
+                ed,
+                true,
+              )
+              if (
+                typeof result === 'string' &&
+                this.isFeeSizingRejection(result) &&
+                deal
+              ) {
+                const fallbackResult = await this.runFeeSizingFallback(
+                  deal,
+                  false,
+                  false,
+                  realFeeOrder,
+                  result,
+                  ed,
+                  sendOptions,
+                )
+                if (fallbackResult !== undefined) {
+                  result = fallbackResult
+                }
+              }
+              // `returnError: true` above means sendOrderToExchange's own
+              // internal handleOrderErrors call never ran (it returns the
+              // reason string early instead, unlike the non-zeroed branch
+              // below, which still gets that handling for free) — a
+              // rejection that reaches here (not a fee-sizing rejection, or
+              // the fallback also failed) still needs to be surfaced, or a
+              // real TP rejection would go completely silent.
+              if (typeof result === 'string') {
+                this.handleOrderErrors(
+                  result,
+                  {
+                    symbol: ed.pair,
+                    orderId: '0',
+                    clientOrderId: realFeeOrder.newClientOrderId,
+                    transactTime: +new Date(),
+                    updateTime: +new Date(),
+                    price: `${realFeeOrder.price}`,
+                    origQty: `${realFeeOrder.qty}`,
+                    executedQty: '0',
+                    cummulativeQuoteQty: '0',
+                    status: 'CANCELED',
+                    type: 'MARKET',
+                    side: realFeeOrder.side,
+                    quoteAsset: ed.quoteAsset.name,
+                    baseAsset: ed.baseAsset.name,
+                    typeOrder: realFeeOrder.type,
+                    exchange: this.data.exchange,
+                    exchangeUUID: this.data.exchangeUUID,
+                    botId: this.botId,
+                    userId: this.userId,
+                    origPrice: `${realFeeOrder.price}`,
+                  },
+                  'placeOrders()',
+                  `Send new order request ${realFeeOrder.newClientOrderId}, qty ${realFeeOrder.qty}, price ${realFeeOrder.price}, side ${realFeeOrder.side}`,
+                )
+              }
+            } else {
+              result = await this.sendGridToExchange(order, sendOptions, ed)
+            }
+            if (
+              result &&
+              typeof result !== 'string' &&
+              result.status === 'FILLED'
+            ) {
               this.processFilledOrder(result)
             }
           } else {
@@ -13511,6 +13773,11 @@ function createDCABotHelper<
       aggregate = false,
       sl = false,
       price?: number,
+      // Spec 015 §7 — the estimated-fee resend passes true to force today's
+      // §1 sizing regardless of quantityFeeIsThirdAssetOnly/feeSizingFallback,
+      // without first writing 'confirmed' (that only happens if this resend
+      // succeeds).
+      forceFullFeeSizing = false,
     ) {
       if (this.data) {
         const ed = await this.getExchangeInfo(_symbol)
@@ -13693,11 +13960,19 @@ function createDCABotHelper<
         // zeroing only the multiplier at this one non-combo site cannot
         // reach combo's own maxFee usage at all.
         const tpFeeDeal = this.getDeal(dealId)?.deal ?? deal
-        const tpQuantityFeeIsThirdAssetOnly = quantityFeeIsThirdAssetOnly(
-          tpFeeDeal?.feeByAsset,
-          tpFeeDeal?.commission ?? 0,
-          tpFeeDeal?.feePaid,
-        )
+        // Spec 015 §7.3: a CONFIRMED fallback overrides the predicate to "use
+        // the account-rate size" regardless of what it says — this is the
+        // "checked first, every subsequent TP build" half of §7.3. A
+        // PENDING-only record does not gate this; the predicate still runs
+        // and a real-fee attempt can be tried again.
+        const tpQuantityFeeIsThirdAssetOnly =
+          !forceFullFeeSizing &&
+          tpFeeDeal?.feeSizingFallback?.status !== 'confirmed' &&
+          quantityFeeIsThirdAssetOnly(
+            tpFeeDeal?.feeByAsset,
+            tpFeeDeal?.commission ?? 0,
+            tpFeeDeal?.feePaid,
+          )
         let qty =
           _qty *
             (this.futures || tpQuantityFeeIsThirdAssetOnly
