@@ -76,6 +76,11 @@ async function makeBot(
     reason: string | null
     data: CommonOrder | null
   }>,
+  getOrderStub?: () => Promise<{
+    status: StatusEnum
+    reason: string | null
+    data: CommonOrder | null
+  }>,
 ) {
   const createDCABotHelper = (await import('../../src/bot/dcaHelper')).default
   const DCA = createDCABotHelper(MainBot as any)
@@ -209,11 +214,13 @@ async function makeBot(
       data: [],
     }),
     getBalance: async () => ({ status: StatusEnum.ok, reason: null, data: [] }),
-    getOrder: async () => ({
-      status: StatusEnum.notok,
-      reason: 'Order not found',
-      data: null,
-    }),
+    getOrder:
+      getOrderStub ??
+      (async () => ({
+        status: StatusEnum.notok,
+        reason: 'Order not found',
+        data: null,
+      })),
   }
 
   return { bot, errors }
@@ -468,8 +475,14 @@ describe('Spec 015: TP dust avoidance and two-stage placement (integration)', ()
         false,
       )
 
-      const reread = await dcaDealsDb.readData({ _id: dealId })
-      return { calls, errors, deal: reread!.data!.result }
+      // Not a fresh DB read: saveDeal's Mongo write is fire-and-forget
+      // (.then(), never awaited — a pre-existing characteristic of this
+      // legacy method, not something spec 015 introduced). The in-memory
+      // this.deals cache is what saveDeal updates SYNCHRONOUSLY and what
+      // every production caller actually reads back through; a DB read
+      // here would race the real write and flake.
+      const deal = bot.getDeal(dealId)?.deal
+      return { calls, errors, deal }
     }
 
     it('fork A — the estimated-fee resend succeeds: the sticky flag is confirmed', async () => {
@@ -493,5 +506,131 @@ describe('Spec 015: TP dust avoidance and two-stage placement (integration)', ()
       expect(deal.feeSizingFallback?.confirmedAt).to.equal(undefined)
       expect(errors.some((e) => e.includes('confirmed wrong'))).to.equal(false)
     })
+  })
+
+  // Spec 015 §10 scenario 3 / §7.2: a rejection that is NEITHER balance-
+  // shaped NOR notional-shaped must not trigger §7 at all — a regression
+  // guard against isFeeSizingRejection's classifier being too broad.
+  it('a real-fee TP rejected for an UNRELATED reason does not trigger the fallback', async () => {
+    let calls = 0
+    const { bot, errors } = await makeBot(async () => {
+      calls++
+      return {
+        status: StatusEnum.notok,
+        reason: 'Invalid API-key, IP, or permissions for action.',
+        data: null,
+      }
+    })
+
+    const dealId = await seedDeal()
+    const baseOrder = filledBaseOrder(dealId, {
+      feePaid: '0.0003',
+      feeAsset: 'BNB',
+    })
+    bot.setOrder(baseOrder)
+    await orderDb.createData(baseOrder as any)
+
+    const findDeal = {
+      deal: (await dcaDealsDb.readData({ _id: dealId }))!.data!.result,
+      initialOrders: [],
+      currentOrders: [],
+      previousOrders: [],
+      closeBySl: false,
+      notCheckSl: false,
+      closeByTp: false,
+    }
+    bot.setDeal(findDeal)
+
+    await bot.closeDealById(
+      BOT_ID,
+      dealId,
+      CloseDCATypeEnum.closeByMarket,
+      false,
+    )
+
+    // No resend — the rejection reason never matched isFeeSizingRejection.
+    expect(calls).to.equal(1)
+    expect(bot.getDeal(dealId)?.deal.feeSizingFallback).to.equal(undefined)
+    // Falls through to the existing generic handling instead.
+    expect(
+      errors.some((e) => e.includes('Invalid API-key, IP, or permissions')),
+    ).to.equal(true)
+    expect(errors.some((e) => e.includes('confirmed wrong'))).to.equal(false)
+  })
+
+  // Spec 015 §8 item 3 / §10 scenario 4: the real-fee attempt's own venue
+  // fate is checked BEFORE resending. A network timeout on that attempt
+  // (request sent, response lost) is not the same as a clean rejection —
+  // resending blind risks a second live TP landing on top of one that
+  // actually reached the venue. Here the rejection is balance-shaped (would
+  // otherwise trigger the fallback), but the status check finds the
+  // real-fee order alive on the venue, so the fallback must abort instead
+  // of firing a resend.
+  it('a size-shaped rejection does not resend when the real-fee order is found live on the venue', async () => {
+    let calls = 0
+    const { bot, errors } = await makeBot(
+      async () => {
+        calls++
+        return {
+          status: StatusEnum.notok,
+          reason: 'Account has insufficient balance for requested action.',
+          data: null,
+        }
+      },
+      // The status check: the real-fee order is NOT "definitively not
+      // found" — it's actually resting live on the venue.
+      async () => ({
+        status: StatusEnum.ok,
+        reason: null,
+        data: {
+          symbol: SYMBOL,
+          orderId: 'venue-order-1-actually-landed',
+          clientOrderId: 'D-TP-1rf',
+          updateTime: Date.now(),
+          price: '50500',
+          origQty: '0.01',
+          executedQty: '0',
+          status: 'NEW',
+          type: 'LIMIT',
+          side: OrderSideEnum.sell,
+        } as CommonOrder,
+      }),
+    )
+
+    const dealId = await seedDeal()
+    const baseOrder = filledBaseOrder(dealId, {
+      feePaid: '0.0003',
+      feeAsset: 'BNB',
+    })
+    bot.setOrder(baseOrder)
+    await orderDb.createData(baseOrder as any)
+
+    const findDeal = {
+      deal: (await dcaDealsDb.readData({ _id: dealId }))!.data!.result,
+      initialOrders: [],
+      currentOrders: [],
+      previousOrders: [],
+      closeBySl: false,
+      notCheckSl: false,
+      closeByTp: false,
+    }
+    bot.setDeal(findDeal)
+
+    await bot.closeDealById(
+      BOT_ID,
+      dealId,
+      CloseDCATypeEnum.closeByMarket,
+      false,
+    )
+
+    // Only the original real-fee attempt — the ambiguous-outcome check
+    // aborted before any resend was sent.
+    expect(calls).to.equal(1)
+    // Written pending BEFORE the status check runs (§7.3), and never
+    // confirmed since no resend ever happened.
+    expect(bot.getDeal(dealId)?.deal.feeSizingFallback?.status).to.equal(
+      'pending',
+    )
+    expect(errors.some((e) => e.includes('confirmed wrong'))).to.equal(false)
   })
 })
