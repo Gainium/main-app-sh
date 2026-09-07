@@ -22,7 +22,7 @@
 
 ### Added
 
-- Bot logs now say, once, when a symbol stops receiving live price ticks and falls back to the periodic REST price poll — and say so again when live ticks return. The poll is only a fallback for the `trade@` price stream, but it is also what drives every price-triggered decision (take-profit level check, stop loss, trailing, DCA level), so a symbol stuck on it evaluates those on a ~5-minute cadence instead of per tick. That state was previously visible only at debug level, which is off in production, so an exchange whose price stream was never enabled looked from the bot's side exactly like a quiet market.
+- Bot logs now say, once, when a symbol stops receiving live price ticks and falls back to the periodic REST price poll — and say so again when live ticks return. The poll is only a fallback for the `trade@` price stream, but it is also what drives every price-triggered decision (take-profit level check, stop loss, trailing, DCA level), so a symbol stuck on it evaluates those on a ~5-minute cadence instead of per tick. That state was previously visible only at debug level, which is off by default, so an exchange whose price stream was never enabled looked from the bot's side exactly like a quiet market.
 
 ## [1.57.18] - 2026-09-07
 
@@ -131,7 +131,7 @@
 
 ### Changed
 
-- `checkTPLevel`'s "already closing by TP" skip and `getDealTPLevelToCheck`'s armed-target/filled-ids line are logged at info instead of debug — debug is off on prod, which is why the latch above was invisible in every archived log.
+- `checkTPLevel`'s "already closing by TP" skip and `getDealTPLevelToCheck`'s armed-target/filled-ids line are logged at info instead of debug — debug is off by default, which is why the latch above was invisible in the logs.
 
 ## [1.57.1] - 2026-09-03
 
@@ -375,7 +375,7 @@
   account mode", a Binance permission object naming the switch that is off —
   but it arrives as `JSON.stringify(BaseReturn)`, and the resolver forwarded a
   reason only when it contained no brace and no "catch". That discarded nearly
-  every venue error in favour of `API keys not valid for <tradeType>`. Over
+  every venue error in favour of `API keys not valid for <tradeType>`. In the
   field that single message covered the large majority of verification failures
   across many distinct users, several of whom retried repeatedly. New
   `exchange/verifyFailureMessage.ts` unwraps the envelope and, where a rule
