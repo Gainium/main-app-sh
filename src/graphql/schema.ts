@@ -873,6 +873,7 @@ export const BotSchema = /* GraphQL */ `
     ): requestOnboardingBacktestResponse
     addDealFunds(input: addDealFundsInput!): addFundsResponse
     reduceDealFunds(input: addDealFundsInput!): addFundsResponse
+    executeNextDca(input: executeNextDcaInput!): addFundsResponse
     cancelTerminalDealOrder(
       input: cancelTerminalDealOrderInput!
     ): cancelTerminalDealOrderResponse
@@ -1183,6 +1184,17 @@ export const BotSchema = /* GraphQL */ `
     limitPrice: String
     asset: String!
     type: String
+  }
+  """
+  Execute a DCA deal's next safety order immediately, at market.
+  expectedLevel is the level the dashboard showed the user; the engine refuses
+  if the deal has moved on since, so a confirmation can never execute a
+  different level than the one it quoted.
+  """
+  input executeNextDcaInput {
+    dealId: String!
+    botId: String!
+    expectedLevel: Int
   }
   input cancelTerminalDealOrderInput {
     dealId: String!

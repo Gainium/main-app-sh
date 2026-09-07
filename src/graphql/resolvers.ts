@@ -5055,6 +5055,35 @@ const resolvers = <
         rest,
       )
     },
+    executeNextDca: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: {
+          dealId: string
+          botId: string
+          expectedLevel?: number
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const { botId, dealId, expectedLevel } = input
+      return await Bot.executeNextDcaLevel(
+        botId,
+        dealId,
+        user.data._id.toString(),
+        paperContext,
+        { expectedLevel },
+      )
+    },
     reduceDealFunds: async (
       _parent: any,
       {

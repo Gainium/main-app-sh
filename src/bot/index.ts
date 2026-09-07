@@ -9377,6 +9377,67 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Public-API twin of `executeNextDcaLevel`. Feature request:
+   * https://community.gainium.io/t/execute-next-dca-manually/5072
+   *
+   * `dealId` is REQUIRED here, unlike the add-funds twin which can fan out over
+   * every open deal on a bot. "Execute the next DCA on all deals" would walk a
+   * whole bot down its ladders at market from one call; the action is only
+   * meaningful, and only reversible in the user's head, against one named deal.
+   */
+  public async executeNextDcaLevelFromPublicApi(
+    userId: string,
+    dealId: string,
+    expectedLevel?: number,
+  ) {
+    if (!this.useBots) {
+      return await this.callExternalBotService<BaseReturn<string>>(
+        BotType.dca,
+        'executeNextDcaLevelFromPublicApi',
+        false,
+        userId,
+        dealId,
+        expectedLevel,
+      )
+    }
+    const findDeal = await this.dcaDealsDb.readData({
+      _id: dealId,
+      userId,
+    })
+    if (findDeal.status === StatusEnum.notok) {
+      return findDeal
+    }
+    // `readData` answers `{ status: ok, result: undefined }` on a MISS — the
+    // repo-wide trap. Without this the next line would take `botId` off
+    // undefined and the caller would get a 500 for what is a plain 404.
+    if (!findDeal.data?.result) {
+      return this.entityNotFound('Deal')
+    }
+    const botIdToUse = findDeal.data.result.botId
+    const findBot = this.dcaBots.find((b) => b.id === botIdToUse)
+    if (!findBot) {
+      return {
+        status: StatusEnum.notok,
+        reason: 'Bot is not running',
+        data: null,
+      }
+    }
+    this.getWorkerById(findBot.worker)?.postMessage({
+      do: 'method',
+      botType: BotType.dca,
+      botId: findBot.id,
+      method: 'executeNextDcaLevel',
+      args: [findBot.id, dealId, { expectedLevel }],
+    })
+
+    return {
+      status: StatusEnum.ok,
+      reason: null,
+      data: 'Execute next DCA scheduled',
+    }
+  }
+
   public async reduceDealFundsFromPublicApi(
     userId: string,
     botId: string | undefined,
@@ -12611,6 +12672,84 @@ class Bot<T extends UserSchema = UserSchema> {
       status: StatusEnum.ok,
       reason: null,
       data: 'Add funds scheduled',
+    }
+  }
+
+  /**
+   * Fill a DCA deal's next safety order now, at market. Feature request:
+   * https://community.gainium.io/t/execute-next-dca-manually/5072
+   *
+   * Same dispatch shape as `addDealFunds`: the worker owns the deal, so this
+   * only routes the request and answers "scheduled". Anything the engine
+   * refuses (deal closed, no levels left, the ladder moved on) surfaces as a
+   * bot message from `executeNextDcaLevel` itself.
+   */
+  public async executeNextDcaLevel(
+    botId: string,
+    dealId: string,
+    userId: string,
+    paperContext: boolean,
+    opts?: { expectedLevel?: number },
+  ) {
+    if (!this.useBots) {
+      return await this.callExternalBotService<BaseReturn<string>>(
+        BotType.dca,
+        'executeNextDcaLevel',
+        false,
+        botId,
+        dealId,
+        userId,
+        paperContext,
+        opts,
+      )
+    }
+    const bot = await this.getDCABotFromDb(
+      userId,
+      botId,
+      undefined,
+      paperContext,
+    )
+    if (bot.status === StatusEnum.notok) {
+      return bot
+    }
+    if (!bot.data) {
+      return this.entityNotFound('Bot')
+    }
+    const findLocal = this.dcaBots.find((d) => d.id === botId)
+    if (!findLocal) {
+      await this.createNewBot(
+        botId,
+        BotType.dca,
+        userId,
+        bot.data.exchange,
+        bot.data.uuid,
+        [botId, bot.data.exchange],
+        (worker) => {
+          worker.postMessage({
+            do: 'method',
+            botType: BotType.dca,
+            botId,
+            method: 'executeNextDcaLevel',
+            args: [botId, dealId, opts],
+          })
+        },
+        paperContext,
+        bot.data.settings.type ?? DCATypeEnum.regular,
+      )
+    } else {
+      this.getWorkerById(findLocal.worker)?.postMessage({
+        do: 'method',
+        botType: BotType.dca,
+        botId: findLocal.id,
+        method: 'executeNextDcaLevel',
+        args: [botId, dealId, opts],
+      })
+    }
+
+    return {
+      status: StatusEnum.ok,
+      reason: null,
+      data: 'Execute next DCA scheduled',
     }
   }
 

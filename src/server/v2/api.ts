@@ -4076,6 +4076,70 @@ const v2API = <R extends UserSchema = UserSchema>(
   })
 
   /**
+   * POST /api/v2/deals/dca/execute-next-dca
+   *
+   * Fill a DCA deal's next safety order now, at market, instead of waiting for
+   * price (or its indicator signal) to reach it. The deal books it as that
+   * level and continues with the next one at its original price.
+   * https://community.gainium.io/t/execute-next-dca-manually/5072
+   *
+   * Query: { dealId: string }  — required; unlike add-funds there is no
+   *   whole-bot fan-out, see `executeNextDcaLevelFromPublicApi`.
+   * Body: { expectedLevel?: number } — refuse if the deal has since moved on.
+   *
+   * Response:
+   * - 200: Execution scheduled
+   * - 400: Validation error or deal not found
+   * - 500: Internal server error
+   */
+  post.set('/api/v2/deals/dca/execute-next-dca', {
+    middlewares: [],
+    handler: async (req, res) => {
+      const user = req.userData
+      const { dealId } = req.query as { dealId?: string }
+      const { expectedLevel } = req.body as { expectedLevel?: number }
+
+      if (!dealId || typeof dealId !== 'string') {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: 'Deal ID required',
+        })
+      }
+
+      if (
+        typeof expectedLevel !== 'undefined' &&
+        (typeof expectedLevel !== 'number' ||
+          !Number.isInteger(expectedLevel) ||
+          expectedLevel < 1)
+      ) {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: 'Invalid parameters',
+        })
+      }
+
+      try {
+        const result = await Bot.executeNextDcaLevelFromPublicApi(
+          user.id,
+          dealId,
+          expectedLevel,
+        )
+
+        return res.status(200).json(result)
+      } catch (error) {
+        console.error('Error executing next DCA level:', error)
+        return res.status(500).json({
+          status: StatusEnum.notok,
+          reason:
+            error instanceof Error
+              ? error.message
+              : 'Failed to execute the next DCA level',
+        })
+      }
+    },
+  })
+
+  /**
    * POST /api/v2/deals/dca/reduce-funds
    *
    * Reduce funds from a deal (works for all deal types)
