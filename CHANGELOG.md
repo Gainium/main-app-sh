@@ -10,31 +10,31 @@
 
 ### Added
 
-- Execute a DCA deal's next safety order on demand, at market, instead of waiting for price (or its indicator signal) to reach it. The deal books it as that level and carries on with the next one at its original price — unlike Add funds, which adds size outside the ladder and does not consume a level. Only the next level can be executed: no skipping ahead, no reordering, no price editing. Available on DCA deals over GraphQL (`executeNextDca`) and the public API (`POST /api/v2/deals/dca/execute-next-dca`). Works for all three ladder shapes — percentage, custom and indicator-driven; combo and risk-based deals are excluded, because their levels are not ladder slots. Where the ladder rests on the venue, the resting order for that level is cancelled first, and the request is refused if that level fills on its own in the meantime. Community request: https://community.gainium.io/t/execute-next-dca-manually/5072
+- Execute a DCA deal's next safety order on demand, at market, instead of waiting for price (or its indicator signal) to reach it. The deal books it as that level and carries on with the next one at its original price — unlike Add funds, which adds size outside the ladder and does not consume a level. Only the next level can be executed: no skipping ahead, no reordering, no price editing. Available on DCA deals over GraphQL (`executeNextDca`) and the public API (`POST /api/v2/deals/dca/execute-next-dca`). Works for all three ladder shapes — percentage, custom and indicator-driven; combo and risk-based deals are excluded, because their levels are not ladder slots. Where the ladder rests on the venue, the resting order for that level is cancelled first, and the request is refused if that level fills on its own in the meantime. Requested by the community.
 
 ## [1.57.20] - 2026-09-07
 
 ### Fixed
 
-- `npm run lint` failed on a clean checkout again, so husky's pre-commit hook rejected every commit in this repo and sessions were committing with `--no-verify`. The take-profit coverage harness (1.57.17, Claus #696) re-loads `dcaHelper` with a fresh module cache so each arming state of `BOT_TP_COVERAGE_REPAIR` gets its own build of the helper, and did so through a bare `require()`, which `@typescript-eslint/no-require-imports` forbids. The harness now goes through a dedicated `createRequire(__filename)` loader, which keeps the cache-busting re-import and satisfies the rule; the file was also brought in line with the repo's prettier settings. Test behaviour is unchanged.
+- `npm run lint` failed on a clean checkout again, so husky's pre-commit hook rejected every commit in this repo and commits had to bypass it with `--no-verify`. The take-profit coverage harness (1.57.17) re-loads `dcaHelper` with a fresh module cache so each arming state of `BOT_TP_COVERAGE_REPAIR` gets its own build of the helper, and did so through a bare `require()`, which `@typescript-eslint/no-require-imports` forbids. The harness now goes through a dedicated `createRequire(__filename)` loader, which keeps the cache-busting re-import and satisfies the rule; the file was also brought in line with the repo's prettier settings. Test behaviour is unchanged.
 
 ## [1.57.19] - 2026-09-07
 
 ### Added
 
-- Bot logs now say, once, when a symbol stops receiving live price ticks and falls back to the periodic REST price poll — and say so again when live ticks return. The poll is only a fallback for the `trade@` price stream, but it is also what drives every price-triggered decision (take-profit level check, stop loss, trailing, DCA level), so a symbol stuck on it evaluates those on a ~5-minute cadence instead of per tick. That state was previously visible only at debug level, which is off in production, so an exchange whose price stream was never enabled looked from the bot's side exactly like a quiet market. Claus #617.
+- Bot logs now say, once, when a symbol stops receiving live price ticks and falls back to the periodic REST price poll — and say so again when live ticks return. The poll is only a fallback for the `trade@` price stream, but it is also what drives every price-triggered decision (take-profit level check, stop loss, trailing, DCA level), so a symbol stuck on it evaluates those on a ~5-minute cadence instead of per tick. That state was previously visible only at debug level, which is off in production, so an exchange whose price stream was never enabled looked from the bot's side exactly like a quiet market.
 
 ## [1.57.18] - 2026-09-07
 
 ### Fixed
 
-- A DCA deal whose base order is refused because the venue's book is in limit-only mode is no longer left with no order on the exchange at all. The limit fallback used to require the bot to be configured for LIMIT entry, so a MARKET-entry bot — whose base order is a market order from the outset — still fell through to the generic error handler and sat in `start` with nothing on the book. The fallback now re-sends the base order with an explicit force-limit flag, which covers both entry types and still terminates after exactly one re-send. Claus #505.
+- A DCA deal whose base order is refused because the venue's book is in limit-only mode is no longer left with no order on the exchange at all. The limit fallback used to require the bot to be configured for LIMIT entry, so a MARKET-entry bot — whose base order is a market order from the outset — still fell through to the generic error handler and sat in `start` with nothing on the book. The fallback now re-sends the base order with an explicit force-limit flag, which covers both entry types and still terminates after exactly one re-send.
 
 ## [1.57.17] - 2026-09-06
 
 ### Added
 
-- DCA deals are now checked, on each reconcile pass, that their resting take-profit still covers the position the deal is tracking. Deals whose take-profit stopped covering their position before 1.57.15 shipped stayed that way, because coverage is only ever re-established when a safety order fills — a market event that may never arrive. Three deals across three users were sitting like that, one with 110,493 base carrying no take-profit at all and two resting a duplicate take-profit that offered more base than the deal owned. The check reports each such deal once; the correction that cancels the stale take-profit and re-arms it is opt-in, behind BOT_TP_COVERAGE_REPAIR, since it cancels and places real orders.
+- DCA deals are now checked, on each reconcile pass, that their resting take-profit still covers the position the deal is tracking. Deals whose take-profit stopped covering their position before 1.57.15 shipped stayed that way, because coverage is only ever re-established when a safety order fills — a market event that may never arrive. Several deals were sitting like that: some carrying no take-profit at all, others resting a duplicate take-profit that offered more base than the deal owned. The check reports each such deal once; the correction that cancels the stale take-profit and re-arms it is opt-in, behind BOT_TP_COVERAGE_REPAIR, since it cancels and places real orders.
 
 ## [1.57.16] - 2026-09-06
 
@@ -52,7 +52,7 @@
 
 ### Fixed
 
-- The reconcile pass's "could not read N order(s)" warning now reports how many exchange lookups it actually spent instead of the configured per-order retry budget. The budget was printed unconditionally, so the line always read "after 3 attempts" even when every order was answered on the first look and the retry ladder never ran — which is the usual case, because a definitive "no such order" from the exchange stops the ladder immediately. Reading that number as work performed makes a quiet pass look like a retry storm, and it already caused a defect to be filed against a code path that was behaving correctly. The line now names the lookups spent and the budget separately. Log wording only: reconcile does exactly the same work, in the same order, as before.
+- The reconcile pass's "could not read N order(s)" warning now reports how many exchange lookups it actually spent instead of the configured per-order retry budget. The budget was printed unconditionally, so the line always read "after 3 attempts" even when every order was answered on the first look and the retry ladder never ran — which is the usual case, because a definitive "no such order" from the exchange stops the ladder immediately. Reading that number as work performed makes a quiet pass look like a retry storm, and it already cost time investigating a code path that was behaving correctly. The line now names the lookups spent and the budget separately. Log wording only: reconcile does exactly the same work, in the same order, as before.
 
 ## [1.57.13] - 2026-09-05
 
@@ -76,14 +76,14 @@
 
 ### Fixed
 
-- A bot that cannot afford to start a new deal now says so once, instead of once a minute for as long as the shortfall lasts. The balance check runs on a loop and the account behind it does not change between runs, but every refusal was recorded as a fresh warning — so a bot's event history filled with hundreds of identical entries a day and real events were buried. 56% of all bot events written in a day were this one warning, across 915 bots. The shortfall is now reported when it starts, again if it clears and comes back, and once a day while it persists. Terminal deals are unaffected and still report every time. Applies to DCA and Combo bots.
+- A bot that cannot afford to start a new deal now says so once, instead of once a minute for as long as the shortfall lasts. The balance check runs on a loop and the account behind it does not change between runs, but every refusal was recorded as a fresh warning — so a bot's event history filled with hundreds of identical entries a day and real events were buried. This one warning accounted for the majority of all bot events written in a day, across a large number of bots. The shortfall is now reported when it starts, again if it clears and comes back, and once a day while it persists. Terminal deals are unaffected and still report every time. Applies to DCA and Combo bots.
 - `Deal symbol <X> not in pairs` moved from the error log to debug — the same loop subscribes the symbol immediately afterwards, so it was never a condition anyone could act on.
 
 ## [1.57.9] - 2026-09-04
 
 ### Fixed
 
-- A bot blocked on several contracts at once now gets a message for each of them. When an exchange refuses an order until the user signs that contract's agreement, the refusal was recorded against the bot rather than against the contract: every blocked contract shared one notification row, whose pair name was overwritten by whichever contract failed most recently, and only the very first one was ever announced. One production bot was refused on 21 different contracts — 16 of the refusal windows overlapping — and the user was told about one. Each contract now gets its own message and its own notification, while conditions that belong to the bot or the account (a rejected API key, a plan limit) keep the single message per bot they had.
+- A bot blocked on several contracts at once now gets a message for each of them. When an exchange refuses an order until the user signs that contract's agreement, the refusal was recorded against the bot rather than against the contract: every blocked contract shared one notification row, whose pair name was overwritten by whichever contract failed most recently, and only the very first one was ever announced. A single bot could be refused on many different contracts at once, with the refusal windows overlapping, and the user was told about one. Each contract now gets its own message and its own notification, while conditions that belong to the bot or the account (a rejected API key, a plan limit) keep the single message per bot they had.
 
 ## [1.57.8] - 2026-09-04
 
@@ -95,19 +95,19 @@
 
 ### Fixed
 
-- Deals no longer stay open forever against a position the exchange no longer holds. When a take profit is reached and the closing order cannot be placed, the bot now asks the exchange whether the position is still there; if it is not, the deal is closed with the profit it had already realised and a message explaining why, instead of re-arming the same impossible close on every price update. Three deals on one bot had been open since April re-trying roughly every 15 seconds against positions the exchange closed the day they opened. The check is throttled to one lookup per deal per 5 minutes, only applies to futures deals, and never closes a deal when the exchange could not be reached.
+- Deals no longer stay open forever against a position the exchange no longer holds. When a take profit is reached and the closing order cannot be placed, the bot now asks the exchange whether the position is still there; if it is not, the deal is closed with the profit it had already realised and a message explaining why, instead of re-arming the same impossible close on every price update. Deals were found that had been open for months, re-trying roughly every 15 seconds against positions the exchange closed the day they opened. The check is throttled to one lookup per deal per 5 minutes, only applies to futures deals, and never closes a deal when the exchange could not be reached.
 
 ## [1.57.6] - 2026-09-04
 
 ### Fixed
 
-- Market take profit: when the exchange refuses the closing order because the position is not there to reduce (`Reduce order is rejected`, `ReduceOnly Order`, `current position is zero…`), the deal now backs off instead of re-sending the identical order on every price update, and says so on the deal. The refusal was discarded unread — it was logged only as `not placed` — so every outcome was treated as a transient miss and re-armed against the price tick: one production deal sent one client order id 1,031 times in about two hours and the user was told nothing, because that rejection class is deliberately invisible at bot level. Retries now wait 1 → 2 → 4 → 8 → 15 minutes, an accepted close clears the wait immediately, and genuinely transient outcomes keep retrying at once as before.
+- Market take profit: when the exchange refuses the closing order because the position is not there to reduce (`Reduce order is rejected`, `ReduceOnly Order`, `current position is zero…`), the deal now backs off instead of re-sending the identical order on every price update, and says so on the deal. The refusal was discarded unread — it was logged only as `not placed` — so every outcome was treated as a transient miss and re-armed against the price tick: a single deal could re-send one client order id hundreds of times in a couple of hours and the user was told nothing, because that rejection class is deliberately invisible at bot level. Retries now wait 1 → 2 → 4 → 8 → 15 minutes, an accepted close clears the wait immediately, and genuinely transient outcomes keep retrying at once as before.
 
 ## [1.57.5] - 2026-09-04
 
 ### Fixed
 
-- Bot messages named the wrong pair. Grid bots store `settings.pair` as a plain string while DCA/combo bots store an array, and the message writer indexed `[0]` unconditionally — so every grid bot's notification reported the first *character* of its pair (`TONUSDT` shown as `T`) across all error types. 2,060 records on 591 bots for 118 users carry a one-letter pair, 758 of them live and visible today. Separately, `getLatestPrice()` did not pass the pair it had just failed on, so the message fell back to the bot's first configured pair: a 356-pair bot filed all 1,607 of its "Not supported symbols" occurrences against `BTCUSDT`, a pair the venue does list, hiding the pair that actually failed.
+- Bot messages named the wrong pair. Grid bots store `settings.pair` as a plain string while DCA/combo bots store an array, and the message writer indexed `[0]` unconditionally — so every grid bot's notification reported the first *character* of its pair (`TONUSDT` shown as `T`) across all error types. Many records across a large number of grid bots carry a one-letter pair, a good share of them still live and visible today. Separately, `getLatestPrice()` did not pass the pair it had just failed on, so the message fell back to the bot's first configured pair: a multi-pair bot filed every one of its "Not supported symbols" occurrences against `BTCUSDT`, a pair the venue does list, hiding the pair that actually failed.
 
 ## [1.57.4] - 2026-09-04
 
@@ -147,7 +147,7 @@
 
 ### Fixed
 
-- **A bot could hold resting orders while deaf to its account's `userStreamInfo` channel — no fills, no reconcile sweeps, no error, no retry.** Thirteen DCA bots of one user on one Kraken account were loaded on the same worker within 10 ms of a process restart on 2026-09-02 and never received another message on that channel until the next restart 20 h later: seven connector reconnects and twelve `RECONCILE VIA SWEEP` publishes went unheard while the worker delivered hundreds of other accounts' messages. `setExchangeCredentials` ran `unsubscribe(ch, cb)` before `subscribe(ch, cb)` for a callback it had never registered; in node-redis 5 that puts a real `UNSUBSCRIBE` on the wire behind a sibling's still-pending `SUBSCRIBE` (its local entry only exists once the reply is in), and every later `subscribe` is then deduplicated client-side. Client: thirteen listeners. Server: nothing. Reproduced deterministically in `src/db/redisPubSub.spec.ts` against a fake that mirrors `@redis/client` 5.10 `pub-sub.js`. `RedisWrapper` now serialises `subscribe`/`unsubscribe` per channel, never sends a command for a listener it did not register, and gains `resubscribe(channel)` (one wire `UNSUBSCRIBE` + `SUBSCRIBE` for every registered callback) to repair a channel the client believes it holds. The redundant pre-subscribe unsubscribe is gone from both `setExchangeCredentials` implementations. Spec: `specs/002.user-stream-channel-lost-on-concurrent-subscribe.md`.
+- **A bot could hold resting orders while deaf to its account's `userStreamInfo` channel — no fills, no reconcile sweeps, no error, no retry.** A group of DCA bots on one account were loaded on the same worker within milliseconds of a process restart and never received another message on that channel until the next restart many hours later: every connector reconnect and every `RECONCILE VIA SWEEP` publish went unheard while the worker delivered other accounts' messages normally. `setExchangeCredentials` ran `unsubscribe(ch, cb)` before `subscribe(ch, cb)` for a callback it had never registered; in node-redis 5 that puts a real `UNSUBSCRIBE` on the wire behind a sibling's still-pending `SUBSCRIBE` (its local entry only exists once the reply is in), and every later `subscribe` is then deduplicated client-side. Client: several listeners. Server: nothing. Reproduced deterministically in `src/db/redisPubSub.spec.ts` against a fake that mirrors `@redis/client` 5.10 `pub-sub.js`. `RedisWrapper` now serialises `subscribe`/`unsubscribe` per channel, never sends a command for a listener it did not register, and gains `resubscribe(channel)` (one wire `UNSUBSCRIBE` + `SUBSCRIBE` for every registered callback) to repair a channel the client believes it holds. The redundant pre-subscribe unsubscribe is gone from both `setExchangeCredentials` implementations. Spec: `specs/002.user-stream-channel-lost-on-concurrent-subscribe.md`.
 - A DCA bot stopped while a deal was open never released its user-stream listeners when that deal later closed (`stop()` only tore the stream down when no deal was open at stop time); the instance was dropped by the worker with live callbacks. `SharedStream.addListener` no longer skips the Redis subscribe silently when the first listener of a fresh worker arrives before the client connected.
 
 ### Added
@@ -168,7 +168,7 @@
 
 ### Fixed
 
-- **The source build no longer breaks the moment `package-lock.json` is regenerated.** `@types/express@5.0.6` depends on `@types/express-serve-static-core: ^5.0.0`; the committed lockfile pins 5.0.6, so `npm ci` was clean — but any fresh `npm install` resolves 5.1.3, where `ParamsDictionary`'s index signature widened from `string` to `string | string[]` (a wildcard or repeated segment can match more than once). That produced 28 `tsc` errors, all in `src/server/v2/api.ts`, where ~24 handlers destructure `req.params` and pass the value on as a bare `string` — `dealType`, `botType`, `botId`, `dealId`, `id`, `sync`, `type` — plus two `.toUpperCase()` calls. Only self-hosted / from-source builders hit it, which is why bug #596 arrived from a source build rather than from prod; the deployed tree installs from the lockfile and was never affected.
+- **The source build no longer breaks the moment `package-lock.json` is regenerated.** `@types/express@5.0.6` depends on `@types/express-serve-static-core: ^5.0.0`; the committed lockfile pins 5.0.6, so `npm ci` was clean — but any fresh `npm install` resolves 5.1.3, where `ParamsDictionary`'s index signature widened from `string` to `string | string[]` (a wildcard or repeated segment can match more than once). That produced 28 `tsc` errors, all in `src/server/v2/api.ts`, where ~24 handlers destructure `req.params` and pass the value on as a bare `string` — `dealType`, `botType`, `botId`, `dealId`, `id`, `sync`, `type` — plus two `.toUpperCase()` calls. Only self-hosted / from-source builders hit it, which is why it was reported from a source build rather than from a deployed one; the deployed tree installs from the lockfile and was never affected.
 
   Fixed at the origin rather than at the 24 call sites: the `APIMap` handler signature now reads `Request<Record<string, string>>`. Every v2 route uses only simple `:name` segments, and the 16 v1 routes folded in at the bottom of `v2API` carry no params at all, so the `string[]` arm is unreachable for every registered route — this narrows the type to what the router actually produces rather than casting over a case that can occur. The parent repo's `src/server/v2.ts` registers its agent/backtest handlers into this same map and is covered by the same one-line change. A wildcard route added later would invalidate the assumption, so the type carries a comment saying to type such a handler's params explicitly.
 
@@ -178,13 +178,13 @@
 
 ### Fixed
 
-- **Per-pair "Avg. deal duration" is no longer 0 for every pair of every multi-pair bot.** `botUpdateStats` fills `symbolStats[].duration.maxDealDuration` and then, three lines later, "computed" the average with a self-assignment guarded by `isNaN` — which never fired, because `getEmptyStats` seeds the field to 0. Bug #604: the reporter's COINBASE bot had 108 pairs carrying a populated max and an average of exactly 0, including pairs whose single closed deal makes avg == max by definition, while the bot-wide `duration.general.avgDealDuration` (which does accumulate a `totalTime`) read a correct 14h. The pair block now accumulates its own `duration.totalTime` / `duration.measuredDeals` and divides them. Deliberately not `numerical.deals.profit + loss`: that count predates the new counters on every bot already trading, so dividing by it would have replaced the honest 0 with a fraction of the real average on the first close after this ships. Bots with history start averaging from their next closed deal per pair; new bots are exact from the first one.
+- **Per-pair "Avg. deal duration" is no longer 0 for every pair of every multi-pair bot.** `botUpdateStats` fills `symbolStats[].duration.maxDealDuration` and then, three lines later, "computed" the average with a self-assignment guarded by `isNaN` — which never fired, because `getEmptyStats` seeds the field to 0. A reported multi-pair bot had every pair carrying a populated max and an average of exactly 0, including pairs whose single closed deal makes avg == max by definition, while the bot-wide `duration.general.avgDealDuration` (which does accumulate a `totalTime`) read correctly. The pair block now accumulates its own `duration.totalTime` / `duration.measuredDeals` and divides them. Deliberately not `numerical.deals.profit + loss`: that count predates the new counters on every bot already trading, so dividing by it would have replaced the honest 0 with a fraction of the real average on the first close after this ships. Bots with history start averaging from their next closed deal per pair; new bots are exact from the first one.
 
 ## [1.56.15] - 2026-09-02
 
 ### Fixed
 
-- **A reconcile order lookup no longer costs 18 connector round trips when the connector is failing.** `reconcileLookup` spends its 3-attempt budget on `MainBot.getOrder`, but `Exchange.apiCall` already retries a connector 5xx/timeout SIX times at 500ms before giving up — so each "attempt" was really six round trips over ~3s and the real ceiling was 3 x 6. Bug #599, 2026-09-02 01:21-01:23Z: one Kraken combo bot reconciling five resting orders against a connector answering HTTP 500 made 96 requests in ~100s (5 order ids x exactly 18, plus 6 for the `primeReconcileBatch` prefetch) and paged the operator as "86 transport failures ... likely wedged" — 6 logical questions rendered as 86 failures, into a connector that was already struggling. The retry budget now also stops on a failure the transport ladder has ALREADY been spent on, matched by the new `isTransportRetryExhausted` on the `Exchange connector | ` prefix that only `apiCall` throws, and only after those six attempts. Deliberately narrower than `isAmbiguousOrderFailure`: a transient reason carried in a NOTOK body on an HTTP 200 (`Response timeout`, a rate-limit) never sees the transport ladder, so it keeps the full 3 attempts. Measured against a fake 500-ing connector: 18 round trips -> 6, with success, definitive not-found, non-transport transient, and mid-ladder recovery all unchanged.
+- **A reconcile order lookup no longer costs 18 connector round trips when the connector is failing.** `reconcileLookup` spends its 3-attempt budget on `MainBot.getOrder`, but `Exchange.apiCall` already retries a connector 5xx/timeout SIX times at 500ms before giving up — so each "attempt" was really six round trips over ~3s and the real ceiling was 3 x 6. Seen in the field: a combo bot reconciling five resting orders against a connector answering HTTP 500 made 96 requests in ~100s (5 order ids x exactly 18, plus 6 for the `primeReconcileBatch` prefetch) and surfaced as "86 transport failures ... likely wedged" — 6 logical questions rendered as 86 failures, into a connector that was already struggling. The retry budget now also stops on a failure the transport ladder has ALREADY been spent on, matched by the new `isTransportRetryExhausted` on the `Exchange connector | ` prefix that only `apiCall` throws, and only after those six attempts. Deliberately narrower than `isAmbiguousOrderFailure`: a transient reason carried in a NOTOK body on an HTTP 200 (`Response timeout`, a rate-limit) never sees the transport ladder, so it keeps the full 3 attempts. Measured against a fake 500-ing connector: 18 round trips -> 6, with success, definitive not-found, non-transport transient, and mid-ladder recovery all unchanged.
 
 ## [1.56.14] - 2026-09-01
 
@@ -194,9 +194,9 @@
 
 ### Fixed
 
-- **A Hyperliquid order the venue had already accepted is no longer written off as CANCELED.** HL answers a status lookup for a brand-new order with `unknownOid` while it is still propagating, and the connector surfaces that as the placement's failure reason — but `unknownOid` can only escape `openOrder` AFTER the venue accepted the order, because the connector's pre-flight duplicate check uses the same token to mean "not a duplicate, go ahead". Classified as a refusal it reached the generic cleanup path and `deleteOrder`, which also unregisters the id from `SharedStream`, so the venue's later fill reached no bot at all. Forum #5097, 2026-08-26: BUY 1.18 HYPE accepted at 05:41:09.682, reported `open` on our OWN user stream at 05:41:09.994, written off at 05:41:20.743, filled at 06:13:32 into a position the bot could no longer see — the deal closed 1.18 HYPE short of the account.
+- **A Hyperliquid order the venue had already accepted is no longer written off as CANCELED.** HL answers a status lookup for a brand-new order with `unknownOid` while it is still propagating, and the connector surfaces that as the placement's failure reason — but `unknownOid` can only escape `openOrder` AFTER the venue accepted the order, because the connector's pre-flight duplicate check uses the same token to mean "not a duplicate, go ahead". Classified as a refusal it reached the generic cleanup path and `deleteOrder`, which also unregisters the id from `SharedStream`, so the venue's later fill reached no bot at all. Seen in the field: an order accepted by the venue and reported `open` on our OWN user stream a fraction of a second later was written off ten seconds after that, then filled half an hour later into a position the bot could no longer see — the deal closed short of the account by that order's size.
 
-  Three changes, in order of how early they stop it. `sendOrderToExchange` now keeps any order it is still tracking whose `orderId` is no longer the `-1` placeholder, whatever the failure text said: only the venue can set that id, so it outranks any classification of the error string. `unknownOid` joins `AMBIGUOUS_ORDER_FAILURE_MARKERS`, so the #5025 guard asks the venue before writing off rather than not at all. And `_handleUnknownOrder` takes a `justPlaced` mode that suspends the two shortcuts written for a stale reconcile — the `orderId === '-1'` fast-fail, which reads "no exchange id" as proof the order never landed when for a just-placed order it only means the response was lost, and the exhaustion write-off, which now leaves the local record to the reconcile/quarantine path (age floor + strikes) instead of deleting it.
+  Three changes, in order of how early they stop it. `sendOrderToExchange` now keeps any order it is still tracking whose `orderId` is no longer the `-1` placeholder, whatever the failure text said: only the venue can set that id, so it outranks any classification of the error string. `unknownOid` joins `AMBIGUOUS_ORDER_FAILURE_MARKERS`, so the ambiguous-failure guard asks the venue before writing off rather than not at all. And `_handleUnknownOrder` takes a `justPlaced` mode that suspends the two shortcuts written for a stale reconcile — the `orderId === '-1'` fast-fail, which reads "no exchange id" as proof the order never landed when for a just-placed order it only means the response was lost, and the exhaustion write-off, which now leaves the local record to the reconcile/quarantine path (age floor + strikes) instead of deleting it.
 
   A definitive venue negative still writes off in both modes, and the placement resend loop cannot duplicate on this: `unknownOid` is ambiguous on the lookup too, so that loop returns the original failure and never re-sends.
 
@@ -204,7 +204,7 @@
 
 ### Changed
 
-- **The reconcile pass asks the venue about all of a bot's orders in one call, where the venue supports it.** `checkOrdersAfterReconnect` is a strictly serial `for (…) await getOrderForReconcile(o)`, which on Kraken — 20 REST tokens decaying 0.5/s per API key — arrives as a burst that drains the budget and then parks every remaining call for ~2.1s, the user's own `openOrder` included. Measured on prod 2026-08-31: 50.5% of ALL Kraken order placements queued, 72% of `openOrder`, from an average load of just 2.5 calls/min (~8% of budget) delivered in bursts of up to 119 calls in 51s. `primeReconcileBatch` prefetches the pass in one `getOrdersBatch` call (exchange-connector core 1.20.13, up to 50 Kraken orders per call) and `getOrder` serves from it.
+- **The reconcile pass asks the venue about all of a bot's orders in one call, where the venue supports it.** `checkOrdersAfterReconnect` is a strictly serial `for (…) await getOrderForReconcile(o)`, which on Kraken — 20 REST tokens decaying 0.5/s per API key — arrives as a burst that drains the budget and then parks every remaining call for ~2.1s, the user's own `openOrder` included. In the field roughly half of all Kraken order placements queued behind it, and a larger share of `openOrder` calls, from an average load well inside the budget delivered in bursts. `primeReconcileBatch` prefetches the pass in one `getOrdersBatch` call (exchange-connector core 1.20.13, up to 50 Kraken orders per call) and `getOrder` serves from it.
 
   Strictly an optimisation, and the fallback is total: it resolves nothing the per-order path would not, and an exchange with no batch lookup, a transport with no such route (paper-trading mirrors the connector's endpoints and does not carry this one), a partial answer, an empty answer or a thrown error all leave the loop doing exactly what it does today. A venue that declines is memoed process-wide so it is asked once, not once per pass.
 
@@ -215,11 +215,11 @@
 ### Fixed
 
 - Revert the 1.56.9 `buyRemainder` change: reduce-only orders are excluded from
-  remainder recovery again. Measured on prod over 18.3h, all 15 reduce-only
-  remainder orders it placed were rejected with `executedQty: 0`
+  remainder recovery again. In the field, every reduce-only
+  remainder order it placed was rejected with `executedQty: 0`
   (`ReduceOnly Order is rejected.` / `wouldNotReducePosition`) — the remainder is
   derived from the order, not the open position, so the venue refuses it. Nothing
-  was recovered and the only effect was ~20 futile orders a day. The gate now
+  was recovered and the only effect was futile orders. The gate now
   documents why, so it is not lifted a third time.
 
 ## [1.56.10] - 2026-08-30
@@ -237,8 +237,8 @@
   `openOrder`/`cancelOrder` behind the flood. The flood was self-sustaining: a
   parked call answers `Response timeout` (NOTOK) and a NOTOK table is never
   cached, so the cache could not re-warm and every later tick fanned out again.
-  Measured with 26 bots on one exchange: 26 connector calls -> 1 on a cold
-  cache, and 78 -> 3 across three ticks while the connector was congested.
+  Measured with a group of bots on one exchange: the whole fan-out collapses to
+  one connector call on a cold cache, and to 3 across three ticks while the connector was congested.
 
 ## [1.56.9] - 2026-08-30
 
@@ -246,9 +246,9 @@
 
 - Reduce-only take-profits that underfill now get their remainder re-placed.
   `buyRemainder` returned early on any `reduceOnly` order, so every futures
-  venue skipped remainder recovery entirely: measured over 8.4 days, 67 of 69
-  underfilled reduce-only TPs stranded (97.1%) against 54 of 670 non-reduce-only
-  ones (8.1%). The unsold residue sat on the venue untracked, with no TP and no
+  venue skipped remainder recovery entirely: in the field, nearly every
+  underfilled reduce-only TP stranded, against a small fraction of non-reduce-only
+  ones. The unsold residue sat on the venue untracked, with no TP and no
   SL, consuming margin until base orders were rejected `Not enough balance`. The
   narrow `kucoinFutures || okx || coinm` exclusion the early return had grown
   around is kept.
@@ -266,7 +266,7 @@
 
 - `updateBalance` (the dashboard's portfolio refresh) no longer waits on the
   on-demand `userSnapshots` run without a deadline. One wedged venue could hold
-  it past the dashboard's own 30s client timeout — prod logged 163s and 127s —
+  it past the dashboard's own 30s client timeout — waits of well over a minute were seen —
   so the user saw a failed request rather than a slow one. The refresh is now
   capped at 25s (`SNAPSHOT_REFRESH_DEADLINE_MS`), after which the last stored
   snapshot is served and the refresh keeps running in the background.
@@ -297,20 +297,20 @@
 - **Bots now reconcile their orders after a socket reconnect, not only after a
   process restart.** `checkOrdersAfterReconnect` is triggered by a user-stream
   (re)subscribe, but Kraken's and Binance's reconnect handlers never published
-  that signal — only bybit's and bitget's did. A Kraken ETH/EUR safety order
-  filled at 16:15 UTC on 2026-08-28 was therefore not booked until 07:52 the
-  next morning, when a deploy restarted the worker: 15h38m in which the deal
+  that signal — only bybit's and bitget's did. A Kraken safety order
+  filled in the afternoon was therefore not booked until the following
+  morning, when the worker was next restarted: many hours in which the deal
   held twice the position the engine thought it had, with its take-profit
   priced off a stale average. (Publisher side ships in websocket-connector.)
 - **A transient order lookup in the reconcile pass is retried instead of
   silently dropping the order.** `!res.data` was treated the same as "the venue
   says this order is gone": one warning, `continue`, nothing to re-check it.
-  2,731 lookups failed that way across 352 bots in 8 hours. `reconcileLookup`
+  Lookups failed that way across many bots. `reconcileLookup`
   now retries with exponential backoff and ±50% jitter, and stops immediately
   on a definitive not-found so the quarantine path keeps owning that case.
 - **The reconcile pass no longer stampedes.** A user-stream connector restart
-  re-subscribes every account at once, which put 5,319 DCA bots into the pass
-  within seconds — 1,422 in a single second — each calling `getOrder` per open
+  re-subscribes every account at once, which put every DCA bot into the pass
+  within seconds — a large burst in a single second — each calling `getOrder` per open
   order, manufacturing the very lookup failures the pass exists to catch. The
   start is now spread over a random window (`BOT_RECONCILE_SPREAD_MS`).
 - Reconcile lookup failures are reported once per pass with a count instead of
@@ -327,7 +327,7 @@
   a CDP key submitted under "Legacy Keys" is now simply authenticated the right
   way. The selector sits behind an Advanced Settings disclosure defaulting to
   Legacy, and getting it wrong was the largest verification-failure bucket in
-  production.
+  the field.
 - Correcting this silently is safe in a way the OKX origin is NOT, and the
   difference is the point: `keysType` only chooses between `{apiKey, apiSecret}`
   and `{cloudApiKeyName, cloudApiSecret}` when building the client, so it
@@ -349,14 +349,14 @@
   nonexistent one produce the same "API key doesn't exist" on okx.com. The
   origin selector sits behind an "Advanced Settings" disclosure that defaults
   to okx.com, so EU users — exactly the people who need to change it — often
-  never see it. This class was 18 of 39 OKX verification failures in
-  2026-08-04..28. On a key-not-found rejection the other origins are now swept
+  never see it. This class was a large share of all OKX verification
+  failures. On a key-not-found rejection the other origins are now swept
   concurrently under an 8s deadline, and the failure message names the platform
   that authenticated.
 - The sweep is narrowly gated by `isOkxOriginSuspect`: a timeout must never
-  reach it. 20 of those same 39 failures were the venue not answering in time,
+  reach it. Around half of those same failures were the venue not answering in time,
   and firing three more `sendtoall` fan-outs at an already-slow venue is how
-  the OKX rate-limit pile-up of bug #329 was built. A wrong-passphrase
+  the OKX rate-limit pile-up of an earlier incident was built. A wrong-passphrase
   rejection is excluded too — the key was found, so the origin is right.
 - The result NAMES the correct origin rather than switching to it. `addExchange`
   derives the tradable universe from `okxSource` BEFORE it verifies — OKX
@@ -376,8 +376,8 @@
   but it arrives as `JSON.stringify(BaseReturn)`, and the resolver forwarded a
   reason only when it contained no brace and no "catch". That discarded nearly
   every venue error in favour of `API keys not valid for <tradeType>`. Over
-  2026-08-04..28 that single message covered 370 failures across 93 distinct
-  users, several of whom retried 8, 13 and 19 times. New
+  field that single message covered the large majority of verification failures
+  across many distinct users, several of whom retried repeatedly. New
   `exchange/verifyFailureMessage.ts` unwraps the envelope and, where a rule
   recognises the error, prepends what to do about it. Interpretation is
   strictly additive — the venue's own sentence is always kept underneath, so a
@@ -397,7 +397,7 @@
 
 ### Added
 
-- **v2 REST API support for hedge bots (`hedgeCombo` / `hedgeDca`)** — community request "API Endpoints for Hedge Combo Bots". `GET /api/v2/bots/{hedgeCombo,hedgeDca}` and `.../details` list and fetch a hedge bot with both legs populated, and start / stop / restore / archive / clone now accept the two hedge types alongside `dca`, `combo` and `grid`. The engine already supported every one of these operations for hedge bots; only the REST layer refused the bot type.
+- **v2 REST API support for hedge bots (`hedgeCombo` / `hedgeDca`)** — a community request. `GET /api/v2/bots/{hedgeCombo,hedgeDca}` and `.../details` list and fetch a hedge bot with both legs populated, and start / stop / restore / archive / clone now accept the two hedge types alongside `dca`, `combo` and `grid`. The engine already supported every one of these operations for hedge bots; only the REST layer refused the bot type.
 - **Hedge profit is aggregated server-side** (`bot/hedgeAggregate.ts`). A hedge bot is a WRAPPER over two child bots, and the wrapper's own `profit` / `profitToday` / `workingTimeNumber` are written once at creation and never updated — the engine only ever writes `status` back to it. The dashboard has always summed the legs client-side; without this, every hedge bot would have reported a flat 0 profit over REST. `profit`, `profitByAssets`, `profitToday`, `unrealizedProfit`, `workingTimeNumber` and `dealsInBot` are now summed from the legs at read time. The two legs are independent bots that may settle in DIFFERENT quote assets, so the `*Usd` fields and `profitByAssets` are always exact while the native-unit fields are only summed when the quote assets agree — `profitBasis.native` (`exact` | `mixed`) says which you got. Used by the REST layer only; the GraphQL/dashboard path is unchanged.
 - `POST /api/v2/bots/{hedgeType}/{botId}/start` accepts an optional `hedgeConfig: { LONG, SHORT }` body naming what each leg should do with a position it already holds, validated against the action enum before it can reach a leg's `action` field.
 - `POST /api/v2/bots/{hedgeType}/{botId}/clone` takes PER-LEG overrides — `{ long?, short?, sharedSettings? }` — because a hedge bot's two legs have their own pairs, exchanges and settings. A flat settings body (what the dca/combo/grid clone takes) is rejected with a 400 that explains the shape rather than being silently ignored. Legs are matched by their own `strategy`, never by position in `bots`.
@@ -407,13 +407,13 @@
 
 ### Fixed
 
-- **The Deal Returns scatter silently dropped every deal that was open when the bot's settings last changed.** `getBotProfitChartData` read `botProfitChart`, a denormalized one-row-per-closed-deal shadow that only `DCABotHelper.botUpdateStats` writes — and that method returns early, before the write, for any deal whose `createTime` predates the bot's `resetStatsAfter`. Changing order sizing (`baseOrderSize`/`orderSize`/`ordersCount`/`volumeScale`/`maxNumberOfOpenDeals`) stamps `resetStatsAfter`, which is right for the aggregate Statistics tab but permanently erased the straddling deals from this chart, while the deals table beside it still listed them. Because the deals open longest are the ones most likely to straddle a settings change, the points lost were the best ones: bug #564's bot had 212 rows for 363 closed deals and a scatter topping out at 1.77% against a real best deal of 8.14% — the reporter counted 10 deals above 1.3% in the table and 4 in the chart. The resolver now derives the series from the closed deals themselves (`$match` → small `$project` → `$sort closeTime` → `$limit 500`, same 500-point cap), using the new pure `dealReturnPercentage()` helper that mirrors `botUpdateStats`' `perc` expression over the settings snapshot frozen on each deal. This also repairs existing history — no backfill could reconstruct rows that were never written, but deals are never cold-archived (only orders and transactions are), so the full series is recomputable on the next read for every affected bot. Verified against the reporter's 363 real deals: 362 points (the 363rd is a zero-profit cancel, which `botUpdateStats` skipped too), max 8.14%, 10 points above 1.3%; 194 of the 209 pairable pre-existing rows reproduce bit-identically and the rest to float noise.
+- **The Deal Returns scatter silently dropped every deal that was open when the bot's settings last changed.** `getBotProfitChartData` read `botProfitChart`, a denormalized one-row-per-closed-deal shadow that only `DCABotHelper.botUpdateStats` writes — and that method returns early, before the write, for any deal whose `createTime` predates the bot's `resetStatsAfter`. Changing order sizing (`baseOrderSize`/`orderSize`/`ordersCount`/`volumeScale`/`maxNumberOfOpenDeals`) stamps `resetStatsAfter`, which is right for the aggregate Statistics tab but permanently erased the straddling deals from this chart, while the deals table beside it still listed them. Because the deals open longest are the ones most likely to straddle a settings change, the points lost were the best ones: a reported bot's scatter topped out far below its real best deal, and the deals table listed more than twice as many deals above a given return as the chart plotted. The resolver now derives the series from the closed deals themselves (`$match` → small `$project` → `$sort closeTime` → `$limit 500`, same 500-point cap), using the new pure `dealReturnPercentage()` helper that mirrors `botUpdateStats`' `perc` expression over the settings snapshot frozen on each deal. This also repairs existing history — no backfill could reconstruct rows that were never written, but deals are never cold-archived (only orders and transactions are), so the full series is recomputable on the next read for every affected bot. Verified against that bot's real deals: every closed deal is plotted (the one exception is a zero-profit cancel, which `botUpdateStats` skipped too), the maximum matches its real best deal, and almost all pairable pre-existing rows reproduce bit-identically, the rest to float noise.
 
 ## [1.55.4] - 2026-08-28
 
 ### Fixed
 
-- **`orders` had no `dealId` index, so every per-deal order lookup full-scanned the collection.** `registerIndexes` declared `userId`, `botId`, `clientOrderId`, `latestOrders_filled` and `fillFailsafe_resting` but nothing on `dealId`, and the deal-scoped queries are a family — `{dealId,typeOrder}`, `{dealId,status,typeOrder}` as both a find and a `$match/$group`, `{dealId,side}`, `{dealId}` sorted by `transactTime`, and `{created:{$gte,$lt},dealId,typeOrder}` — for which `dealId` equality is the only indexable predicate any of them has. On prod that last shape alone burned 72,735s of slow-op time over 18,556 ops in ~24h, 69% of all slow-query time on the database, examining ~220 billion documents in an 11.9M-doc collection to return ~429 rows (p50 3.9s, max 11.3s); the scans also evict everyone else's working set from the WiredTiger cache, so unrelated queries degrade with them. `orderSchema.index({ dealId: 1 })` is now declared, so `models.order.syncIndexes()` builds and keeps it at boot rather than relying on a hand-run `createIndex` — one such manual attempt reported success while building nothing, and the gap re-fired later at 20x the cost. Not compound with `status`/`typeOrder`: `status` is mutable and moving entries in an 11.9M-key index is the write regression the partial indexes beside it were shaped to avoid, whereas `dealId` is effectively write-once — rewritten with the same value on every fill event, and genuinely reassigned only by a deal merge. Measured on a seeded 300k-doc collection: 300,000 docsExamined → 1 returned at 249ms becomes an `IXSCAN dealId_1` at 2 docsExamined and 4ms, identical result sets, no measurable insert/update cost.
+- **`orders` had no `dealId` index, so every per-deal order lookup full-scanned the collection.** `registerIndexes` declared `userId`, `botId`, `clientOrderId`, `latestOrders_filled` and `fillFailsafe_resting` but nothing on `dealId`, and the deal-scoped queries are a family — `{dealId,typeOrder}`, `{dealId,status,typeOrder}` as both a find and a `$match/$group`, `{dealId,side}`, `{dealId}` sorted by `transactTime`, and `{created:{$gte,$lt},dealId,typeOrder}` — for which `dealId` equality is the only indexable predicate any of them has. In the field that last shape alone dominated slow-query time on the database, examining an enormous number of documents to return a handful of rows and taking seconds per op; the scans also evict everyone else's working set from the WiredTiger cache, so unrelated queries degrade with them. `orderSchema.index({ dealId: 1 })` is now declared, so `models.order.syncIndexes()` builds and keeps it at boot rather than relying on a hand-run `createIndex` — one such manual attempt reported success while building nothing, and the gap re-fired later at 20x the cost. Not compound with `status`/`typeOrder`: `status` is mutable and moving entries in an index that size is the write regression the partial indexes beside it were shaped to avoid, whereas `dealId` is effectively write-once — rewritten with the same value on every fill event, and genuinely reassigned only by a deal merge. Measured on a seeded 300k-doc collection: 300,000 docsExamined → 1 returned at 249ms becomes an `IXSCAN dealId_1` at 2 docsExamined and 4ms, identical result sets, no measurable insert/update cost.
 
 ## [1.55.3] - 2026-08-28
 
@@ -431,8 +431,8 @@
   `maxNumberOfOpenDeals`) or `profitCurrency` clears `stats`/`symbolStats` and stamps it, after
   which `botUpdateStats` skips every deal created before that instant. Nothing exposed it, so the
   dashboards could not tell a user that a bot's Statistics tab describes a SHORTER window than its
-  deals list, and the disagreement read as wrong data (bug #540: a bot whose stats counted 149 of
-  its 353 closed deals). Additive and read-only: a new nullable `Float` on two existing types, no
+  deals list, and the disagreement read as wrong data (a bot whose stats counted only part of
+  its closed deals). Additive and read-only: a new nullable `Float` on two existing types, no
   resolver change — `getBot` already returns the whole lean document.
 
 ## [1.55.1] - 2026-08-28
@@ -445,13 +445,13 @@
 
 ### Fixed
 
-- **A fallback fee rate could permanently overwrite an account's real one.** When a venue cannot say what an account pays, the connector answers with the published schedule's entry rung — a plausible number with `status: OK`, indistinguishable from a real rate at the call site — and the fee sweep wrote it straight over whatever was stored. On Kraken that rung matches NO tier in the live schedule (it reads 0.40%/0.25%; real Tier 1 is 0.80%/0.40%), so the replacement was not merely stale but a rate the venue offers nobody, understating the true cost by about half. Observed 2026-08-28: a transient `EGeneral:Temporary lockout` (#543) made TradeVolume fail for several accounts mid-sweep and 1341 of one account's 1615 pairs were overwritten in a single pass — 16 of 54 Kraken connections were left on it, 7 of them with live bots, some carrying rates last touched in April. These fees size the base-order gross-up and the take-profit, so the error is real money. A fallback may now only CREATE a row that does not exist yet; once any rate is stored, only the venue's own answer may replace it. `source` is persisted on the fee row so the two can be told apart. Poisoned accounts self-heal on their next successful lookup — verified on a live account, which went from the 0.40%/0.25% fallback to its real 0.60%/0.30% (Kraken Tier 2) across 1340 pairs.
+- **A fallback fee rate could permanently overwrite an account's real one.** When a venue cannot say what an account pays, the connector answers with the published schedule's entry rung — a plausible number with `status: OK`, indistinguishable from a real rate at the call site — and the fee sweep wrote it straight over whatever was stored. On Kraken that rung matches NO tier in the live schedule (it reads 0.40%/0.25%; real Tier 1 is 0.80%/0.40%), so the replacement was not merely stale but a rate the venue offers nobody, understating the true cost by about half. Observed in the field: a transient `EGeneral:Temporary lockout` made TradeVolume fail for several accounts mid-sweep and most of an account's pairs were overwritten in a single pass — a meaningful share of Kraken connections were left on it, some of them with live bots and rates months out of date. These fees size the base-order gross-up and the take-profit, so the error is real money. A fallback may now only CREATE a row that does not exist yet; once any rate is stored, only the venue's own answer may replace it. `source` is persisted on the fee row so the two can be told apart. Poisoned accounts self-heal on their next successful lookup — verified on a live account, which went from the fallback rung back to its real Tier 2 rate across every affected pair.
 
 ## [1.54.6] - 2026-08-27
 
 ### Fixed
 
-- `getAllUserFees` dropped `UserFee.source` on the way through the exchange layer, so 1.54.3's fallback-attribution logging never fired. The mapper rebuilds each entry as a `{pair, maker, taker}` literal rather than spreading, which silently discards any field the connector adds unless it is named — the single-pair `getUserFees` returns its response unmapped and was unaffected. Verified against prod: the connector reported `EGeneral:Permission denied` for one account on every sweep while main-app logged zero fallback lines.
+- `getAllUserFees` dropped `UserFee.source` on the way through the exchange layer, so 1.54.3's fallback-attribution logging never fired. The mapper rebuilds each entry as a `{pair, maker, taker}` literal rather than spreading, which silently discards any field the connector adds unless it is named — the single-pair `getUserFees` returns its response unmapped and was unaffected. Verified in the field: the connector reported `EGeneral:Permission denied` for an account on every sweep while main-app logged zero fallback lines.
 
 ## [1.54.5] - 2026-08-27
 
@@ -484,13 +484,13 @@
 
 ### Fixed
 
-- **A Kraken DCA deal opened with no safety orders on the exchange at all.** `placeOrders` looks the pair up with `getExchangeInfo`, which is keyed on the platform form (`ETH-EUR`), but callers that take the symbol off an exchange ORDER pass the venue's own spelling — on Kraken `ETHEUR`, `XBTUSD`, `XRPUSD`. The lookup missed, and the method returned before placing anything. Since the ladder is built when the base order fills and handed straight to `placeOrders` as `orderBo.symbol`, it was dropped on every deal open: the deal ran with only its base order, and the ladder reached the exchange only if something later reloaded the bot (a settings save, a restart, a worker recycle), because the restore path passes the deal's own symbol. Silent — the miss is a warning in the service log, with no bot message and nothing on the deal, so a user could only find it by looking at their exchange. Present daily in production as `Exchange info not found for XBTUSD` / `XRPUSD`. The pair is now resolved from the deal, with the argument kept as the fallback when the deal is not in memory; two combo callers carried the identical defect and are fixed by the same change. Venues whose native symbol already matches the platform form (most of them) were never affected.
+- **A Kraken DCA deal opened with no safety orders on the exchange at all.** `placeOrders` looks the pair up with `getExchangeInfo`, which is keyed on the platform form (`ETH-EUR`), but callers that take the symbol off an exchange ORDER pass the venue's own spelling — on Kraken `ETHEUR`, `XBTUSD`, `XRPUSD`. The lookup missed, and the method returned before placing anything. Since the ladder is built when the base order fills and handed straight to `placeOrders` as `orderBo.symbol`, it was dropped on every deal open: the deal ran with only its base order, and the ladder reached the exchange only if something later reloaded the bot (a settings save, a restart, a worker recycle), because the restore path passes the deal's own symbol. Silent — the miss is a warning in the service log, with no bot message and nothing on the deal, so a user could only find it by looking at their exchange. It shows up as `Exchange info not found for XBTUSD` / `XRPUSD`. The pair is now resolved from the deal, with the argument kept as the fallback when the deal is not in memory; two combo callers carried the identical defect and are fixed by the same change. Venues whose native symbol already matches the platform form (most of them) were never affected.
 
 ## [1.54.1] - 2026-08-27
 
 ### Fixed
 
-- Cancelling a Kraken **spot** order no longer cancels a different order. `cancelOrderOnExchange` addressed the venue by our client order id, and Kraken spot has no client-id lookup — the connector falls back to `userref = parseInt(clientOrderId.substring(0, 8), 16)`, which stops at the first non-hex char, so every `D-*` id collapses to userref 13 and every `CMB-*` to 12. `getOrder` then returned whichever same-userref order the account listed first and we cancelled that one, reporting success. Kraken spot now uses the stored `orderId` (the Kraken txid), routing through the connector's exact `isKrakenSpotTxid` → `getSpotOrderByTxid` path — the swap `_handleUnknownOrder` already made in 1.32.4 for the same reason. In production 232 Kraken txids were shared by more than one client order id across 1,992 order rows, on 63 of 79 Kraken-spot bots.
+- Cancelling a Kraken **spot** order no longer cancels a different order. `cancelOrderOnExchange` addressed the venue by our client order id, and Kraken spot has no client-id lookup — the connector falls back to `userref = parseInt(clientOrderId.substring(0, 8), 16)`, which stops at the first non-hex char, so every `D-*` id collapses to userref 13 and every `CMB-*` to 12. `getOrder` then returned whichever same-userref order the account listed first and we cancelled that one, reporting success. Kraken spot now uses the stored `orderId` (the Kraken txid), routing through the connector's exact `isKrakenSpotTxid` → `getSpotOrderByTxid` path — the swap `_handleUnknownOrder` already made in 1.32.4 for the same reason. In the field many Kraken txids were shared by more than one client order id, across order rows on the large majority of Kraken-spot bots.
 
 ## [1.54.0] - 2026-08-27
 
@@ -502,13 +502,13 @@
 
 ### Fixed
 
-- Bot notifications now name the pair that actually errored. `processError` labelled every message with `settings.pair[0]`, so on a multi-pair bot each notification claimed the bot's first pair no matter which one failed — a row could read `BTC-USDC` above a message about AIOZ. The occurrence's own symbol is now threaded through `handleErrors` / `handleOrderErrors` (`order.symbol`, or the deal's symbol), and `settings.pair[0]` stays the fallback only for bot-level conditions that have no erroring pair, such as a revoked API key. Across a month of production `Not enough balance` messages, a meaningful minority of machine-checkable rows named a pair contradicted by their own message text. The same value feeds the realtime `bot message` socket payload, so the notification bell is corrected too.
+- Bot notifications now name the pair that actually errored. `processError` labelled every message with `settings.pair[0]`, so on a multi-pair bot each notification claimed the bot's first pair no matter which one failed — a row could read `BTC-USDC` above a message about AIOZ. The occurrence's own symbol is now threaded through `handleErrors` / `handleOrderErrors` (`order.symbol`, or the deal's symbol), and `settings.pair[0]` stays the fallback only for bot-level conditions that have no erroring pair, such as a revoked API key. Across a month of `Not enough balance` messages in the field, a meaningful minority of machine-checkable rows named a pair contradicted by their own message text. The same value feeds the realtime `bot message` socket payload, so the notification bell is corrected too.
 
 ## [1.53.13] - 2026-08-26
 
 ### Changed
 
-- The base-order fallback notice added in 1.53.12 now logs at debug level for the `nominal` case and keeps log level for the two that are worth reading. Measured on prod right after the fix went live: the `nominal` branch is the routine one — every deal whose opening order has not landed yet passes through it, ~650 lines/min across the DCA fleet and 1% of the worker's whole stdout — and it is the case with nothing to diagnose. `deal` and `accounted` say something about a deal's books and stay visible. The line also prints `(new)` rather than an empty id for a deal that does not exist yet.
+- The base-order fallback notice added in 1.53.12 now logs at debug level for the `nominal` case and keeps log level for the two that are worth reading. Measured right after the fix went live: the `nominal` branch is the routine one — every deal whose opening order has not landed yet passes through it, and it dominated the DCA workers' log volume — and it is the case with nothing to diagnose. `deal` and `accounted` say something about a deal's books and stay visible. The line also prints `(new)` rather than an empty id for a deal that does not exist yet.
 
 ## [1.53.12] - 2026-08-26
 
@@ -516,13 +516,13 @@
 
 - **A DCA take-profit was sized from the NOMINAL base order size instead of the position the deal actually held.** `getTPOrder` builds the close as `sum(entry fills) + base order`, and when the base order's row was not in the order map it re-derived one from `baseOrderSize`. Two things put it in that state and both are now closed.
 
-  First, a base order that partially fills and is then CANCELED is a terminal row, and `loadOrders` filtered `status: CANCELED` out of its query — so after a worker restart `findBaseOrderByDeal`, which is written for precisely this case (`['CANCELED','FILLED']` plus `executedQty > 0`), could never find it. A Coinbase AIOZ deal's base order executed 345.3 of 1790.1 before being cancelled; the nominal put 1788.4 back, and the deal asked the venue to sell 5147.9 against 3711.30 held. The venue rejected it, which leaves a deal with no take-profit at all. Open deals now load their partially-executed cancelled entry orders back, scoped by deal id so the query examines the same documents as before. The same rows are what the deal fee split and `updateUsage`'s filled base were already written to read.
+  First, a base order that partially fills and is then CANCELED is a terminal row, and `loadOrders` filtered `status: CANCELED` out of its query — so after a worker restart `findBaseOrderByDeal`, which is written for precisely this case (`['CANCELED','FILLED']` plus `executedQty > 0`), could never find it. A deal's base order executed a fraction of its size before being cancelled; the nominal put the whole size back, and the deal asked the venue to sell far more base than it held. The venue rejected it, which leaves a deal with no take-profit at all. Open deals now load their partially-executed cancelled entry orders back, scoped by deal id so the query examines the same documents as before. The same rows are what the deal fee split and `updateUsage`'s filled base were already written to read.
 
-  Second, deals restored from the Redis snapshot had their orders — take-profit included — generated *before* `_loadOrders` populated the order book, so the sizing saw no fills whatsoever and the nominal became the entire take-profit: 1786.1 against the same 3711.30, and a still-resting 2226 against 103,547 on another deal. The restored deals are now seeded first and their orders generated after the load. That also fixes a second-order case: generating and setting a deal in one pass meant `getDeal` could not see the deal whose orders it was generating, and `findBaseOrderByDeal` returns nothing without it.
+  Second, deals restored from the Redis snapshot had their orders — take-profit included — generated *before* `_loadOrders` populated the order book, so the sizing saw no fills whatsoever and the nominal became the entire take-profit, far short of the position on the deals affected. The restored deals are now seeded first and their orders generated after the load. That also fixes a second-order case: generating and setting a deal in one pass meant `getDeal` could not see the deal whose orders it was generating, and `findBaseOrderByDeal` returns nothing without it.
 
   The base order size is now taken from the deal's own books when its row is missing — the volume the counted fills do not explain IS the base order, exactly, with no reference to settings. The settings-derived fallback is kept for the case it was written for, a deal whose opening order has not landed yet, and is no longer reachable once the deal holds anything.
 - A safety order that partially filled and was then cancelled now counts toward the take-profit size. It was matched `status: FILLED` only, so every one of them under-stated the position by whatever it had already executed — the same omission as the base order, on the orders that outnumber it.
-- The settings-derived base order fallback now converts `usd` sizes through the USD rate and treats an unset `orderSizeType` as quote, matching `getBaseOrder`. `percFree`/`percTotal` are a percentage of a live balance the take-profit path cannot see, so they fall to the venue minimum rather than being read as a coin quantity — a `percTotal` BTC deal had rested a 0.537 BTC take-profit against 0.105 BTC held.
+- The settings-derived base order fallback now converts `usd` sizes through the USD rate and treats an unset `orderSizeType` as quote, matching `getBaseOrder`. `percFree`/`percTotal` are a percentage of a live balance the take-profit path cannot see, so they fall to the venue minimum rather than being read as a coin quantity — a `percTotal` deal had rested a take-profit several times larger than the base it held.
 
 ## [1.53.11] - 2026-08-26
 
@@ -535,7 +535,7 @@
 
 ### Fixed
 
-- Booking a partial fill off a canceled take-profit now requires a usable `updateTime`. Cancel records written from a REST response rather than a stream event can carry a bogus `executedQty` next to `updateTime: -1`; production holds such a row, and it looks exactly like a 1.29 partial fill on an order the venue never filled. Trusting it would invent a sale and under-size every later take-profit by the phantom amount — a silent failure in the opposite direction to the one 1.53.8 fixed. Stream events always carry a real timestamp, so nothing legitimate is lost.
+- Booking a partial fill off a canceled take-profit now requires a usable `updateTime`. Cancel records written from a REST response rather than a stream event can carry a bogus `executedQty` next to `updateTime: -1`; such rows exist in the field, and one looks exactly like a partial fill on an order the venue never filled. Trusting it would invent a sale and under-size every later take-profit by the phantom amount — a silent failure in the opposite direction to the one 1.53.8 fixed. Stream events always carry a real timestamp, so nothing legitimate is lost.
 
 ## [1.53.9] - 2026-08-26
 
@@ -584,13 +584,13 @@
 
 ### Fixed
 
-- A DCA bot-settings save really does leave running deals their orders now. 1.53.0 stopped re-deriving each open deal's settings — that part held — but it removed only one of **two** teardowns, and not the one users were hitting. `restoreWork`, which runs further down `start()`, cancels every resting order for any reload it does not classify as a cold service restart, and the reload flags deliberately make a settings save not look like one. So the cancel moved instead of going away: one 50-pair bot had all 300 of its orders pulled and re-placed about two minutes after an edit, with the user watching it happen for the second time. A reload that must keep the book now says so explicitly, and `restoreWork` reconciles against the venue instead of tearing it down. Combo was never affected — its own `restoreWork` override tests `serviceRestart` alone — and that asymmetry is now pinned by a test rather than left as a coincidence.
+- A DCA bot-settings save really does leave running deals their orders now. 1.53.0 stopped re-deriving each open deal's settings — that part held — but it removed only one of **two** teardowns, and not the one users were hitting. `restoreWork`, which runs further down `start()`, cancels every resting order for any reload it does not classify as a cold service restart, and the reload flags deliberately make a settings save not look like one. So the cancel moved instead of going away: a multi-pair bot had its whole order book pulled and re-placed about two minutes after an edit. A reload that must keep the book now says so explicitly, and `restoreWork` reconciles against the venue instead of tearing it down. Combo was never affected — its own `restoreWork` override tests `serviceRestart` alone — and that asymmetry is now pinned by a test rather than left as a coincidence.
 
 ## [1.53.1] - 2026-08-24
 
 ### Fixed
 
-- A bot reload no longer replays stale signal deals. `restoreWork` walks every deal still in `start` and re-placed its opening order regardless of why the deal existed — so a deal created by a TradingView webhook that was refused at the time (for example under a Binance Quantitative Rules restriction) could be executed hours later by a reload, opening a trade at a moment the signal never described. One production account had a reload replay a 21-hour-old webhook deal into a long the strategy had since flipped short on. The sweep now applies the same rule as the Quantitative Rules give-up path: only an ASAP deal — whose start carries no timing — is re-attempted; a deal opened by a webhook, indicator, timer or manual click is cancelled instead, and its own trigger opens the next one.
+- A bot reload no longer replays stale signal deals. `restoreWork` walks every deal still in `start` and re-placed its opening order regardless of why the deal existed — so a deal created by a TradingView webhook that was refused at the time (for example under a Binance Quantitative Rules restriction) could be executed hours later by a reload, opening a trade at a moment the signal never described. A reload could replay a day-old webhook deal into a long the strategy had since flipped short on. The sweep now applies the same rule as the Quantitative Rules give-up path: only an ASAP deal — whose start carries no timing — is re-attempted; a deal opened by a webhook, indicator, timer or manual click is cancelled instead, and its own trigger opens the next one.
 
 ## [1.53.0] - 2026-08-24
 
@@ -602,19 +602,19 @@
 
 ### Fixed
 
-- A deal we decline to re-open is now released instead of holding its symbol. A deal is written before its opening order reaches the venue, so an order refused under Binance's Quantitative Rules leaves the deal in `start` with nothing on the exchange. While the retry loop existed something eventually opened or failed it; now that we correctly stop retrying, nothing did — and an abandoned deal still counts against `max deals per pair`, so it silently swallowed every later signal for that symbol. One account had a deal created during an account-wide restriction hold XTZUSDT for four hours and eat a TradingView signal that arrived long after the restriction had cleared; 42 deals on that account were sitting in the same state. Only a deal still in `start` is released — one that has opened, closed or been cancelled is left exactly as it is, so this can never abandon a real position.
+- A deal we decline to re-open is now released instead of holding its symbol. A deal is written before its opening order reaches the venue, so an order refused under Binance's Quantitative Rules leaves the deal in `start` with nothing on the exchange. While the retry loop existed something eventually opened or failed it; now that we correctly stop retrying, nothing did — and an abandoned deal still counts against `max deals per pair`, so it silently swallowed every later signal for that symbol. A deal created during an account-wide restriction could hold its symbol for hours and eat a TradingView signal that arrived long after the restriction had cleared, with many deals on an account left sitting in the same state. Only a deal still in `start` is released — one that has opened, closed or been cancelled is left exactly as it is, so this can never abandon a real position.
 
 ## [1.52.10] - 2026-08-23
 
 ### Fixed
 
-- A Binance Quantitative Rules restriction no longer re-opens itself. Every order refused during one restriction was scheduled to retry at that restriction's expiry plus one second — the same instant for all of them — so the moment an account-wide window lifted, everything it had blocked fired together: one account saw 39 opening orders retry, fill and place 39 take-profits inside a single minute across 39 symbols. Binance measures the unfilled ratio per symbol in 10-minute buckets, so a burst of that shape lands placed quantity on dozens of symbols with nothing executed against it, records a violation on each, and ten symbols at once re-opens the account-wide restriction the burst was waiting out — 69 seconds after the previous one expired, in that account's case. Retries are now spread across a jitter window, backed off per attempt, capped, and refused outright once a symbol is within a few violations of the level-2 threshold, since our own refused retry is itself a violation. Only a deal started ASAP is retried at all: every other start condition is a point in time, so re-sending it after a restriction lifts opens a trade the original signal never described, and its own trigger will fire again anyway.
+- A Binance Quantitative Rules restriction no longer re-opens itself. Every order refused during one restriction was scheduled to retry at that restriction's expiry plus one second — the same instant for all of them — so the moment an account-wide window lifted, everything it had blocked fired together: an account could see dozens of opening orders retry, fill and place their take-profits inside a single minute across as many symbols. Binance measures the unfilled ratio per symbol in 10-minute buckets, so a burst of that shape lands placed quantity on dozens of symbols with nothing executed against it, records a violation on each, and ten symbols at once re-opens the account-wide restriction the burst was waiting out — barely a minute after the previous one expired. Retries are now spread across a jitter window, backed off per attempt, capped, and refused outright once a symbol is within a few violations of the level-2 threshold, since our own refused retry is itself a violation. Only a deal started ASAP is retried at all: every other start condition is a point in time, so re-sending it after a restriction lifts opens a trade the original signal never described, and its own trigger will fire again anyway.
 
 ## [1.52.9] - 2026-08-22
 
 ### Fixed
 
-- A Kraken Futures duplicate-order rejection no longer writes off an order the venue is actually holding. Kraken spells it `clientOrderIdAlreadyExist` with no spaces, so it matched none of the duplicate-recovery variants (OKX's spaced `Client order ID already exists` already did) and fell through to the terminal write-off — which also unregisters the id from the shared stream, so the venue's later fills reach no bot at all. One combo bot on krakenUsdm had a reduce-only SELL written off 1.7s after it went live on the venue, then filled 34 @ 1.4219 an hour later — a fill the deal never saw. Both spellings now also classify as `Duplicate order ID` instead of Uncategorized.
+- A Kraken Futures duplicate-order rejection no longer writes off an order the venue is actually holding. Kraken spells it `clientOrderIdAlreadyExist` with no spaces, so it matched none of the duplicate-recovery variants (OKX's spaced `Client order ID already exists` already did) and fell through to the terminal write-off — which also unregisters the id from the shared stream, so the venue's later fills reach no bot at all. A combo bot on krakenUsdm had a reduce-only SELL written off seconds after it went live on the venue, then filled an hour later — a fill the deal never saw. Both spellings now also classify as `Duplicate order ID` instead of Uncategorized.
 
 ## [1.52.8] - 2026-08-22
 
@@ -626,27 +626,27 @@
 
 ### Fixed
 
-- A deal abandoned with an open position is no longer reported as "Deal closed". Stopping a bot whose `stopType` is `leave` cancels the deal's resting orders and deliberately leaves whatever already filled on the exchange, but the bot event still read `Deal closed, id: …, profit: 0$` — so a user who read their event log correctly concluded the deal was finished. It was not: the position stayed on the venue, unmanaged, with no take profit and no stop loss. A 125 XRP Kraken futures short was left that way on Aug 18, went unwatched for three days, and was liquidated by the venue on Aug 21. A `canceled` deal that still holds volume now names the outcome, the size left behind and that the bot no longer manages it.
-- The explicit `leave` close path recorded nothing at all. It cancels the resting orders and returns before `processDealClose`, so a deal left open produced no event and no message anywhere. It now reports the abandoned position as a warning (never an error — leaving a position is what the user asked for, and it must not flip the bot into `error`), under its own `Position left open` subtype so the admin rules can tune it without touching real errors. The throttle is bypassed: stopping two bots in a row has to report both positions.
-- A bot blocked by the pre-start position check no longer goes quiet. When `loadData` refuses to start (leverage, margin type or side of an existing venue position disagrees with the settings) the bot is stopped, but no status event was written — the event log's last line stayed `open status is set` while the bot sat closed and never retried. A hedge long leg blocked this way opened zero deals for ten days and looked merely idle; the user attributed it to an unrelated stop-loss deal on the other leg. The transition is now recorded, and says the bot will not retry on its own.
+- A deal abandoned with an open position is no longer reported as "Deal closed". Stopping a bot whose `stopType` is `leave` cancels the deal's resting orders and deliberately leaves whatever already filled on the exchange, but the bot event still read `Deal closed, id: …, profit: 0$` — so a user who read their event log correctly concluded the deal was finished. It was not: the position stayed on the venue, unmanaged, with no take profit and no stop loss. A futures short was left that way, went unwatched for days, and was liquidated by the venue. A `canceled` deal that still holds volume now names the outcome, the size left behind and that the bot no longer manages it.
+- The explicit `leave` close path recorded nothing at all. It cancels the resting orders and returns before `processDealClose`, so a deal left open produced no event and no message anywhere. It now reports the abandoned position as a warning (never an error — leaving a position is what the user asked for, and it must not flip the bot into `error`), under its own `Position left open` subtype so it can be tuned without touching real errors. The throttle is bypassed: stopping two bots in a row has to report both positions.
+- A bot blocked by the pre-start position check no longer goes quiet. When `loadData` refuses to start (leverage, margin type or side of an existing venue position disagrees with the settings) the bot is stopped, but no status event was written — the event log's last line stayed `open status is set` while the bot sat closed and never retried. A hedge long leg blocked this way can open no deals for days while looking merely idle, with nothing pointing at the real cause. The transition is now recorded, and says the bot will not retry on its own.
 
 ## [1.52.6] - 2026-08-22
 
 ### Fixed
 
-- A bot error the user never saw is no longer deleted before they can see it. `restoreFromRangeOrError()` tombstoned every undismissed message on a bot whenever it left `error` status, on the premise that leaving that status meant the condition was gone — but `BotStatusEnum.error` is soft and the bot returns to `open` on the very next cycle whether or not anything was fixed, so the clear ran against live conditions, every cycle. The notifications feed filters on `isDeleted`, so the row vanished from the panel seconds after it was written: an OKX key that could not place an order for three days produced 12 visible messages, 12 tombstoned, and nothing at all in Notifications — the only surviving trace was the bot's Events tab (community #5041). Recovery now clears the bot's error badge and nothing else; a repeat `$inc`s the one row the user is looking at, as `logMode: 'once'` always intended, and dismissal remains what re-arms the subType.
+- A bot error the user never saw is no longer deleted before they can see it. `restoreFromRangeOrError()` tombstoned every undismissed message on a bot whenever it left `error` status, on the premise that leaving that status meant the condition was gone — but `BotStatusEnum.error` is soft and the bot returns to `open` on the very next cycle whether or not anything was fixed, so the clear ran against live conditions, every cycle. The notifications feed filters on `isDeleted`, so the row vanished from the panel seconds after it was written: a key that could not place an order for days produced a visible message on every cycle, each one tombstoned moments later, and nothing at all in Notifications — the only surviving trace was the bot's Events tab. Recovery now clears the bot's error badge and nothing else; a repeat `$inc`s the one row the user is looking at, as `logMode: 'once'` always intended, and dismissal remains what re-arms the subType.
 
 ## [1.52.5] - 2026-08-21
 
 ### Fixed
 
-- `getDataByPriority` now falls back to the OAuth/top-level value when a field is absent from the partial `userDefined` override, so a surname saved to Settings → Personal data survives a reload instead of reading back empty (bug #471). The `userSettings` mutation also mirrors `lastName` into `userDefined` alongside `name`, and no longer drops `name`/`lastName` when they are deliberately cleared.
+- `getDataByPriority` now falls back to the OAuth/top-level value when a field is absent from the partial `userDefined` override, so a surname saved to Settings → Personal data survives a reload instead of reading back empty. The `userSettings` mutation also mirrors `lastName` into `userDefined` alongside `name`, and no longer drops `name`/`lastName` when they are deliberately cleared.
 
 ## [1.52.4] - 2026-08-21
 
 ### Fixed
 
-- `getBalances` for a futures leg that is `linkedTo` its spot leg (OKX / Bybit unified accounts) now returns the shared balance pool, tagged with the requested leg — the bot form showed "BAL 0" for every such account because balances are only stored under the source leg (reported on OKX Europe X-Perps, forum topic 4925).
+- `getBalances` for a futures leg that is `linkedTo` its spot leg (OKX / Bybit unified accounts) now returns the shared balance pool, tagged with the requested leg — the bot form showed "BAL 0" for every such account because balances are only stored under the source leg (seen on OKX Europe X-Perps).
 
 ## [1.52.3] - 2026-08-21
 
@@ -661,7 +661,7 @@
 
 ### Fixed
 
-- `cli:reset-password` now signs the account out everywhere as well as changing the password. It only rewrote the password before, so every session stayed valid — and on a self-hosted install this command is the recovery path an operator reaches for when an account looks compromised, which meant the intruder stayed logged in through the very reset meant to evict them. Same reasoning as the `changePassword` fix in 1.52.0.
+- `cli:reset-password` now signs the account out everywhere as well as changing the password. It only rewrote the password before, so every session stayed valid — and on a self-hosted install this command is the recovery path an operator reaches for when an account looks compromised, which meant any session opened before the reset survived it. Same reasoning as the `changePassword` fix in 1.52.0.
 
 ## [1.52.1] - 2026-08-21
 
@@ -685,7 +685,7 @@
 
 ### Fixed
 
-- The not-enough-balance guard is no longer wiped by an ordinary small fill on the same pair, so a recovery order the exchange keeps refusing is finally allowed to back off. The guard counts refusals per (symbol, side), which deliberately puts a combo bot's routine grid orders and its much larger safety/recovery order on one counter, and it retired that counter on any success at least as big as the *smallest* order the venue had ever refused on the key. That floor screens out nothing: once a grid order has been refused a single time during a dip, it sits at grid-order size forever, and every grid fill a few minutes later cleared both the counter and the retry cooldown that only the big order had built. One Kraken combo bot re-sent the same 262 USD recovery order — identical symbol, side, quantity and price, a fresh order id each time — for seventeen days, arming and losing the guard six times in six hours. Retiring the guard now takes a success at the *largest* size the venue has refused, and the same rule stops a small affordable order from decaying the counter before it is sent. Suppression still starts at the smallest refused size, so nothing that was being held back is let through.
+- The not-enough-balance guard is no longer wiped by an ordinary small fill on the same pair, so a recovery order the exchange keeps refusing is finally allowed to back off. The guard counts refusals per (symbol, side), which deliberately puts a combo bot's routine grid orders and its much larger safety/recovery order on one counter, and it retired that counter on any success at least as big as the *smallest* order the venue had ever refused on the key. That floor screens out nothing: once a grid order has been refused a single time during a dip, it sits at grid-order size forever, and every grid fill a few minutes later cleared both the counter and the retry cooldown that only the big order had built. A combo bot could re-send the same recovery order — identical symbol, side, quantity and price, a fresh order id each time — for weeks, arming and losing the guard several times in a few hours. Retiring the guard now takes a success at the *largest* size the venue has refused, and the same rule stops a small affordable order from decaying the counter before it is sent. Suppression still starts at the smallest refused size, so nothing that was being held back is let through.
 
 ## [1.51.29] - 2026-08-21
 
@@ -698,7 +698,7 @@
 
 ### Fixed
 
-- A deal whose opening order the exchange refused under a Binance Quantitative Rules cooldown now re-attempts as soon as the cooldown ends, instead of waiting for the periodic order sweep. The retry timer that exists for exactly this — the exchange never saw the order, so nothing in normal running re-places it — was skipped for any caller that asks for the rejection reason back, which is every deal-opening order. One deal spent 2h28m between its refusal and its next attempt, most of it after the restriction had already expired. The re-attempt re-runs the whole deal-opening sequence rather than re-sending the bare order, because that is what starts the deal on an immediate fill and arms the limit-reposition timers on one that rests; it is keyed on the deal, so repeated refusals collapse onto the single re-open the deal needs instead of accumulating one pending retry per attempt. An opening order held back this way is also no longer left behind as an order the exchange has never heard of. Safety orders and take-profits retry exactly as before.
+- A deal whose opening order the exchange refused under a Binance Quantitative Rules cooldown now re-attempts as soon as the cooldown ends, instead of waiting for the periodic order sweep. The retry timer that exists for exactly this — the exchange never saw the order, so nothing in normal running re-places it — was skipped for any caller that asks for the rejection reason back, which is every deal-opening order. A deal could spend hours between its refusal and its next attempt, most of it after the restriction had already expired. The re-attempt re-runs the whole deal-opening sequence rather than re-sending the bare order, because that is what starts the deal on an immediate fill and arms the limit-reposition timers on one that rests; it is keyed on the deal, so repeated refusals collapse onto the single re-open the deal needs instead of accumulating one pending retry per attempt. An opening order held back this way is also no longer left behind as an order the exchange has never heard of. Safety orders and take-profits retry exactly as before.
 
 ## [1.51.27] - 2026-08-21
 
@@ -768,7 +768,7 @@
 
 ### Fixed
 
-- A bot error the user alone can resolve (an unsigned exchange agreement, a dead API key, a venue restriction) was re-raised on every bot cycle. `logMode: 'once'` caps such a condition at one visible bot message per bot only while that message stays the coalescing target, and for any subType with `errorsBot: true` it never does: `BotStatusEnum.error` is a soft status, so `restoreFromRangeOrError()` clears the bot's messages and `$unset`s their bucket before the next attempt. The condition re-failed, inserted a fresh row, and every occurrence looked like a first occurrence — a new dashboard message and alert each cycle. `processError` now consults a Redis-backed exponential re-raise cooldown per (bot, subType) — same mechanism and 5min→1h ceiling as the compliance/auth/balance guards — and while it is open writes the occurrence into the hidden lane instead. Hidden rows are born `isDeleted`, which is what the recovery clear filters on, so their bucket survives and they coalesce; the admin Bot Errors page keeps a counted record. User-initiated (`force`) reports are never suppressed, and a Redis failure re-raises as before.
+- A bot error the user alone can resolve (an unsigned exchange agreement, a dead API key, a venue restriction) was re-raised on every bot cycle. `logMode: 'once'` caps such a condition at one visible bot message per bot only while that message stays the coalescing target, and for any subType with `errorsBot: true` it never does: `BotStatusEnum.error` is a soft status, so `restoreFromRangeOrError()` clears the bot's messages and `$unset`s their bucket before the next attempt. The condition re-failed, inserted a fresh row, and every occurrence looked like a first occurrence — a new dashboard message and alert each cycle. `processError` now consults a Redis-backed exponential re-raise cooldown per (bot, subType) — same mechanism and 5min→1h ceiling as the compliance/auth/balance guards — and while it is open writes the occurrence into the hidden lane instead. Hidden rows are born `isDeleted`, which is what the recovery clear filters on, so their bucket survives and they coalesce; a counted record is kept either way. User-initiated (`force`) reports are never suppressed, and a Redis failure re-raises as before.
 
 ## [1.51.16] - 2026-08-14
 
@@ -780,7 +780,7 @@
 
 ### Fixed
 
-- Reducing a deal's funds by 100% told the user "Reduce funds order qty 1222 NEAR is more than closed order qty 1222 NEAR. Order size will be reduced" — an inequality between two equal numbers, followed by a promise the bot does not keep. When the requested reduction covers the whole remaining position there is nothing left to keep, so the deal is closed at market and no reduce order is placed. The warning now says the deal will be closed, and distinguishes a reduction that exactly covers the position from one that exceeds it. Behaviour is unchanged — only the wording.
+- Reducing a deal's funds by 100% told the user the reduce order quantity was "more than" a closed order quantity equal to it — an inequality between two equal numbers, followed by a promise the bot does not keep. When the requested reduction covers the whole remaining position there is nothing left to keep, so the deal is closed at market and no reduce order is placed. The warning now says the deal will be closed, and distinguishes a reduction that exactly covers the position from one that exceeds it. Behaviour is unchanged — only the wording.
 
 ## [1.51.14] - 2026-08-13
 
@@ -808,7 +808,7 @@
 
 ### Fixed
 
-- The backtest callback routes (`/api/serverSideBacktest`, `/api/serverSideBacktestSaveFile`) now authenticate the caller. They sit above the global JWT middleware — deliberately, since the backtest worker calls them host-to-host with no user token — which left them reachable by anyone who could reach the port. Cloud already guards the equivalent routes with a shared token compiled into its private source; that could not be copied here, because this repo is public and a literal would be both published and identical across every install, so the token is derived per-install from `JWT_SECRET` (override with `INTERNAL_API_SECRET`). Fails closed: with no secret configured, no caller is accepted.
+- The backtest callback routes (`/api/serverSideBacktest`, `/api/serverSideBacktestSaveFile`) now authenticate the caller. They sit above the global JWT middleware — deliberately, since the backtest worker calls them host-to-host with no user token — so they accepted an unauthenticated caller. A build-time literal was not an option here, because this repo is public and such a literal would be both published and identical across every install, so the token is derived per-install from `JWT_SECRET` (override with `INTERNAL_API_SECRET`). Fails closed: with no secret configured, no caller is accepted.
 
 ## [1.51.10] - 2026-08-12
 
@@ -820,25 +820,25 @@
 
 ### Fixed
 
-- The not-enough-balance guard is now aware of order SIZE, so a bot that keeps a small order filling on the same pair and side as one the exchange refuses no longer hammers the venue forever. The guard counts failures per (symbol, side), but affordability depends on the order's notional: a combo bot's 4.83 USD grid order filled every few minutes on Kraken SOL-USD BUY while its 35.10 USD safety order on the same key was refused, and each of those fills wiped the failure counter and the cooldown the safety order had built up. The counter never survived long enough to engage, so every single retry reached the exchange and raised a "Not enough balance" alert — 48 in 12h on one bot, with the guard disarmed for 12.2h at a stretch. Orders below the size the venue has actually refused now pass through the guard untouched (the grid keeps trading), and only a success at or above that size clears it. The failure counter's arm and trip thresholds were also one apart, which let every second attempt slip past the guard.
+- The not-enough-balance guard is now aware of order SIZE, so a bot that keeps a small order filling on the same pair and side as one the exchange refuses no longer hammers the venue forever. The guard counts failures per (symbol, side), but affordability depends on the order's notional: a combo bot's small grid order filled every few minutes on the same key while its much larger safety order was refused, and each of those fills wiped the failure counter and the cooldown the safety order had built up. The counter never survived long enough to engage, so every single retry reached the exchange and raised a "Not enough balance" alert, with the guard left disarmed for hours at a stretch. Orders below the size the venue has actually refused now pass through the guard untouched (the grid keeps trading), and only a success at or above that size clears it. The failure counter's arm and trip thresholds were also one apart, which let every second attempt slip past the guard.
 
 ## [1.51.8] - 2026-08-10
 
 ### Fixed
 
-- An order the exchange never accepted is no longer re-checked against the exchange five times before the bot gives up on it. Such an order carries a placeholder instead of an exchange order id, so "the exchange does not know this order" is the final answer the first time it is given — waiting ~15 seconds to ask four more times cannot change it. A Kraken Futures combo bot was holding 37 grid orders that had been refused for insufficient funds days earlier, and re-checking them after a restart cost 222 exchange calls and eleven minutes of errors. Checks that fail for any other reason — a timeout, a rate limit — still get the full retry ladder, as do orders that do hold a real exchange order id.
+- An order the exchange never accepted is no longer re-checked against the exchange five times before the bot gives up on it. Such an order carries a placeholder instead of an exchange order id, so "the exchange does not know this order" is the final answer the first time it is given — waiting ~15 seconds to ask four more times cannot change it. A Kraken Futures combo bot holding dozens of grid orders that had been refused for insufficient funds days earlier cost hundreds of exchange calls and many minutes of errors when they were re-checked after a restart. Checks that fail for any other reason — a timeout, a rate limit — still get the full retry ladder, as do orders that do hold a real exchange order id.
 
 ## [1.51.7] - 2026-08-10
 
 ### Fixed
 
-- The not-enough-balance cooldown now opens on any real venue rejection once the failure counter has tripped, instead of only when our own balance figures also agreed the order was unaffordable. `required` is one order's bare notional while the venue prices the whole safety-order ladder plus its fees, so the two disagree — a Kraken Futures bot was refused `insufficientAvailableFunds` for a 12.75 USD order while the venue's OWN available margin read 13.40 USD, and that disagreement was the one case that never backed off. The cooldown is also consulted whichever way the balance comparison falls, so the window it opens actually suppresses. 22 rejected orders in 1.4h becomes 3.
+- The not-enough-balance cooldown now opens on any real venue rejection once the failure counter has tripped, instead of only when our own balance figures also agreed the order was unaffordable. `required` is one order's bare notional while the venue prices the whole safety-order ladder plus its fees, so the two disagree — a Kraken Futures bot was refused `insufficientAvailableFunds` for an order smaller than the venue's OWN reported available margin, and that disagreement was the one case that never backed off. The cooldown is also consulted whichever way the balance comparison falls, so the window it opens actually suppresses: a long run of rejected orders becomes a handful.
 
 ## [1.51.6] - 2026-08-10
 
 ### Fixed
 
-- `getActiveOrders()` now honours the exchange auth-failure cooldown, like `checkAssets()` already did. Gating only the balance call left the combo open-a-deal path re-asking a dead API key once per minute — 236 rejections in 3.9h on one bot — while the balance path was correctly backed off to hourly.
+- `getActiveOrders()` now honours the exchange auth-failure cooldown, like `checkAssets()` already did. Gating only the balance call left the combo open-a-deal path re-asking a dead API key once per minute — hundreds of rejections in a few hours on one bot — while the balance path was correctly backed off to hourly.
 
 ## [1.51.5] - 2026-08-10
 
@@ -869,7 +869,7 @@
 
 ### Fixed
 
-- A stop loss that "move SL" had already pushed into profit no longer closes a deal at a loss. Once the move fires, the deal's stop sits on the profit side of the average entry and can only be reached on the way back from profit — but the check only compared the price to the stop level, so as soon as the market ran past that level the wrong way (safety orders pulling the average through it), the very next tick closed the deal at market. Two BTCUSDT deals on one short bot were closed 3.8% down this way. The stop now only triggers while the deal is still on the profit side of its entry; ordinary loss-side stops are unaffected.
+- A stop loss that "move SL" had already pushed into profit no longer closes a deal at a loss. Once the move fires, the deal's stop sits on the profit side of the average entry and can only be reached on the way back from profit — but the check only compared the price to the stop level, so as soon as the market ran past that level the wrong way (safety orders pulling the average through it), the very next tick closed the deal at market. Deals on a short bot were closed at a loss this way. The stop now only triggers while the deal is still on the profit side of its entry; ordinary loss-side stops are unaffected.
 
 ## [1.51.0] - 2026-08-07
 
@@ -881,7 +881,7 @@
 
 ### Fixed
 
-- Orders that never received an exchange order id are no longer looked up on the exchange. On Coinbase, Kraken and KuCoin full futures an order can only be fetched by the id the venue assigns it, and until that id arrives the order carries a placeholder — which was being sent as if it were a real id. Every check of such an order cost two futile exchange calls and an error line; one grid bot re-checking 17 of them on each stream reconnect produced 39 exchange errors in a minute. The checks now answer immediately, with the same verdict the exchange was giving.
+- Orders that never received an exchange order id are no longer looked up on the exchange. On Coinbase, Kraken and KuCoin full futures an order can only be fetched by the id the venue assigns it, and until that id arrives the order carries a placeholder — which was being sent as if it were a real id. Every check of such an order cost two futile exchange calls and an error line; a grid bot re-checking a batch of them on each stream reconnect produced dozens of exchange errors in a minute. The checks now answer immediately, with the same verdict the exchange was giving.
 
 ## [1.50.2] - 2026-08-06
 
@@ -951,13 +951,13 @@
 
 ### Fixed
 
-- An order held back by one of the local safeguards no longer leaves a cancelled-order record behind. Each attempt is issued under its own order id, so every held-back retry was filing a fresh record for an order that was never placed anywhere — on production these accounted for roughly a third of all stored orders. Orders that genuinely reached the exchange are recorded exactly as before.
+- An order held back by one of the local safeguards no longer leaves a cancelled-order record behind. Each attempt is issued under its own order id, so every held-back retry was filing a fresh record for an order that was never placed anywhere — these accounted for a large share of all stored orders. Orders that genuinely reached the exchange are recorded exactly as before.
 
 ## [1.48.3] - 2026-08-06
 
 ### Fixed
 
-- The marker recording which scheme a bot's not-enough-balance counters were written under was not declared on the stored bot, so it was silently dropped every time the bot saved. The one-time clean-up it guards therefore ran again on every restart, clearing the counters and making the safeguard re-arm from scratch — which costs a handful of pointless exchange calls per stuck order each time a worker restarts. Confirmed against production, where the marker read as absent on a bot whose counters had plainly been migrated.
+- The marker recording which scheme a bot's not-enough-balance counters were written under was not declared on the stored bot, so it was silently dropped every time the bot saved. The one-time clean-up it guards therefore ran again on every restart, clearing the counters and making the safeguard re-arm from scratch — which costs a handful of pointless exchange calls per stuck order each time a worker restarts. Confirmed in the field, where the marker read as absent on a bot whose counters had plainly been migrated.
 
 ## [1.48.2] - 2026-08-06
 
@@ -976,7 +976,7 @@
 ### Changed
 
 - A repeating bot error now updates one message and counts the repeats, instead of writing a new message every time it happens. The error list shows how many times a condition fired and when it first did, rather than the same error over and over.
-- How often a given error is allowed to write a new message is now set per error type from the admin Bot Errors page, and takes effect within five minutes without restarting anything.
+- How often a given error is allowed to write a new message is now set per error type in configuration, and takes effect within five minutes without restarting anything.
 - Errors that are suppressed from users were being recorded on every single occurrence — they are now recorded once an hour by default, as they always should have been.
 - Notifications and alerts for a repeating error are sent when it first happens, not on every repeat.
 
@@ -1015,7 +1015,7 @@
 
 ### Fixed
 
-- A bot whose exchange account is barred from trading a pair for compliance reasons (for example Kraken refusing USDT pairs to residents of certain countries) kept re-sending the same order to the exchange every few minutes — one account produced 82 rejected attempts in four hours. That block is permanent until the account holder resolves it, so the order is now held back for up to an hour after each rejection instead of being retried. Nothing else changes: the bot reports the same error and the same status as before, and orders that close a position are never held back.
+- A bot whose exchange account is barred from trading a pair for compliance reasons (for example Kraken refusing USDT pairs to residents of certain countries) kept re-sending the same order to the exchange every few minutes — one account could produce dozens of rejected attempts in a few hours. That block is permanent until the account holder resolves it, so the order is now held back for up to an hour after each rejection instead of being retried. Nothing else changes: the bot reports the same error and the same status as before, and orders that close a position are never held back.
 
 ## [1.44.2] - 2026-08-05
 
@@ -1088,7 +1088,7 @@
 
 ### Fixed
 
-- Using "reduce funds" more than once on the same DCA deal could close the whole deal instead of shrinking it. Each completed reduction is already recorded on the deal, and the take-profit sizing was subtracting it a second time from the filled sell orders it also counted — so the remaining position it calculated shrank twice as fast as the real one and eventually went negative. Once that number fell below the amount being withdrawn, the bot decided the withdrawal was larger than the position and closed the deal at market. On a reported deal of 813 base with 437 already withdrawn, the remaining position was computed as -61 instead of 376. Completed reductions are now counted once, so repeated reductions size correctly and the deal stays open. Deals that never used reduce funds are unaffected.
+- Using "reduce funds" more than once on the same DCA deal could close the whole deal instead of shrinking it. Each completed reduction is already recorded on the deal, and the take-profit sizing was subtracting it a second time from the filled sell orders it also counted — so the remaining position it calculated shrank twice as fast as the real one and eventually went negative. Once that number fell below the amount being withdrawn, the bot decided the withdrawal was larger than the position and closed the deal at market. On a reported deal the remaining position was computed as a negative number instead of the base still held. Completed reductions are now counted once, so repeated reductions size correctly and the deal stays open. Deals that never used reduce funds are unaffected.
 
 ## [1.41.5] - 2026-08-04
 
@@ -1100,13 +1100,13 @@
 
 ### Fixed
 
-- Disconnecting an exchange connection could hang the request for minutes, and when it did, the account's fee, balance and per-exchange snapshot records were left behind with no way to clear them. Telling the running bots to close waited for each worker to acknowledge, using a one-shot listener that fired on whatever the worker said next — and a worker runs up to a hundred bots, all reporting on the same channel, so an unrelated bot's event consumed the acknowledgement and the wait never ended; a bot whose worker had already been restarted never returned either. The wait now matches the reply it is actually waiting for, gives up after a bounded time across the whole disconnect instead of stalling on one bot, and the close is still delivered either way. The sweep that finds those bots is also now scoped to the account being disconnected, so it uses an index instead of reading every bot on the platform (measured on 150,000 bots: 150,000 records examined and 264ms became 50 examined and 2ms, same bots matched). Finally, a bot service that fails to answer no longer aborts the rest of the disconnect: the connection's fees, balances and snapshots are cleaned up regardless, and the failure is logged.
+- Disconnecting an exchange connection could hang the request for minutes, and when it did, the account's fee, balance and per-exchange snapshot records were left behind with no way to clear them. Telling the running bots to close waited for each worker to acknowledge, using a one-shot listener that fired on whatever the worker said next — and a worker runs many bots, all reporting on the same channel, so an unrelated bot's event consumed the acknowledgement and the wait never ended; a bot whose worker had already been restarted never returned either. The wait now matches the reply it is actually waiting for, gives up after a bounded time across the whole disconnect instead of stalling on one bot, and the close is still delivered either way. The sweep that finds those bots is also now scoped to the account being disconnected, so it uses an index instead of reading every bot in the collection (measured over the whole bot collection: a full scan at 264ms became 50 documents examined at 2ms, same bots matched). Finally, a bot service that fails to answer no longer aborts the rest of the disconnect: the connection's fees, balances and snapshots are cleaned up regardless, and the failure is logged.
 
 ## [1.41.3] - 2026-08-03
 
 ### Fixed
 
-- The admin Bot Errors page read every bot message in the database on each load. It is the only fleet-wide reader of that collection — it filters by a date range and sorts newest-first without narrowing to a single user or bot — and no index covered the message timestamp, so the query had no usable plan and fell back to scanning all 2.58M records before joining usernames onto the handful it actually returned. The scan had climbed to roughly 2.5 minutes per load and was the second-heaviest query on the database, slow enough that a wide date range could also exhaust the sort memory limit and leave the page empty. Adding a timestamp index lets the query seek straight to the requested window and read the rows already in sort order: measured on a 2,580,000-record collection in the reported shape, 2,580,000 records examined and 3.4s became 79 examined and 12ms, with an identical result set. The one index serves both the default view and the "include hidden" view, and the results the page shows are unchanged.
+- The fleet-wide bot-message view read every bot message in the database on each load. It is the only reader of that collection that filters by a date range and sorts newest-first without narrowing to a single user or bot — and no index covered the message timestamp, so the query had no usable plan and fell back to a full collection scan before joining usernames onto the handful it actually returned. The scan had climbed to minutes per load, slow enough that a wide date range could also exhaust the sort memory limit and leave the view empty. Adding a timestamp index lets the query seek straight to the requested window and read the rows already in sort order: measured on a collection of that size in the reported shape, a full scan at 3.4s became 79 documents examined at 12ms, with an identical result set. The one index serves both the default view and the "include hidden" view, and the results shown are unchanged.
 
 ## [1.41.2] - 2026-08-03
 
@@ -1183,7 +1183,7 @@
 
 ### Fixed
 
-- Indicators service `serviceLog` listener no longer throws on messages without a `.restart` field. `serviceLog` is a shared bus, and `redisServiceLogListener` cast the payload to `{restart: string}` and called `.startsWith()` on it unchecked, so every `priceConnectorAlive` beacon (websocket-connector ≥ 1.13.7, once per beacon interval — deliberately omits `.restart`), `userStreamFlap` and `userStreamAuthReject` produced a "Failed to parse message … TypeError" error line. Now type-guarded before the string call, mirroring the other consumers (`src/indicators/service.ts:processServiceLog`, `src/bot/main.ts`). Behaviour for `botService*` restarts is unchanged; only the throw becomes a no-op. Backport of the cloud-side fix shipped in main-app 2.57.2, which never reached this repo. Noise only — no functionality was lost, but ~1 440 error lines/day/process buried real errors. (issue #222)
+- Indicators service `serviceLog` listener no longer throws on messages without a `.restart` field. `serviceLog` is a shared bus, and `redisServiceLogListener` cast the payload to `{restart: string}` and called `.startsWith()` on it unchecked, so every `priceConnectorAlive` beacon (websocket-connector ≥ 1.13.7, once per beacon interval — deliberately omits `.restart`), `userStreamFlap` and `userStreamAuthReject` produced a "Failed to parse message … TypeError" error line. Now type-guarded before the string call, mirroring the other consumers (`src/indicators/service.ts:processServiceLog`, `src/bot/main.ts`). Behaviour for `botService*` restarts is unchanged; only the throw becomes a no-op. Backport of the cloud-side fix shipped in main-app 2.57.2, which never reached this repo. Noise only — no functionality was lost, but the spurious error lines buried real ones.
 
 ## [1.39.0] - 2026-07-31
 
@@ -1204,12 +1204,12 @@
 
 ### Added
 
-- OKX Europe X-Perp futures (Phase 2 of the OKX-EU work): `getAccountFuturesExchangeInfo()` exchange-client counterpart, `updateOkxEuPerpPairs()` keyless cron refresh of the X-Perp universe into `pairs` as `source: 'my'` (real + paper ids), and `updateOkxEuSpotApproxPairs()` — a keyless EUR/USDC spot approximation that seeds EU spot until a real my.okx.com account connects (tracked via the new `approx` pair flag, never overwrites real data). EU futures adds now create only the Linear leg (the EU venue has no inverse product). Contributed by community member discord2020 (forum topic 4925).
+- OKX Europe X-Perp futures (Phase 2 of the OKX-EU work): `getAccountFuturesExchangeInfo()` exchange-client counterpart, `updateOkxEuPerpPairs()` keyless cron refresh of the X-Perp universe into `pairs` as `source: 'my'` (real + paper ids), and `updateOkxEuSpotApproxPairs()` — a keyless EUR/USDC spot approximation that seeds EU spot until a real my.okx.com account connects (tracked via the new `approx` pair flag, never overwrites real data). EU futures adds now create only the Linear leg (the EU venue has no inverse product). Contributed by a community member.
 
 ### Fixed
 
-- X-Perp pair symbols (`BASE-QUOTE_UM_XPERP`) no longer get torn apart by legacy `BASE_QUOTE` split parsing in deal-start pair validation, bot pair checks, the v2 create-bot validators, and server-side backtest pair resolution (fix by discord2020).
-- `updateOkxEuPairs()` now takes plaintext keys and encrypts internally — passing already-encrypted keys corrupted the passphrase on decrypt (fix by discord2020).
+- X-Perp pair symbols (`BASE-QUOTE_UM_XPERP`) no longer get torn apart by legacy `BASE_QUOTE` split parsing in deal-start pair validation, bot pair checks, the v2 create-bot validators, and server-side backtest pair resolution (community contribution).
+- `updateOkxEuPairs()` now takes plaintext keys and encrypts internally — passing already-encrypted keys corrupted the passphrase on decrypt (community contribution).
 
 ## [1.37.12] - 2026-07-30
 
@@ -1229,21 +1229,21 @@
 
 ### Fixed
 
-- **The "latest orders" list took seconds to load for accounts with a long trading history.** `getLatestOrders` asks for the 10 newest filled orders — `{userId, status:'FILLED', paperContext}` sorted newest-first — but the only usable index was `userId` alone, so Mongo read every order the account had ever filled (up to 4.2M on prod) and sorted them in memory to hand back 10 rows. On a seeded 1.38M-document collection that is a 3.6s blocking sort examining 1,140,000 documents; on prod it produced 8 slow-query warnings in 4 hours, worst 9.6s. A `{userId, updateTime:-1}` index restricted to `status:'FILLED'` lets the sort come straight from the index: 12 documents examined and ~15ms. The index is deliberately partial — `updateTime` moves while an order is still working, but an order is frozen once it fills, so entries are written once and never shuffle, and the busy `NEW`/`PARTIALLY_FILLED` writes never touch the index at all (measured no write cost versus having no index at all). `paperContext` is intentionally not part of the key — the live-context filter is `{$ne: true}`, a range rather than an equality, which would stop `updateTime` from supplying the sort order.
+- **The "latest orders" list took seconds to load for accounts with a long trading history.** `getLatestOrders` asks for the 10 newest filled orders — `{userId, status:'FILLED', paperContext}` sorted newest-first — but the only usable index was `userId` alone, so Mongo read every order the account had ever filled — millions of rows on a heavy account — and sorted them in memory to hand back 10 rows. On a seeded 1.38M-document collection that is a 3.6s blocking sort examining 1,140,000 documents, and in the field it produced repeated multi-second slow-query warnings. A `{userId, updateTime:-1}` index restricted to `status:'FILLED'` lets the sort come straight from the index: 12 documents examined and ~15ms. The index is deliberately partial — `updateTime` moves while an order is still working, but an order is frozen once it fills, so entries are written once and never shuffle, and the busy `NEW`/`PARTIALLY_FILLED` writes never touch the index at all (measured no write cost versus having no index at all). `paperContext` is intentionally not part of the key — the live-context filter is `{$ne: true}`, a range rather than an equality, which would stop `updateTime` from supplying the sort order.
 - The same list also counted **every** filled order on the account just to show a total that is capped at 100 — on its own a 3-8s query, and the larger half of the delay. `countData` now takes an optional ceiling, and the count runs alongside the page fetch rather than after it.
 
 ## [1.37.9] - 2026-07-29
 
 ### Fixed
 
-- **The notifications feed took seconds to load for accounts with a lot of bot messages.** `getMessageBot` filters bot messages by `{userId, showUser}` and always sorts newest-first, but the only usable index was `userId` alone — so Mongo fetched every message the account had ever received and sorted them in memory. On a 914k-document collection with a 45.7k-message account that is a 643ms blocking sort for the default feed, and 531ms to return a single 20-row page (all 45.7k documents are read to produce 20 rows). A `{userId, showUser, created:-1}` index lets the sort come straight from the index: the default feed drops to 153ms and a 20-row page to ~1ms / 25 documents examined. `paperContext` is intentionally not part of the key — the live-context filter is `{$ne: true}`, a range rather than an equality, which would stop `created` from supplying the sort order.
+- **The notifications feed took seconds to load for accounts with a lot of bot messages.** `getMessageBot` filters bot messages by `{userId, showUser}` and always sorts newest-first, but the only usable index was `userId` alone — so Mongo fetched every message the account had ever received and sorted them in memory. On a large message collection with a heavy account that is a 643ms blocking sort for the default feed, and 531ms to return a single 20-row page (every one of the account's messages is read to produce 20 rows). A `{userId, showUser, created:-1}` index lets the sort come straight from the index: the default feed drops to 153ms and a 20-row page to ~1ms / 25 documents examined. `paperContext` is intentionally not part of the key — the live-context filter is `{$ne: true}`, a range rather than an equality, which would stop `created` from supplying the sort order.
 - Searching the notifications feed with "unread only" active also returned already-deleted messages: the search filter overwrote the `$or` holding the unread clause instead of being combined with it. Both clauses are now `$and`-ed together.
 
 ## [1.37.8] - 2026-07-28
 
 ### Fixed
 
-- **Hyperliquid indicators on live bots silently received no candle data.** For HL exchanges the indicator service subscribed to Redis — and asked websocket-connector — by the pair's *wire code* (`BTC@hyperliquidLinear@1hCandle`), a dialect the connector stopped speaking in Jul 2026 when it normalized candle channels to display pairs: the `candlesRequests` payload failed symbol translation and was dropped, and nothing publishes on wire-code channels (on prod, 11 of 14 live HL candle channels had subscribers and no publisher). Paper HL bots were unaffected — the pairs-map lookup misses on the paper exchange key, so they always fell back to the display pair, which works. Indicators now always subscribe and request by display pair; `symbolCode` is kept for delisted-pair matching and state dumps only.
+- **Hyperliquid indicators on live bots silently received no candle data.** For HL exchanges the indicator service subscribed to Redis — and asked websocket-connector — by the pair's *wire code* (`BTC@hyperliquidLinear@1hCandle`), a dialect the connector stopped speaking in Jul 2026 when it normalized candle channels to display pairs: the `candlesRequests` payload failed symbol translation and was dropped, and nothing publishes on wire-code channels. Paper HL bots were unaffected — the pairs-map lookup misses on the paper exchange key, so they always fell back to the display pair, which works. Indicators now always subscribe and request by display pair; `symbolCode` is kept for delisted-pair matching and state dumps only.
 
 ## [1.37.7] - 2026-07-28
 
@@ -1267,13 +1267,13 @@
 
 ### Fixed
 
-- The check-candle failure streak is now tracked per `symbol@interval@exchange` instead of per indicator Service, so one delisted pair costs a fixed 3 error lines + 1 mute line no matter how many Services ride it. `getId` keys a Service by type+config+exchange+symbol+interval, so a single pair carries one Service per distinct indicator setting subscribed on it — and each kept its own counter, multiplying the "log the first few" allowance by the instance count. `AERGOUSDT@binanceUsdm` (~86 stale bot docs, ~160 Services) was 97.5% of the indicator worker's error log, hiding every other error including real regressions on live symbols. A new Service for an already-muted pair now inherits the mute and the backoff instead of re-arming both. Completes 1.37.4, which stopped the streak re-arming over time but not the fan-out across Services.
+- The check-candle failure streak is now tracked per `symbol@interval@exchange` instead of per indicator Service, so one delisted pair costs a fixed 3 error lines + 1 mute line no matter how many Services ride it. `getId` keys a Service by type+config+exchange+symbol+interval, so a single pair carries one Service per distinct indicator setting subscribed on it — and each kept its own counter, multiplying the "log the first few" allowance by the instance count. One delisted pair, carried by many stale Services, dominated the indicator worker's error log, hiding every other error including real regressions on live symbols. A new Service for an already-muted pair now inherits the mute and the backoff instead of re-arming both. Completes 1.37.4, which stopped the streak re-arming over time but not the fan-out across Services.
 
 ## [1.37.4] - 2026-07-26
 
 ### Fixed
 
-- The delisted-symbol check-candle mute now actually holds. `updateCandle` cleared `consecutiveCandleFailures` unconditionally, and both "serve last candle" fallbacks call it with a fabricated flat candle (`lastCandle.close`, volume 0) — no new data arrived, but the streak reset anyway. For a delisted symbol those alternate with real failures, so the mute *and* the 15min backoff re-armed forever: `AERGOUSDT@binanceUsdm` re-logged "suppressing further errors" 1,930 times in 50h and accounted for 100% of the indicator worker's error output. Synthetic fills no longer clear the streak. Same bug class as the 1.36.2 ESUSDT fix, which only half-closed it.
+- The delisted-symbol check-candle mute now actually holds. `updateCandle` cleared `consecutiveCandleFailures` unconditionally, and both "serve last candle" fallbacks call it with a fabricated flat candle (`lastCandle.close`, volume 0) — no new data arrived, but the streak reset anyway. For a delisted symbol those alternate with real failures, so the mute *and* the 15min backoff re-armed forever: one delisted symbol re-logged "suppressing further errors" endlessly and accounted for essentially all of the indicator worker's error output. Synthetic fills no longer clear the streak. Same bug class as the 1.36.2 ESUSDT fix, which only half-closed it.
 
 ### Added
 
@@ -1283,7 +1283,7 @@
 
 ### Fixed
 
-- A transient `getExchangeInfo` miss no longer poisons the funding registry for the life of the bot. On Kraken and Hyperliquid `toFundingSymbol` fell back to the raw pair when the exchange code couldn't be resolved, and the subscription heartbeat then re-wrote that member every 60s so it never aged out of the cron's stale window — the hourly funding poll rejected it on every run, forever (4 Hyperliquid + 1 Kraken symbol on prod, ~5 guaranteed failures/hour). The lookup now retries forced before giving up, and an unresolved code skips the funding subscription instead of registering a symbol the exchange can't answer. Same transient-miss hazard as 1.37.2, different consumer.
+- A transient `getExchangeInfo` miss no longer poisons the funding registry for the life of the bot. On Kraken and Hyperliquid `toFundingSymbol` fell back to the raw pair when the exchange code couldn't be resolved, and the subscription heartbeat then re-wrote that member every 60s so it never aged out of the cron's stale window — the hourly funding poll rejected it on every run, forever (a handful of symbols, each a guaranteed failure every hour). The lookup now retries forced before giving up, and an unresolved code skips the funding subscription instead of registering a symbol the exchange can't answer. Same transient-miss hazard as 1.37.2, different consumer.
 
 ### Changed
 
@@ -1317,7 +1317,7 @@
 
 ### Fixed
 
-- Fill-failsafe resting-order lookup no longer scans the whole `orders` collection: added a partial index on the resting LIMIT statuses. The query ran every 30s at ~6.5s, examining 18.5M documents to return ~101, and accounted for 66% of all slow-query time on production Mongo.
+- Fill-failsafe resting-order lookup no longer scans the whole `orders` collection: added a partial index on the resting LIMIT statuses. The query ran every 30s at ~6.5s, examining the whole collection to return about a hundred rows, and dominated slow-query time on Mongo.
 
 ## [1.36.0] - 2026-07-17
 
@@ -1329,7 +1329,7 @@
 
 ### Fixed
 
-- Bot permanent-delete no longer orphans deal/transaction ledgers. `premanenetlyDeleteBots` now purges `dcadeals`, `transactions` and `combotransactions` by `botId` in the per-bot cascade (alongside orders/events/messages), bounded to the bots being GC'd — previously these were left only to the weekly orphan-sweep, which never removed them (see next), so prod accumulated ~52–64% orphaned docs (~13.8M) from hard-deleted bots.
+- Bot permanent-delete no longer orphans deal/transaction ledgers. `premanenetlyDeleteBots` now purges `dcadeals`, `transactions` and `combotransactions` by `botId` in the per-bot cascade (alongside orders/events/messages), bounded to the bots being GC'd — previously these were left only to the weekly orphan-sweep, which never removed them (see next), so a large share of the documents in those collections were left orphaned by hard-deleted bots.
 - Combo orphan-sweeps (`combotransactions`/`comboMinigrid`/`comboProfit`) were no-ops: each `$lookup ... as: 'combobot'` but `$match`ed a non-existent `bot` field (`{$size:0}`), matching nothing. Corrected the match field to `combobot` so the sweeps actually flag orphans.
 
 ## [1.35.4] - 2026-07-16
@@ -1427,8 +1427,8 @@
 
 ### Changed
 
-- Bot-error BEHAVIOUR is now data-driven. `handleErrors` no longer hardcodes per-subType branches for visibility / error-state / message; it consults the admin-managed `boterrorsubtypes` collection (via `errorRulesCache`) for `{showUser, errorsBot, userMessage}`. `errorsBot:false` keeps the bot running (warning, no error state), `showUser:false` suppresses the user message + bot event, `userMessage` rewrites the shown text. FAIL-SAFE: an unclassified subType keeps today's defaults (shown, errors bot, raw message); a static fallback mirrors the migrated hardcoded behaviours until the DB cache loads, so a restart never briefly flips a benign error into a hard error. The leverage-misconfig `Futures position` case stays a visible hard error (excluded from the suppression path); the `Indicators error:` prefix-strip stays a code transform.
-- `errorRulesCache` now also loads the `boterrorsubtypes` behaviour table and counts rule HITS at the write path (once per real error occurrence, batched + flushed on the TTL) so the admin page shows a meaningful fire count instead of always 0.
+- Bot-error BEHAVIOUR is now data-driven. `handleErrors` no longer hardcodes per-subType branches for visibility / error-state / message; it consults the `boterrorsubtypes` collection (via `errorRulesCache`) for `{showUser, errorsBot, userMessage}`. `errorsBot:false` keeps the bot running (warning, no error state), `showUser:false` suppresses the user message + bot event, `userMessage` rewrites the shown text. FAIL-SAFE: an unclassified subType keeps today's defaults (shown, errors bot, raw message); a static fallback mirrors the migrated hardcoded behaviours until the DB cache loads, so a restart never briefly flips a benign error into a hard error. The leverage-misconfig `Futures position` case stays a visible hard error (excluded from the suppression path); the `Indicators error:` prefix-strip stays a code transform.
+- `errorRulesCache` now also loads the `boterrorsubtypes` behaviour table and counts rule HITS at the write path (once per real error occurrence, batched + flushed on the TTL) so the stored rule carries a meaningful fire count instead of always 0.
 
 ## [1.32.7] - 2026-07-12
 
@@ -1486,7 +1486,7 @@
 
 ### Added
 
-- Bot-error subType classification now consults the DB-backed `boterrorrules` collection first (seeded/owned by admin-app; extendable by admins and the Claus autonomous reclassifier). Rules relabel newly-stored errors with no deploy — a 5-min self-priming, non-blocking cache (`errorRulesCache`) refreshes in the background, falling through to the static `errorDict` until first load. Reduces `Uncategorized` and lets a mislabel be corrected from the admin side. NB: takes effect only after a bot-worker restart (ships the rules-aware code); rule *additions* thereafter need no restart.
+- Bot-error subType classification now consults the DB-backed `boterrorrules` collection first (seeded out of band and extendable without a code change). Rules relabel newly-stored errors with no deploy — a 5-min self-priming, non-blocking cache (`errorRulesCache`) refreshes in the background, falling through to the static `errorDict` until first load. Reduces `Uncategorized` and lets a mislabel be corrected without a release. NB: takes effect only after a bot-worker restart (ships the rules-aware code); rule *additions* thereafter need no restart.
 
 ## [1.30.3] - 2026-07-10
 
@@ -1498,7 +1498,7 @@
 
 ### Changed
 
-- Bot events (30d), rates (30d) and snapshots (90d) now expire via TTL indexes (declared in `registerIndexes()`, matching the indexes created on prod) instead of weekly bulk `deleteMany` age-scans in `cleanJob`. Expiry runs continuously in the background rather than as a weekly spike. The conditional cleanup steps (paper/balances/fees/orphaned-bot data) and the bot-*warning* 14d delete (a subset the 30d TTL can't express) are unchanged.
+- Bot events (30d), rates (30d) and snapshots (90d) now expire via TTL indexes (declared in `registerIndexes()`) instead of weekly bulk `deleteMany` age-scans in `cleanJob`. Expiry runs continuously in the background rather than as a weekly spike. The conditional cleanup steps (paper/balances/fees/orphaned-bot data) and the bot-*warning* 14d delete (a subset the 30d TTL can't express) are unchanged.
 
 ## [1.30.1] - 2026-07-07
 
@@ -1535,13 +1535,13 @@
 
 ### Fixed
 
-- Kraken spot deal fills silently dropped (forum #4890). Kraken spot has no `cl_ord_id`, so user-stream execution reports carry the Kraken txid as their clientOrderId — the stream matcher (keyed by our `D-…`/`GRID-…` client id) never matched, so resting-limit fills never registered. `convertExecutionReportToOrder` now falls back to matching by exchange `orderId` (txid) for Kraken spot when the client-id lookups miss. Also `mergeCommonOrderWithOrder` now preserves the local order's `clientOrderId` instead of the exchange-echoed one (no-op for other exchanges; prevents rekey/DB corruption on the Kraken reconcile path, which resolves by txid). Pairs with exchange-connector core 1.14.3.
+- Kraken spot deal fills silently dropped. Kraken spot has no `cl_ord_id`, so user-stream execution reports carry the Kraken txid as their clientOrderId — the stream matcher (keyed by our `D-…`/`GRID-…` client id) never matched, so resting-limit fills never registered. `convertExecutionReportToOrder` now falls back to matching by exchange `orderId` (txid) for Kraken spot when the client-id lookups miss. Also `mergeCommonOrderWithOrder` now preserves the local order's `clientOrderId` instead of the exchange-echoed one (no-op for other exchanges; prevents rekey/DB corruption on the Kraken reconcile path, which resolves by txid). Pairs with exchange-connector core 1.14.3.
 
 ## [1.28.1] - 2026-07-06
 
 ### Added
 
-- streamWatchdog: actions carry a reason tag (stale vs catchRate) and main() accepts an onAction ops-visibility hook (fire-and-forget) so escalations can surface in the admin watchdog notifications feed
+- streamWatchdog: actions carry a reason tag (stale vs catchRate) and main() accepts an onAction ops-visibility hook (fire-and-forget) so escalations can be surfaced by the host application
 
 ## [1.28.0] - 2026-07-05
 
@@ -1577,7 +1577,7 @@
 ## [1.25.1] - 2026-07-03
 
 ### Added
-- Register five query indexes in `registerIndexes()` to match indexes already created on prod: `dcaBot {uuid}`, `botMessage {botId, isDeleted}`, `dcaDeal {userId, createTime}` (partial on `status: 'open'`), and `transaction`/`comboTransaction {botId, userId}`. Eliminates COLLSCANs on the webhook bot-lookup and bot-error message soft-delete, removes the in-memory sort on the deals list, and lets the bot engine load a single bot's transactions instead of scanning the whole user's. All indexed fields are static/write-once (no write-path regression). No-op on prod (indexes already present); first-boot build on self-hosted/local.
+- Register five query indexes in `registerIndexes()`, matching indexes commonly created by hand: `dcaBot {uuid}`, `botMessage {botId, isDeleted}`, `dcaDeal {userId, createTime}` (partial on `status: 'open'`), and `transaction`/`comboTransaction {botId, userId}`. Eliminates COLLSCANs on the webhook bot-lookup and bot-error message soft-delete, removes the in-memory sort on the deals list, and lets the bot engine load a single bot's transactions instead of scanning the whole user's. All indexed fields are static/write-once (no write-path regression). No-op where the indexes are already present; first-boot build on self-hosted/local.
 
 ## [1.25.0] - 2026-07-03
 
@@ -1602,7 +1602,7 @@
 ## [1.24.0] - 2026-07-02
 
 ### Added
-- Binance Futures Quantitative Rules (-4400) cooldown guard: violations are tracked per account+symbol in Redis (`QuantRulesGuard`), mirroring Binance's tiers (L1 symbol 5min, L2 symbol 2h after 10 violations/24h, L3 whole-account 2h at 10+ restricted symbols). During a cooldown, non-reduceOnly Binance-futures orders are delayed (pre-send gate + bounded deferred retry) instead of hammering the exchange; the -4400 rejection no longer errors the bot — it emits a once-per-window warning. Deferred retries are cancelled on bot stop and dropped when the deal closed meanwhile. New `quantrulesevents` collection (90d TTL; read by admin-app) and `getQuantRulesStatus` GraphQL query for the dashboard banner. Additive `subType` field on the `bot message` socket payload.
+- Binance Futures Quantitative Rules (-4400) cooldown guard: violations are tracked per account+symbol in Redis (`QuantRulesGuard`), mirroring Binance's tiers (L1 symbol 5min, L2 symbol 2h after 10 violations/24h, L3 whole-account 2h at 10+ restricted symbols). During a cooldown, non-reduceOnly Binance-futures orders are delayed (pre-send gate + bounded deferred retry) instead of hammering the exchange; the -4400 rejection no longer errors the bot — it emits a once-per-window warning. Deferred retries are cancelled on bot stop and dropped when the deal closed meanwhile. New `quantrulesevents` collection (90d TTL) and `getQuantRulesStatus` GraphQL query for the dashboard banner. Additive `subType` field on the `bot message` socket payload.
 
 ## [1.23.2] - 2026-07-01
 
@@ -1622,12 +1622,12 @@
 ## [1.22.4] - 2026-06-29
 
 ### Fixed
-- Pin the reconcile-sweep collection name explicitly to `reconcilesweepcatches`. Mongoose lowercases derived model collection names (e.g. `dcaBots` → `dcabots`), so the previously-configured `reconcileSweepCatches` model would have written live catches to a lowercased collection that the admin-app reader/backfill didn't match — the admin page would have shown backfilled history but never live data. Now both sides use the same explicit lowercase name.
+- Pin the reconcile-sweep collection name explicitly to `reconcilesweepcatches`. Mongoose lowercases derived model collection names (e.g. `dcaBots` → `dcabots`), so the previously-configured `reconcileSweepCatches` model would have written live catches to a lowercased collection that the reader/backfill didn't match — the reader would have shown backfilled history but never live data. Now both sides use the same explicit lowercase name.
 
 ## [1.22.3] - 2026-06-29
 
 ### Added
-- Persist reconciliation-sweep catches to the `reconcileSweepCatches` collection (`MainBot.recordReconcileSweepCatch`, fire-and-forget at the grid/DCA catch sites) — `botId/botType/userId/exchange/exchangeUUID/paperContext/pair/missedFills`, 90-day TTL. Powers the admin "User Stream Health" page; a rising per-account catch rate = that account's user stream is silently dead. No-op when `RECONCILE_SWEEP_ENABLED` is off.
+- Persist reconciliation-sweep catches to the `reconcileSweepCatches` collection (`MainBot.recordReconcileSweepCatch`, fire-and-forget at the grid/DCA catch sites) — `botId/botType/userId/exchange/exchangeUUID/paperContext/pair/missedFills`, 90-day TTL. A rising per-account catch rate = that account's user stream is silently dead. No-op when `RECONCILE_SWEEP_ENABLED` is off.
 
 ## [1.22.2] - 2026-06-28
 
@@ -1642,7 +1642,7 @@
 ## [1.22.0] - 2026-06-28
 
 ### Added
-- Opt-in Tier-2 reconciliation sweep (`RECONCILE_SWEEP_ENABLED`, interval `RECONCILE_SWEEP_INTERVAL_MS`): a per-worker timer periodically re-runs each running grid/DCA bot's existing reconnect reconcile, so order fills missed by a silently-dead user stream are caught within one interval instead of stalling the bot until a manual restart (community thread 4863). Off by default; jittered + overlap-guarded; routed through the per-bot mutex.
+- Opt-in Tier-2 reconciliation sweep (`RECONCILE_SWEEP_ENABLED`, interval `RECONCILE_SWEEP_INTERVAL_MS`): a per-worker timer periodically re-runs each running grid/DCA bot's existing reconnect reconcile, so order fills missed by a silently-dead user stream are caught within one interval instead of stalling the bot until a manual restart. Off by default; jittered + overlap-guarded; routed through the per-bot mutex.
 
 ### Fixed
 - `checkOrdersAfterReconnect` (grid + DCA) and `checkOrders` (grid) now reset `blockCheck` via `try/catch/finally`. A throw mid-check previously left `blockCheck` stuck `true`, silently freezing all subsequent order checks for that bot — turning a transient reconnect-reconcile error into a permanent stall.
