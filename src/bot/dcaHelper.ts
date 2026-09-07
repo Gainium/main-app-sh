@@ -20388,6 +20388,262 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * How many DCA safety-order levels this deal's ladder defines.
+     *
+     * Each `dcaCondition` counts a different thing, and `settings.ordersCount`
+     * is only the answer for `percentage`/`dynamicAr`. `createInitialDealOrders`
+     * already branches this way when it builds the ladder; this mirrors it so
+     * "is there a next level" and "which level is next" agree with what was
+     * actually generated.
+     */
+    dcaLadderSize(settings: {
+      dcaCondition?: DCAConditionEnum
+      indicators?: SettingsIndicators[]
+      dcaCustom?: DCACustom[]
+      ordersCount?: number | string
+    }) {
+      if (settings.dcaCondition === DCAConditionEnum.indicators) {
+        return (settings.indicators ?? []).filter(
+          (i) => i.indicatorAction === IndicatorAction.startDca,
+        ).length
+      }
+      if (settings.dcaCondition === DCAConditionEnum.custom) {
+        return (settings.dcaCustom ?? []).length
+      }
+      return parseInt(`${settings.ordersCount ?? 0}`) || 0
+    }
+
+    /**
+     * Fill the deal's NEXT safety order now, at market, instead of waiting for
+     * price (or an indicator signal) to reach it. Feature request:
+     * https://community.gainium.io/t/execute-next-dca-manually/5072
+     *
+     * This is deliberately NOT `addDealFunds`. Add funds tags its order with
+     * `addFundsId`, which routes it down the `roa` branch of `updateDeal` —
+     * that branch appends to `deal.funds` and GROWS `levels.all`, i.e. it
+     * enlarges the deal outside the ladder. Here we want the opposite: consume
+     * the slot the ladder already reserved, so the deal books level N and
+     * carries on with N+1. Same venue order, different bookkeeping, and the
+     * bookkeeping is the whole feature — so this path must never set
+     * `addFundsId` and must keep the plain `D-RO` client-order-id prefix.
+     *
+     * Everything after the fill is existing machinery: `processFilledOrder` →
+     * `updateDeal`'s non-`roa` branch counts the level, recomputes the average,
+     * re-sizes the take profit and rebuilds the ladder. `createCurrentDealOrders`
+     * selects the remaining levels BY COUNT (`ordersCount - filledRegular`,
+     * slicing the deepest that many out of a `initialOrders` list whose prices
+     * were fixed at deal start), so consuming a level early does not move the
+     * levels below it — they keep their original prices.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `executeNextDca${botId}${dealId}`,
+    )
+    async executeNextDcaLevel(
+      _botId: string,
+      dealId: string,
+      opts?: { expectedLevel?: number },
+    ) {
+      const _id = this.startMethod('executeNextDcaLevel')
+      this.handleDebug(
+        `Execute next DCA | Received request for deal ${dealId}, expected level ${opts?.expectedLevel}`,
+      )
+      const fail = (reason: string) => {
+        this.endMethod(_id)
+        // setError=false: a refused manual action is the user's problem to see,
+        // not a bot fault that should stop the bot or open an error state.
+        return this.handleErrors(
+          reason,
+          'executeNextDcaLevel',
+          '',
+          false,
+          true,
+          true,
+          true,
+        )
+      }
+      if (this.combo) {
+        // Combo levels are minigrid-managed; the count-based ladder reasoning
+        // above does not hold there. Same early return `addDealFunds` uses.
+        this.endMethod(_id)
+        return
+      }
+      if (!this.data) {
+        this.endMethod(_id)
+        return
+      }
+      const deal = this.getDeal(dealId)
+      if (!deal) {
+        return fail(`Cannot find deal to execute the next DCA order`)
+      }
+      if (deal.deal.status !== DCADealStatusEnum.open) {
+        return fail(`The next DCA order can only be executed on an open deal`)
+      }
+      const settings = await this.getAggregatedSettings(deal.deal)
+      const ladderSize = this.dcaLadderSize(settings)
+      // `levels.complete` counts the base order as 1, and `createInitialDealOrders`
+      // numbers safety orders from 1 — so the next safety order's `levelNumber`
+      // IS `levels.complete`. This is the same identity `addDCAOrderByIndicator`
+      // relies on when it matches `levels.complete === index + 1` against
+      // `levelNumber === index + 1`.
+      const level = deal.deal.levels.complete
+      if (!ladderSize || level > ladderSize) {
+        return fail(
+          `This deal has no DCA levels left to execute (${level - 1}/${ladderSize} used)`,
+        )
+      }
+      if (
+        typeof opts?.expectedLevel === 'number' &&
+        opts.expectedLevel !== level
+      ) {
+        // The ladder moved between the dashboard rendering the confirmation and
+        // the user confirming it — a safety order filled on its own in that
+        // window. Refusing is the only safe answer: executing "the next level"
+        // would silently be a DIFFERENT level than the one the user was shown
+        // the numbers for.
+        return fail(
+          `The deal has moved on to DCA level ${level} since this was requested — nothing was executed. Please try again.`,
+        )
+      }
+      const symbol = deal.deal.symbol.symbol
+      const price = await this.getLatestPrice(symbol)
+      if (!price || !isFinite(price)) {
+        return fail(`Cannot get the current price for ${symbol}`)
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      if (!ed) {
+        return fail(`Cannot get exchange info for ${symbol}`)
+      }
+      // Regenerate the ladder rather than reading `currentOrders`: this is the
+      // only shape that also works for `dcaCondition: 'indicators'`, whose
+      // safety orders are stripped out of `currentOrders` entirely (they never
+      // rest on a venue — they fire on a signal). Prices still come from
+      // `deal.initialPrice`, so they are the same prices the ladder always had;
+      // the 5th argument only sizes a quote/usd order against the price we are
+      // actually going to fill at, which is what keeps an early execution from
+      // overspending the level's budget. Identical call to the one
+      // `addDCAOrderByIndicator` makes.
+      const orders = await this.createInitialDealOrders(
+        symbol,
+        deal.deal.initialPrice,
+        dealId,
+        deal.deal,
+        price,
+      )
+      const dcaOrder = orders.find(
+        (o) => o.levelNumber === level && o.type === TypeOrderEnum.dealRegular,
+      )
+      if (!dcaOrder) {
+        return fail(`Cannot find DCA level ${level} on this deal`)
+      }
+      const ladderPrice = dcaOrder.price
+      // A resting safety order exists only when the ladder is actually placed on
+      // the venue. It is not for `indicators` (stripped from `currentOrders`),
+      // and not when `dcaByMarket` / `useOppositeBalance` suppress `dealRegular`
+      // sends in `placeOrders`.
+      const ladderRests =
+        settings.dcaCondition !== DCAConditionEnum.indicators &&
+        !settings.dcaByMarket &&
+        deal.deal.action !== ActionsEnum.useOppositeBalance
+      // Claim the same key `checkDCAByMarketLevel` claims, so a price tick
+      // crossing this level while we work skips it instead of double-filling.
+      const claim = `${ladderPrice}@${dealId}`
+      if (this.dealsByMarketProcessing.has(claim)) {
+        return fail(`DCA level ${level} is already being executed`)
+      }
+      this.dealsByMarketProcessing.add(claim)
+      try {
+        if (ladderRests) {
+          const resting = this.getOrdersByStatusAndDealId({
+            dealId,
+            defaultStatuses: true,
+          }).filter(
+            (o) =>
+              o.typeOrder === TypeOrderEnum.dealRegular &&
+              +o.price === ladderPrice,
+          )
+          for (const o of resting) {
+            const canceled = await this.cancelOrderOnExchange(o)
+            if (canceled && canceled.status === 'FILLED') {
+              // The level filled while we were cancelling it. `cancelOrderOnExchange`
+              // promotes that case; book it and stop — sending the market order
+              // now would fill the SAME level twice.
+              this.handleLog(
+                `Execute next DCA | level ${level} on deal ${dealId} filled while cancelling; not sending a market order`,
+              )
+              await this.handleUnknownOrder(canceled)
+              this.endMethod(_id)
+              return
+            }
+          }
+        }
+        if (!this.futures) {
+          // Spot: the level was sized against its ladder price, and we are
+          // filling at the current one. Re-check the venue's quote minimum and
+          // relabel the price, exactly as `addDCAOrderByIndicator` does.
+          const quote = dcaOrder.qty * price
+          if (quote < ed.quoteAsset.minAmount) {
+            dcaOrder.qty = this.math.round(
+              ed.quoteAsset.minAmount / price,
+              await this.baseAssetPrecision(ed.pair),
+              false,
+              true,
+            )
+          }
+          dcaOrder.price = this.math.round(price, ed.priceAssetPrecision)
+        }
+        const order = await this.sendGridToExchange(
+          dcaOrder,
+          {
+            dealId,
+            type: 'MARKET',
+            // A hedge-mode futures account rejects an order whose positionSide
+            // does not name the leg (OKX 51000, Binance USDM -4061). Same
+            // expression every other market-order path here passes.
+            positionSide: this.hedge
+              ? this.isLong
+                ? PositionSide.LONG
+                : PositionSide.SHORT
+              : PositionSide.BOTH,
+          },
+          ed,
+        )
+        if (!order) {
+          return fail(`DCA level ${level} was not accepted by the exchange`)
+        }
+        if (
+          order.status === 'FILLED' ||
+          (order.exchange === ExchangeEnum.bybit &&
+            (order.status === 'CANCELED' ||
+              order.status === 'PARTIALLY_FILLED'))
+        ) {
+          await this.processFilledOrder(order)
+        }
+        if (this.shouldProceed()) {
+          // A level that filled away from its ladder price with no explanation
+          // is a support ticket. Say it happened, and say what it cost.
+          this.botEventDb.createData({
+            userId: this.userId,
+            botId: this.botId,
+            event: 'Deal',
+            botType: this.botType,
+            description:
+              settings.dcaCondition === DCAConditionEnum.indicators
+                ? `DCA level ${level} was executed manually at ${price} without waiting for its signal`
+                : `DCA level ${level} was executed manually at ${price} instead of waiting for ${ladderPrice}`,
+            paperContext: !!this.data?.paperContext,
+            deal: dealId,
+            symbol,
+            type: MessageTypeEnum.info,
+          })
+        }
+      } finally {
+        this.dealsByMarketProcessing.delete(claim)
+      }
+      this.endMethod(_id)
+    }
+
     @IdMute(
       mutex,
       (botId: string, dealId: string) => `addFunds${botId}${dealId}`,

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.58.1] - 2026-09-07
+
+### Changed
+
+- `POST /api/v2/backtest/{botType}/request/sync` now keeps its connection alive while it waits. That wait is by design up to an hour, and a proxy or CDN in front of the API will not sit through it in silence — Cloudflare gives up at about 100 seconds — so the caller lost a response for a backtest that was still running fine. Existing clients are unaffected: the JSON response is byte-compatible, the heartbeat being insignificant whitespace ahead of the document. Callers who send `Accept: text/event-stream` instead get the same result as Server-Sent Events, with the request id delivered up front, before the wait — so if the connection does drop, the run can still be collected from `GET /api/v2/backtest/{botType}/requests/{id}`.
+
+## [1.58.0] - 2026-09-07
+
+### Added
+
+- Execute a DCA deal's next safety order on demand, at market, instead of waiting for price (or its indicator signal) to reach it. The deal books it as that level and carries on with the next one at its original price — unlike Add funds, which adds size outside the ladder and does not consume a level. Only the next level can be executed: no skipping ahead, no reordering, no price editing. Available on DCA deals over GraphQL (`executeNextDca`) and the public API (`POST /api/v2/deals/dca/execute-next-dca`). Works for all three ladder shapes — percentage, custom and indicator-driven; combo and risk-based deals are excluded, because their levels are not ladder slots. Where the ladder rests on the venue, the resting order for that level is cancelled first, and the request is refused if that level fills on its own in the meantime. Community request: https://community.gainium.io/t/execute-next-dca-manually/5072
+
 ## [1.57.20] - 2026-09-07
 
 ### Fixed

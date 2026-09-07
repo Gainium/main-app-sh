@@ -11,6 +11,7 @@
  */
 
 import type { Request, Response } from 'express'
+import { openSyncStream, syncStreamMode } from './syncStream'
 import { Types, isValidObjectId } from 'mongoose'
 import {
   StatusEnum,
@@ -4076,6 +4077,70 @@ const v2API = <R extends UserSchema = UserSchema>(
   })
 
   /**
+   * POST /api/v2/deals/dca/execute-next-dca
+   *
+   * Fill a DCA deal's next safety order now, at market, instead of waiting for
+   * price (or its indicator signal) to reach it. The deal books it as that
+   * level and continues with the next one at its original price.
+   * https://community.gainium.io/t/execute-next-dca-manually/5072
+   *
+   * Query: { dealId: string }  — required; unlike add-funds there is no
+   *   whole-bot fan-out, see `executeNextDcaLevelFromPublicApi`.
+   * Body: { expectedLevel?: number } — refuse if the deal has since moved on.
+   *
+   * Response:
+   * - 200: Execution scheduled
+   * - 400: Validation error or deal not found
+   * - 500: Internal server error
+   */
+  post.set('/api/v2/deals/dca/execute-next-dca', {
+    middlewares: [],
+    handler: async (req, res) => {
+      const user = req.userData
+      const { dealId } = req.query as { dealId?: string }
+      const { expectedLevel } = req.body as { expectedLevel?: number }
+
+      if (!dealId || typeof dealId !== 'string') {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: 'Deal ID required',
+        })
+      }
+
+      if (
+        typeof expectedLevel !== 'undefined' &&
+        (typeof expectedLevel !== 'number' ||
+          !Number.isInteger(expectedLevel) ||
+          expectedLevel < 1)
+      ) {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: 'Invalid parameters',
+        })
+      }
+
+      try {
+        const result = await Bot.executeNextDcaLevelFromPublicApi(
+          user.id,
+          dealId,
+          expectedLevel,
+        )
+
+        return res.status(200).json(result)
+      } catch (error) {
+        console.error('Error executing next DCA level:', error)
+        return res.status(500).json({
+          status: StatusEnum.notok,
+          reason:
+            error instanceof Error
+              ? error.message
+              : 'Failed to execute the next DCA level',
+        })
+      }
+    },
+  })
+
+  /**
    * POST /api/v2/deals/dca/reduce-funds
    *
    * Reduce funds from a deal (works for all deal types)
@@ -4619,19 +4684,44 @@ const v2API = <R extends UserSchema = UserSchema>(
 
       const requestId = result.data!.requestId
 
-      // Sync mode: wait for terminal status and return the full request item
+      // Sync mode: wait for terminal status and return the full request item.
+      // The wait can legitimately run for up to an hour, which no CDN will sit
+      // through in silence, so the response head is committed now and the
+      // connection is kept warm until the run finishes. See ./syncStream.ts.
       if (sync === 'sync') {
-        const itemResult = await waitForBacktestCompletion(
-          botType!,
+        const stream = openSyncStream(res, {
+          mode: syncStreamMode(req),
           requestId,
-          user.id,
-          rawFields,
-        )
-        return res.status(200).json({
-          status: StatusEnum.ok,
-          reason: null,
-          data: itemResult.data,
+          onClientGone: () =>
+            console.log(
+              `[backtest:sync] client disconnected botType=${botType} requestId=${requestId} userId=${user.id} — run continues`,
+            ),
         })
+        try {
+          const itemResult = await waitForBacktestCompletion(
+            botType!,
+            requestId,
+            user.id,
+            rawFields,
+          )
+          stream.finish({
+            status: StatusEnum.ok,
+            reason: null,
+            data: itemResult.data,
+          })
+        } catch (e) {
+          // The head is already sent, so a late failure cannot change the
+          // status code — it is reported in the envelope instead. The request
+          // id goes with it so the caller can still collect the result.
+          stream.finish({
+            status: StatusEnum.notok,
+            reason: `Backtest submitted but its result could not be read: ${
+              (e as Error)?.message || e
+            }`,
+            data: { requestId },
+          })
+        }
+        return
       }
 
       return res.status(200).json({
