@@ -608,6 +608,12 @@ const botSettings = new Schema({
 
 const botSchema: Schema<BotSchema> = new Schema({
   ...botCommon,
+  flags: [String],
+  feeByAsset: profitByAssets,
+  feePaid: {
+    base: Number,
+    quote: Number,
+  },
   feeBalance: Number,
   settings: botSettings,
   initialPrice: Number,
@@ -1968,6 +1974,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     base: Number,
     quote: Number,
   },
+  feeByAsset: profitByAssets,
   avgPrice: Number,
   displayAvg: Number,
   commission: Number,
@@ -2149,6 +2156,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     base: Number,
     quote: Number,
   },
+  feeByAsset: profitByAssets,
   avgPrice: Number,
   displayAvg: Number,
   commission: Number,
@@ -2779,6 +2787,7 @@ const comboMinigrid = new Schema<ComboMinigridSchema>({
     pureBase: Number,
     pureQuote: Number,
   },
+  feeByAsset: profitByAssets,
   feePaid: {
     base: Number,
     quote: Number,

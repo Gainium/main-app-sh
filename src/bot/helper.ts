@@ -14,11 +14,14 @@ import {
   StrategyEnum,
   FuturesStrategyEnum,
   BotType,
+  BotFlags,
 } from '../../types'
 import MainBot, {
   isDefinitiveOrderNotFound,
   reconcileUnresolvedWarn,
 } from './main'
+import { observedFeeOnSide, observedFeeSplit } from './orderFee'
+import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
 
 import type {
   BotData,
@@ -3223,9 +3226,82 @@ function createBotHelper<
         )
         const qty = parseFloat(o.origQty)
         const price = parseFloat(o.price)
-        let comBase = o.side === OrderSideEnum.buy ? qty * fee.maker : 0
+        // Spec 014 §2.4: grid gains the same observedFeeSplit/
+        // observedFeeOnSide resolution combo already has, in place of the
+        // stored-rate-only estimate — gated on BotFlags.feeByAsset (§3), new
+        // grid bots only.
+        const feeByAssetGated = !!this.data.flags?.includes(BotFlags.feeByAsset)
+        const observedSplit = observedFeeSplit(
+          o,
+          this.data.symbol.baseAsset,
+          this.data.symbol.quoteAsset,
+        )
+        const observedFee = feeByAssetGated
+          ? observedFeeOnSide(
+              observedSplit,
+              o.side === OrderSideEnum.buy ? 'base' : 'quote',
+              price,
+            )
+          : null
+        const feeLegRaw = feeByAssetGated
+          ? observedFeeLegs(
+              o,
+              this.data.symbol.baseAsset,
+              this.data.symbol.quoteAsset,
+            )
+          : []
+        // Off-pair fee (spec 014 §2.2): book 0 on base/quote, never the
+        // estimate — the ledger built below carries it, USD only.
+        const offPair =
+          feeByAssetGated && !observedSplit && feeLegRaw.length > 0
+        // Spec 014 §2.1/§2.3: every observed leg is recorded on the ledger
+        // (on-pair legs included, §4 Q3), priced in USD at capture time.
+        let cachedPrices:
+          | { pair: string; price: number; exchange: string }[]
+          | undefined
+        const feeLegs: { asset: string; amount: number; usdRate: number }[] = []
+        let offPairFeeUsd = 0
+        for (const leg of feeLegRaw) {
+          let usdRate: number
+          if (feeLegRaw.length === 1 && o.feePaidUsd !== undefined) {
+            const usd = +o.feePaidUsd
+            usdRate = leg.amount > 0 ? usd / leg.amount : 0
+          } else if (leg.asset === this.data.symbol.baseAsset) {
+            usdRate = await this.getUsdRate(this.data.symbol.symbol, 'base')
+          } else if (leg.asset === this.data.symbol.quoteAsset) {
+            usdRate = await this.getUsdRate(this.data.symbol.symbol, 'quote')
+          } else {
+            if (!cachedPrices) {
+              const pricesResult = await this.exchange?.getAllPrices(true)
+              cachedPrices =
+                pricesResult?.status === StatusEnum.ok
+                  ? pricesResult.data.map((p) => ({ ...p, exchange: 'all' }))
+                  : []
+            }
+            usdRate =
+              utils.findUSDRate(
+                leg.asset,
+                cachedPrices ?? [],
+                this.data?.exchange,
+              ) || 0
+          }
+          feeLegs.push({ asset: leg.asset, amount: leg.amount, usdRate })
+          if (offPair) {
+            offPairFeeUsd += leg.amount * usdRate
+          }
+        }
+        let comBase =
+          o.side === OrderSideEnum.buy
+            ? offPair
+              ? 0
+              : (observedFee ?? qty * fee.maker)
+            : 0
         let comQuote =
-          o.side === OrderSideEnum.sell ? qty * price * fee.maker : 0
+          o.side === OrderSideEnum.sell
+            ? offPair
+              ? 0
+              : (observedFee ?? qty * price * fee.maker)
+            : 0
         let profitQuote = 0
         let matchedPrice = 0
         let matchQty = 0
@@ -3606,9 +3682,13 @@ function createBotHelper<
                 : this.data?.settings.profitCurrency === 'base'
                   ? profitBase - comBase
                   : profitQuote - comQuote,
-              totalUsd: this.data?.profit?.totalUsd
-                ? this.data?.profit?.totalUsd + profitUsdt
-                : profitUsdt,
+              // Spec 014 §2.2: an off-pair fee's USD value moves totalUsd
+              // only — the native-currency `total` above is unaffected,
+              // since the fee was never booked to base/quote for that leg.
+              totalUsd:
+                (this.data?.profit?.totalUsd
+                  ? this.data?.profit?.totalUsd + profitUsdt
+                  : profitUsdt) - offPairFeeUsd,
               freeTotal:
                 this.data?.profit.freeTotal || this.data.profit.total
                   ? (this.data?.profit?.freeTotal || this.data.profit.total) +
@@ -3627,11 +3707,33 @@ function createBotHelper<
               pureBase: 0,
               pureQuote: 0,
             },
+            // Spec 014 §2.5/§3: new grid bots only (BotFlags.feeByAsset — no
+            // separate flag for this field). Grid has no "close" to finalize
+            // a total at, so `feePaid` is a live running total updated on
+            // every transaction — the write pattern combo's
+            // minigrid.feePaid already uses.
+            feePaid: feeByAssetGated
+              ? {
+                  base: (this.data?.feePaid?.base ?? 0) + comBase,
+                  quote: (this.data?.feePaid?.quote ?? 0) + comQuote,
+                }
+              : undefined,
+            // Spec 014 §2.1: every observed leg (on-pair legs included, §4
+            // Q3).
+            feeByAsset: feeByAssetGated
+              ? feeLegs.reduce(
+                  (ledger, leg) =>
+                    accrueFeeLedger(ledger, leg.asset, leg.amount, leg.usdRate),
+                  this.data?.feeByAsset,
+                )
+              : undefined,
           }
           if (this.data) {
             this.data.transactionsCount =
               data.transactionsCount || this.data.transactionsCount
             this.data.profit = data.profit || this.data.profit
+            this.data.feePaid = data.feePaid || this.data.feePaid
+            this.data.feeByAsset = data.feeByAsset || this.data.feeByAsset
           }
           this.emit('bot settings update', data)
           this.updateData({ ...data })

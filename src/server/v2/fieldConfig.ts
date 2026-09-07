@@ -173,6 +173,9 @@ export const GRID_BOT_EXTENDED_FIELDS = [
   'workingTimeNumber',
   'profitToday',
   'statusReason',
+  'flags',
+  'feePaid',
+  'feeByAsset',
 ] as const
 
 /**
@@ -222,6 +225,7 @@ export const DCA_DEAL_EXTENDED_FIELDS = [
   'initialBalances',
   'currentBalances',
   'feePaid',
+  'feeByAsset',
   'usage',
   'stats',
   'strategy',

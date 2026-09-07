@@ -87,6 +87,7 @@ import {
   DealStartBlock,
 } from '../../types'
 import { observedFeeSplit } from './orderFee'
+import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
 import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
@@ -1778,7 +1779,10 @@ function createDCABotHelper<
       }
       const dealSettings = this.getInitalDealSettings()
       if (this.data && symbolData && dealSettings) {
-        const flags: DCADealFlags[] = [DCADealFlags.newMultiTp]
+        const flags: DCADealFlags[] = [
+          DCADealFlags.newMultiTp,
+          DCADealFlags.feeByAsset,
+        ]
         if (this.data.flags?.includes(BotFlags.externalSl)) {
           flags.push(DCADealFlags.externalSl)
         }
@@ -2286,6 +2290,56 @@ function createDCABotHelper<
           const commDeal = await this.getCommDeal(findDeal.deal)
           let feeBaseFull = 0
           let feeQuoteFull = 0
+          // Off-pair fee legs' USD value only (spec 014 §2.2) — subtracted
+          // from profit.totalUsd below, never from total/pureBase/pureQuote,
+          // which stay correct via feeBaseFull/feeQuoteFull as before.
+          let offPairFeeUsd = 0
+          // Spec 014 §2.1/§2.2/§3: new deals only. `feeByAsset` records every
+          // observed fee leg, on-pair legs included — the ledger's job is
+          // "what did we actually pay," independent of what side comBase/
+          // comQuote ultimately booked to (spec 014 §4 Q3).
+          const feeByAssetGated = !!findDeal.deal.flags?.includes(
+            DCADealFlags.feeByAsset,
+          )
+          let cachedPrices:
+            | { pair: string; price: number; exchange: string }[]
+            | undefined
+          const resolveLegUsdRate = async (
+            asset: string,
+            order: (typeof dealOrders)[number],
+            legAmount: number,
+            singleLeg: boolean,
+          ): Promise<number> => {
+            // Spec 014 §1.4/§2.3: prefer the venue's own USD-equivalent when
+            // it reported one for this order (Kraken today) over any rate
+            // lookup — only meaningful when the fee is a single leg, since
+            // feePaidUsd is one order-level number, not per-leg.
+            if (singleLeg && order.feePaidUsd !== undefined) {
+              const usd = +order.feePaidUsd
+              return legAmount > 0 ? usd / legAmount : 0
+            }
+            const { baseAsset, quoteAsset } = findDeal.deal.symbol ?? {}
+            if (asset === baseAsset) {
+              return this.getUsdRate(tpOrder.symbol, 'base')
+            }
+            if (asset === quoteAsset) {
+              return this.getUsdRate(tpOrder.symbol, 'quote')
+            }
+            if (!cachedPrices) {
+              const pricesResult = await this.exchange?.getAllPrices(true)
+              cachedPrices =
+                pricesResult?.status === StatusEnum.ok
+                  ? pricesResult.data.map((p) => ({ ...p, exchange: 'all' }))
+                  : []
+            }
+            return (
+              utils.findUSDRate(
+                asset,
+                cachedPrices ?? [],
+                this.data?.exchange,
+              ) || 0
+            )
+          }
           for (const o of dealOrders) {
             // Prefer what the VENUE said it charged. `deal.feePaid` was
             // previously the sum of `qty * price * storedFeeRate` for every
@@ -2305,9 +2359,39 @@ function createDCABotHelper<
               findDeal.deal.symbol?.baseAsset,
               findDeal.deal.symbol?.quoteAsset,
             )
+            const legs = feeByAssetGated
+              ? observedFeeLegs(
+                  o,
+                  findDeal.deal.symbol?.baseAsset,
+                  findDeal.deal.symbol?.quoteAsset,
+                )
+              : []
+            for (const leg of legs) {
+              const rate = await resolveLegUsdRate(
+                leg.asset,
+                o,
+                leg.amount,
+                legs.length === 1,
+              )
+              findDeal.deal.feeByAsset = accrueFeeLedger(
+                findDeal.deal.feeByAsset,
+                leg.asset,
+                leg.amount,
+                rate,
+              )
+              if (!observed) {
+                offPairFeeUsd += leg.amount * rate
+              }
+            }
             if (observed) {
               feeBaseFull += observed.base
               feeQuoteFull += observed.quote
+              continue
+            }
+            if (feeByAssetGated && legs.length) {
+              // Off-pair fee (spec 014 §2.2): already recorded on the ledger
+              // above, USD only. Book 0 on base/quote — never the estimate —
+              // and skip it entirely rather than falling through below.
               continue
             }
             if (o.side === OrderSideEnum.buy) {
@@ -2348,8 +2432,12 @@ function createDCABotHelper<
                   findDeal.deal.initialBalances.quote) /
                   findDeal.deal.lastPrice) - commDeal
           const rate = await this.getUsdRate(tpOrder.symbol)
+          // Spec 014 §2.2: an off-pair fee's USD value moves totalUsd only —
+          // total/pureBase/pureQuote above are unaffected (native currencies,
+          // and the fee was never booked to base/quote for these legs).
           const totalUsd =
-            total * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate
+            total * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate -
+            offPairFeeUsd
           findDeal.deal.profit = {
             ...findDeal.deal.profit,
             pureBase: (findDeal.deal.profit.pureBase ?? 0) + pureBase,

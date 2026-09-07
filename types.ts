@@ -1048,6 +1048,9 @@ export type BotData = {
   created?: Date
   public?: boolean
   avgPrice?: number
+  flags?: string[]
+  feeByAsset?: { asset: string; total: number; totalUsd: number }[]
+  feePaid?: { base: number; quote: number }
 }
 export type DCABotData = {
   _id: string
@@ -1228,6 +1231,7 @@ export enum DCADealFlags {
   futuresPrecision = 'futuresPrecision',
   externalTp = 'externalTp',
   externalSl = 'externalSl',
+  feeByAsset = 'feeByAsset',
 }
 
 export enum DCACloseTriggerEnum {
@@ -1296,6 +1300,9 @@ export interface DCADealsSchema extends SchemaI {
     base?: number
     quote?: number
   }
+  /** Per-asset fee ledger (spec 014 §2.1), gated behind
+   *  `DCADealFlags.feeByAsset`. Inherited by `ComboDealsSchema`. */
+  feeByAsset?: { asset: string; total: number; totalUsd: number }[]
   funding?: Funding
   avgPrice: number
   displayAvg: number
@@ -1459,6 +1466,9 @@ export interface ComboDealsSchema extends DCADealsSchema {
     base?: number
     quote?: number
   }
+  /** Per-asset fee ledger (spec 014 §2.1), gated behind
+   *  `DCADealFlags.feeByAsset`. */
+  feeByAsset?: { asset: string; total: number; totalUsd: number }[]
   funding?: Funding
   avgPrice: number
   displayAvg: number
@@ -1535,6 +1545,9 @@ export interface ComboMinigridSchema extends SchemaI {
     pureBase?: number
     pureQuote?: number
   }
+  /** Per-asset fee ledger (spec 014 §2.1), gated behind
+   *  `DCADealFlags.feeByAsset` (read off the owning deal). */
+  feeByAsset?: { asset: string; total: number; totalUsd: number }[]
   feePaid?: {
     base?: number
     quote?: number
@@ -2019,6 +2032,15 @@ export type PositionInBot = {
   price: number
 }
 export interface BotSchema extends MainBot<BotSettings> {
+  /** Grid bots have no dcaBot/comboBot-style `flags` field today (spec 014 §3). */
+  flags?: string[]
+  /** Per-asset fee ledger (spec 014 §2.1) — one entry per asset a fee was ever
+   *  observed to be paid in, gated behind `BotFlags.feeByAsset`. */
+  feeByAsset?: { asset: string; total: number; totalUsd: number }[]
+  /** Running base/quote fee total, updated on every transaction (spec 014
+   *  §2.5) — grid has no "close" to finalize a total at the way DCA/combo
+   *  deals do, so this stays live for as long as the bot runs. */
+  feePaid?: { base: number; quote: number }
   initialPrice: number
   initialPriceFrom?: InitialPriceFromEnum
   initialPriceStart?: number
@@ -2322,6 +2344,7 @@ export enum BotFlags {
   newBaseProfit = 'newBaseProfit',
   externalTp = 'externalTp',
   externalSl = 'externalSl',
+  feeByAsset = 'feeByAsset',
 }
 
 export type DealStatsForBot = {
@@ -3264,6 +3287,14 @@ export type CommonOrder = {
    * inventing an FX rate.
    */
   feeBreakdown?: { asset: string; amount: string }[]
+  /**
+   * The fee's USD value, when the VENUE itself computed and reported it —
+   * today, only Kraken spot's `fee_usd_equiv` (`websocket-connector-sh`
+   * spec 003 §2). Preferred over any rate-lookup for that leg (spec 014
+   * §1.4/§2.3): at least as accurate as anything derived from a
+   * separately-fetched price table, and skips a lookup entirely.
+   */
+  feePaidUsd?: string
 }
 
 /**
@@ -3538,6 +3569,19 @@ export interface SpotUpdate {
   commission?: string
   commissionAsset?: string | null
   tradeId?: number
+  /**
+   * The fee the venue reported, forwarded by `websocket-connector-sh` spec
+   * 003 for every venue but Binance (which uses `commission`/
+   * `commissionAsset`/`tradeId` above instead — its own per-trade shape,
+   * unchanged by that spec). Already an order-level running total by the
+   * time it reaches here — see spec 003 §2.1 for the per-venue
+   * cumulative-vs-per-fill resolution; this repo never accumulates these.
+   */
+  feePaid?: string
+  feeAsset?: string
+  feeBreakdown?: { asset: string; amount: string }[]
+  /** Venue-computed USD value of the fee — only Kraken spot today. */
+  feePaidUsd?: string
 }
 export type ExecutionReport = (SpotUpdate | OrderUpdate) & {
   liquidation?: boolean
