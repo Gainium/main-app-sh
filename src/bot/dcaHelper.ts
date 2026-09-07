@@ -132,7 +132,11 @@ import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
-import { tpPriceDisplacement, worstFee } from './dca/tpFees'
+import {
+  tpPriceDisplacement,
+  worstFee,
+  quantityFeeIsThirdAssetOnly,
+} from './dca/tpFees'
 import {
   buyAndHoldOutcome,
   carryForwardBenchmark,
@@ -7744,8 +7748,20 @@ function createDCABotHelper<
         // leaves the close short of the base it needs to pay its own fee. If you
         // ever set `oflags`, or add a venue whose fee currency differs again,
         // re-derive this per venue rather than trusting either explanation.
+        // Spec 015 §2/§3: a deal whose fees so far were ALL third-asset never
+        // had base/quote debited for fees — same "nothing base/quote-
+        // denominated left the quantity" precondition that already zeroes
+        // this for futures/short, so it zeroes the same way. Gated on the
+        // new-deal flag (014 §3) via feeByAsset only being populated there.
+        const feeDeal = dealId ? this.getDeal(dealId)?.deal : undefined
         const feeFactor =
-          this.futures || short
+          this.futures ||
+          short ||
+          quantityFeeIsThirdAssetOnly(
+            feeDeal?.feeByAsset,
+            feeDeal?.commission ?? 0,
+            feeDeal?.feePaid,
+          )
             ? 1
             : settings.terminalDealType === TerminalDealTypeEnum.simple
               ? 1
@@ -13668,8 +13684,28 @@ function createDCABotHelper<
         // worth of base as exactly the headroom that pays for it. See the long
         // note on `feeFactor` in `createOrder` before changing either side; they
         // are one mechanism and only balance as a pair.
+        // Spec 015 §2/§3: same all-third-asset precondition as getBaseOrder's
+        // feeFactor. Deliberately narrower than zeroing `maxFee` itself
+        // (the plan's original phrasing) — `maxFee` is also read further
+        // below inside the `this.combo` branch (spec §4: combo's TP path is
+        // untraced and explicitly out of scope), and `qty`'s value computed
+        // here is unconditionally overwritten there for a combo deal, so
+        // zeroing only the multiplier at this one non-combo site cannot
+        // reach combo's own maxFee usage at all.
+        const tpFeeDeal = this.getDeal(dealId)?.deal ?? deal
+        const tpQuantityFeeIsThirdAssetOnly = quantityFeeIsThirdAssetOnly(
+          tpFeeDeal?.feeByAsset,
+          tpFeeDeal?.commission ?? 0,
+          tpFeeDeal?.feePaid,
+        )
         let qty =
-          _qty * (this.futures ? 1 : long ? 1 - maxFee : 1 / (1 - maxFee)) + add
+          _qty *
+            (this.futures || tpQuantityFeeIsThirdAssetOnly
+              ? 1
+              : long
+                ? 1 - maxFee
+                : 1 / (1 - maxFee)) +
+          add
         let origQty = qty
         const priceDisplacement = tpPriceDisplacement(priceFee, long)
         let tpPrice = this.math.round(

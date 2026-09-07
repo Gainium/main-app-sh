@@ -52,7 +52,7 @@ export function tpPriceDisplacement(fee: MaybeFee, long: boolean): number {
 export function quantityFeeIsThirdAssetOnly(
   feeByAsset: { asset: string; total: number; totalUsd?: number }[] | undefined,
   commission: number,
-  feePaid: { base: number; quote: number } | undefined,
+  feePaid: { base?: number; quote?: number } | undefined,
 ): boolean {
   const hasThirdAssetFee = (feeByAsset?.length ?? 0) > 0
   const hasOnPairFee =
