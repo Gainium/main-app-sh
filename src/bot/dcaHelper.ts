@@ -17687,6 +17687,7 @@ function createDCABotHelper<
         const lastStreamData = this.getLastStreamData(d.deal.symbol.symbol)
         const time = lastStreamData?.time ?? 0
         if (+new Date() - time < this.priceTimeout) {
+          this.trackPriceStreamHealth(symbol, false)
           continue
         }
         this.handleDebug(
@@ -17694,6 +17695,9 @@ function createDCABotHelper<
             time,
           ).toISOString()}, more then ${this.priceTimeout / 1000 / 60}m`,
         )
+        // Info-level, state-change only: this REST poll is the fallback, and a
+        // symbol that never leaves it has no live `trade@` stream at all.
+        this.trackPriceStreamHealth(symbol, true)
         symbols.add(symbol)
       }
       if (this.exchange && symbols.size) {

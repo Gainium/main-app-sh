@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.19] - 2026-09-07
+
+### Added
+
+- Bot logs now say, once, when a symbol stops receiving live price ticks and falls back to the periodic REST price poll — and say so again when live ticks return. The poll is only a fallback for the `trade@` price stream, but it is also what drives every price-triggered decision (take-profit level check, stop loss, trailing, DCA level), so a symbol stuck on it evaluates those on a ~5-minute cadence instead of per tick. That state was previously visible only at debug level, which is off in production, so an exchange whose price stream was never enabled looked from the bot's side exactly like a quiet market. Claus #617.
+
 ## [1.57.18] - 2026-09-07
 
 ### Fixed
