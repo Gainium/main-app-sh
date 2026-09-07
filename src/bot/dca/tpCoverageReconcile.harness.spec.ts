@@ -27,6 +27,7 @@ import { expect } from 'chai'
 import { MathHelper } from '../../utils/math'
 import { ExchangeEnum } from '../../../types'
 import { ConditionLatch } from '../conditionLatch'
+import { createRequire } from 'module'
 
 type Cancelled = { clientOrderId: string; promotePartialToFilled: unknown }
 
@@ -87,7 +88,15 @@ const DEALS = {
     avgPrice: 0.0004688244815601252,
     initialPrice: 0.0004688244815601252,
     reduceFunds: [],
-    tps: [order('D-TP-TNTUX', 'PARTIALLY_FILLED', '878966', '54103', '6a90e161a76e7fe63ea3118f')],
+    tps: [
+      order(
+        'D-TP-TNTUX',
+        'PARTIALLY_FILLED',
+        '878966',
+        '54103',
+        '6a90e161a76e7fe63ea3118f',
+      ),
+    ],
   },
   ctsi: {
     _id: '6a978104aa99d06351d63e3a',
@@ -99,7 +108,13 @@ const DEALS = {
     initialPrice: 0.02484698888888889,
     reduceFunds: [],
     tps: [
-      order('TP-Jjsrx', 'PARTIALLY_FILLED', '682', '367.00000000', '6a978104aa99d06351d63e3a'),
+      order(
+        'TP-Jjsrx',
+        'PARTIALLY_FILLED',
+        '682',
+        '367.00000000',
+        '6a978104aa99d06351d63e3a',
+      ),
       order('TP-qWLCK', 'NEW', '533', '0.00000000', '6a978104aa99d06351d63e3a'),
     ],
   },
@@ -113,7 +128,13 @@ const DEALS = {
     initialPrice: 0.0075,
     reduceFunds: [],
     tps: [
-      order('D-TP-fawIy', 'PARTIALLY_FILLED', '31934.9', '11245.4', '691de676b60a5e1cf2d420eb'),
+      order(
+        'D-TP-fawIy',
+        'PARTIALLY_FILLED',
+        '31934.9',
+        '11245.4',
+        '691de676b60a5e1cf2d420eb',
+      ),
       order('D-TP-GzuLl', 'NEW', '31730.4', '0', '691de676b60a5e1cf2d420eb'),
     ],
   },
@@ -127,7 +148,15 @@ const DEALS = {
     avgPrice: 0.0004,
     initialPrice: 0.0004,
     reduceFunds: [],
-    tps: [order('TP-ui5yI', 'PARTIALLY_FILLED', '158522', '102530.00000000', '6a5939f5d3d5da3fb6d03677')],
+    tps: [
+      order(
+        'TP-ui5yI',
+        'PARTIALLY_FILLED',
+        '158522',
+        '102530.00000000',
+        '6a5939f5d3d5da3fb6d03677',
+      ),
+    ],
   },
 } as const
 
@@ -137,6 +166,7 @@ const DEALS = {
  * load compiles 21k lines through ts-node, so it is done at most twice for the
  * whole file rather than once per test.
  */
+const loadModule = createRequire(__filename)
 const helperCache = new Map<boolean, any>()
 const helperFor = (armed: boolean) => {
   const hit = helperCache.get(armed)
@@ -146,8 +176,11 @@ const helperFor = (armed: boolean) => {
   } else {
     delete process.env.BOT_TP_COVERAGE_REPAIR
   }
-  delete require.cache[require.resolve('../dcaHelper')]
-  const built = require('../dcaHelper').default(FakeBase as any)
+  // The helper reads BOT_TP_COVERAGE_REPAIR at module load, so each arming
+  // state needs a fresh module instance: evict it and re-load through a
+  // dedicated CommonJS loader (the ESM-style import is cached for the run).
+  delete loadModule.cache[loadModule.resolve('../dcaHelper')]
+  const built = loadModule('../dcaHelper').default(FakeBase as any)
   helperCache.set(armed, built)
   return built
 }
@@ -163,7 +196,11 @@ const buildBot = (armed: boolean, deals: readonly any[]) => {
     public rearmQty = 935356
 
     getDealsByStatusAndSymbol() {
-      return deals.map((d) => ({ deal: d, initialOrders: [], currentOrders: [] }))
+      return deals.map((d) => ({
+        deal: d,
+        initialOrders: [],
+        currentOrders: [],
+      }))
     }
     async getAggregatedSettings() {
       return settings
@@ -216,8 +253,11 @@ const confirmedFrom = (deals: readonly any[]) => {
   return map
 }
 
-const run = async (bot: any, deals: readonly any[], unresolved = new Set<string>()) =>
-  await bot.checkTpCoverage(confirmedFrom(deals), unresolved)
+const run = async (
+  bot: any,
+  deals: readonly any[],
+  unresolved = new Set<string>(),
+) => await bot.checkTpCoverage(confirmedFrom(deals), unresolved)
 
 describe('checkTpCoverage (spec 013, issue #696)', () => {
   before(function () {
@@ -275,9 +315,9 @@ describe('checkTpCoverage (spec 013, issue #696)', () => {
     it('when armed, cancels the stale take-profit and re-arms', async () => {
       const bot = buildBot(true, [DEALS.b3])
       await run(bot, [DEALS.b3])
-      expect(bot.cancelled.map((c: Cancelled) => c.clientOrderId)).to.deep.equal([
-        'D-TP-TNTUX',
-      ])
+      expect(
+        bot.cancelled.map((c: Cancelled) => c.clientOrderId),
+      ).to.deep.equal(['D-TP-TNTUX'])
       expect(bot.placed).to.have.length(1)
       expect(bot.placed[0].dealId).to.equal(DEALS.b3._id)
       expect(bot.placed[0].orders.new[0].qty).to.equal(935356)
@@ -322,7 +362,15 @@ describe('checkTpCoverage (spec 013, issue #696)', () => {
       // Covered: the take-profit now rests the whole tracked position.
       const healed = {
         ...DEALS.b3,
-        tps: [order('D-TP-TNTUX', 'PARTIALLY_FILLED', '989459', '54103', DEALS.b3._id)],
+        tps: [
+          order(
+            'D-TP-TNTUX',
+            'PARTIALLY_FILLED',
+            '989459',
+            '54103',
+            DEALS.b3._id,
+          ),
+        ],
       }
       await run(bot, [healed])
       await run(bot, [DEALS.b3])
