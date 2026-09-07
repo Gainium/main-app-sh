@@ -9606,6 +9606,11 @@ function createDCABotHelper<
           baseMinAmount: ed.baseAsset.minAmount,
           quoteMinAmount: ed.quoteAsset.minAmount,
           price: deal.lastPrice || deal.avgPrice || 0,
+          // The fee `getTPOrder` sizes the take-profit net of, so a healthy
+          // deal does not read as drifted by exactly that fee (issue #700,
+          // spec `014`). Same accessor `getTPOrder` uses, so a `zeroFee` key
+          // answers 0 here exactly as it does there.
+          feeRate: worstFee(await this.getUserFee(symbol)),
         })
         const latchKey = standingConditionKey(tpCoverageDrift, dealId)
         if (verdict.state === 'covered' || verdict.state === 'unknown') {

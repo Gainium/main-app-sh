@@ -135,6 +135,42 @@ export const trackedPosition = ({
 }
 
 /**
+ * The part of a drift the engine's own fee handling cannot account for.
+ *
+ * `getTPOrder` does not size the take-profit at the tracked position: on spot
+ * it shaves one fee off a long (`dcaHelper.ts:13563`, `_qty * (1 - maxFee)`)
+ * because the close sells `gross * (1 - fee)`, and grosses a short up by
+ * `1 / (1 - fee)` for the mirror reason. `trackedPosition` measures the
+ * position itself, so on a perfectly healthy deal the two differ by exactly
+ * that factor — `tracked * fee / (1 - fee)`, the same magnitude in both
+ * directions — and the check reported it as drift forever. Issue #700, spec
+ * `014`: RUNE-USDC `6a9169e0…` rested `1151.1818 * 0.999 = 1150.0306` and was
+ * reported `under` on every pass; APE-USDC `6a9168a9…` rested
+ * `32550 / 0.999 = 32582.58` and was reported `over`.
+ *
+ * Subtracting the factor from `tracked` instead was rejected: which of
+ * `getTPOrder`'s fee branches produced a given resting order is not knowable
+ * from the deal (the quantity leg is zeroed on futures, zero for a `zeroFee`
+ * key, and re-derived from quote profit on a `profitCurrency: base` deal), and
+ * on the live fleet most in-scope deals rest a take-profit at exactly the
+ * tracked position. A subtraction would have silenced one false family and
+ * created another of the same shape in the opposite direction. A tolerance is
+ * safe under every branch: it can only ever make this check report LESS.
+ *
+ * Deliberately one fee wide and no wider. The real population this check exists
+ * for starts at 1.25% of the tracked position and runs to 98%, an order of
+ * magnitude clear of the ~0.1% a fee can move.
+ */
+export const unexplainedDrift = (
+  drift: number,
+  tracked: number,
+  feeRate: number,
+): number => {
+  const fee = feeRate > 0 && feeRate < 1 ? feeRate : 0
+  return Math.max(0, Math.abs(drift) - (Math.abs(tracked) * fee) / (1 - fee))
+}
+
+/**
  * Could an order be placed for this much base at all?
  *
  * The engine's own placeability test, applied wherever it decides a remainder
@@ -156,7 +192,17 @@ const isActionable = (
 export const reconcileTpCoverage = (
   probe: TpCoverageProbe,
   tracked: number,
-  venue: { baseMinAmount: number; quoteMinAmount: number; price: number },
+  venue: {
+    baseMinAmount: number
+    quoteMinAmount: number
+    price: number
+    /**
+     * `worstFee` of the bot's own fee for this pair — the one `getTPOrder`
+     * sizes with. Optional so the decision still answers without it; 0 is the
+     * pre-#700 behaviour. See {@link unexplainedDrift}.
+     */
+    feeRate?: number
+  },
 ): TpCoverageVerdict => {
   if (probe.kind === 'unavailable') {
     // No answer is not an answer. Do exactly what this pass would have done
@@ -176,7 +222,12 @@ export const reconcileTpCoverage = (
   const drift = resting - tracked
   const base = { tracked, resting, drift }
 
-  if (!isActionable(drift, venue)) {
+  // What a repair would actually have to place: the drift LESS the part the
+  // take-profit is sized net of. A residue no venue would accept an order for
+  // is not a defect — whether it is too small outright, or is the fee itself.
+  const unexplained = unexplainedDrift(drift, tracked, venue.feeRate ?? 0)
+
+  if (!isActionable(unexplained, venue)) {
     return {
       ...base,
       state: 'covered',
@@ -185,9 +236,9 @@ export const reconcileTpCoverage = (
       verdict:
         drift === 0
           ? `take-profit covers the position (${fmtQty(resting)})`
-          : `take-profit is ${fmtQty(drift)} off ${fmtQty(
-              tracked,
-            )}, below the venue minimum — not actionable`,
+          : `take-profit is ${fmtQty(drift)} off ${fmtQty(tracked)}, of which ` +
+            `${fmtQty(unexplained)} is not the fee it is sized net of — below ` +
+            `the venue minimum, not actionable`,
     }
   }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.5] - 2026-09-07
+
+### Fixed
+
+- The take-profit coverage check reported healthy deals as drifted by exactly the trading fee. A take-profit is deliberately not sized at the position it closes: on spot it is shaved by one fee on a long, and grossed up by one on a short, because the close itself is charged in the base asset. The check compared the resting take-profit against the position instead, so a spot deal large enough for one fee to clear the venue's minimum order size was reported as under- or over-covered on every reconcile pass and could never clear. It now ignores a difference no larger than the fee the take-profit is sized net of, and judges only what remains — the part a repair would actually have to place an order for. Detection only: nothing is cancelled, placed or re-armed as a result, futures deals are unaffected (their take-profit carries no fee), and a genuine coverage gap still reports exactly as before.
+
 ## [1.58.4] - 2026-09-07
 
 ### Fixed
