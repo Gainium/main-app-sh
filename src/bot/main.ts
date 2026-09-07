@@ -4336,6 +4336,12 @@ class MainBot<T extends IMainBot> {
    */
   private priceStreamGaps = new PriceStreamGapTracker(
     PRICE_STREAM_GAP_LOG_EVERY_MS,
+    // Boot grace: a freshly loaded bot has no stream data for any symbol, and
+    // its subscriptions settle over the next minutes. Without this, the first
+    // poll flags every symbol and two runs later declares them all recovered
+    // — hundreds of lines per worker restart saying nothing. A symbol that
+    // still has not ticked after 2 × priceTimeout is reported as before.
+    { graceMs: 2 * this.priceTimeout, startedAt: +new Date() },
   )
 
   /**

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.2] - 2026-09-07
+
+### Fixed
+
+- The "No live price stream" bot log (1.57.19) fired for every symbol on every bot load. A freshly loaded bot has no stream data for any of its symbols yet, and its subscriptions settle over the following minutes, so the first price poll flagged them all and two polls later declared them all recovered — a burst of lines per worker restart that said nothing about the stream. A bot now gives its symbols a short grace after loading (twice the poll interval) before reporting one as gapped, unless it has already seen a live tick for that symbol, in which case a later gap is reported at once. A symbol that still has not ticked when the grace ends is reported as before, dated from its first stale poll, and a gap that was never reported does not report its recovery either.
+
 ## [1.58.1] - 2026-09-07
 
 ### Changed
