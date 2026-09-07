@@ -6,6 +6,7 @@
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "test": "env NODE_NO_WARNINGS=1 NODE_ENV=testing mocha --timeout 20000 --exit -r ts-node/register --extension ts 'src/**/*.spec.ts'",
+    "processing:test": "tsc --project tsconfig.json && env NODE_NO_WARNINGS=1 NODE_ENV=testing JWT_SECRET=processing-test-jwt-secret mocha --timeout 30000 --exit -r ts-node/register 'tests/processing/**.ts'",
     "fullInit": "export GAINIUM_INDICATORS=@gainium/indicators && export GAINIUM_BACKTESTER=@gainium/backtester && (npm uninstall $GAINIUM_INDICATORS $GAINIUM_BACKTESTER || true) && npm cache clean --force && npm install $GAINIUM_INDICATORS@git+https://github.com/Gainium/indicators.git && npm install $GAINIUM_BACKTESTER@git+https://github.com/Gainium/backtester.git && unset GAINIUM_INDICATORS && unset GAINIUM_BACKTESTER",
     "build": "tsc --project tsconfig.json",
     "push": "git push origin main",
@@ -51,6 +52,7 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^25.0.3",
     "@types/node-cron": "^3.0.11",
+    "@types/sinon": "^21.0.1",
     "@types/swagger-ui-express": "^4.1.8",
     "@types/uuid": "^11.0.0",
     "@typescript-eslint/eslint-plugin": "^8.50.1",
@@ -64,7 +66,9 @@
     "globals": "^16.5.0",
     "husky": "^9.1.7",
     "mocha": "^11.8.0",
+    "mongodb-memory-server": "^11.2.0",
     "prettier": "^3.7.4",
+    "sinon": "^21.1.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },

@@ -25,6 +25,7 @@ export const {
   SERVICETYPE,
   MONGO_DB_CONNECTION_STRING,
   MONGO_DB_HOST = defaultHost,
+  MONGO_DB_URI,
   RABBIT_USER,
   RABBIT_PASSWORD,
   RABBIT_HOST = defaultHost,
