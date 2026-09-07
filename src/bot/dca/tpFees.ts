@@ -56,10 +56,19 @@ export function quantityFeeIsThirdAssetOnly(
   commission: number,
   feePaid: { base?: number; quote?: number } | undefined,
 ): boolean {
-  const hasThirdAssetFee = (feeByAsset?.length ?? 0) > 0
+  // `feeByAsset` is NOT third-asset-exclusive (spec 014 §2.1 — it records
+  // every observed fee, on-pair legs included), so this alone only means
+  // "some fee was observed," not "a third-asset one was." It's still the
+  // right check IN COMBINATION with `hasOnPairFee` below: `closeDeal`
+  // (014 §2.2) adds an on-pair leg to `feeByAsset` in the exact same pass
+  // where it adds to `commission`/`feePaid` — an on-pair fee can never be
+  // in `feeByAsset` without also showing up there. So a non-empty
+  // `feeByAsset` with `hasOnPairFee` false can only mean every entry in it
+  // was off-pair.
+  const hasAnyObservedFee = (feeByAsset?.length ?? 0) > 0
   const hasOnPairFee =
     commission > 0 || (feePaid?.base ?? 0) > 0 || (feePaid?.quote ?? 0) > 0
-  return hasThirdAssetFee && !hasOnPairFee
+  return hasAnyObservedFee && !hasOnPairFee
 }
 
 /**
