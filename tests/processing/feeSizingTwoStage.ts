@@ -27,7 +27,7 @@ import RedisClient from '../../src/db/redis'
 // Both guards treat "no reading" as "not tripped" and continue, so a no-op
 // stub is enough; it just must not try a real connection.
 ;(RedisClient as any).getInstance = async () => undefined
-import { dcaDealsDb, orderDb } from '../../src/db/dbInit'
+import { dcaDealsDb, comboDealsDb, orderDb } from '../../src/db/dbInit'
 import {
   ExchangeEnum,
   StatusEnum,
@@ -317,6 +317,7 @@ function filledBaseOrder(
 describe('Spec 015: TP dust avoidance and two-stage placement (integration)', () => {
   afterEach(async () => {
     await dcaDealsDb.deleteManyData({})
+    await comboDealsDb.deleteManyData({})
     await orderDb.deleteManyData({})
   })
 
@@ -632,5 +633,181 @@ describe('Spec 015: TP dust avoidance and two-stage placement (integration)', ()
       'pending',
     )
     expect(errors.some((e) => e.includes('confirmed wrong'))).to.equal(false)
+  })
+
+  // Spec 015 §4/§7.4, extended to combo on review: getTPOrder's combo
+  // branch sizes its TP off a balance-based formula, not the plain path's
+  // multiplier — but it was still subtracting the account-rate ESTIMATE
+  // (filled.reduce(qty * maxFee)) unconditionally, the same gap the plain
+  // path had. Both call sites reuse tpQuantityFeeIsThirdAssetOnly, so
+  // combo gets the same zeroing and two-stage fallback as DCA for free.
+  describe('combo', () => {
+    async function seedComboDeal() {
+      const created = await comboDealsDb.createData({
+        flags: [DCADealFlags.feeByAsset],
+        botId: BOT_ID,
+        userId: USER_ID,
+        status: DCADealStatusEnum.open,
+        initialBalances: { base: 0, quote: 0 },
+        currentBalances: { base: 0.01, quote: 0 },
+        initialPrice: 50000,
+        avgPrice: 50000,
+        displayAvg: 50000,
+        lastPrice: 50000,
+        profit: { total: 0, totalUsd: 0, pureBase: 0, pureQuote: 0 },
+        feePaid: { base: 0, quote: 0 },
+        commission: 0,
+        createTime: Date.now(),
+        updateTime: Date.now(),
+        levels: { all: 5, complete: 0 },
+        usage: { current: { base: 0, quote: 0 }, max: { base: 0, quote: 0 } },
+        assets: {
+          used: { base: 0, quote: 0 },
+          required: { base: 0, quote: 0 },
+        },
+        settings: {
+          pair: SYMBOL,
+          baseOrderSize: '500',
+          orderSize: '500',
+          strategy: 'long',
+          tpPerc: '1',
+          orderSizeType: 'quote',
+        },
+        parentId: null,
+        childIds: [],
+        parent: false,
+        child: false,
+        gridBreakpoints: [],
+        paperContext: false,
+        symbol: { symbol: SYMBOL, baseAsset: BASE, quoteAsset: QUOTE },
+        stats: {
+          drawdownPercent: 0,
+          runUpPercent: 0,
+          timeInProfit: 0,
+          timeInLoss: 0,
+          trackTime: 0,
+          timeCountStart: Date.now(),
+          unrealizedProfit: 0,
+          usage: 0,
+          maxUsage: 0,
+        },
+      } as any)
+      expect(created.status).to.equal(StatusEnum.ok)
+      return `${created.data!._id}`
+    }
+
+    it('a combo TP is sized with NO fee subtraction when the base order fee was third-asset', async () => {
+      const { bot } = await makeBot(async () => {
+        throw new Error('exchange.openOrder should not be called by this test')
+      })
+      Object.defineProperty(bot, 'combo', {
+        value: true,
+        configurable: true,
+      })
+      bot.dealsDb = comboDealsDb
+
+      const dealId = await seedComboDeal()
+      const baseOrder = filledBaseOrder(dealId, {
+        feePaid: '0.0003',
+        feeAsset: 'BNB',
+      })
+      bot.setOrder(baseOrder)
+      await orderDb.createData(baseOrder as any)
+
+      const findDeal = {
+        deal: (await comboDealsDb.readData({ _id: dealId }))!.data!.result,
+        initialOrders: [],
+        currentOrders: [],
+        previousOrders: [],
+        closeBySl: false,
+        notCheckSl: false,
+        closeByTp: false,
+      }
+      bot.setDeal(findDeal)
+
+      const tpOrders = await bot.getTPOrder(
+        SYMBOL,
+        50000,
+        [],
+        50000,
+        50000,
+        dealId,
+        findDeal.deal,
+        true,
+        false,
+        50000,
+      )
+      const tp = tpOrders[0]
+      // The balance-based formula's qty is currentBalances.base (0.01) minus
+      // the fee subtraction — no estimate subtracted means qty stays 0.01.
+      expect(tp.qty).to.equal(0.01)
+    })
+
+    it('a combo TP rejected as size-shaped still falls back to the estimate size and confirms the sticky flag', async () => {
+      let calls = 0
+      const { bot, errors } = await makeBot(async () => {
+        calls++
+        if (calls === 1) {
+          return {
+            status: StatusEnum.notok,
+            reason: 'Account has insufficient balance for requested action.',
+            data: null,
+          }
+        }
+        return {
+          status: StatusEnum.ok,
+          reason: null,
+          data: {
+            symbol: SYMBOL,
+            orderId: 'venue-order-2',
+            clientOrderId: 'D-TP-1ef',
+            updateTime: Date.now(),
+            price: '50500',
+            origQty: '0.01',
+            executedQty: '0',
+            status: 'NEW',
+            type: 'LIMIT',
+            side: OrderSideEnum.sell,
+          } as CommonOrder,
+        }
+      })
+      Object.defineProperty(bot, 'combo', {
+        value: true,
+        configurable: true,
+      })
+      bot.dealsDb = comboDealsDb
+
+      const dealId = await seedComboDeal()
+      const baseOrder = filledBaseOrder(dealId, {
+        feePaid: '0.0003',
+        feeAsset: 'BNB',
+      })
+      bot.setOrder(baseOrder)
+      await orderDb.createData(baseOrder as any)
+
+      const findDeal = {
+        deal: (await comboDealsDb.readData({ _id: dealId }))!.data!.result,
+        initialOrders: [],
+        currentOrders: [],
+        previousOrders: [],
+        closeBySl: false,
+        notCheckSl: false,
+        closeByTp: false,
+      }
+      bot.setDeal(findDeal)
+
+      await bot.closeDealById(
+        BOT_ID,
+        dealId,
+        CloseDCATypeEnum.closeByMarket,
+        false,
+      )
+
+      expect(calls).to.equal(2)
+      expect(bot.getDeal(dealId)?.deal.feeSizingFallback?.status).to.equal(
+        'confirmed',
+      )
+      expect(errors.some((e) => e.includes('confirmed wrong'))).to.equal(true)
+    })
   })
 })

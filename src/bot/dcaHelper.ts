@@ -6169,10 +6169,12 @@ function createDCABotHelper<
               findDeal.deal.symbol.symbol,
             )
             if (symbol) {
-              // Spec 015 §7.4 Chain B. Combo excluded — §4's TP path is
-              // untraced for combo and out of scope here, same as §2/§3.
+              // Spec 015 §7.4 Chain B. Combo included on review — §2/§3's
+              // zeroing now covers combo's own (balance-based, not
+              // multiplier-based) TP formula too, via the same
+              // tpQuantityFeeIsThirdAssetOnly getTPOrder already computes,
+              // so there is now something for this fallback to catch there.
               const isZeroedFeeSizeTp =
-                !this.combo &&
                 !this.futures &&
                 findDeal.deal.feeSizingFallback?.status !== 'confirmed' &&
                 this.currentDealFeeIsThirdAssetOnly(
@@ -13620,12 +13622,10 @@ function createDCABotHelper<
                 : PositionSide.BOTH,
             }
             // Spec 015 §7.4 Chain A — the routine per-fill/per-tick path.
-            // Combo excluded (§4/§7.4, "shares this method" per the comment
-            // above — same exclusion as Chain B).
+            // Combo included on review — see Chain B's comment above.
             const isZeroedFeeSizeTp =
               order.type === TypeOrderEnum.dealTP &&
               !!deal &&
-              !this.combo &&
               !this.futures &&
               deal.deal.feeSizingFallback?.status !== 'confirmed' &&
               this.currentDealFeeIsThirdAssetOnly(
@@ -14081,7 +14081,17 @@ function createDCABotHelper<
                 ? +o.executedQty !== 0
                 : o.status === 'FILLED' || o.status === 'PARTIALLY_FILLED'),
           )
-          const f = filled.reduce((acc, v) => acc + +v.executedQty * maxFee, 0)
+          // Spec 015 §2/§3/§7, extended to combo on review: this subtraction
+          // was always the account-rate estimate, same gap DCA's plain path
+          // had. `tpQuantityFeeIsThirdAssetOnly` (computed above, before this
+          // branch) already carries the right answer for combo too — it's
+          // deal/order-level, not DCA-specific — and already respects a
+          // CONFIRMED feeSizingFallback/forceFullFeeSizing (the §7 resend),
+          // so reusing it here wires combo into the same two-stage placement
+          // as DCA for free.
+          const f = tpQuantityFeeIsThirdAssetOnly
+            ? 0
+            : filled.reduce((acc, v) => acc + +v.executedQty * maxFee, 0)
           qty -= f
           if (qty < symbol.baseAsset.minAmount && !this.futures) {
             this.handleDebug(
