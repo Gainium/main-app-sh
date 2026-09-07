@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.57.20] - 2026-09-07
+
+### Fixed
+
+- `npm run lint` failed on a clean checkout again, so husky's pre-commit hook rejected every commit in this repo and sessions were committing with `--no-verify`. The take-profit coverage harness (1.57.17, Claus #696) re-loads `dcaHelper` with a fresh module cache so each arming state of `BOT_TP_COVERAGE_REPAIR` gets its own build of the helper, and did so through a bare `require()`, which `@typescript-eslint/no-require-imports` forbids. The harness now goes through a dedicated `createRequire(__filename)` loader, which keeps the cache-busting re-import and satisfies the rule; the file was also brought in line with the repo's prettier settings. Test behaviour is unchanged.
+
 ## [1.57.19] - 2026-09-07
 
 ### Added
