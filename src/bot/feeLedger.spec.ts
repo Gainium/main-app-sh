@@ -1,7 +1,7 @@
 process.env.NODE_ENV = 'testing'
 
 /**
- * Spec: specs/006.fee-ledger-and-usd-pnl.md §2.1/§2.2.
+ * Spec: specs/014.fee-ledger-and-usd-pnl.md §2.1/§2.2.
  *
  * Run: `npm test` (mocha).
  *

@@ -97,11 +97,11 @@ describe('tpFees', () => {
     })
   })
 
-  // Spec 007 §2: a deal whose fees have ALL been paid in a third asset
+  // Spec 015 §2: a deal whose fees have ALL been paid in a third asset
   // (BNB/BGB/KCS) never had base or quote debited for a fee — the same
   // precondition that already zeroes the quantity fee for futures (file
   // header) happens to also hold here, for an unrelated reason. This is
-  // deliberately narrower than "use the real fee" — see spec 007 §4 for why
+  // deliberately narrower than "use the real fee" — see spec 015 §4 for why
   // a per-order real-fee swap is out of scope.
   describe('quantityFeeIsThirdAssetOnly: the ONE case safe to zero the quantity gross-up for', () => {
     it('every observed fee off-pair, none on-pair → true', () => {

@@ -147,6 +147,7 @@ const helperFor = (armed: boolean) => {
     delete process.env.BOT_TP_COVERAGE_REPAIR
   }
   delete require.cache[require.resolve('../dcaHelper')]
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- cache-busting reload, needs CJS require
   const built = require('../dcaHelper').default(FakeBase as any)
   helperCache.set(armed, built)
   return built
