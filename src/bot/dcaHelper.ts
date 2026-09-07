@@ -17680,14 +17680,24 @@ function createDCABotHelper<
     )
     async priceTimerFn(_exchange?: ExchangeEnum) {
       const symbols: Set<string> = new Set()
+      // Stream health is per symbol, not per deal: the tracker's "did we serve
+      // this last run" memory assumes one observation per symbol per run. Two
+      // open deals on the same symbol would feed it twice — the second
+      // observation of a fresh-because-we-served-it symbol reads as a live
+      // tick and declares recovery one run early.
+      const healthNoted: Set<string> = new Set()
       for (const d of this.getDealsByStatusAndSymbol({
         status: DCADealStatusEnum.open,
       }).filter((d) => !d.closeBySl && !d.deal.blockSl && !d.notCheckSl)) {
         const symbol = d.deal.symbol.symbol
         const lastStreamData = this.getLastStreamData(d.deal.symbol.symbol)
         const time = lastStreamData?.time ?? 0
+        const noteHealth = !healthNoted.has(symbol)
+        healthNoted.add(symbol)
         if (+new Date() - time < this.priceTimeout) {
-          this.trackPriceStreamHealth(symbol, false)
+          if (noteHealth) {
+            this.trackPriceStreamHealth(symbol, false)
+          }
           continue
         }
         this.handleDebug(
@@ -17697,7 +17707,9 @@ function createDCABotHelper<
         )
         // Info-level, state-change only: this REST poll is the fallback, and a
         // symbol that never leaves it has no live `trade@` stream at all.
-        this.trackPriceStreamHealth(symbol, true)
+        if (noteHealth) {
+          this.trackPriceStreamHealth(symbol, true)
+        }
         symbols.add(symbol)
       }
       if (this.exchange && symbols.size) {

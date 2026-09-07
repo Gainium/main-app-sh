@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.3] - 2026-09-07
+
+### Fixed
+
+- The "Live price stream resumed" bot log (1.57.19) could fire one poll early on a DCA bot with more than one open deal on the same symbol. The poll walks deals, and told the stream-health tracker about the symbol once per deal; the tracker's rule that a symbol fresh right after our own REST injection is not yet proof of a live tick only holds for one observation per poll, so the second deal's observation was read as that proof. Each poll now reports each symbol once. No trading behaviour changes.
+
 ## [1.58.2] - 2026-09-07
 
 ### Fixed
