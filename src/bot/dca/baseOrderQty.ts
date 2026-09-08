@@ -18,11 +18,12 @@
  *  - Sized before the order map was populated, the same fallback produced the
  *    nominal ALONE: 1786.1 against the same 3711.30.
  *
- * The deal's own books already know the answer. `deal.size` is the position it
- * still holds and the closed quantity is separately tracked, so whatever those
- * two account for beyond the counted safety fills IS the base order — exactly,
- * with no reference to settings. The nominal survives only for its original
- * case: a deal that holds nothing yet because its opening order has not landed.
+ * The deal's own books already know the answer. `deal.size` is the volume the
+ * deal entered — gross of what it has since sold, which is tracked separately
+ * ({@link grossEntryVolume}) — so whatever it accounts for beyond the counted
+ * safety fills IS the base order: exactly, with no reference to settings. The
+ * nominal survives only for its original case: a deal that holds nothing yet
+ * because its opening order has not landed.
  *
  * Pure so `baseOrderQty.spec.ts` can pin it against the real prod numbers.
  */
@@ -48,19 +49,37 @@ export type BaseOrderQtySource =
 /**
  * Gross entry volume a deal is known to have taken on.
  *
- * `deal.size` is NET of everything already closed, while the take-profit sum is
- * expressed GROSS (`add` subtracts the closed quantity again further down), so
- * the closed quantity has to be added back. `add` as `getTPOrder` builds it is
- * negative and already folds in `pendingReduceFunds`, which is QUEUED and not
- * yet executed — that part is still in the position, so it must not be counted
- * as closed.
+ * `deal.size` is already GROSS of every partial take-profit: on B3-USDC deal
+ * `6a90e161…` the base order executed 204177 and the nine safety orders 785282,
+ * and `deal.size` reads 989458.9999999998 — the sum, to the unit — while the
+ * 54103 the deal had already sold sits in `tpHistory` and nowhere else. That
+ * holds fleet-wide: on 2026-09-08, 20 of the 21 open deals carrying a partial
+ * `tpHistory` had `|deal.size|` equal to their summed entry fills exactly, and
+ * `tpCoverageReconcile.trackedPosition` (spec `013`) already reads it that way.
+ * So the closed quantity must NOT be added back here — `getTPOrder`'s `add`
+ * term subtracts it once, downstream, and that is the only time it should be
+ * counted.
+ *
+ * `reduceFunds` is the opposite case and is why this is not simply
+ * `Math.abs(dealSize)`: an EXECUTED reduce-funds withdrawal does leave
+ * `deal.size` (DOGEUSDT `size 4141` against 9073 entered and 4932 withdrawn),
+ * so it has to come back to reach the entry volume. A QUEUED one has not
+ * happened yet, is still in the position, and is already included — pass only
+ * the executed ones.
+ *
+ * This used to take `getTPOrder`'s `add` and negate it, which bundled all three
+ * quantities together and got two of the three wrong. Adding the take-profit
+ * closes back over-stated the base order's contribution by exactly what had
+ * been sold, and once spec `017` started COMPARING that against the base-order
+ * row the over-statement became live for every deal with a partial take-profit:
+ * `6a90e161…` rested three take-profits for 988153 against the 935356 it held,
+ * and all three were cancelled. Spec `026`, issue #717.
  */
 export function grossEntryVolume(
   dealSize: number,
-  add: number,
-  pendingReduceFundsBase: number,
+  reduceFundsBase: number,
 ): number {
-  return Math.abs(dealSize) - add - pendingReduceFundsBase
+  return Math.abs(dealSize) + reduceFundsBase
 }
 
 export function resolveBaseOrderQty({
@@ -74,7 +93,7 @@ export function resolveBaseOrderQty({
   boFromOrder: number
   /** Gross base already counted from this deal's entry fills, base order excluded. */
   filledQty: number
-  /** `|deal.size|` — the position the deal still holds. */
+  /** `|deal.size|` — the volume the deal entered, gross of what it has sold. */
   dealSize: number
   /** Result of {@link grossEntryVolume}. */
   grossEntry: number

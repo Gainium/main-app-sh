@@ -14167,7 +14167,11 @@ function createDCABotHelper<
           boFromOrder,
           filledQty,
           dealSize,
-          grossEntry: grossEntryVolume(dealSize, add, pendingReduceFunds.base),
+          // Only the EXECUTED reduce-funds. `add` is not passed: the closes it
+          // bundles are subtracted once below and `deal.size` is already gross
+          // of them (spec `026`), and a PENDING reduce-funds is still in the
+          // position.
+          grossEntry: grossEntryVolume(dealSize, reduceFundsBase),
           floor: (n) => this.math.round(n, precision, !this.futures),
         })
         let boQty = resolvedBo.qty

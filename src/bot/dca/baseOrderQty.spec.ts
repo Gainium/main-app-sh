@@ -26,15 +26,33 @@ const floor1 = (n: number) => Math.floor(n * 10) / 10
 describe('baseOrderQty', () => {
   describe('grossEntryVolume', () => {
     it('a deal that has closed nothing is its own size', () => {
-      expect(grossEntryVolume(3711.3, 0, 0)).to.equal(3711.3)
+      expect(grossEntryVolume(3711.3, 0)).to.equal(3711.3)
     })
-    it('a deal that has already taken partial profit adds it back', () => {
-      // `add` arrives negative: 51.5 closed via tpHistory.
-      expect(grossEntryVolume(186.79, -51.5, 0)).to.equal(238.29)
+
+    // Spec `026` §2.2 corrects what this suite used to assert. The original
+    // case (`grossEntryVolume(186.79, -51.5, 0) === 238.29`) read `add` as
+    // proof that `deal.size` was NET of the 51.5 already sold. It is not:
+    // B3-USDC `6a90e161…` entered 204177 + 785282 = 989459 and stores
+    // `size: 989458.9999999998` while carrying `tpHistory [{ qty: 54103 }]`,
+    // and 20 of the 21 open deals holding a partial take-profit on prod
+    // 2026-09-08 show that same identity. Adding the close back double-counted
+    // it, and once spec `017` began comparing the result against the
+    // base-order row that over-sized every such deal's replacement
+    // take-profit. Issue #717.
+    it('a deal that has already taken partial profit does NOT add it back', () => {
+      // 989459 entered, 54103 of it since sold: the ENTRY volume is unchanged.
+      expect(grossEntryVolume(989458.9999999998, 0)).to.equal(989458.9999999998)
     })
-    it('a QUEUED reduce-funds is still in the position, so it is not closed volume', () => {
-      // `add` folds pendingReduceFunds in; grossEntryVolume must take it back out.
-      expect(grossEntryVolume(100, -30, 30)).to.equal(100)
+
+    it('an EXECUTED reduce-funds did leave deal.size, so it comes back', () => {
+      // DOGEUSDT on prod: 9073 entered, 4932 withdrawn, `size: 4141`.
+      expect(grossEntryVolume(4141, 4932)).to.equal(9073)
+    })
+
+    it('a QUEUED reduce-funds is still in the position and never reaches here', () => {
+      // Only `deal.reduceFunds` (appended on fill) is passed;
+      // `getPendingReduceFunds` is not part of this quantity.
+      expect(grossEntryVolume(100, 0)).to.equal(100)
     })
   })
 

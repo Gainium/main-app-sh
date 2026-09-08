@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.17] - 2026-09-08
+
+### Fixed
+
+- A deal that has already taken part of its profit no longer arms a replacement close order for more than it holds. The size of a close is worked out from the volume the deal bought, less whatever it has already sold. The record of what the deal bought never had the sold amount taken out of it in the first place, so adding that amount back on top inflated the figure by exactly what had been sold; the resulting close order asks the exchange for coins the deal no longer owns and is rejected, and each rejection leaves the position with no exit order resting at all. Funds deliberately withdrawn from a deal are a different case and are still added back, because those genuinely do leave the recorded volume. A deal that has sold nothing is unchanged to the last decimal. Spec 026.
+- Cancelling a partly-filled order in order to REPLACE it with a bigger one is now always recorded as a cancellation. Some exchanges answer such a cancellation by reporting the order as complete, and that answer was written over the local record before the "this is a replacement, not a close" instruction was read — so the instruction was skipped, the partial sale was recorded as if the whole order had filled, and the deal's own figures stopped matching the position it still held. The exchange's report of how much actually traded is still kept, and an order the exchange fills outright in the moment before the cancellation lands is still recorded as filled. Spec 026.
+
 ## [1.58.16] - 2026-09-08
 
 ### Fixed

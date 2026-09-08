@@ -8382,6 +8382,34 @@ class MainBot<T extends IMainBot> {
               }
             }
           })
+          // `promotePartialToFilled: false` is the CALLER'S INTENT — this
+          // cancel is a deliberate re-size, never a close — and the guard below
+          // reads `order.status`, which the copy loop has just overwritten with
+          // whatever the venue's cancel RESPONSE said. A venue that answers
+          // `FILLED` therefore walks straight past the opt-out: the row is
+          // persisted FILLED and the flag never runs. B3-USDC deal
+          // `6a90e161…` on 2026-09-08 — the #696 tp-coverage repair cancelled
+          // `D-TP-TNTUX…` with the opt-out at 13:18:25.597Z, the row was written
+          // FILLED at 13:18:26.055Z, and the venue's own user-stream event 37 ms
+          // later said CANCELED. Only `dealOutcome`'s `dealLeftOpenSize` guard
+          // stopped 54103 of a 989459 position from closing the deal.
+          //
+          // So decide it from what we asked for, not from what came back. The
+          // response's `executedQty` is still trusted — it is the fills, and
+          // they are a partial take profit `tpHistory` already carries. `origQty`
+          // is the row's own (the copy loop excludes it), so this compares the
+          // venue's fills against the size we placed: short of it, the cancel
+          // won and the row is terminal-CANCELED. At or past it the venue filled
+          // the order out from under the cancel, which IS a close — left FILLED
+          // so `placeOrders`' `result.status === 'FILLED'` handling still sees
+          // it. Spec `026`, issue #717.
+          if (
+            !promotePartialToFilled &&
+            order.status !== 'CANCELED' &&
+            +order.executedQty < +order.origQty
+          ) {
+            order.status = 'CANCELED'
+          }
           if (+order.executedQty !== 0 && order.status === 'CANCELED') {
             if (
               promotePartialToFilled &&
