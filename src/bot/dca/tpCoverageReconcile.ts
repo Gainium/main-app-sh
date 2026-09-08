@@ -267,7 +267,21 @@ export const reconcileTpCoverage = (
     // nothing is left resting: either we cancelled what was there, or there was
     // never anything there. `placeOrders` is idempotent about the rest — it
     // re-sizes only when the resting quantity actually disagrees with the deal.
-    rearm: staleTps.length > 0 || live.length === 0,
+    //
+    // `under` is the third safe case, and without it this whole correction was
+    // inert for the population it matters most to (spec `017` §4.1, issue
+    // #702): a deal resting ONE undersized `NEW` take-profit has no `staleTps`
+    // and one live order, so the rule above answered false and an armed engine
+    // logged the drift and did nothing — 61 open deals on 2026-09-08, 92% of
+    // the position uncovered on average. `under` means the deal needs a BIGGER
+    // take-profit, and that is exactly the branch `placeOrders` already has:
+    // it looks the resting order up by `['NEW','PARTIALLY_FILLED']` and, when
+    // that order can sell less than the replacement, cancels it (with
+    // `promotePartialToFilled: false`) and sends the replacement in the same
+    // pass. So this re-arm cannot duplicate — it can only resize upward, and
+    // an order too small to close the deal is not one worth protecting.
+    // `over` keeps the conservative rule: there, re-arming really would stack.
+    rearm: staleTps.length > 0 || live.length === 0 || state === 'under',
     verdict,
   }
 }

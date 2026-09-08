@@ -13560,7 +13560,17 @@ function createDCABotHelper<
             symbol.baseAsset.minAmount,
           )
         }
-        if (resolvedBo.source !== 'order') {
+        if (resolvedBo.source === 'position') {
+          // The base order IS on record — so the message below would be a lie —
+          // and the deal still holds more than it and the counted fills
+          // explain. Spec `017` (#702): entry rows missing from the order map
+          // used to size the close at the base order alone. Greppable on its
+          // own so an operator can tell this branch firing from the
+          // no-base-order one.
+          this.handleLog(
+            `Deal ${dealId || '(new)'} holds more than its order rows account for — base order qty ${boQty} taken from the position, not the ${boFromOrder} on record (size ${dealSize}, counted fills ${filledQty})`,
+          )
+        } else if (resolvedBo.source !== 'order') {
           // `nominal` is the routine case: every deal whose opening order has
           // not landed yet passes through it, ~650 lines/min across the fleet,
           // and it is the one with nothing to diagnose. The two that say

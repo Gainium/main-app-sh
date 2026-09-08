@@ -163,6 +163,33 @@ const DEALS = {
       ),
     ],
   },
+  /**
+   * AIXBTUSDT — spec `017` §2.1 (issue #702), read from production on
+   * 2026-09-08. Base order 250, one safety fill 260, `size: 510`, and ONE
+   * `NEW` take-profit of 250: the first take-profit was 510 and EXPIRED, the
+   * replacement was sized at the base order alone. No partial fill anywhere,
+   * so `staleTps` is empty and `live.length` is 1 — the shape the correction
+   * could not act on.
+   */
+  underNewOnly: {
+    _id: '6a301c7ca999bdafb2ad8055',
+    symbol: { symbol: 'AIXBTUSDT' },
+    size: 510,
+    tpHistory: [],
+    lastPrice: 0.023445,
+    avgPrice: 0.0238,
+    initialPrice: 0.02417,
+    reduceFunds: [],
+    tps: [
+      order(
+        'D-TP-3w5x48B7xtLpQUQMNepJpT1GKajf7j',
+        'NEW',
+        '250',
+        '0',
+        '6a301c7ca999bdafb2ad8055',
+      ),
+    ],
+  },
   /** SPELLUSDT — partially filled and perfectly covered. Must not be touched. */
   healthy: {
     _id: '6a5939f5d3d5da3fb6d03677',
@@ -490,6 +517,62 @@ describe('checkTpCoverage (spec 013, issue #696)', () => {
       const bot = buildBot(true, [DEALS.b3])
       bot.data = { ...bot.data, flags: ['externalTp'] }
       await run(bot, [DEALS.b3])
+      expect(bot.cancelled).to.deep.equal([])
+    })
+  })
+
+  /**
+   * Spec `017.tp-sized-from-base-order-when-fills-are-absent.md` §4.1
+   * (issue #702) — the correction was inert for the whole undersized-`NEW`
+   * population: 61 open deals across 8 users on 2026-09-08.
+   */
+  describe('spec 017 §4.1 an undersized resting take-profit is repaired', () => {
+    const deal = DEALS.underNewOnly
+
+    it('reports the AIXBTUSDT deal as 260 of 510 uncovered', async () => {
+      const bot = buildBot(false, [deal])
+      await run(bot, [deal])
+      // The exact production line, twice a day since 2026-09-06.
+      expect(bot.warns.join('\n')).to.contain('under: 260 of 510')
+    })
+
+    it('re-arms it when armed — it used to cancel nothing and place nothing', async () => {
+      const bot = buildBot(true, [deal])
+      bot.rearmQty = 510
+      await run(bot, [deal])
+      expect(bot.cancelled).to.deep.equal([])
+      expect(bot.placed).to.have.length(1)
+      expect(bot.placed[0].dealId).to.equal(deal._id)
+      expect(bot.placed[0].orders.new[0].qty).to.equal(510)
+    })
+
+    it('does not re-place on every pass', async () => {
+      const bot = buildBot(true, [deal])
+      for (let i = 0; i < 4; i++) await run(bot, [deal])
+      expect(bot.placed).to.have.length(1)
+    })
+
+    it('stays out of it when the correction is not armed', async () => {
+      const bot = buildBot(false, [deal])
+      await run(bot, [deal])
+      expect(bot.placed).to.deep.equal([])
+      expect(bot.cancelled).to.deep.equal([])
+    })
+
+    it('still refuses to stack on an OVER-covered deal', async () => {
+      // Two healthy NEW take-profits, no partial: `over`, and re-arming there
+      // is how the duplicate take-profit was made in the first place.
+      const over = {
+        ...deal,
+        tps: [
+          order('D-TP-a', 'NEW', '510', '0', deal._id),
+          order('D-TP-b', 'NEW', '510', '0', deal._id),
+        ],
+      }
+      const bot = buildBot(true, [over])
+      await run(bot, [over])
+      expect(bot.warns.join('\n')).to.contain('over')
+      expect(bot.placed).to.deep.equal([])
       expect(bot.cancelled).to.deep.equal([])
     })
   })

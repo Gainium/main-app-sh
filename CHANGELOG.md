@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.9] - 2026-09-08
+
+### Fixed
+
+- A deal could rest a take-profit sized for its opening order alone while it actually held everything its safety orders had bought, so the position could not close at target and the money kept riding with no exit order covering it. The close is sized by adding up the deal's entry orders as the running bot holds them in memory, and that record is rebuilt whenever a worker restarts; when safety-order rows were missing from it the sum silently collapsed to the opening order, and nothing compared the result against the position the deal itself records. Deals whose opening order was the missing row were already covered by an earlier fix; the same check now applies when the opening order is present, so the quantity can only ever be raised to the position the deal records, never lowered below the order on record. A deal whose records all agree is unaffected. The log now says when the position, rather than the order row, supplied the size.
+- The take-profit coverage correction now also repairs a deal resting a single take-profit that is simply too small. It could previously only act on a deal whose take-profit had taken a partial fill, or one with no take-profit at all, so an undersized-but-untouched order was reported on every pass and never corrected. Correcting one asks the engine to resize it, which is the path that already cancels the small order and sends the replacement in the same pass. A deal offering more than it owns is unchanged and is still never added to.
+
 ## [1.58.8] - 2026-09-08
 
 ### Fixed

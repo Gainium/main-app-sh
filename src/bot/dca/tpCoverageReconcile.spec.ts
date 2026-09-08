@@ -258,6 +258,34 @@ describe('tpCoverageReconcile', () => {
       }
     })
 
+    it('§017 re-arms a deal resting ONE undersized NEW take-profit', () => {
+      // Deal 6a301c7ca999bdafb2ad8055 (AIXBTUSDT), prod 2026-09-08: 510 held,
+      // one NEW take-profit at 250. No partial, one live order — so before spec
+      // `017` `rearm` was false and an armed correction logged
+      // `under: 260 of 510` on every pass and did nothing. 61 open deals.
+      const v = reconcileTpCoverage(
+        { kind: 'orders', orders: [tp('NEW', '250', '0')] },
+        510,
+        { baseMinAmount: 1, quoteMinAmount: 1, price: 0.023445 },
+      )
+      expect(v.state).to.equal('under')
+      expect(v.drift).to.equal(-260)
+      // Nothing is cancelled here: `placeOrders` cancels the small order and
+      // sends the replacement in the same pass.
+      expect(v.staleTps).to.deep.equal([])
+      expect(v.rearm).to.equal(true)
+    })
+
+    it('§017 leaves an over-covered deal alone — re-arming there would stack', () => {
+      const v = reconcileTpCoverage(
+        { kind: 'orders', orders: [tp('NEW', '800', '0')] },
+        510,
+        { baseMinAmount: 1, quoteMinAmount: 1, price: 0.023445 },
+      )
+      expect(v.state).to.equal('over')
+      expect(v.rearm).to.equal(false)
+    })
+
     it('does not nominate a NEW order for cancellation even when over-covered', () => {
       // Two NEW take-profits and no partial: real, but not this defect's
       // shape, and cancelling a healthy resting order is not this fix's job.
