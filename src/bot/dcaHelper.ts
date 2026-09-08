@@ -14274,6 +14274,37 @@ function createDCABotHelper<
             return []
           }
         }
+        // Spec `023` (#714). Nothing below can notice a non-finite size: every
+        // comparison with NaN is false, so the `baseAsset.minAmount` and
+        // `quoteAsset.minAmount` clamps further down are no-ops, and the one
+        // thing that does object — `new Big(qty).mod(step)` throwing
+        // `[big.js] Invalid number` — is caught and execution continues. The
+        // order was built anyway, `sendOrderToExchange` write-ahead persisted
+        // `origQty: "NaN"` / `cummulativeQuoteQty: "NaN"` as STRINGS (mongoose
+        // accepts them), and from then on every deal aggregate that casts those
+        // back to Number produced NaN, so the deal document could not be saved
+        // at all: `CastError ... at path "fullFee" / "currentBalances.quote" /
+        // "usage.currentUsd" / "assets.required.base"`.
+        //
+        // The usual way in: a deal whose price inputs are 0 leaves
+        // `resolveBaseOrderQty` at `nominal`, whose re-derivation divides
+        // `baseOrderSize` by that price — Infinity — and `math.round` stringifies
+        // its input, so `Number('Infinity' + 'e0')` quietly becomes NaN. Same
+        // failure `createInitialDealOrders` already refuses above ("Latest price
+        // is 0"), and the same refusal `addDealFunds` already makes for its own
+        // quantity. Placed after the combo branch so its balance-derived `qty`
+        // is covered too, and before the order exists at all.
+        if (!Number.isFinite(qty) || !Number.isFinite(tpPrice) || tpPrice <= 0) {
+          this.handleErrors(
+            `Close order qty is not a number. Deal ${dealId || '(new)'} qty ${qty}, price ${tpPrice}, base order qty ${boQty}, counted fills ${filledQty}`,
+            'getTPOrder',
+            '',
+            false,
+            false,
+            false,
+          )
+          return []
+        }
         const tpOrder: Grid = {
           qty: this.math.round(
             qty,

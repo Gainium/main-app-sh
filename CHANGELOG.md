@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.14] - 2026-09-08
+
+### Fixed
+
+- A take-profit order is no longer built, sent or recorded when its size does not come out as a real number. If a deal's price inputs are momentarily missing, the size the close is derived from could become "not a number", and none of the existing minimum-size checks catch that value — every comparison against it is false — so the order was recorded and sent regardless. The venue refused it, but the recorded row kept the unusable size, and from then on the deal's own totals could not be saved at all, so its stored figures stopped following the position. Close orders now refuse to be built in that state and say so in the bot log, the same way adding funds to a deal already refuses an unusable quantity. Spec 023.
+
 ## [1.58.13] - 2026-09-08
 
 ### Fixed
