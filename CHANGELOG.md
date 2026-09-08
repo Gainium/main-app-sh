@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.10] - 2026-09-08
+
+### Fixed
+
+- An exchange that refused an order because its quantity carried more decimal places than that account's venue accepts is now learned from instead of simply failing. A trading pair's quantity step is read once from the exchange's public instrument list and shared by every bot on that pair, but the endpoint an account actually trades against does not always publish the same limits — a regional endpoint can require a coarser quantity, and may not list the pair at all — so every order the bot computed was refused, again and again, with no refresh able to fix it. The refusal itself now supplies the answer: a quantity the venue rejects proves it accepts one decimal place fewer, so the order is rounded down to that and sent again immediately, and the precision is remembered for that connection and pair so later orders are sized correctly from the start rather than costing another refusal. The remembered value can only ever get coarser, is never applied to any other account, and never changes the shared pair record. An account that has never been refused behaves exactly as before.
+
 ## [1.58.9] - 2026-09-08
 
 ### Fixed

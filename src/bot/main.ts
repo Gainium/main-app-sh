@@ -88,6 +88,11 @@ import {
   noteErrorRuleHit,
 } from './errorRulesCache'
 import QuantRulesGuard, { LEVEL2_VIOLATIONS } from './quantRulesGuard'
+import QtyStepGuard, {
+  decimalsToStep,
+  deriveAcceptedDecimals,
+  isQtyDecimalsRefusal,
+} from './qtyStepGuard'
 
 /**
  * Retry budget for a deal whose start carries no timing of its own (ASAP): the
@@ -2240,12 +2245,58 @@ class MainBot<T extends IMainBot> {
   }
 
   public async getExchangeInfo(symbol: string, force = false) {
-    return await this.sharedData.getExchangeInfo(
+    const info = await this.sharedData.getExchangeInfo(
       removePaperFormExchangeName(this.data?.exchange ?? ExchangeEnum.binance),
       symbol,
       this.botId,
       force,
     )
+    return this.applyLearnedQtyStep(symbol, info)
+  }
+
+  /**
+   * Widen a pair's quantity step to what THIS connection's venue has actually
+   * proven it accepts (see `qtyStepGuard.ts`).
+   *
+   * `pairs` holds one row per `exchange@pair`, loaded from the venue's public
+   * instrument list — but the host an account signs against is not always the
+   * host that list came from (Bybit's regional endpoints publish coarser lot
+   * filters, and some symbols only on one of them). When such a venue refuses a
+   * quantity, `sendOrderToExchange` records the precision the refusal proves,
+   * and this is where every later sizing decision picks it up: this method is
+   * the single read path for pair filters in the engine, so `baseAssetPrecision`
+   * and the `baseAsset.step` remainder arithmetic in dcaHelper / gridMonitor /
+   * comboHelper all inherit it without their own call sites changing.
+   *
+   * Three properties matter and are pinned by `qtyStepGuard.spec.ts`:
+   *  - it only ever COARSENS — a learned step finer than the shared one is
+   *    ignored, so this can never loosen a venue's real filter;
+   *  - it COPIES — the row from the shared store is handed to every bot in the
+   *    worker, so mutating it would re-size other users' orders on that pair;
+   *  - with nothing learned it returns the very same object, so an account that
+   *    has never been refused is byte-for-byte unaffected.
+   */
+  private applyLearnedQtyStep(
+    symbol: string,
+    info: ClearPairsSchema | undefined,
+  ): ClearPairsSchema | undefined {
+    const decimals = QtyStepGuard.peek(this.data?.exchangeUUID, symbol)
+    if (!info || decimals === null) {
+      return info
+    }
+    const step = decimalsToStep(decimals)
+    if (!(step > info.baseAsset.step)) {
+      return info
+    }
+    return {
+      ...info,
+      baseAsset: {
+        ...info.baseAsset,
+        step,
+        // An order below a single step cannot be expressed at this precision.
+        minAmount: Math.max(info.baseAsset.minAmount, step),
+      },
+    }
   }
 
   /**
@@ -7559,6 +7610,66 @@ class MainBot<T extends IMainBot> {
                 )
                 order.price = requantized
                 order.origPrice = requantized
+                this.endMethod(_id)
+                return this.sendOrderToExchange(order, returnError, count)
+              }
+            }
+          }
+          // The QUANTITY twin of the tick-size branch above, and it exists for
+          // the same reason with one extra twist: the cached filter is not
+          // merely stale, it can be the WRONG VENUE's filter. `pairs` holds one
+          // `baseAsset.step` per exchange+pair, loaded from the public
+          // instrument list, but Bybit's regional hosts do not publish the same
+          // filters — measured live, api.bybit.eu lists 133 spot symbols to
+          // api.bybit.com's 538, gives 34 of the shared ones a coarser
+          // basePrecision (SOLUSDC 0.001 vs 0.0001), and does not list SOLUSDT
+          // at all. An account on the `eu` host therefore has every quantity we
+          // compute refused with `Order quantity has too many decimals.`, and
+          // no refresh can fix it: re-reading the .com list returns the same
+          // step, and there is no EU row for the pair to read instead.
+          //
+          // So the refusal itself is the source of truth. A quantity with `d`
+          // decimals that the venue refused proves it accepts at most `d-1`;
+          // we record that against this connection+symbol, re-quantize DOWN
+          // (never up — a SELL must not exceed the position, a BUY must not
+          // exceed the budget) and resubmit. `getExchangeInfo` then serves the
+          // learned step to every later sizing decision, so the NEXT order is
+          // right the first time rather than costing another refusal.
+          //
+          // Termination needs no counter: each pass strictly lowers the decimal
+          // count and stops at zero, and a re-quantization that changes nothing
+          // (or empties the order) falls through to normal error handling.
+          // `count` is passed through unchanged, exactly as the tick-size branch
+          // does, so the coin-M conversion and the write-ahead persist keep
+          // their `count === 0` semantics.
+          //
+          // Guarded on the sent quantity still BEING the base quantity: the
+          // coin-M, OKX-contract and Bybit market-buy paths above send a
+          // converted number, and deriving a base-asset precision from one of
+          // those would learn a fiction.
+          if (
+            isQtyDecimalsRefusal(request.reason) &&
+            requestData.quantity === parseFloat(order.origQty)
+          ) {
+            const accepted = deriveAcceptedDecimals(requestData.quantity)
+            if (accepted !== null) {
+              const learned = await QtyStepGuard.record(
+                this.data.exchangeUUID,
+                order.symbol,
+                accepted,
+              )
+              const requantized = this.math.round(
+                +order.origQty,
+                learned ?? accepted,
+                true,
+              )
+              if (requantized > 0 && requantized !== +order.origQty) {
+                this.handleLog(
+                  `Order ${order.clientOrderId} refused on quantity decimals. ${order.symbol} quantity precision learned as ${
+                    learned ?? accepted
+                  }, re-quantized ${order.origQty} -> ${requantized}, retry`,
+                )
+                order.origQty = `${requantized}`
                 this.endMethod(_id)
                 return this.sendOrderToExchange(order, returnError, count)
               }
