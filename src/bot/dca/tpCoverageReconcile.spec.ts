@@ -18,6 +18,7 @@ import {
   reconcileTpCoverage,
   restingTpQty,
   trackedPosition,
+  unexplainedDrift,
   type LiveTpOrder,
 } from './tpCoverageReconcile'
 
@@ -257,6 +258,34 @@ describe('tpCoverageReconcile', () => {
       }
     })
 
+    it('§017 re-arms a deal resting ONE undersized NEW take-profit', () => {
+      // Deal 6a301c7ca999bdafb2ad8055 (AIXBTUSDT), prod 2026-09-08: 510 held,
+      // one NEW take-profit at 250. No partial, one live order — so before spec
+      // `017` `rearm` was false and an armed correction logged
+      // `under: 260 of 510` on every pass and did nothing. 61 open deals.
+      const v = reconcileTpCoverage(
+        { kind: 'orders', orders: [tp('NEW', '250', '0')] },
+        510,
+        { baseMinAmount: 1, quoteMinAmount: 1, price: 0.023445 },
+      )
+      expect(v.state).to.equal('under')
+      expect(v.drift).to.equal(-260)
+      // Nothing is cancelled here: `placeOrders` cancels the small order and
+      // sends the replacement in the same pass.
+      expect(v.staleTps).to.deep.equal([])
+      expect(v.rearm).to.equal(true)
+    })
+
+    it('§017 leaves an over-covered deal alone — re-arming there would stack', () => {
+      const v = reconcileTpCoverage(
+        { kind: 'orders', orders: [tp('NEW', '800', '0')] },
+        510,
+        { baseMinAmount: 1, quoteMinAmount: 1, price: 0.023445 },
+      )
+      expect(v.state).to.equal('over')
+      expect(v.rearm).to.equal(false)
+    })
+
     it('does not nominate a NEW order for cancellation even when over-covered', () => {
       // Two NEW take-profits and no partial: real, but not this defect's
       // shape, and cancelling a healthy resting order is not this fix's job.
@@ -271,6 +300,110 @@ describe('tpCoverageReconcile', () => {
       expect(v.state).to.equal('over')
       expect(v.staleTps).to.deep.equal([])
       expect(v.rearm).to.equal(false)
+    })
+  })
+
+  /**
+   * Spec `014.tp-coverage-fee-shaped-false-drift.md` (issue #700).
+   *
+   * Every number below is a production deal read from Mongo on 2026-09-07,
+   * with the quantity the venue actually had resting. The three healthy ones
+   * were reported `under`/`over` on every reconcile pass for more than a day.
+   */
+  describe('§014 a drift no larger than the fee the take-profit is sized net of', () => {
+    const FEE = 0.001
+
+    it('clears the spot LONG shave — RUNE-USDC rested size × (1 − fee)', () => {
+      // Deal 6a9169e0d044367d73f9c917: size 1151.1818, one NEW take-profit of
+      // 1150.0306 = 1151.1818 × 0.999, exactly what `getTPOrder` sizes.
+      const probe = {
+        kind: 'orders' as const,
+        orders: [tp('NEW', '1150.0306', '0')],
+      }
+      const venue = { baseMinAmount: 0.1, quoteMinAmount: 1, price: 6.9596 }
+      // Before: a healthy deal read as 1.1512 RUNE uncovered.
+      expect(reconcileTpCoverage(probe, 1151.1818, venue).state).to.equal(
+        'under',
+      )
+      expect(
+        reconcileTpCoverage(probe, 1151.1818, { ...venue, feeRate: FEE }).state,
+      ).to.equal('covered')
+    })
+
+    it('clears the spot SHORT gross-up — APE-USDC rested size ÷ (1 − fee)', () => {
+      // Deal 6a9168a9d044367d73f9b190: tracked 32,550, resting 32,582.58 =
+      // 32,550 / 0.999. The mirror of the long shave, same magnitude.
+      const probe = {
+        kind: 'orders' as const,
+        orders: [tp('NEW', '32582.58', '0')],
+      }
+      const venue = { baseMinAmount: 0.1, quoteMinAmount: 1, price: 0.4 }
+      expect(reconcileTpCoverage(probe, 32550, venue).state).to.equal('over')
+      expect(
+        reconcileTpCoverage(probe, 32550, { ...venue, feeRate: FEE }).state,
+      ).to.equal('covered')
+    })
+
+    it('clears the shave plus the venue step it is floored to — RENDER-USDT', () => {
+      // Deal 6a15d25a1af32681aa1cf186: 626.06 tracked, 625.43 resting. The
+      // 0.63 gap is 0.0033 more than one fee because the quantity is floored
+      // to the pair's base step; that residue is itself unplaceable.
+      const probe = {
+        kind: 'orders' as const,
+        orders: [tp('NEW', '625.43', '0')],
+      }
+      const venue = { baseMinAmount: 0.1, quoteMinAmount: 1, price: 2.0436 }
+      expect(reconcileTpCoverage(probe, 626.06, venue).state).to.equal('under')
+      expect(
+        reconcileTpCoverage(probe, 626.06, { ...venue, feeRate: FEE }).state,
+      ).to.equal('covered')
+    })
+
+    it('still reports the smallest genuinely drifted deal in the population', () => {
+      // SANTOSUSDT 689ca35912af2b11a181dce5 — 1.45% adrift, the narrowest real
+      // member of the 2026-09-07 population. A one-fee tolerance must not
+      // reach it, or the check stops being worth running.
+      const v = reconcileTpCoverage(
+        { kind: 'orders', orders: [tp('NEW', '388.6', '0')] },
+        394.33,
+        { baseMinAmount: 0.1, quoteMinAmount: 1, price: 1.5, feeRate: FEE },
+      )
+      expect(v.state).to.equal('under')
+      expect(v.drift).to.be.closeTo(-5.73, 1e-6)
+    })
+
+    it('still reports the B3-USDC deal spec 013 was written for', () => {
+      const v = reconcileTpCoverage(
+        { kind: 'orders', orders: [tp('PARTIALLY_FILLED', '878966', '54103')] },
+        935356,
+        { ...placeable, feeRate: FEE },
+      )
+      expect(v.state).to.equal('under')
+      expect(v.rearm).to.equal(true)
+    })
+
+    it('measures the same tolerance in both directions and none without a fee', () => {
+      expect(unexplainedDrift(-1.1512, 1151.1818, FEE)).to.equal(0)
+      expect(unexplainedDrift(1.1512, 1151.1818, FEE)).to.equal(0)
+      expect(unexplainedDrift(-1.1512, 1151.1818, 0)).to.be.closeTo(
+        1.1512,
+        1e-9,
+      )
+      // A zeroFee key answers 0 here exactly as it does in `getTPOrder`.
+      expect(unexplainedDrift(-110493, 935356, 0)).to.equal(110493)
+      // Nonsense fees are ignored rather than widening the tolerance.
+      expect(unexplainedDrift(-100, 1000, 1)).to.equal(100)
+      expect(unexplainedDrift(-100, 1000, -0.5)).to.equal(100)
+    })
+
+    it('leaves the drift itself untouched for the log line', () => {
+      const v = reconcileTpCoverage(
+        { kind: 'orders', orders: [tp('NEW', '1150.0306', '0')] },
+        1151.1818,
+        { baseMinAmount: 0.1, quoteMinAmount: 1, price: 6.9596, feeRate: FEE },
+      )
+      expect(v.drift).to.be.closeTo(-1.1512, 1e-9)
+      expect(v.resting).to.equal(1150.0306)
     })
   })
 })

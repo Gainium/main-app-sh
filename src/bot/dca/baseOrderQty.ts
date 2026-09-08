@@ -33,6 +33,13 @@ export type BaseOrderQtySource =
   | 'order'
   /** Derived from the deal's position: the volume the fills do not explain. */
   | 'deal'
+  /**
+   * The base order's row WAS found, and the deal still holds more base than it
+   * and the counted fills explain — so entry rows are missing from the order
+   * map and the position wins. Distinct from `deal` only so the caller's log
+   * line can say which happened; the quantity is derived identically.
+   */
+  | 'position'
   /** The deal has traded and holds nothing unaccounted for: contributes 0. */
   | 'accounted'
   /** Nothing held and nothing filled: the settings-derived stopgap. */
@@ -74,10 +81,36 @@ export function resolveBaseOrderQty({
   /** Round DOWN to the pair's base precision, so a sub-step residue reads as 0. */
   floor?: (n: number) => number
 }): { qty: number; source: BaseOrderQtySource } {
+  const fromDeal = floor(Math.max(0, grossEntry - filledQty))
   if (boFromOrder > 0) {
+    // The row was found — but the order map is a cache, and the SAFETY-order
+    // rows can be missing from it just as the base order's can (it is rebuilt
+    // per worker restart, from a Redis snapshot whose staleness is documented
+    // at `main.ts:4017`, or from a DB query that has repeatedly turned out to
+    // exclude rows it needed). When they are, `filledQty` collapses and
+    // `getTPOrder` sizes the close at the base order alone: AIXBTUSDT
+    // `6a301c7ca999bdafb2ad8055` armed a 510 take-profit while both rows were
+    // known, it EXPIRED, and the replacement rests at 250 — the base order, to
+    // the unit — leaving 260 of the 510 with nothing covering it. 61 open deals
+    // across 8 users were in that state on 2026-09-08, 92% of the position
+    // uncovered on average. Issue #702, spec `017`.
+    //
+    // So keep asking the deal's own books, which are persisted and do not
+    // depend on what this process happens to hold in RAM. Compared through
+    // `floor` on both sides so the float noise `deal.size` carries from summing
+    // fills (`452.20000000000005`) cannot look like a missing order.
+    //
+    // One-way on purpose: this can only ever RAISE the contribution to the
+    // position, never lower it below the row. An over-stated close is rejected
+    // by the venue and leaves the deal with NO take-profit at all — the AIOZ
+    // failure this module was written for — and across 8,740 live deals holding
+    // a resting take-profit `deal.size` and the entry rows agree within 0.5% on
+    // 8,704, so on a complete order map this branch is inert.
+    if (fromDeal > floor(boFromOrder)) {
+      return { qty: fromDeal, source: 'position' }
+    }
     return { qty: boFromOrder, source: 'order' }
   }
-  const fromDeal = floor(Math.max(0, grossEntry - filledQty))
   if (fromDeal > 0) {
     return { qty: fromDeal, source: 'deal' }
   }

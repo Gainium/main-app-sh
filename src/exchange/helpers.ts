@@ -106,7 +106,8 @@ export const removePaperFormExchangeName = (exchange: ExchangeEnum) => {
                                         : exchange ===
                                             ExchangeEnum.paperHyperliquid
                                           ? ExchangeEnum.hyperliquid
-                                          : exchange === ExchangeEnum.bitget
+                                          : exchange ===
+                                              ExchangeEnum.paperBitget
                                             ? ExchangeEnum.bitget
                                             : exchange
 }

@@ -93,6 +93,11 @@ import {
   noteErrorRuleHit,
 } from './errorRulesCache'
 import QuantRulesGuard, { LEVEL2_VIOLATIONS } from './quantRulesGuard'
+import QtyStepGuard, {
+  decimalsToStep,
+  deriveAcceptedDecimals,
+  isQtyDecimalsRefusal,
+} from './qtyStepGuard'
 
 /**
  * Retry budget for a deal whose start carries no timing of its own (ASAP): the
@@ -2245,12 +2250,58 @@ class MainBot<T extends IMainBot> {
   }
 
   public async getExchangeInfo(symbol: string, force = false) {
-    return await this.sharedData.getExchangeInfo(
+    const info = await this.sharedData.getExchangeInfo(
       removePaperFormExchangeName(this.data?.exchange ?? ExchangeEnum.binance),
       symbol,
       this.botId,
       force,
     )
+    return this.applyLearnedQtyStep(symbol, info)
+  }
+
+  /**
+   * Widen a pair's quantity step to what THIS connection's venue has actually
+   * proven it accepts (see `qtyStepGuard.ts`).
+   *
+   * `pairs` holds one row per `exchange@pair`, loaded from the venue's public
+   * instrument list — but the host an account signs against is not always the
+   * host that list came from (Bybit's regional endpoints publish coarser lot
+   * filters, and some symbols only on one of them). When such a venue refuses a
+   * quantity, `sendOrderToExchange` records the precision the refusal proves,
+   * and this is where every later sizing decision picks it up: this method is
+   * the single read path for pair filters in the engine, so `baseAssetPrecision`
+   * and the `baseAsset.step` remainder arithmetic in dcaHelper / gridMonitor /
+   * comboHelper all inherit it without their own call sites changing.
+   *
+   * Three properties matter and are pinned by `qtyStepGuard.spec.ts`:
+   *  - it only ever COARSENS — a learned step finer than the shared one is
+   *    ignored, so this can never loosen a venue's real filter;
+   *  - it COPIES — the row from the shared store is handed to every bot in the
+   *    worker, so mutating it would re-size other users' orders on that pair;
+   *  - with nothing learned it returns the very same object, so an account that
+   *    has never been refused is byte-for-byte unaffected.
+   */
+  private applyLearnedQtyStep(
+    symbol: string,
+    info: ClearPairsSchema | undefined,
+  ): ClearPairsSchema | undefined {
+    const decimals = QtyStepGuard.peek(this.data?.exchangeUUID, symbol)
+    if (!info || decimals === null) {
+      return info
+    }
+    const step = decimalsToStep(decimals)
+    if (!(step > info.baseAsset.step)) {
+      return info
+    }
+    return {
+      ...info,
+      baseAsset: {
+        ...info.baseAsset,
+        step,
+        // An order below a single step cannot be expressed at this precision.
+        minAmount: Math.max(info.baseAsset.minAmount, step),
+      },
+    }
   }
 
   /**
@@ -2635,6 +2686,7 @@ class MainBot<T extends IMainBot> {
       }
       // Refreshed on every occurrence, so a coalesced row reports the LATEST
       // state of the condition rather than a snapshot of the first time it fired.
+      // `symbol` is the exception — see `onEveryCoalesced` below.
       const onEvery = {
         botName,
         type: messageType,
@@ -2666,12 +2718,29 @@ class MainBot<T extends IMainBot> {
           bucket,
           // A per-contract subType gets one row per contract, so the user is
           // told about each one they have to act on separately rather than
-          // about whichever failed last. `symbol` is in `$set` either way, so
-          // for every other subType this is the same single row it always was —
-          // the field just moves under the row instead of over it.
+          // about whichever failed last.
           // `botMessageCoalesceKey` carries `symbol` for this to be insertable.
           ...(perSymbol ? { symbol } : {}),
         }
+        // `symbol` is part of the row's position in `botMessageCoalesceKey`, so
+        // it may only be written where it cannot MOVE the row. For a
+        // per-contract subType it is in the filter above, so `$set`ting it can
+        // only ever rewrite it to the value it already holds. For every other
+        // subType the filter has no `symbol` — `$set`ting it there moves the row
+        // inside a UNIQUE index, and a multi-pair bot's sibling children share
+        // one `messageBotId` while holding separate `processError` mutexes (the
+        // `@IdMute` id is the CHILD botId), so two of them can insert one row
+        // each in the same window: the index tolerates that pair because their
+        // symbols differ, and from then on every occurrence carrying the other
+        // contract tried to move its row onto its sibling and died on E11000 —
+        // in the upsert AND in the fold below, which re-used this same payload.
+        // Production dropped 119 of the 240 occurrences in one hour that way
+        // (spec 015). So pin it on insert instead: the row is labelled once,
+        // with the contract the window actually opened on, and never moves.
+        // Refreshing it was never right anyway — spec 007 §1.2.1 calls the
+        // resulting silent re-labelling out as a defect in its own right.
+        const { symbol: _movesTheRow, ...onEveryExceptSymbol } = onEvery
+        const onEveryCoalesced = perSymbol ? onEvery : onEveryExceptSymbol
         // `$inc` makes "is this the first occurrence in this window?" a property
         // of the write itself rather than of a separate read: count===1 means
         // this call created the row. Nothing else can observe a different answer.
@@ -2680,8 +2749,12 @@ class MainBot<T extends IMainBot> {
           {
             // `bucket` rides in $setOnInsert rather than the key spread so the
             // `always` path above can share `onInsert` without carrying a null.
-            $setOnInsert: { ...onInsert, bucket },
-            $set: onEvery,
+            $setOnInsert: {
+              ...onInsert,
+              bucket,
+              ...(perSymbol ? {} : { symbol }),
+            },
+            $set: onEveryCoalesced,
             $inc: { count: 1 },
           },
           true,
@@ -2698,7 +2771,7 @@ class MainBot<T extends IMainBot> {
           // coalescing exists to prevent.
           firstOccurrence = false
           const folded = await this.messagesDb.updateData(key, {
-            $set: onEvery,
+            $set: onEveryCoalesced,
             $inc: { count: 1 },
           })
           if (folded.status === StatusEnum.notok) {
@@ -3305,15 +3378,15 @@ class MainBot<T extends IMainBot> {
     )
   }
 
+  /**
+   * Redis price channels for these pairs. Always the display pair, never the
+   * Hyperliquid wire code: websocket-connector publishes `trade@` by display
+   * pair (it translates wire codes internally), so a channel keyed by wire
+   * code (`BTC@hyperliquidLinear`, `xyz:NVDA@hyperliquidLinear`) has no
+   * publisher and the bot never ticks. Same fix as the candle channel in
+   * indicators/service.ts.
+   */
   async redisSubKeys(pairs: string[]) {
-    if (this.hyperliquid) {
-      pairs = await Promise.all(
-        pairs.map(async (p) => {
-          const find = await this.getExchangeInfo(p)
-          return this.isKraken ? p : (find?.code ?? p)
-        }),
-      )
-    }
     return pairs.map(
       (p) =>
         `trade@${p}@${removePaperFormExchangeName(
@@ -4344,6 +4417,12 @@ class MainBot<T extends IMainBot> {
    */
   private priceStreamGaps = new PriceStreamGapTracker(
     PRICE_STREAM_GAP_LOG_EVERY_MS,
+    // Boot grace: a freshly loaded bot has no stream data for any symbol, and
+    // its subscriptions settle over the next minutes. Without this, the first
+    // poll flags every symbol and two runs later declares them all recovered
+    // — hundreds of lines per worker restart saying nothing. A symbol that
+    // still has not ticked after 2 × priceTimeout is reported as before.
+    { graceMs: 2 * this.priceTimeout, startedAt: +new Date() },
   )
 
   /**
@@ -7549,6 +7628,66 @@ class MainBot<T extends IMainBot> {
               }
             }
           }
+          // The QUANTITY twin of the tick-size branch above, and it exists for
+          // the same reason with one extra twist: the cached filter is not
+          // merely stale, it can be the WRONG VENUE's filter. `pairs` holds one
+          // `baseAsset.step` per exchange+pair, loaded from the public
+          // instrument list, but Bybit's regional hosts do not publish the same
+          // filters — measured live, api.bybit.eu lists 133 spot symbols to
+          // api.bybit.com's 538, gives 34 of the shared ones a coarser
+          // basePrecision (SOLUSDC 0.001 vs 0.0001), and does not list SOLUSDT
+          // at all. An account on the `eu` host therefore has every quantity we
+          // compute refused with `Order quantity has too many decimals.`, and
+          // no refresh can fix it: re-reading the .com list returns the same
+          // step, and there is no EU row for the pair to read instead.
+          //
+          // So the refusal itself is the source of truth. A quantity with `d`
+          // decimals that the venue refused proves it accepts at most `d-1`;
+          // we record that against this connection+symbol, re-quantize DOWN
+          // (never up — a SELL must not exceed the position, a BUY must not
+          // exceed the budget) and resubmit. `getExchangeInfo` then serves the
+          // learned step to every later sizing decision, so the NEXT order is
+          // right the first time rather than costing another refusal.
+          //
+          // Termination needs no counter: each pass strictly lowers the decimal
+          // count and stops at zero, and a re-quantization that changes nothing
+          // (or empties the order) falls through to normal error handling.
+          // `count` is passed through unchanged, exactly as the tick-size branch
+          // does, so the coin-M conversion and the write-ahead persist keep
+          // their `count === 0` semantics.
+          //
+          // Guarded on the sent quantity still BEING the base quantity: the
+          // coin-M, OKX-contract and Bybit market-buy paths above send a
+          // converted number, and deriving a base-asset precision from one of
+          // those would learn a fiction.
+          if (
+            isQtyDecimalsRefusal(request.reason) &&
+            requestData.quantity === parseFloat(order.origQty)
+          ) {
+            const accepted = deriveAcceptedDecimals(requestData.quantity)
+            if (accepted !== null) {
+              const learned = await QtyStepGuard.record(
+                this.data.exchangeUUID,
+                order.symbol,
+                accepted,
+              )
+              const requantized = this.math.round(
+                +order.origQty,
+                learned ?? accepted,
+                true,
+              )
+              if (requantized > 0 && requantized !== +order.origQty) {
+                this.handleLog(
+                  `Order ${order.clientOrderId} refused on quantity decimals. ${order.symbol} quantity precision learned as ${
+                    learned ?? accepted
+                  }, re-quantized ${order.origQty} -> ${requantized}, retry`,
+                )
+                order.origQty = `${requantized}`
+                this.endMethod(_id)
+                return this.sendOrderToExchange(order, returnError, count)
+              }
+            }
+          }
           if (
             (request.reason.toLowerCase().indexOf('duplicate') !== -1 ||
               request.reason
@@ -7721,18 +7860,39 @@ class MainBot<T extends IMainBot> {
             this.deleteOrder(order.clientOrderId)
             // Only persist a CANCELED record for an order that actually
             // reached the venue. When a local guard served the rejection the
-            // order never existed anywhere but in this process, and
-            // `updateOrderOnDb` UPSERTS on a clientOrderId that is freshly
-            // minted per attempt — so every suppressed retry created a brand
-            // new row describing an order that never was. Production carried
-            // ~6.6k-10.7k such rows/hour, and 2.5M of them from ten bots
-            // accounted for 20.3% of the whole `orders` collection.
+            // order never existed anywhere but in this process, so there is
+            // nothing to write off — but there IS something to take back.
+            //
+            // `sendOrderToExchange` persists the order at `count === 0` (:6870)
+            // BEFORE any of these guards is consulted, as a write-ahead record
+            // so a crash mid-placement still leaves a trace of an order the
+            // venue might be holding. That write is what CREATES the row; the
+            // `updateOrderOnDb` below only ever RETIRED it. Merely skipping the
+            // retire (commit 3f7ae42, which read the upsert as the creator)
+            // therefore removed no rows at all — it stranded them at the
+            // `status: 'NEW'`, `orderId: '-1'` shape `saveOrderToDb` left, which
+            // the dashboard renders as an open order and `loadOrders` (:4022,
+            // `status: { $nin: ['CANCELED', 'EXPIRED'] }`) reloads into the bot
+            // on every restart. Prod went from 0 such rows/day before the
+            // 2026-08-06T07:37Z rollout to ~130k/day after it, 3.97M live
+            // against 32k genuinely open orders (bug #673).
+            //
+            // So DELETE the write-ahead row instead. That honours what 3f7ae42
+            // was actually after — no row for an order that never was — while
+            // leaving nothing behind for the UI or the reload to trip over.
+            //
+            // Scoped to the untouched placeholder shape on purpose: if the user
+            // stream or a reconcile has given this row a real exchange id or a
+            // terminal status in the meantime, the order DID reach the venue and
+            // the filter matches nothing, so the record survives.
             if (
               !notEnoughBalanceShortCircuit &&
               !complianceShortCircuit &&
               !authShortCircuit
             ) {
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+            } else {
+              await this.deleteOrderFromDb(order.clientOrderId)
             }
           }
           // Every other venue refusal lands here — min-notional, price band,
@@ -8237,6 +8397,43 @@ class MainBot<T extends IMainBot> {
               false,
             )
           }
+        }
+      })
+  }
+
+  /**
+   * Remove the write-ahead row `saveOrderToDb` created for an order that never
+   * reached the exchange.
+   *
+   * Deliberately filtered on the untouched placeholder shape — `NEW` with the
+   * `noExchangeOrderId` placeholder — rather than on the client order id alone.
+   * An order carrying a real exchange id got it from the venue (placement
+   * response or user stream) and must keep its record; so must one already in a
+   * terminal state. In those cases this matches nothing and is a no-op.
+   *
+   * `deleteManyData` rather than `deleteData` because `clientOrderId` is
+   * uniquely indexed, so the filter can only ever match one row, and
+   * `deleteData` reports a no-match as `'Server error'` — which is the normal
+   * outcome here whenever the row has legitimately moved on.
+   */
+
+  async deleteOrderFromDb(clientOrderId: string) {
+    await this.ordersDb
+      .deleteManyData({
+        clientOrderId,
+        status: 'NEW',
+        orderId: noExchangeOrderId,
+      })
+      .then((res) => {
+        if (res.status === StatusEnum.notok) {
+          this.handleErrors(
+            res.reason,
+            'limitOrders()',
+            `Error removing never-sent order ${clientOrderId}`,
+            false,
+            false,
+            false,
+          )
         }
       })
   }

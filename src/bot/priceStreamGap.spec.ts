@@ -65,6 +65,72 @@ describe('PriceStreamGapTracker', () => {
     expect(t.gapped()).to.deep.equal([])
   })
 
+  describe('boot grace', () => {
+    // A bot loads with no stream data at all; its first poll (2.5 min in)
+    // sees every symbol stale, and the subscriptions only settle over the
+    // next minutes. Grace = 2 × priceTimeout, anchored at bot load.
+    const POLL = 2.5 * MIN
+    const GRACE = 2 * POLL
+    const opts = { graceMs: GRACE, startedAt: 0 }
+
+    it('is silent for a symbol whose stream simply had not started yet', () => {
+      const t = new PriceStreamGapTracker(REPEAT, opts)
+      // First poll: nothing has ticked yet, served from REST, no line.
+      expect(t.note('BTCUSDT', true, POLL)).to.equal(null)
+      expect(t.gapped()).to.deep.equal(['BTCUSDT'])
+      expect(t.reported()).to.deep.equal([])
+      // The stream came up in the meantime: fresh — and the run before was
+      // ours, so still ambiguous, still silent.
+      expect(t.note('BTCUSDT', false, 2 * POLL)).to.equal(null)
+      // Fresh again without our help: it is live. No "recovered" line for a
+      // gap that was never announced.
+      expect(t.note('BTCUSDT', false, 3 * POLL)).to.equal(null)
+      expect(t.gapped()).to.deep.equal([])
+    })
+
+    it('still reports a symbol that has not ticked once the grace is over', () => {
+      const t = new PriceStreamGapTracker(REPEAT, opts)
+      expect(t.note('FLR-USDC', true, POLL)).to.equal(null)
+      // Fresh only because we served it last run.
+      expect(t.note('FLR-USDC', false, 2 * POLL)).to.equal(null)
+      // Past the grace, still stale: announced now, dated from the first
+      // stale poll.
+      expect(t.note('FLR-USDC', true, 3 * POLL)).to.deep.equal({
+        kind: 'entered',
+      })
+      expect(t.reported()).to.deep.equal(['FLR-USDC'])
+      expect(t.note('FLR-USDC', false, 4 * POLL)).to.equal(null)
+      expect(t.note('FLR-USDC', true, 5 * POLL)).to.equal(null)
+      // The repeat interval counts from the announcement; the reported
+      // duration counts from the first stale poll.
+      expect(t.note('FLR-USDC', true, 3 * POLL + 61 * MIN)).to.deep.equal({
+        kind: 'persisting',
+        minutes: 66,
+      })
+      // And recovery is announced as usual once ticks arrive.
+      expect(t.note('FLR-USDC', false, 3 * POLL + 62 * MIN)).to.equal(null)
+      expect(t.note('FLR-USDC', false, 3 * POLL + 63 * MIN)).to.deep.equal({
+        kind: 'recovered',
+        minutes: 68,
+      })
+    })
+
+    it('does not cover a symbol that has already been seen live', () => {
+      const t = new PriceStreamGapTracker(REPEAT, opts)
+      // Live tick seen inside the grace window: the subscription works, so a
+      // later gap on it is real and is reported at once.
+      expect(t.note('ETH-USD', false, MIN)).to.equal(null)
+      expect(t.note('ETH-USD', true, 2 * MIN)).to.deep.equal({
+        kind: 'entered',
+      })
+    })
+
+    it('is off when no grace is configured', () => {
+      const t = new PriceStreamGapTracker(REPEAT)
+      expect(t.note('BTCUSDT', true, 0)).to.deep.equal({ kind: 'entered' })
+    })
+  })
+
   it('tracks symbols independently', () => {
     const t = new PriceStreamGapTracker(REPEAT)
     expect(t.note('FLR-USDC', true, 0)).to.deep.equal({ kind: 'entered' })

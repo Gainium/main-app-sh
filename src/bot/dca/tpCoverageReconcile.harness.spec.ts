@@ -138,6 +138,58 @@ const DEALS = {
       order('D-TP-GzuLl', 'NEW', '31730.4', '0', '691de676b60a5e1cf2d420eb'),
     ],
   },
+  /**
+   * RUNE-USDC — spec `014` §2.1 (issue #700), read from production on
+   * 2026-09-07. One base order, no safety fills, one `NEW` take-profit of
+   * `1151.1818 × 0.999` — exactly what `getTPOrder` arms for a spot long. It
+   * is healthy, and was reported `under` on every pass for over a day.
+   */
+  feeShaved: {
+    _id: '6a9169e0d044367d73f9c917',
+    symbol: { symbol: 'RUNE-USDC' },
+    size: 1151.1818,
+    tpHistory: [],
+    lastPrice: 6.9596,
+    avgPrice: 6.9596,
+    initialPrice: 6.9596,
+    reduceFunds: [],
+    tps: [
+      order(
+        'D-TP-r92xrCEBaVOvlFbM4tiM0AEVNo2dCa',
+        'NEW',
+        '1150.0306',
+        '0',
+        '6a9169e0d044367d73f9c917',
+      ),
+    ],
+  },
+  /**
+   * AIXBTUSDT — spec `017` §2.1 (issue #702), read from production on
+   * 2026-09-08. Base order 250, one safety fill 260, `size: 510`, and ONE
+   * `NEW` take-profit of 250: the first take-profit was 510 and EXPIRED, the
+   * replacement was sized at the base order alone. No partial fill anywhere,
+   * so `staleTps` is empty and `live.length` is 1 — the shape the correction
+   * could not act on.
+   */
+  underNewOnly: {
+    _id: '6a301c7ca999bdafb2ad8055',
+    symbol: { symbol: 'AIXBTUSDT' },
+    size: 510,
+    tpHistory: [],
+    lastPrice: 0.023445,
+    avgPrice: 0.0238,
+    initialPrice: 0.02417,
+    reduceFunds: [],
+    tps: [
+      order(
+        'D-TP-3w5x48B7xtLpQUQMNepJpT1GKajf7j',
+        'NEW',
+        '250',
+        '0',
+        '6a301c7ca999bdafb2ad8055',
+      ),
+    ],
+  },
   /** SPELLUSDT — partially filled and perfectly covered. Must not be touched. */
   healthy: {
     _id: '6a5939f5d3d5da3fb6d03677',
@@ -163,29 +215,40 @@ const DEALS = {
 /**
  * One helper class per arming state. The flag is a module-level constant read
  * at import time, so each state needs its own load of `dcaHelper` — and that
- * load compiles 21k lines through ts-node, so it is done at most twice for the
- * whole file rather than once per test.
+ * load compiles 21k lines through ts-node, so it is done once per distinct
+ * `BOT_TP_COVERAGE_REPAIR` value for the whole file rather than once per test.
+ *
+ * `true`/`false` are the two states spec 013 had; spec 016 (#696 follow-up)
+ * adds scoped values, so the state is the raw env string. The boolean spelling
+ * is kept so every test written against 013 reads unchanged — which is what
+ * makes them the regression proof that `1` still means the whole fleet.
  */
+type Arming = boolean | string
+const rawFor = (armed: Arming) =>
+  armed === true ? '1' : armed === false ? undefined : armed
+
 const loadModule = createRequire(__filename)
-const helperCache = new Map<boolean, any>()
-const helperFor = (armed: boolean) => {
-  const hit = helperCache.get(armed)
+const helperCache = new Map<string, any>()
+const helperFor = (armed: Arming) => {
+  const raw = rawFor(armed)
+  const key = raw ?? '<unset>'
+  const hit = helperCache.get(key)
   if (hit) return hit
-  if (armed) {
-    process.env.BOT_TP_COVERAGE_REPAIR = '1'
-  } else {
+  if (raw === undefined) {
     delete process.env.BOT_TP_COVERAGE_REPAIR
+  } else {
+    process.env.BOT_TP_COVERAGE_REPAIR = raw
   }
   // The helper reads BOT_TP_COVERAGE_REPAIR at module load, so each arming
   // state needs a fresh module instance: evict it and re-load through a
   // dedicated CommonJS loader (the ESM-style import is cached for the run).
   delete loadModule.cache[loadModule.resolve('../dcaHelper')]
   const built = loadModule('../dcaHelper').default(FakeBase as any)
-  helperCache.set(armed, built)
+  helperCache.set(key, built)
   return built
 }
 
-const buildBot = (armed: boolean, deals: readonly any[]) => {
+const buildBot = (armed: Arming, deals: readonly any[]) => {
   const Helper: any = helperFor(armed)
 
   class TestBot extends Helper {
@@ -194,6 +257,12 @@ const buildBot = (armed: boolean, deals: readonly any[]) => {
     public warns: string[] = []
     public logs: string[] = []
     public rearmQty = 935356
+    /**
+     * What `main.ts:2173` answers for this bot's pair. The fleet's common spot
+     * fee; a `zeroFee` API key answers `{maker: 0, taker: 0}` there instead,
+     * which is what the last test below sets.
+     */
+    public userFee: any = { maker: 0.001, taker: 0.001 }
 
     getDealsByStatusAndSymbol() {
       return deals.map((d) => ({
@@ -207,6 +276,9 @@ const buildBot = (armed: boolean, deals: readonly any[]) => {
     }
     async getExchangeInfo() {
       return EXCHANGE_INFO
+    }
+    async getUserFee() {
+      return this.userFee
     }
     getOrdersByStatusAndDealId() {
       // No FILLED close orders on any of these deals.
@@ -446,6 +518,154 @@ describe('checkTpCoverage (spec 013, issue #696)', () => {
       bot.data = { ...bot.data, flags: ['externalTp'] }
       await run(bot, [DEALS.b3])
       expect(bot.cancelled).to.deep.equal([])
+    })
+  })
+
+  /**
+   * Spec `017.tp-sized-from-base-order-when-fills-are-absent.md` §4.1
+   * (issue #702) — the correction was inert for the whole undersized-`NEW`
+   * population: 61 open deals across 8 users on 2026-09-08.
+   */
+  describe('spec 017 §4.1 an undersized resting take-profit is repaired', () => {
+    const deal = DEALS.underNewOnly
+
+    it('reports the AIXBTUSDT deal as 260 of 510 uncovered', async () => {
+      const bot = buildBot(false, [deal])
+      await run(bot, [deal])
+      // The exact production line, twice a day since 2026-09-06.
+      expect(bot.warns.join('\n')).to.contain('under: 260 of 510')
+    })
+
+    it('re-arms it when armed — it used to cancel nothing and place nothing', async () => {
+      const bot = buildBot(true, [deal])
+      bot.rearmQty = 510
+      await run(bot, [deal])
+      expect(bot.cancelled).to.deep.equal([])
+      expect(bot.placed).to.have.length(1)
+      expect(bot.placed[0].dealId).to.equal(deal._id)
+      expect(bot.placed[0].orders.new[0].qty).to.equal(510)
+    })
+
+    it('does not re-place on every pass', async () => {
+      const bot = buildBot(true, [deal])
+      for (let i = 0; i < 4; i++) await run(bot, [deal])
+      expect(bot.placed).to.have.length(1)
+    })
+
+    it('stays out of it when the correction is not armed', async () => {
+      const bot = buildBot(false, [deal])
+      await run(bot, [deal])
+      expect(bot.placed).to.deep.equal([])
+      expect(bot.cancelled).to.deep.equal([])
+    })
+
+    it('still refuses to stack on an OVER-covered deal', async () => {
+      // Two healthy NEW take-profits, no partial: `over`, and re-arming there
+      // is how the duplicate take-profit was made in the first place.
+      const over = {
+        ...deal,
+        tps: [
+          order('D-TP-a', 'NEW', '510', '0', deal._id),
+          order('D-TP-b', 'NEW', '510', '0', deal._id),
+        ],
+      }
+      const bot = buildBot(true, [over])
+      await run(bot, [over])
+      expect(bot.warns.join('\n')).to.contain('over')
+      expect(bot.placed).to.deep.equal([])
+      expect(bot.cancelled).to.deep.equal([])
+    })
+  })
+
+  describe('spec 014 §1.1 the fee the take-profit is sized net of is not drift', () => {
+    it('leaves the fee-shaved RUNE-USDC deal alone, armed', async () => {
+      const bot = buildBot(true, [DEALS.feeShaved])
+      await run(bot, [DEALS.feeShaved])
+      expect(bot.warns.join('\n')).to.not.contain('tp-coverage drift')
+      expect(bot.cancelled).to.deep.equal([])
+      expect(bot.placed).to.deep.equal([])
+    })
+
+    it('reported it before the bot fee reached the check', async () => {
+      // The pre-#700 behaviour, reproduced by the one input that changed: a
+      // fee of 0 is what the check effectively had.
+      const bot = buildBot(false, [DEALS.feeShaved])
+      bot.userFee = { maker: 0, taker: 0 }
+      await run(bot, [DEALS.feeShaved])
+      expect(bot.warns.join('\n')).to.contain('tp-coverage drift')
+      expect(bot.warns.join('\n')).to.contain('under')
+    })
+
+    it('does not blunt the check for a genuinely drifted deal', async () => {
+      // One fee on B3-USDC's position is 936 base against a 110,493 gap.
+      const bot = buildBot(false, [DEALS.b3])
+      await run(bot, [DEALS.b3])
+      expect(bot.warns.join('\n')).to.contain('under: 110493')
+    })
+  })
+
+  /**
+   * Spec `016.tp-coverage-repair-per-deal-scope.md` (#696 follow-up).
+   *
+   * Arming the correction responsibly means running it on ONE deal first. With
+   * the flag a boolean, `1` acted on all three of these at once — 184 deals in
+   * production (#700) — and the deal id the operator was told to arm matched
+   * nothing at all and was rejected in silence.
+   */
+  describe('spec 016 §4.1 the correction can be armed for one deal', () => {
+    const drifted = [DEALS.b3, DEALS.ctsi, DEALS.dgb]
+
+    before(function () {
+      // A third arming state = a third ts-node compile of dcaHelper.
+      this.timeout(180000)
+      helperFor(DEALS.b3._id)
+    })
+
+    it('repairs only the named deal', async () => {
+      const bot = buildBot(DEALS.b3._id, drifted)
+      await run(bot, drifted)
+      expect(
+        bot.cancelled.map((c: Cancelled) => c.clientOrderId),
+      ).to.deep.equal(['D-TP-TNTUX'])
+      expect(bot.placed).to.have.length(1)
+      expect(bot.placed[0].dealId).to.equal(DEALS.b3._id)
+    })
+
+    it('§4.4 logs the other drifted deals as outside the scope', async () => {
+      const bot = buildBot(DEALS.b3._id, drifted)
+      await run(bot, drifted)
+      const outOfScope = bot.logs.filter((l: string) =>
+        l.includes('outside the armed scope'),
+      )
+      expect(outOfScope).to.have.length(2)
+      expect(outOfScope.join('\n')).to.contain(DEALS.ctsi._id)
+      expect(outOfScope.join('\n')).to.contain(DEALS.dgb._id)
+      // Not the flat "not armed" line — the operator armed it, on purpose,
+      // for a different deal.
+      expect(outOfScope.join('\n')).to.not.contain('correction is not armed')
+    })
+
+    it('still detects and reports every drifted deal', async () => {
+      const bot = buildBot(DEALS.b3._id, drifted)
+      await run(bot, drifted)
+      expect(
+        bot.warns.filter((w: string) => w.startsWith('tp-coverage drift')),
+      ).to.have.length(3)
+    })
+
+    it('leaves the fleet-wide value meaning the whole fleet', async () => {
+      const bot = buildBot(true, drifted)
+      await run(bot, drifted)
+      expect(bot.cancelled).to.have.length(3)
+      expect(bot.placed).to.have.length(3)
+    })
+
+    it('repairs nothing at all while unset', async () => {
+      const bot = buildBot(false, drifted)
+      await run(bot, drifted)
+      expect(bot.cancelled).to.deep.equal([])
+      expect(bot.placed).to.deep.equal([])
+      expect(bot.logs.join('\n')).to.contain('correction is not armed')
     })
   })
 })

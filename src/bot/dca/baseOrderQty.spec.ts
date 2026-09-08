@@ -101,6 +101,85 @@ describe('baseOrderQty', () => {
     })
   })
 
+  describe('resolveBaseOrderQty — the base order row is present but the SAFETY rows are not (spec 017, #702)', () => {
+    // Deal 6a301c7ca999bdafb2ad8055, AIXBTUSDT, read from prod 2026-09-08:
+    //   dealStart   FILLED  250   dealRegular FILLED 260   deal.size 510
+    // It armed a 510 take-profit while both rows were known, that order EXPIRED,
+    // and the replacement rests at 250 — the base order, to the unit.
+    const AIXBT_HELD = 510
+    /** AIXBTUSDT steps in whole coins. */
+    const floor0 = (n: number) => Math.floor(n)
+
+    it('the safety-order row missing: the position supplies 510, not the 250 on record', () => {
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 250,
+          filledQty: 0,
+          dealSize: AIXBT_HELD,
+          grossEntry: AIXBT_HELD,
+          floor: floor0,
+        }),
+      ).to.deep.equal({ qty: 510, source: 'position' })
+    })
+
+    it('the same deal with a COMPLETE order map is untouched — still the row', () => {
+      // The no-op that 8,704 of 8,740 live deals take: `grossEntry - filledQty`
+      // is exactly the base order, so there is nothing to raise to.
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 250,
+          filledQty: 260,
+          dealSize: AIXBT_HELD,
+          grossEntry: AIXBT_HELD,
+          floor: floor0,
+        }),
+      ).to.deep.equal({ qty: 250, source: 'order' })
+    })
+
+    it('AAVEUSDT at ladder depth: 0.727 of the 0.728 held, not the 0.027 rested', () => {
+      // Deal 693b8695e6e7cc790c7388ef — 96% of the position with no take-profit.
+      // 0.727 not 0.728: `deal.size` is stored 0.7279999999999999 and both sides
+      // are compared through the pair's precision floor.
+      const floor3 = (n: number) => Math.floor(n * 1000) / 1000
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 0.027,
+          filledQty: 0,
+          dealSize: 0.7279999999999999,
+          grossEntry: 0.7279999999999999,
+          floor: floor3,
+        }),
+      ).to.deep.equal({ qty: 0.727, source: 'position' })
+    })
+
+    it('never LOWERS the row: rows that exceed the position keep the row', () => {
+      // The 27 live deals whose counted rows are larger than `deal.size`.
+      // Under-stating is survivable; over-stating is the AIOZ rejection that
+      // leaves the deal with no take-profit at all, so this stays one-way.
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 345.3,
+          filledQty: 3366.0,
+          dealSize: 3000,
+          grossEntry: 3000,
+          floor: floor1,
+        }),
+      ).to.deep.equal({ qty: 345.3, source: 'order' })
+    })
+
+    it('a sub-step float residue in deal.size is not a missing safety order', () => {
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 250,
+          filledQty: 260,
+          dealSize: 510.00000000000006,
+          grossEntry: 510.00000000000006,
+          floor: floor0,
+        }),
+      ).to.deep.equal({ qty: 250, source: 'order' })
+    })
+  })
+
   describe('resolveBaseOrderQty — the fallback that must survive', () => {
     it('a deal whose opening order has not landed still gets the nominal', () => {
       // qty 0 with source 'nominal' — the caller fills in the settings-derived

@@ -159,8 +159,11 @@ import {
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
 import {
+  describeTpRepairScope,
+  parseTpRepairScope,
   reconcileTpCoverage,
   tpCoverageDriftWarn,
+  tpRepairAllows,
   trackedPosition,
   type LiveTpOrder,
   type TpCoverageProbe,
@@ -200,17 +203,38 @@ const { sleep, checkNumber, mapToArray } = utils
 
 /**
  * Arms the take-profit coverage CORRECTION (issue #696, spec
- * `013.tp-coverage-drift-after-partial-tp` §4.2).
+ * `013.tp-coverage-drift-after-partial-tp` §4.2, scoped by spec
+ * `016.tp-coverage-repair-per-deal-scope`).
  *
  * Detection is unconditional and only ever logs. This flag gates the part that
  * cancels a resting order and places a new one on a live venue with real money,
  * so it is deliberately opt-in: deploying the fix must not, by itself, start
  * trading against anyone's account. An operator arms it once, deliberately,
  * having read the `tp-coverage drift` lines the detection pass emits.
+ *
+ * It takes a LIST OF DEAL IDS as well as `1`, because arming a money-moving
+ * correction responsibly means running it on one deal first and reading the
+ * result. As a boolean the only choice was every drifted deal in the fleet at
+ * once — 184 of them when spec 016 was written (spec 016 §1.2).
  */
-const tpCoverageRepairArmed = /^(1|true|yes)$/i.test(
-  process.env.BOT_TP_COVERAGE_REPAIR ?? '',
+const tpCoverageRepairScope = parseTpRepairScope(
+  process.env.BOT_TP_COVERAGE_REPAIR,
 )
+
+// §4.3 — say what was read, once per process, so an operator can confirm the
+// engine understood the value he set. Silent while unset: that is the state
+// the whole fleet runs in, and this would otherwise be a line on every boot of
+// every bot worker forever.
+if ((process.env.BOT_TP_COVERAGE_REPAIR ?? '').trim()) {
+  const line = `BOT_TP_COVERAGE_REPAIR: tp-coverage correction ${describeTpRepairScope(
+    tpCoverageRepairScope,
+  )}`
+  if (tpCoverageRepairScope.kind === 'invalid') {
+    logger.warn(line)
+  } else {
+    logger.info(line)
+  }
+}
 
 export type FullDeal<Deal extends CleanDCADealsSchema> = {
   deal: Deal
@@ -10065,6 +10089,11 @@ function createDCABotHelper<
           baseMinAmount: ed.baseAsset.minAmount,
           quoteMinAmount: ed.quoteAsset.minAmount,
           price: deal.lastPrice || deal.avgPrice || 0,
+          // The fee `getTPOrder` sizes the take-profit net of, so a healthy
+          // deal does not read as drifted by exactly that fee (issue #700,
+          // spec `014`). Same accessor `getTPOrder` uses, so a `zeroFee` key
+          // answers 0 here exactly as it does there.
+          feeRate: worstFee(await this.getUserFee(symbol)),
         })
         const latchKey = standingConditionKey(tpCoverageDrift, dealId)
         if (verdict.state === 'covered' || verdict.state === 'unknown') {
@@ -10086,14 +10115,20 @@ function createDCABotHelper<
           continue
         }
         this.handleWarn(tpCoverageDriftWarn({ dealId, symbol, verdict }))
-        if (!tpCoverageRepairArmed) {
+        if (!tpRepairAllows(tpCoverageRepairScope, dealId)) {
           // The whole point of the flag. Say so once, with what WOULD happen,
-          // so the log is enough for an operator to decide on.
+          // so the log is enough for an operator to decide on — and say WHICH
+          // reason applies (spec 016 §4.4): a fleet that is not armed at all
+          // and a deal deliberately left out of a scoped run are different
+          // operational situations.
+          const would = `cancel ${verdict.staleTps.length} stale take-profit(s) and re-arm`
           this.handleLog(
-            `tp-coverage drift | deal ${dealId} left as is — correction is not armed ` +
-              `(set BOT_TP_COVERAGE_REPAIR to cancel ${
-                verdict.staleTps.length
-              } stale take-profit(s) and re-arm)`,
+            tpCoverageRepairScope.kind === 'deals'
+              ? `tp-coverage drift | deal ${dealId} left as is — outside the armed scope ` +
+                  `(BOT_TP_COVERAGE_REPAIR names ${tpCoverageRepairScope.dealIds.size} other deal(s); ` +
+                  `add this deal id to ${would})`
+              : `tp-coverage drift | deal ${dealId} left as is — correction is not armed ` +
+                  `(set BOT_TP_COVERAGE_REPAIR to ${would})`,
           )
           continue
         }
@@ -14077,7 +14112,17 @@ function createDCABotHelper<
             symbol.baseAsset.minAmount,
           )
         }
-        if (resolvedBo.source !== 'order') {
+        if (resolvedBo.source === 'position') {
+          // The base order IS on record — so the message below would be a lie —
+          // and the deal still holds more than it and the counted fills
+          // explain. Spec `017` (#702): entry rows missing from the order map
+          // used to size the close at the base order alone. Greppable on its
+          // own so an operator can tell this branch firing from the
+          // no-base-order one.
+          this.handleLog(
+            `Deal ${dealId || '(new)'} holds more than its order rows account for — base order qty ${boQty} taken from the position, not the ${boFromOrder} on record (size ${dealSize}, counted fills ${filledQty})`,
+          )
+        } else if (resolvedBo.source !== 'order') {
           // `nominal` is the routine case: every deal whose opening order has
           // not landed yet passes through it, ~650 lines/min across the fleet,
           // and it is the one with nothing to diagnose. The two that say
@@ -18270,14 +18315,24 @@ function createDCABotHelper<
     )
     async priceTimerFn(_exchange?: ExchangeEnum) {
       const symbols: Set<string> = new Set()
+      // Stream health is per symbol, not per deal: the tracker's "did we serve
+      // this last run" memory assumes one observation per symbol per run. Two
+      // open deals on the same symbol would feed it twice — the second
+      // observation of a fresh-because-we-served-it symbol reads as a live
+      // tick and declares recovery one run early.
+      const healthNoted: Set<string> = new Set()
       for (const d of this.getDealsByStatusAndSymbol({
         status: DCADealStatusEnum.open,
       }).filter((d) => !d.closeBySl && !d.deal.blockSl && !d.notCheckSl)) {
         const symbol = d.deal.symbol.symbol
         const lastStreamData = this.getLastStreamData(d.deal.symbol.symbol)
         const time = lastStreamData?.time ?? 0
+        const noteHealth = !healthNoted.has(symbol)
+        healthNoted.add(symbol)
         if (+new Date() - time < this.priceTimeout) {
-          this.trackPriceStreamHealth(symbol, false)
+          if (noteHealth) {
+            this.trackPriceStreamHealth(symbol, false)
+          }
           continue
         }
         this.handleDebug(
@@ -18287,7 +18342,9 @@ function createDCABotHelper<
         )
         // Info-level, state-change only: this REST poll is the fallback, and a
         // symbol that never leaves it has no live `trade@` stream at all.
-        this.trackPriceStreamHealth(symbol, true)
+        if (noteHealth) {
+          this.trackPriceStreamHealth(symbol, true)
+        }
         symbols.add(symbol)
       }
       if (this.exchange && symbols.size) {
