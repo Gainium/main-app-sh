@@ -7714,18 +7714,39 @@ class MainBot<T extends IMainBot> {
             this.deleteOrder(order.clientOrderId)
             // Only persist a CANCELED record for an order that actually
             // reached the venue. When a local guard served the rejection the
-            // order never existed anywhere but in this process, and
-            // `updateOrderOnDb` UPSERTS on a clientOrderId that is freshly
-            // minted per attempt — so every suppressed retry created a brand
-            // new row describing an order that never was. Production carried
-            // ~6.6k-10.7k such rows/hour, and 2.5M of them from ten bots
-            // accounted for 20.3% of the whole `orders` collection.
+            // order never existed anywhere but in this process, so there is
+            // nothing to write off — but there IS something to take back.
+            //
+            // `sendOrderToExchange` persists the order at `count === 0` (:6870)
+            // BEFORE any of these guards is consulted, as a write-ahead record
+            // so a crash mid-placement still leaves a trace of an order the
+            // venue might be holding. That write is what CREATES the row; the
+            // `updateOrderOnDb` below only ever RETIRED it. Merely skipping the
+            // retire (commit 3f7ae42, which read the upsert as the creator)
+            // therefore removed no rows at all — it stranded them at the
+            // `status: 'NEW'`, `orderId: '-1'` shape `saveOrderToDb` left, which
+            // the dashboard renders as an open order and `loadOrders` (:4022,
+            // `status: { $nin: ['CANCELED', 'EXPIRED'] }`) reloads into the bot
+            // on every restart. Prod went from 0 such rows/day before the
+            // 2026-08-06T07:37Z rollout to ~130k/day after it, 3.97M live
+            // against 32k genuinely open orders (bug #673).
+            //
+            // So DELETE the write-ahead row instead. That honours what 3f7ae42
+            // was actually after — no row for an order that never was — while
+            // leaving nothing behind for the UI or the reload to trip over.
+            //
+            // Scoped to the untouched placeholder shape on purpose: if the user
+            // stream or a reconcile has given this row a real exchange id or a
+            // terminal status in the meantime, the order DID reach the venue and
+            // the filter matches nothing, so the record survives.
             if (
               !notEnoughBalanceShortCircuit &&
               !complianceShortCircuit &&
               !authShortCircuit
             ) {
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+            } else {
+              await this.deleteOrderFromDb(order.clientOrderId)
             }
           }
           // Every other venue refusal lands here — min-notional, price band,
@@ -8230,6 +8251,43 @@ class MainBot<T extends IMainBot> {
               false,
             )
           }
+        }
+      })
+  }
+
+  /**
+   * Remove the write-ahead row `saveOrderToDb` created for an order that never
+   * reached the exchange.
+   *
+   * Deliberately filtered on the untouched placeholder shape — `NEW` with the
+   * `noExchangeOrderId` placeholder — rather than on the client order id alone.
+   * An order carrying a real exchange id got it from the venue (placement
+   * response or user stream) and must keep its record; so must one already in a
+   * terminal state. In those cases this matches nothing and is a no-op.
+   *
+   * `deleteManyData` rather than `deleteData` because `clientOrderId` is
+   * uniquely indexed, so the filter can only ever match one row, and
+   * `deleteData` reports a no-match as `'Server error'` — which is the normal
+   * outcome here whenever the row has legitimately moved on.
+   */
+
+  async deleteOrderFromDb(clientOrderId: string) {
+    await this.ordersDb
+      .deleteManyData({
+        clientOrderId,
+        status: 'NEW',
+        orderId: noExchangeOrderId,
+      })
+      .then((res) => {
+        if (res.status === StatusEnum.notok) {
+          this.handleErrors(
+            res.reason,
+            'limitOrders()',
+            `Error removing never-sent order ${clientOrderId}`,
+            false,
+            false,
+            false,
+          )
         }
       })
   }

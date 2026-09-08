@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.6] - 2026-09-08
+
+### Fixed
+
+- Orders refused by one of the bot's own local guards (not enough balance, compliance restriction, exchange auth cooldown) are no longer left behind as open orders. The engine saves an order to the database just before sending it, as a safety record in case the process dies mid-placement; when a local guard then refuses the order the exchange never sees it, but since 2026-08-06 that safety record was neither completed nor removed, so it stayed on the books as a live order the exchange had never heard of. Affected bots showed a growing list of open orders that could not be cancelled or filled, and each one was re-adopted by the bot every time it restarted. The record is now removed on that path, and only for orders still carrying the unsent placeholder — anything the exchange has acknowledged, or that has already filled or cancelled, is left exactly as it was.
+
 ## [1.58.5] - 2026-09-07
 
 ### Fixed
