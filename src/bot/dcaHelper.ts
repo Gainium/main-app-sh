@@ -1325,8 +1325,20 @@ function createDCABotHelper<
           await this.getFromRedis<FullDeal<ExcludeDoc<Deal>>[]>('deals')
         if (fromRedis?.length) {
           this.handleLog(`Found in redis ${fromRedis.length} deals`)
+          // Spec `024` (#716) §4.4: the balance ledger gets the same
+          // treatment `avgPrice` already had. This mirror is written with
+          // `JSON.stringify` (`setDealToRedis`), and `JSON.stringify(NaN)` is
+          // `null` — so a deal mongoose was REFUSING to save for being NaN
+          // still lands in Redis, silently, as a ledger of nulls. Restoring
+          // one makes the deal look like it never traded (`null + x === x`)
+          // and `closeDeal` then books its whole allocation as a loss. The DB
+          // copy this falls back to is the last mongoose-validated state,
+          // which is exactly what we want in that case.
           const checkAvg = fromRedis.some(
-            (d) => typeof d.deal.avgPrice !== 'number',
+            (d) =>
+              typeof d.deal.avgPrice !== 'number' ||
+              !Number.isFinite(d.deal.currentBalances?.base) ||
+              !Number.isFinite(d.deal.currentBalances?.quote),
           )
           if (!checkAvg) {
             restoredFromRedis = fromRedis.filter(
@@ -2381,15 +2393,6 @@ function createDCABotHelper<
 
           findDeal.deal.status = DCADealStatusEnum.closed
           findDeal.deal.lastPrice = parseFloat(tpOrder.price)
-          findDeal.deal.currentBalances = {
-            base:
-              findDeal.deal.currentBalances.base +
-              qty * (tpOrder.side === OrderSideEnum.buy ? 1 : -1),
-            quote:
-              findDeal.deal.currentBalances.quote +
-              qty * price * (tpOrder.side === OrderSideEnum.sell ? 1 : -1),
-          }
-          findDeal.deal.updateTime = tpOrder.updateTime
           const dealOrders = this.getOrdersByStatusAndDealId({
             dealId,
             status: ['FILLED', 'CANCELED'],
@@ -2400,6 +2403,95 @@ function createDCABotHelper<
                 o.typeOrder,
               ),
           )
+          // Spec `024` (#716). `currentBalances` is the deal's running ledger,
+          // and the profit booked below is measured against
+          // `initialBalances` — the funds the deal was allocated. If the
+          // ledger has been LOST, that subtraction stops being a P/L and
+          // becomes the allocation itself: the close delta added just below
+          // cancels out of `total`, leaving
+          // `-initialBalances.quote - commDeal`, a loss equal to the deal's
+          // entire volume no matter what it actually did. Seven deals closed
+          // that way inside ten seconds, each booking a fabricated loss of its
+          // whole allocation against a real result near zero.
+          //
+          // How the ledger is lost: mongoose REFUSES a NaN
+          // (`CastError ... at path "currentBalances.quote"`), so the DB keeps
+          // its last good value — but `setDealToRedis` mirrors the same deal
+          // through `JSON.stringify`, and `JSON.stringify(NaN)` is `null`. On
+          // the next restart `loadOrders` prefers that Redis copy, and
+          // `null + x === x`, so the deal comes back as if it had never
+          // traded. (§4.4 below stops that restore; this stays because
+          // nothing else between here and `saveProfitToDb` re-derives the
+          // figure, and the deal has already closed on the venue.)
+          //
+          // Deliberately narrow: only a provably unusable ledger — non-finite
+          // on either side, or exactly zero — is touched, so a healthy deal
+          // takes the same arithmetic it always did, to the last decimal.
+          const ledger = findDeal.deal.currentBalances
+          const ledgerLost =
+            !Number.isFinite(ledger?.base) ||
+            !Number.isFinite(ledger?.quote) ||
+            (ledger.base === 0 && ledger.quote === 0)
+          if (
+            ledgerLost &&
+            Number.isFinite(findDeal.deal.initialBalances?.base) &&
+            Number.isFinite(findDeal.deal.initialBalances?.quote)
+          ) {
+            // The legs `qty`/`price` above already account for; everything
+            // else this deal filled has to be replayed onto the baseline.
+            const closedTp = new Set([
+              tpOrder.clientOrderId,
+              ...filledTp.map((d) => d.id),
+            ])
+            const replay = dealOrders.filter(
+              (o) => !closedTp.has(o.clientOrderId),
+            )
+            if (replay.length) {
+              const rebuilt = replay.reduce(
+                (acc, o) => {
+                  const oQty = +o.executedQty
+                  const oPrice = +o.price
+                  // Add-funds fills move `initialBalances` too — see the
+                  // `roa` branch of `processFilledOrder` — so only the side
+                  // they credited belongs on the ledger. Treating one as a
+                  // normal buy would subtract the added funds a second time.
+                  const roa = o.clientOrderId.indexOf('ROA') !== -1
+                  const buy = o.side === OrderSideEnum.buy
+                  return roa
+                    ? {
+                        base: acc.base + oQty * (buy ? 1 : 0),
+                        quote: acc.quote + oQty * oPrice * (buy ? 0 : 1),
+                      }
+                    : {
+                        base: acc.base + oQty * (buy ? 1 : -1),
+                        quote: acc.quote + oQty * oPrice * (buy ? -1 : 1),
+                      }
+                },
+                {
+                  base: findDeal.deal.initialBalances.base,
+                  quote: findDeal.deal.initialBalances.quote,
+                },
+              )
+              this.handleErrors(
+                `Deal ${dealId} balance ledger was lost (base ${ledger?.base}, quote ${ledger?.quote}) — rebuilt from ${replay.length} filled order(s) as base ${rebuilt.base}, quote ${rebuilt.quote} before closing`,
+                'closeDeal',
+                '',
+                false,
+                false,
+                false,
+              )
+              findDeal.deal.currentBalances = rebuilt
+            }
+          }
+          findDeal.deal.currentBalances = {
+            base:
+              findDeal.deal.currentBalances.base +
+              qty * (tpOrder.side === OrderSideEnum.buy ? 1 : -1),
+            quote:
+              findDeal.deal.currentBalances.quote +
+              qty * price * (tpOrder.side === OrderSideEnum.sell ? 1 : -1),
+          }
+          findDeal.deal.updateTime = tpOrder.updateTime
           const commDeal = await this.getCommDeal(findDeal.deal)
           let feeBaseFull = 0
           let feeQuoteFull = 0

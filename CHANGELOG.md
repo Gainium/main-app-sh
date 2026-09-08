@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.15] - 2026-09-08
+
+### Fixed
+
+- Closing a deal no longer reports a loss the size of everything the deal was allowed to spend. A deal keeps a running tally of what it currently holds, and its realised result is that tally measured against the funds it started with. If the tally was lost — reset to zero, or left holding a value that is not a real number — the two cancelled out and the deal booked its whole allocation as a loss, which then carried into the bot's totals and the profit history. The tally can be lost because the working copy a bot restores itself from after a restart is stored as plain text, where a value that is not a real number becomes an empty one on the way in; the database refuses such a value outright and keeps the last good figures. Deal close now rebuilds the tally from the deal's own filled orders before working out any result, and says so in the bot log. A healthy deal's arithmetic is unchanged to the last decimal, and a restored copy whose tally is unusable is discarded in favour of the database copy — the same way an unusable average price already was. Spec 024.
+
 ## [1.58.14] - 2026-09-08
 
 ### Fixed
