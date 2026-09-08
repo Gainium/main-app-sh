@@ -273,6 +273,87 @@ export const reconcileTpCoverage = (
 }
 
 /**
+ * Which deals the CORRECTION is armed for.
+ * Spec `specs/016.tp-coverage-repair-per-deal-scope.md`.
+ *
+ * `invalid` is deliberately not folded into `off`, for the same reason
+ * `unavailable` is not an empty order list above: both refuse to act, but one
+ * is the operator's intent and the other is a value the engine could not read.
+ * Reporting the second as the first is how an operator concludes the flag does
+ * not work and reaches for the fleet-wide value instead (§1.3).
+ */
+export type TpRepairScope =
+  | { kind: 'off' }
+  | { kind: 'fleet' }
+  | { kind: 'deals'; dealIds: Set<string> }
+  | { kind: 'invalid'; tokens: string[] }
+
+/**
+ * A deal id, and nothing looser. Stricter than mongoose's `isValidObjectId`,
+ * which also accepts any 12-character string — under that check a truncated
+ * token parses as a legitimate id and the run silently scopes to a deal that
+ * does not exist (§4.2). This module is pure by design, so it could not import
+ * mongoose in any case.
+ */
+const DEAL_ID = /^[0-9a-f]{24}$/i
+
+/**
+ * Reads `BOT_TP_COVERAGE_REPAIR` (§4.1).
+ *
+ * Correction cancels and places real orders with real money, so every branch
+ * that is not an unambiguous arming instruction answers "do not act".
+ */
+export const parseTpRepairScope = (
+  raw: string | undefined,
+): TpRepairScope => {
+  const value = (raw ?? '').trim()
+  if (!value) return { kind: 'off' }
+  if (/^(1|true|yes)$/i.test(value)) return { kind: 'fleet' }
+  const tokens = value
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
+  const bad = tokens.filter((t) => !DEAL_ID.test(t))
+  if (bad.length || !tokens.length) return { kind: 'invalid', tokens: bad }
+  return {
+    kind: 'deals',
+    dealIds: new Set(tokens.map((t) => t.toLowerCase())),
+  }
+}
+
+/** May the correction run for this deal? */
+export const tpRepairAllows = (
+  scope: TpRepairScope,
+  dealId: string,
+): boolean =>
+  scope.kind === 'fleet' ||
+  (scope.kind === 'deals' && scope.dealIds.has(dealId.toLowerCase()))
+
+/**
+ * The startup line (§4.3). An operator arming a money-moving correction has to
+ * be able to confirm from the log that the engine read what he typed.
+ */
+export const describeTpRepairScope = (scope: TpRepairScope): string => {
+  switch (scope.kind) {
+    case 'fleet':
+      return 'ARMED for every drifted deal (fleet-wide)'
+    case 'deals':
+      return `ARMED for ${scope.dealIds.size} deal(s): ${[
+        ...scope.dealIds,
+      ].join(', ')}`
+    case 'invalid':
+      return (
+        `value not understood, so nothing is armed (detect only) — ` +
+        `not a deal id: ${scope.tokens.join(', ')}. ` +
+        `Expected 1/true/yes for every drifted deal, or a comma-separated ` +
+        `list of 24-character deal ids`
+      )
+    case 'off':
+      return 'not armed (detect only)'
+  }
+}
+
+/**
  * The greppable line the reconcile pass emits for a drifted deal.
  *
  * Named after the deal because that is what an operator has to act on, and

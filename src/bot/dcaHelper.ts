@@ -152,8 +152,11 @@ import {
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
 import {
+  describeTpRepairScope,
+  parseTpRepairScope,
   reconcileTpCoverage,
   tpCoverageDriftWarn,
+  tpRepairAllows,
   trackedPosition,
   type LiveTpOrder,
   type TpCoverageProbe,
@@ -193,17 +196,38 @@ const { sleep, checkNumber, mapToArray } = utils
 
 /**
  * Arms the take-profit coverage CORRECTION (issue #696, spec
- * `013.tp-coverage-drift-after-partial-tp` §4.2).
+ * `013.tp-coverage-drift-after-partial-tp` §4.2, scoped by spec
+ * `016.tp-coverage-repair-per-deal-scope`).
  *
  * Detection is unconditional and only ever logs. This flag gates the part that
  * cancels a resting order and places a new one on a live venue with real money,
  * so it is deliberately opt-in: deploying the fix must not, by itself, start
  * trading against anyone's account. An operator arms it once, deliberately,
  * having read the `tp-coverage drift` lines the detection pass emits.
+ *
+ * It takes a LIST OF DEAL IDS as well as `1`, because arming a money-moving
+ * correction responsibly means running it on one deal first and reading the
+ * result. As a boolean the only choice was every drifted deal in the fleet at
+ * once — 184 of them when spec 016 was written (spec 016 §1.2).
  */
-const tpCoverageRepairArmed = /^(1|true|yes)$/i.test(
-  process.env.BOT_TP_COVERAGE_REPAIR ?? '',
+const tpCoverageRepairScope = parseTpRepairScope(
+  process.env.BOT_TP_COVERAGE_REPAIR,
 )
+
+// §4.3 — say what was read, once per process, so an operator can confirm the
+// engine understood the value he set. Silent while unset: that is the state
+// the whole fleet runs in, and this would otherwise be a line on every boot of
+// every bot worker forever.
+if ((process.env.BOT_TP_COVERAGE_REPAIR ?? '').trim()) {
+  const line = `BOT_TP_COVERAGE_REPAIR: tp-coverage correction ${describeTpRepairScope(
+    tpCoverageRepairScope,
+  )}`
+  if (tpCoverageRepairScope.kind === 'invalid') {
+    logger.warn(line)
+  } else {
+    logger.info(line)
+  }
+}
 
 export type FullDeal<Deal extends CleanDCADealsSchema> = {
   deal: Deal
@@ -9632,14 +9656,20 @@ function createDCABotHelper<
           continue
         }
         this.handleWarn(tpCoverageDriftWarn({ dealId, symbol, verdict }))
-        if (!tpCoverageRepairArmed) {
+        if (!tpRepairAllows(tpCoverageRepairScope, dealId)) {
           // The whole point of the flag. Say so once, with what WOULD happen,
-          // so the log is enough for an operator to decide on.
+          // so the log is enough for an operator to decide on — and say WHICH
+          // reason applies (spec 016 §4.4): a fleet that is not armed at all
+          // and a deal deliberately left out of a scoped run are different
+          // operational situations.
+          const would = `cancel ${verdict.staleTps.length} stale take-profit(s) and re-arm`
           this.handleLog(
-            `tp-coverage drift | deal ${dealId} left as is — correction is not armed ` +
-              `(set BOT_TP_COVERAGE_REPAIR to cancel ${
-                verdict.staleTps.length
-              } stale take-profit(s) and re-arm)`,
+            tpCoverageRepairScope.kind === 'deals'
+              ? `tp-coverage drift | deal ${dealId} left as is — outside the armed scope ` +
+                  `(BOT_TP_COVERAGE_REPAIR names ${tpCoverageRepairScope.dealIds.size} other deal(s); ` +
+                  `add this deal id to ${would})`
+              : `tp-coverage drift | deal ${dealId} left as is — correction is not armed ` +
+                  `(set BOT_TP_COVERAGE_REPAIR to ${would})`,
           )
           continue
         }

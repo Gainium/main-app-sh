@@ -188,29 +188,40 @@ const DEALS = {
 /**
  * One helper class per arming state. The flag is a module-level constant read
  * at import time, so each state needs its own load of `dcaHelper` — and that
- * load compiles 21k lines through ts-node, so it is done at most twice for the
- * whole file rather than once per test.
+ * load compiles 21k lines through ts-node, so it is done once per distinct
+ * `BOT_TP_COVERAGE_REPAIR` value for the whole file rather than once per test.
+ *
+ * `true`/`false` are the two states spec 013 had; spec 016 (#696 follow-up)
+ * adds scoped values, so the state is the raw env string. The boolean spelling
+ * is kept so every test written against 013 reads unchanged — which is what
+ * makes them the regression proof that `1` still means the whole fleet.
  */
+type Arming = boolean | string
+const rawFor = (armed: Arming) =>
+  armed === true ? '1' : armed === false ? undefined : armed
+
 const loadModule = createRequire(__filename)
-const helperCache = new Map<boolean, any>()
-const helperFor = (armed: boolean) => {
-  const hit = helperCache.get(armed)
+const helperCache = new Map<string, any>()
+const helperFor = (armed: Arming) => {
+  const raw = rawFor(armed)
+  const key = raw ?? '<unset>'
+  const hit = helperCache.get(key)
   if (hit) return hit
-  if (armed) {
-    process.env.BOT_TP_COVERAGE_REPAIR = '1'
-  } else {
+  if (raw === undefined) {
     delete process.env.BOT_TP_COVERAGE_REPAIR
+  } else {
+    process.env.BOT_TP_COVERAGE_REPAIR = raw
   }
   // The helper reads BOT_TP_COVERAGE_REPAIR at module load, so each arming
   // state needs a fresh module instance: evict it and re-load through a
   // dedicated CommonJS loader (the ESM-style import is cached for the run).
   delete loadModule.cache[loadModule.resolve('../dcaHelper')]
   const built = loadModule('../dcaHelper').default(FakeBase as any)
-  helperCache.set(armed, built)
+  helperCache.set(key, built)
   return built
 }
 
-const buildBot = (armed: boolean, deals: readonly any[]) => {
+const buildBot = (armed: Arming, deals: readonly any[]) => {
   const Helper: any = helperFor(armed)
 
   class TestBot extends Helper {
@@ -507,6 +518,71 @@ describe('checkTpCoverage (spec 013, issue #696)', () => {
       const bot = buildBot(false, [DEALS.b3])
       await run(bot, [DEALS.b3])
       expect(bot.warns.join('\n')).to.contain('under: 110493')
+    })
+  })
+
+  /**
+   * Spec `016.tp-coverage-repair-per-deal-scope.md` (#696 follow-up).
+   *
+   * Arming the correction responsibly means running it on ONE deal first. With
+   * the flag a boolean, `1` acted on all three of these at once — 184 deals in
+   * production (#700) — and the deal id the operator was told to arm matched
+   * nothing at all and was rejected in silence.
+   */
+  describe('spec 016 §4.1 the correction can be armed for one deal', () => {
+    const drifted = [DEALS.b3, DEALS.ctsi, DEALS.dgb]
+
+    before(function () {
+      // A third arming state = a third ts-node compile of dcaHelper.
+      this.timeout(180000)
+      helperFor(DEALS.b3._id)
+    })
+
+    it('repairs only the named deal', async () => {
+      const bot = buildBot(DEALS.b3._id, drifted)
+      await run(bot, drifted)
+      expect(
+        bot.cancelled.map((c: Cancelled) => c.clientOrderId),
+      ).to.deep.equal(['D-TP-TNTUX'])
+      expect(bot.placed).to.have.length(1)
+      expect(bot.placed[0].dealId).to.equal(DEALS.b3._id)
+    })
+
+    it('§4.4 logs the other drifted deals as outside the scope', async () => {
+      const bot = buildBot(DEALS.b3._id, drifted)
+      await run(bot, drifted)
+      const outOfScope = bot.logs.filter((l: string) =>
+        l.includes('outside the armed scope'),
+      )
+      expect(outOfScope).to.have.length(2)
+      expect(outOfScope.join('\n')).to.contain(DEALS.ctsi._id)
+      expect(outOfScope.join('\n')).to.contain(DEALS.dgb._id)
+      // Not the flat "not armed" line — the operator armed it, on purpose,
+      // for a different deal.
+      expect(outOfScope.join('\n')).to.not.contain('correction is not armed')
+    })
+
+    it('still detects and reports every drifted deal', async () => {
+      const bot = buildBot(DEALS.b3._id, drifted)
+      await run(bot, drifted)
+      expect(
+        bot.warns.filter((w: string) => w.startsWith('tp-coverage drift')),
+      ).to.have.length(3)
+    })
+
+    it('leaves the fleet-wide value meaning the whole fleet', async () => {
+      const bot = buildBot(true, drifted)
+      await run(bot, drifted)
+      expect(bot.cancelled).to.have.length(3)
+      expect(bot.placed).to.have.length(3)
+    })
+
+    it('repairs nothing at all while unset', async () => {
+      const bot = buildBot(false, drifted)
+      await run(bot, drifted)
+      expect(bot.cancelled).to.deep.equal([])
+      expect(bot.placed).to.deep.equal([])
+      expect(bot.logs.join('\n')).to.contain('correction is not armed')
     })
   })
 })

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.8] - 2026-09-08
+
+### Fixed
+
+- The take-profit coverage correction can now be armed for named deals rather than only all-or-nothing. That correction cancels a stale take-profit and places a replacement with real money, so it stays off unless an operator turns it on — but the only value that turned it on applied to every affected deal at once, leaving no way to try it on a single deal and read the result before widening. `BOT_TP_COVERAGE_REPAIR` now also accepts a comma-separated list of deal ids and corrects only those; `1`/`true`/`yes` keeps its existing meaning of every affected deal, and leaving it unset still changes nothing at all. A value that is neither is refused rather than guessed at — nothing is corrected, and the reason is logged, instead of the setting appearing to have been ignored. The scope the engine actually read is written to the log once at startup so it can be confirmed. Deals outside an armed scope are still detected and reported exactly as before, and now say they were skipped for that reason rather than reporting as though the correction were switched off entirely.
+
 ## [1.58.7] - 2026-09-08
 
 ### Fixed
