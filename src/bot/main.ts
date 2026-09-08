@@ -7007,6 +7007,45 @@ class MainBot<T extends IMainBot> {
     skipBr?: boolean,
   ): Promise<Order | string | void> {
     const _id = this.startMethod('sendOrderToExchange')
+    // Spec `025` §4.1 (#715). The money-safety boundary: this method has no
+    // opinion about the numbers it is handed, and on 2026-09-08 it took a
+    // take-profit whose quantity was NaN, wrote it ahead to `orders` and sent
+    // it (`limitOrders() ... qty NaN, price 0.000001, side SELL`). No venue
+    // has ever accepted a non-finite quantity, so refusing one here cannot
+    // cost a fill — but NOT refusing it costs twice: the position is left
+    // without its exit, and the write-ahead row survives as the STRING "NaN"
+    // (mongoose `String` fields accept it), after which every later deal
+    // aggregate that casts it back to Number fails and the deal document
+    // stops saving at all (spec `023` §2.2).
+    //
+    // Deliberately the last line of defence rather than the only one: the
+    // producers are guarded too (the DCA ladder, spec `025` §4.2/§4.3, and
+    // `getTPOrder`, spec `023`). This one is what bounds a producer nobody has
+    // found yet, and it is venue-independent.
+    //
+    // The price arm is skipped for MARKET orders: their `price` is not what
+    // gets filled and some connectors drop it entirely, so a missing one there
+    // is not proof of a broken order the way a missing quantity always is.
+    const sendQty = parseFloat(`${order.origQty}`)
+    const sendPrice = parseFloat(`${order.price}`)
+    if (
+      !Number.isFinite(sendQty) ||
+      (order.type !== 'MARKET' && !Number.isFinite(sendPrice))
+    ) {
+      // Same string `addDealFunds` already refuses its own quantity with, so
+      // `bot/utils.ts` errorDict classifies it as `orderParams` unchanged.
+      const reason = `Order qty is not a number. Order ${order.clientOrderId} ${order.symbol} qty ${order.origQty}, price ${order.price}, side ${order.side}`
+      await this.handleOrderErrors(
+        reason,
+        order,
+        'sendOrderToExchange()',
+        `Send new order request ${order.clientOrderId}`,
+        false,
+        false,
+      )
+      this.endMethod(_id)
+      return returnError ? reason : undefined
+    }
     const ed = await this.getExchangeInfo(order.symbol)
     if (
       this.isBitget &&

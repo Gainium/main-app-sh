@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.16] - 2026-09-08
+
+### Fixed
+
+- An order whose quantity or price is not a real number is no longer sent to the exchange or recorded. Such an order can never be filled, but it was still written to the order history first, where the unusable value was kept as text — and every later calculation that read it back produced another unusable value, so the deal's own figures stopped being saved at all while the position stayed open with no exit order. Two places that could produce one are fixed at the source as well: the safety-order ladder now refuses to be built when the price it sizes against is missing, instead of quietly producing a ladder of unusable sizes, and the close order does the same when its size cannot be worked out after the fact. Healthy orders, ladders and close orders are unchanged to the last decimal. Spec 025.
+
 ## [1.58.15] - 2026-09-08
 
 ### Fixed

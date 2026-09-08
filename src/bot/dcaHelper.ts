@@ -14597,6 +14597,25 @@ function createDCABotHelper<
             false,
             false,
           )
+          // Spec `025` §4.4 (#715). Spec `023` refuses an unusable size before
+          // `tpOrder` is built; this is the same refusal for a size that goes
+          // bad AFTER it — the `quoteAsset.minAmount` re-derivations just above
+          // divide by `tpOrder.price`/`tpOrder.qty`. Falling through from here
+          // is what sent `qty NaN, price 0.000001` to the venue. Narrow on
+          // purpose: only a quantity that is provably unusable bails, so a
+          // throw with any other cause (an unreadable `baseAsset.step`) keeps
+          // today's behaviour of logging and resting the take-profit anyway.
+          if (!Number.isFinite(tpOrder.qty)) {
+            this.handleErrors(
+              `Order qty is not a number. Deal ${dealId || '(new)'} close order sized to ${tpOrder.qty} at price ${tpOrder.price}`,
+              'getTPOrder',
+              '',
+              false,
+              false,
+              false,
+            )
+            return []
+          }
         }
         this.handleDebug(
           `TP order. Base order size: ${boQty}, qty: ${tpOrder.qty}, origQty: ${origQty}, qtyBase: ${qtyBase}, price: ${tpOrder.price}`,
@@ -14995,7 +15014,24 @@ function createDCABotHelper<
         // pass that straight through. Without this bail baseQty becomes
         // Infinity (baseOrderSize / 0), new Big() throws "Invalid number" and
         // we still return a bogus TP order with an Infinity qty.
-        if (!latestPrice || !Number.isFinite(latestPrice)) {
+        //
+        // Spec `025` §4.2 (#715): `_price` needs the same bail. It is the
+        // SIZING price the DCA ladder below actually divides the order size by
+        // (`_price ?? price`), it arrived later than this guard, and `??` only
+        // rejects null/undefined — a `0` from the same failed `getLatestPrice`
+        // passes straight through it. `33 / 0` is Infinity, `math.round`
+        // stringifies its input so `Number('Infinity' + 'e0')` is NaN, and from
+        // there nothing downstream can see it: every clamp compares against
+        // NaN and is false. Production built a 30-level ladder of `qty: NaN`
+        // this way, which sums into `assets.required.*` / `usage.max*` /
+        // `usage.maxUsd` and blocked every deal AND bot save for 41 minutes.
+        const sizingPrice = _price ?? latestPrice
+        if (
+          !latestPrice ||
+          !Number.isFinite(latestPrice) ||
+          !sizingPrice ||
+          !Number.isFinite(sizingPrice)
+        ) {
           this.handleErrors(
             `Latest price is 0`,
             'createInitialDealOrders',
@@ -15018,6 +15054,25 @@ function createDCABotHelper<
             : baseOrderSize)
         const baseQtyOrig = baseQty
         baseQty = this.math.round(baseQty, precision, true)
+        // Spec `025` §4.2 (#715). The other way into this function's
+        // arithmetic: `bo?.origQty` is read off a PERSISTED order row, where
+        // the quantity is a string. `parseFloat('NaN')` is falsy and harmlessly
+        // falls through to the nominal re-derivation, but `'Infinity'` is
+        // truthy — `math.round` then turns it into NaN, and every take-profit
+        // clamp below compares against that and is false. Guarded here rather
+        // than at each use because everything this function returns is derived
+        // from `baseQty`.
+        if (!Number.isFinite(baseQty) || !Number.isFinite(baseQtyOrig)) {
+          this.handleErrors(
+            `Order qty is not a number. Base order qty for ${_symbol} read as ${bo?.origQty ?? baseOrderSize}`,
+            'createInitialDealOrders',
+            'Get base order qty',
+            false,
+            false,
+            false,
+          )
+          return []
+        }
         let tpPrice = this.math.round(
           latestPrice * (1 + (this.isLong ? 1 : -1) * tpPerc),
           symbol.priceAssetPrecision,
@@ -15089,6 +15144,20 @@ function createDCABotHelper<
             false,
             false,
           )
+          // Spec `025` §4.3 (#715). Same narrow bail as the ladder's catch
+          // below and `getTPOrder`'s: this throw is the only thing that can see
+          // a non-finite take-profit size, and falling through built it anyway.
+          if (!Number.isFinite(tpOrder.qty)) {
+            this.handleErrors(
+              `Order qty is not a number. Close order for ${_symbol} sized to ${tpOrder.qty} at price ${tpOrder.price}`,
+              'createInitialDealOrders',
+              '',
+              false,
+              false,
+              false,
+            )
+            return []
+          }
         }
         const gridStep = latestPrice * step
         const minGridStep =
@@ -15414,6 +15483,26 @@ function createDCABotHelper<
                 false,
                 false,
               )
+              // Spec `025` §4.3 (#715). `new Big(qty)` throwing is the ONLY
+              // thing in this loop that can notice a non-finite quantity —
+              // the `baseAsset.minAmount` and `quoteAsset.minAmount` clamps
+              // above compare against NaN and are no-ops. Catching it and
+              // pushing the level anyway is what put `qty: NaN` on the ladder;
+              // one such level is enough to make `assets.required` and
+              // `usage.maxUsd` NaN, which mongoose then refuses on every save.
+              // A ladder we cannot size is no ladder, so refuse all of it —
+              // the same answer the latest-price bail above already gives.
+              if (!Number.isFinite(qty)) {
+                this.handleErrors(
+                  `Order qty is not a number. DCA level ${i} for ${_symbol} sized to ${qty} at price ${price}`,
+                  'createInitialDealOrders',
+                  'dca',
+                  false,
+                  false,
+                  false,
+                )
+                return []
+              }
             }
             orders.push({
               qty,
