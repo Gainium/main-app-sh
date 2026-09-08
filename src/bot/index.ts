@@ -3372,6 +3372,9 @@ class Bot<T extends UserSchema = UserSchema> {
     const saveBotRequest = await this.botDb.createData({
       userId,
       status: BotStatusEnum.closed,
+      // Spec 014 §3 — gates the new observed-fee resolution + feeByAsset
+      // ledger in helper.ts:createTransaction to new grid bots only.
+      flags: [BotFlags.feeByAsset],
       settings: { ...settings, updatedBudget: true, newBalance: true },
       exchange: settings.exchange,
       exchangeUUID: settings.exchangeUUID,

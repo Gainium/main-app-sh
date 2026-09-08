@@ -2889,6 +2889,9 @@ export const BotSchema = /* GraphQL */ `
     profit: Profit
     funding: Funding
     profitByAssets: [ProfitByAssets]
+    flags: [String]
+    feePaid: FeePaid
+    feeByAsset: [FeeByAsset]
     symbol: Symbol
     profitToday: ProfitToday
     public: Boolean
@@ -3690,6 +3693,7 @@ export const BotSchema = /* GraphQL */ `
     lastPrice: Float
     profit: Profit
     feePaid: FeePaid
+    feeByAsset: [FeeByAsset]
     avgPrice: Float
     createTime: Float
     updateTime: Float
@@ -4175,6 +4179,7 @@ export const BotSchema = /* GraphQL */ `
     profit: Profit
     funding: Funding
     feePaid: FeePaid
+    feeByAsset: [FeeByAsset]
     avgPrice: Float
     displayAvg: Float
     commission: Float
@@ -4278,6 +4283,7 @@ export const BotSchema = /* GraphQL */ `
     profit: Profit
     funding: Funding
     feePaid: FeePaid
+    feeByAsset: [FeeByAsset]
     avgPrice: Float
     displayAvg: Float
     commission: Float
@@ -4411,6 +4417,11 @@ export const BotSchema = /* GraphQL */ `
     gridProfitUsd: FloatOrInfinity
   }
   type ProfitByAssets {
+    asset: String
+    total: FloatOrInfinity
+    totalUsd: FloatOrInfinity
+  }
+  type FeeByAsset {
     asset: String
     total: FloatOrInfinity
     totalUsd: FloatOrInfinity

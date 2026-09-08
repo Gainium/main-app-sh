@@ -1,4 +1,4 @@
-import type { CommonOrder, Order } from '../../types'
+import type { CommonOrder, ExecutionReport, Order } from '../../types'
 
 /**
  * Turning the fee a venue reported into the base/quote split a deal books.
@@ -216,4 +216,41 @@ export function accrueStreamFee(
     feeAsset: asset,
     feeTradeId: tradeId,
   }
+}
+
+/**
+ * The order-level fee fields every venue but Binance reports as running
+ * totals on the live stream (`websocket-connector-sh` spec 003 §2.1) —
+ * `feePaid`/`feeAsset`/`feeBreakdown`/`feePaidUsd`, plus `feeSide`, which
+ * only paper-trading sets (paper-trading spec 003) and real venues never do.
+ *
+ * ASSIGNED, not accumulated, unlike Binance's per-trade `commission` that
+ * `accrueStreamFee` handles instead. Absent means "not observed" — never a
+ * claim the fee was zero — so a field is only copied when the message
+ * actually carries it.
+ */
+export function streamFeeFields(msg: ExecutionReport): {
+  feePaid?: string
+  feeAsset?: string
+  feeBreakdown?: { asset: string; amount: string }[]
+  feePaidUsd?: string
+  feeSide?: 'base' | 'quote'
+} {
+  const out: ReturnType<typeof streamFeeFields> = {}
+  if ('feePaid' in msg && msg.feePaid !== undefined) {
+    out.feePaid = msg.feePaid
+  }
+  if ('feeAsset' in msg && msg.feeAsset !== undefined) {
+    out.feeAsset = msg.feeAsset
+  }
+  if ('feeBreakdown' in msg && msg.feeBreakdown?.length) {
+    out.feeBreakdown = msg.feeBreakdown
+  }
+  if ('feePaidUsd' in msg && msg.feePaidUsd !== undefined) {
+    out.feePaidUsd = msg.feePaidUsd
+  }
+  if ('feeSide' in msg && msg.feeSide !== undefined) {
+    out.feeSide = msg.feeSide
+  }
+  return out
 }

@@ -25,7 +25,18 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import { tpPriceDisplacement, worstFee } from './tpFees'
+import {
+  quantityFeeIsThirdAssetOnly,
+  ordersFeeIsThirdAssetOnly,
+  tpPriceDisplacement,
+  worstFee,
+} from './tpFees'
+import type { Order } from '../../../types'
+
+const order = (overrides: Partial<Order>): Partial<Order> => ({
+  executedQty: '1',
+  ...overrides,
+})
 
 // Binance USD-M standard tier.
 const futuresFee = { maker: 0.0002, taker: 0.0005 }
@@ -90,6 +101,102 @@ describe('tpFees', () => {
       const uncompensated =
         avg * (1 + tpPerc) * tpPriceDisplacement(zeroedFee, true)
       closeTo(uncompensated, 100.12)
+    })
+  })
+
+  // Spec 015 §2: a deal whose fees have ALL been paid in a third asset
+  // (BNB/BGB/KCS) never had base or quote debited for a fee — the same
+  // precondition that already zeroes the quantity fee for futures (file
+  // header) happens to also hold here, for an unrelated reason. This is
+  // deliberately narrower than "use the real fee" — see spec 015 §4 for why
+  // a per-order real-fee swap is out of scope.
+  describe('quantityFeeIsThirdAssetOnly: the ONE case safe to zero the quantity gross-up for', () => {
+    it('every observed fee off-pair, none on-pair → true', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(
+          [{ asset: 'BNB', total: 0.001, totalUsd: 0.25 }],
+          0,
+          { base: 0, quote: 0 },
+        ),
+      ).to.equal(true)
+    })
+    it('an on-pair fee alongside an off-pair one → false (mixed, keep the gross-up)', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(
+          [{ asset: 'BNB', total: 0.001, totalUsd: 0.25 }],
+          0,
+          { base: 0.00002, quote: 0 },
+        ),
+      ).to.equal(false)
+    })
+    it('commission already booked (from an earlier on-pair fee), no feeByAsset → false', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(undefined, 0.05, { base: 0, quote: 0.05 }),
+      ).to.equal(false)
+    })
+    it('nothing observed yet (no fills) → false, not vacuously true', () => {
+      expect(
+        quantityFeeIsThirdAssetOnly(undefined, 0, { base: 0, quote: 0 }),
+      ).to.equal(false)
+    })
+  })
+
+  // Spec 015 correction (post-review): the persisted feeByAsset/commission/
+  // feePaid fields only get written when closeDeal runs (a TP fill) — after
+  // the TP being sized is already built. ordersFeeIsThirdAssetOnly answers
+  // the same question live, from the orders themselves, so a deal's FIRST
+  // TP (built right after the base order fills, before closeDeal has ever
+  // run) still sees a third-asset-only base order.
+  describe('ordersFeeIsThirdAssetOnly: the live equivalent, from orders not persisted fields', () => {
+    it('a single filled order with an off-pair fee → true', () => {
+      expect(
+        ordersFeeIsThirdAssetOnly(
+          [order({ feePaid: '0.001', feeAsset: 'BNB' })],
+          'BTC',
+          'USDT',
+        ),
+      ).to.equal(true)
+    })
+    it('a single filled order with an on-pair fee → false', () => {
+      expect(
+        ordersFeeIsThirdAssetOnly(
+          [order({ feePaid: '0.5', feeAsset: 'USDT' })],
+          'BTC',
+          'USDT',
+        ),
+      ).to.equal(false)
+    })
+    it('an early off-pair fee and a later on-pair fee → false (mixed, keep the gross-up)', () => {
+      expect(
+        ordersFeeIsThirdAssetOnly(
+          [
+            order({ feePaid: '0.001', feeAsset: 'BNB' }),
+            order({ feePaid: '0.4', feeAsset: 'USDT' }),
+          ],
+          'BTC',
+          'USDT',
+        ),
+      ).to.equal(false)
+    })
+    it('two off-pair fees on two different orders → true', () => {
+      expect(
+        ordersFeeIsThirdAssetOnly(
+          [
+            order({ feePaid: '0.001', feeAsset: 'BNB' }),
+            order({ feePaid: '0.0002', feeAsset: 'BNB' }),
+          ],
+          'BTC',
+          'USDT',
+        ),
+      ).to.equal(true)
+    })
+    it('no orders at all → false, not vacuously true', () => {
+      expect(ordersFeeIsThirdAssetOnly([], 'BTC', 'USDT')).to.equal(false)
+    })
+    it('an order with no fee observed at all → false', () => {
+      expect(ordersFeeIsThirdAssetOnly([order({})], 'BTC', 'USDT')).to.equal(
+        false,
+      )
     })
   })
 })

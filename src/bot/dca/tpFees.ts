@@ -17,7 +17,9 @@
  * futures TP/SL, which is what happened between v1.14.17 and this file
  * (see `tpFees.spec.ts` for both regression cases).
  */
-import type { UserFee } from '../../../types'
+import type { Order, UserFee } from '../../../types'
+import { observedFeeLegs } from '../feeLedger'
+import { observedFeeSplit } from '../orderFee'
 
 type MaybeFee = Partial<UserFee> | null | undefined
 
@@ -40,4 +42,63 @@ export function worstFee(fee: MaybeFee): number {
  */
 export function tpPriceDisplacement(fee: MaybeFee, long: boolean): number {
   return 1 + (long ? 1 : -1) * worstFee(fee) * 2
+}
+
+/**
+ * Whether a deal's fees so far were ALL paid in a third asset — meaning
+ * nothing base/quote-denominated has been taken out of the quantity, the
+ * same precondition that already zeroes the fee for futures (see file
+ * header). Only true once at least one fee has actually been observed;
+ * a deal with no fills yet is not "all third-asset," it's "unknown."
+ */
+export function quantityFeeIsThirdAssetOnly(
+  feeByAsset: { asset: string; total: number; totalUsd?: number }[] | undefined,
+  commission: number,
+  feePaid: { base?: number; quote?: number } | undefined,
+): boolean {
+  // `feeByAsset` is NOT third-asset-exclusive (spec 014 §2.1 — it records
+  // every observed fee, on-pair legs included), so this alone only means
+  // "some fee was observed," not "a third-asset one was." It's still the
+  // right check IN COMBINATION with `hasOnPairFee` below: `closeDeal`
+  // (014 §2.2) adds an on-pair leg to `feeByAsset` in the exact same pass
+  // where it adds to `commission`/`feePaid` — an on-pair fee can never be
+  // in `feeByAsset` without also showing up there. So a non-empty
+  // `feeByAsset` with `hasOnPairFee` false can only mean every entry in it
+  // was off-pair.
+  const hasAnyObservedFee = (feeByAsset?.length ?? 0) > 0
+  const hasOnPairFee =
+    commission > 0 || (feePaid?.base ?? 0) > 0 || (feePaid?.quote ?? 0) > 0
+  return hasAnyObservedFee && !hasOnPairFee
+}
+
+/**
+ * The same question as `quantityFeeIsThirdAssetOnly`, answered from every
+ * order filled so far instead of the deal's persisted `feeByAsset`/
+ * `commission`/`feePaid` fields.
+ *
+ * Those fields are only written when `closeDeal` runs (spec 014 §2.2) —
+ * which happens when a TP fills, i.e. AFTER the TP this predicate is
+ * gating has already been sized and sent. For a deal's first (and for a
+ * non-multi-TP deal, only) TP, the persisted fields are always empty
+ * regardless of what the base order actually paid — the zeroing this spec
+ * exists for would never fire for the common case. This is the live
+ * equivalent, evaluated directly against the orders instead.
+ */
+export function ordersFeeIsThirdAssetOnly(
+  orders: Partial<Order>[],
+  baseAsset?: string,
+  quoteAsset?: string,
+): boolean {
+  let hasThirdAssetFee = false
+  let hasOnPairFee = false
+  for (const o of orders) {
+    if (observedFeeSplit(o, baseAsset, quoteAsset)) {
+      hasOnPairFee = true
+      continue
+    }
+    if (observedFeeLegs(o, baseAsset, quoteAsset).length) {
+      hasThirdAssetFee = true
+    }
+  }
+  return hasThirdAssetFee && !hasOnPairFee
 }

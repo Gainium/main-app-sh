@@ -85,8 +85,11 @@ import {
   ComboBotSchema,
   LWConditionEnum,
   DealStartBlock,
+  ClearPairsSchema,
+  OrderAdditionalParams,
 } from '../../types'
 import { observedFeeSplit } from './orderFee'
+import { observedFeeLegs, accrueFeeLedger, FeeLedgerEntry } from './feeLedger'
 import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
@@ -132,7 +135,11 @@ import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
-import { tpPriceDisplacement, worstFee } from './dca/tpFees'
+import {
+  tpPriceDisplacement,
+  worstFee,
+  ordersFeeIsThirdAssetOnly,
+} from './dca/tpFees'
 import {
   buyAndHoldOutcome,
   carryForwardBenchmark,
@@ -296,7 +303,7 @@ const positionProbeBackoff = new RetryBackoff({
  * never accept an order for. Anything not listed here falls through to the
  * generic handler, which classifies it as `Order params` and stops the bot.
  */
-const notionalReasons = [
+export const notionalReasons = [
   // KuCoin
   'The order funds should be more than',
   // Binance NOTIONAL / MIN_NOTIONAL filter
@@ -1779,7 +1786,10 @@ function createDCABotHelper<
       }
       const dealSettings = this.getInitalDealSettings()
       if (this.data && symbolData && dealSettings) {
-        const flags: DCADealFlags[] = [DCADealFlags.newMultiTp]
+        const flags: DCADealFlags[] = [
+          DCADealFlags.newMultiTp,
+          DCADealFlags.feeByAsset,
+        ]
         if (this.data.flags?.includes(BotFlags.externalSl)) {
           flags.push(DCADealFlags.externalSl)
         }
@@ -2205,6 +2215,23 @@ function createDCABotHelper<
               : observed.base * price + observed.quote)
           )
         }
+        // A fee was observed for this order, just not resolvable to
+        // base/quote (BNB/BGB/KCS-style, or a third-asset test symbol) —
+        // that is real information, not "we don't know." Book 0 for this
+        // order rather than the estimate, the same rule `closeDeal`'s
+        // feeByAsset loop and `ordersFeeIsThirdAssetOnly` already apply for
+        // `feePaid`/TP sizing (spec 014/015) — unconditional, not gated
+        // behind the `feeByAsset` deal flag, since this is a plain
+        // correctness question independent of that ledger feature.
+        if (
+          observedFeeLegs(
+            v,
+            findDeal.symbol?.baseAsset,
+            findDeal.symbol?.quoteAsset,
+          ).length
+        ) {
+          return acc
+        }
         return (
           acc +
           (profitBase
@@ -2215,6 +2242,95 @@ function createDCABotHelper<
               (v.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0)))
         )
       }, 0)
+    }
+    /**
+     * The observed-fee portion of `closeDeal`'s ledger (spec 014/020),
+     * recomputed FRESH from every filled order every time — never seeded
+     * from the deal's current `feeByAsset`/`feePaid`, so it's safe to call
+     * after every fill (spec 022), not only once at close: two calls over
+     * the same order set produce the same answer, not a doubled one.
+     *
+     * No estimate fallback and no `offPairFeeUsd`/profit interaction here —
+     * both stay close-only (spec 022's Design section). `null` means this
+     * deal isn't opted into the ledger (`DCADealFlags.feeByAsset`, "new
+     * deals only" per spec 014) — callers skip the save entirely rather
+     * than persist an empty ledger over a deal that never asked for one.
+     */
+    async computeObservedFeeLedger(deal: ExcludeDoc<Deal>): Promise<{
+      feeByAsset: FeeLedgerEntry[]
+      feePaid: { base: number; quote: number }
+    } | null> {
+      if (!deal._id || !deal.flags?.includes(DCADealFlags.feeByAsset)) {
+        return null
+      }
+      const dealOrders = this.getOrdersByStatusAndDealId({
+        dealId: `${deal._id}`,
+        status: ['FILLED', 'CANCELED'],
+      }).filter(
+        (o) =>
+          +o.executedQty > 0 &&
+          ![TypeOrderEnum.br, TypeOrderEnum.rebalance].includes(o.typeOrder),
+      )
+      let feeByAsset: FeeLedgerEntry[] = []
+      let feeBaseFull = 0
+      let feeQuoteFull = 0
+      let cachedPrices:
+        | { pair: string; price: number; exchange: string }[]
+        | undefined
+      const resolveLegUsdRate = async (
+        asset: string,
+        order: (typeof dealOrders)[number],
+        legAmount: number,
+        singleLeg: boolean,
+      ): Promise<number> => {
+        if (singleLeg && order.feePaidUsd !== undefined) {
+          const usd = +order.feePaidUsd
+          return legAmount > 0 ? usd / legAmount : 0
+        }
+        const { baseAsset, quoteAsset } = deal.symbol ?? {}
+        if (asset === baseAsset) {
+          return this.getUsdRate(deal.symbol.symbol, 'base')
+        }
+        if (asset === quoteAsset) {
+          return this.getUsdRate(deal.symbol.symbol, 'quote')
+        }
+        if (!cachedPrices) {
+          const pricesResult = await this.exchange?.getAllPrices(true)
+          cachedPrices =
+            pricesResult?.status === StatusEnum.ok
+              ? pricesResult.data.map((p) => ({ ...p, exchange: 'all' }))
+              : []
+        }
+        return (
+          utils.findUSDRate(asset, cachedPrices ?? [], this.data?.exchange) || 0
+        )
+      }
+      for (const o of dealOrders) {
+        const observed = observedFeeSplit(
+          o,
+          deal.symbol?.baseAsset,
+          deal.symbol?.quoteAsset,
+        )
+        const legs = observedFeeLegs(
+          o,
+          deal.symbol?.baseAsset,
+          deal.symbol?.quoteAsset,
+        )
+        for (const leg of legs) {
+          const rate = await resolveLegUsdRate(
+            leg.asset,
+            o,
+            leg.amount,
+            legs.length === 1,
+          )
+          feeByAsset = accrueFeeLedger(feeByAsset, leg.asset, leg.amount, rate)
+        }
+        if (observed) {
+          feeBaseFull += observed.base
+          feeQuoteFull += observed.quote
+        }
+      }
+      return { feeByAsset, feePaid: { base: feeBaseFull, quote: feeQuoteFull } }
     }
     /**
      * Close deal when TP is filled
@@ -2287,6 +2403,64 @@ function createDCABotHelper<
           const commDeal = await this.getCommDeal(findDeal.deal)
           let feeBaseFull = 0
           let feeQuoteFull = 0
+          // Off-pair fee legs' USD value only (spec 014 §2.2) — subtracted
+          // from profit.totalUsd below, never from total/pureBase/pureQuote,
+          // which stay correct via feeBaseFull/feeQuoteFull as before.
+          let offPairFeeUsd = 0
+          // Spec 014 §2.1/§2.2/§3: new deals only. `feeByAsset` records every
+          // observed fee leg, on-pair legs included — the ledger's job is
+          // "what did we actually pay," independent of what side comBase/
+          // comQuote ultimately booked to (spec 014 §4 Q3).
+          const feeByAssetGated = !!findDeal.deal.flags?.includes(
+            DCADealFlags.feeByAsset,
+          )
+          let cachedPrices:
+            | { pair: string; price: number; exchange: string }[]
+            | undefined
+          const resolveLegUsdRate = async (
+            asset: string,
+            order: (typeof dealOrders)[number],
+            legAmount: number,
+            singleLeg: boolean,
+          ): Promise<number> => {
+            // Spec 014 §1.4/§2.3: prefer the venue's own USD-equivalent when
+            // it reported one for this order (Kraken today) over any rate
+            // lookup — only meaningful when the fee is a single leg, since
+            // feePaidUsd is one order-level number, not per-leg.
+            if (singleLeg && order.feePaidUsd !== undefined) {
+              const usd = +order.feePaidUsd
+              return legAmount > 0 ? usd / legAmount : 0
+            }
+            const { baseAsset, quoteAsset } = findDeal.deal.symbol ?? {}
+            if (asset === baseAsset) {
+              return this.getUsdRate(tpOrder.symbol, 'base')
+            }
+            if (asset === quoteAsset) {
+              return this.getUsdRate(tpOrder.symbol, 'quote')
+            }
+            if (!cachedPrices) {
+              const pricesResult = await this.exchange?.getAllPrices(true)
+              cachedPrices =
+                pricesResult?.status === StatusEnum.ok
+                  ? pricesResult.data.map((p) => ({ ...p, exchange: 'all' }))
+                  : []
+            }
+            return (
+              utils.findUSDRate(
+                asset,
+                cachedPrices ?? [],
+                this.data?.exchange,
+              ) || 0
+            )
+          }
+          // Seed fresh, not from the deal's current value: an incremental
+          // update (spec 022) may already have added these SAME orders'
+          // legs earlier in the deal's life. Seeding from `[]` and
+          // rebuilding the whole ledger from `dealOrders` below makes this
+          // loop idempotent regardless of what ran before it — the exact
+          // property spec 022 needs to call this safely after every fill,
+          // not just once at close.
+          findDeal.deal.feeByAsset = []
           for (const o of dealOrders) {
             // Prefer what the VENUE said it charged. `deal.feePaid` was
             // previously the sum of `qty * price * storedFeeRate` for every
@@ -2306,9 +2480,39 @@ function createDCABotHelper<
               findDeal.deal.symbol?.baseAsset,
               findDeal.deal.symbol?.quoteAsset,
             )
+            const legs = feeByAssetGated
+              ? observedFeeLegs(
+                  o,
+                  findDeal.deal.symbol?.baseAsset,
+                  findDeal.deal.symbol?.quoteAsset,
+                )
+              : []
+            for (const leg of legs) {
+              const rate = await resolveLegUsdRate(
+                leg.asset,
+                o,
+                leg.amount,
+                legs.length === 1,
+              )
+              findDeal.deal.feeByAsset = accrueFeeLedger(
+                findDeal.deal.feeByAsset,
+                leg.asset,
+                leg.amount,
+                rate,
+              )
+              if (!observed) {
+                offPairFeeUsd += leg.amount * rate
+              }
+            }
             if (observed) {
               feeBaseFull += observed.base
               feeQuoteFull += observed.quote
+              continue
+            }
+            if (feeByAssetGated && legs.length) {
+              // Off-pair fee (spec 014 §2.2): already recorded on the ledger
+              // above, USD only. Book 0 on base/quote — never the estimate —
+              // and skip it entirely rather than falling through below.
               continue
             }
             if (o.side === OrderSideEnum.buy) {
@@ -2349,8 +2553,12 @@ function createDCABotHelper<
                   findDeal.deal.initialBalances.quote) /
                   findDeal.deal.lastPrice) - commDeal
           const rate = await this.getUsdRate(tpOrder.symbol)
+          // Spec 014 §2.2: an off-pair fee's USD value moves totalUsd only —
+          // total/pureBase/pureQuote above are unaffected (native currencies,
+          // and the fee was never booked to base/quote for these legs).
           const totalUsd =
-            total * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate
+            total * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate -
+            offPairFeeUsd
           findDeal.deal.profit = {
             ...findDeal.deal.profit,
             pureBase: (findDeal.deal.profit.pureBase ?? 0) + pureBase,
@@ -2449,6 +2657,7 @@ function createDCABotHelper<
             size: findDeal.deal.size,
             tpHistory: filledTp,
             feePaid: findDeal.deal.feePaid,
+            feeByAsset: findDeal.deal.feeByAsset,
             feeBalance: findDeal.deal.feeBalance,
             ac: findDeal.deal.ac,
             closeTrigger: findDeal.deal.closeTrigger,
@@ -5494,6 +5703,168 @@ function createDCABotHelper<
       return false
     }
 
+    /**
+     * Spec 015 §7.2 — whether a TP rejection LOOKS shaped like "this order
+     * was too small," which is what a missing fee gross-up would produce.
+     * Deliberately wider than just a balance rejection: a too-small
+     * quantity can just as plausibly be rejected as invalid-quantity/
+     * lot-size if the venue rounds it below its step before ever reaching a
+     * balance check (`isErrorNotEnoughBalance` alone would miss that shape
+     * — confirmed, it's substring-matched against `notEnoughErrors` only).
+     * A private method composing two other private methods, same shape as
+     * its siblings — see plans/015.md's "§7 solution" for why this can't be
+     * a freestanding pure function.
+     */
+    private isFeeSizingRejection(reason: string): boolean {
+      return (
+        this.isErrorNotEnoughBalance(reason) || this.isNotionalReason(reason)
+      )
+    }
+
+    /**
+     * Spec 015 §2/§3 correction (post-review): whether every fee observed so
+     * far on this deal was third-asset, computed LIVE from every currently
+     * filled order rather than the deal's persisted `feeByAsset`/
+     * `commission`/`feePaid` fields.
+     *
+     * Those fields are only written when `closeDeal` runs (spec 014 §2.2) —
+     * a TP fill — which happens AFTER the TP this predicate gates has
+     * already been sized and sent. For a deal's first (and for a
+     * non-multi-TP deal, only) TP, the persisted fields are always empty
+     * regardless of what the base order actually paid, so the original
+     * persisted-field check could never fire for the common case. Cheap:
+     * `getOrdersByStatusAndDealId` is the same in-memory index
+     * `getCommDeal` already scans fresh on every call, no DB round trip.
+     *
+     * Still gated on the new-deal flag (014 §3) — an existing deal without
+     * it never has this predicate return true, same as before.
+     */
+    private currentDealFeeIsThirdAssetOnly(
+      dealId: string,
+      baseAsset?: string,
+      quoteAsset?: string,
+    ): boolean {
+      if (
+        !this.getDeal(dealId)?.deal.flags?.includes(DCADealFlags.feeByAsset)
+      ) {
+        return false
+      }
+      const dealOrders = this.getOrdersByStatusAndDealId({
+        status: ['FILLED', 'CANCELED'],
+        dealId,
+      }).filter(
+        (o) =>
+          +o.executedQty > 0 &&
+          ![TypeOrderEnum.br, TypeOrderEnum.rebalance].includes(o.typeOrder),
+      )
+      return ordersFeeIsThirdAssetOnly(dealOrders, baseAsset, quoteAsset)
+    }
+
+    /**
+     * Spec 015 §7: `rejectedOrder` — a TP built at the §2-zeroed (real-fee)
+     * size — was just rejected as `rejectionReason`, already classified by
+     * the caller as `isFeeSizingRejection`.
+     *
+     * Sequence: write the sticky flag PENDING (before anything else is sent
+     * — §7.3) → check the real-fee attempt's own venue fate (§8 item 3 —
+     * never fires blind; only a confirmed-NOT-live outcome proceeds) →
+     * rebuild the SAME TP at today's account-rate size and resend once,
+     * suffixed `...ef` → on THAT resend's own success, confirm the flag and
+     * surface a bot error (the one signal an operator actually sees); on
+     * failure, leave it pending and do not attempt a third size.
+     *
+     * Returns the resend's own outcome so the caller falls through to its
+     * existing success/failure handling using it, or `undefined` if the
+     * ambiguous-outcome check aborted this fallback for the current tick —
+     * the caller should keep treating its ORIGINAL rejection as
+     * authoritative; nothing here touched the exchange.
+     */
+    private async runFeeSizingFallback(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      slSource: boolean,
+      sl: boolean,
+      rejectedOrder: { newClientOrderId: string },
+      rejectionReason: string,
+      symbol: ClearPairsSchema,
+      sendOptions: OrderAdditionalParams,
+    ): Promise<Order | string | undefined> {
+      const dealId = findDeal.deal._id
+      const since = +new Date()
+      await this.saveDeal(findDeal, {
+        feeSizingFallback: {
+          status: 'pending',
+          since,
+          reason: rejectionReason,
+          triggeredByOrderId: rejectedOrder.newClientOrderId,
+        },
+      })
+      // §8 item 3 — never fire blind. A network timeout on the real-fee
+      // attempt (request sent, response lost) is not the same as a clean
+      // rejection; resending unconditionally risks a second live TP landing
+      // on top of one that actually reached the venue. getOrderForReconcile
+      // (not a bare getOrder) so a single transient lookup blip cannot be
+      // misread as "confirmed not found" either.
+      const lookup = await this.getOrderForReconcile(
+        { clientOrderId: rejectedOrder.newClientOrderId } as Order,
+        { symbol: symbol.pair, fromCache: false },
+      )
+      if (!isDefinitiveOrderNotFound(lookup)) {
+        this.handleDebug(
+          `Fee-sizing fallback for deal ${dealId} aborted this tick: real-fee attempt ${
+            rejectedOrder.newClientOrderId
+          }'s own fate is not confirmed-not-live (status ${lookup?.status}, reason ${lookup?.reason})`,
+        )
+        return undefined
+      }
+      const refreshedDeal = this.getDeal(dealId) ?? findDeal
+      const fullSizeOrder = await this.prepareTpOrder(
+        refreshedDeal,
+        slSource,
+        sl,
+        true,
+      )
+      if (!fullSizeOrder) {
+        return undefined
+      }
+      const resendOrder = {
+        ...fullSizeOrder,
+        newClientOrderId: `${rejectedOrder.newClientOrderId.slice(
+          0,
+          rejectedOrder.newClientOrderId.length - 2,
+        )}ef`,
+      }
+      const resendResult = await this.sendGridToExchange(
+        resendOrder,
+        sendOptions,
+        symbol,
+        true,
+      )
+      if (resendResult && typeof resendResult !== 'string') {
+        await this.saveDeal(this.getDeal(dealId) ?? refreshedDeal, {
+          feeSizingFallback: {
+            status: 'confirmed',
+            since,
+            confirmedAt: +new Date(),
+            reason: rejectionReason,
+            triggeredByOrderId: rejectedOrder.newClientOrderId,
+          },
+        })
+        await this.handleErrors(
+          `Fee-sizing assumption confirmed wrong for deal ${dealId}: real-fee TP ${
+            rejectedOrder.newClientOrderId
+          } rejected (${rejectionReason}), estimated-fee resend ${
+            resendOrder.newClientOrderId
+          } succeeded. Future TPs for this deal use the account-rate size.`,
+          'runFeeSizingFallback()',
+          'confirm fee-sizing fallback',
+          false,
+          true,
+          true,
+        )
+      }
+      return resendResult ?? undefined
+    }
+
     private isPositionAlreadyClosedReason(text: string): boolean {
       const haystack = normalizeReason(text)
       for (const r of positionAlreadyClosedReasons) {
@@ -5508,6 +5879,8 @@ function createDCABotHelper<
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       slSource = false,
       sl = false,
+      // Spec 015 §7 — see getTPOrder's own param doc.
+      forceFullFeeSizing = false,
     ) {
       const symbol = await this.getExchangeInfo(findDeal.deal.symbol.symbol)
       const priceRequest = await this.getLatestPrice(symbol?.pair ?? '')
@@ -5533,6 +5906,7 @@ function createDCABotHelper<
           !slSource,
           slSource,
           priceRequest,
+          forceFullFeeSizing,
         )
       )?.sort((a, b) =>
         this.isLong ? b.price - a.price : a.price - b.price,
@@ -5901,33 +6275,79 @@ function createDCABotHelper<
               findDeal.deal.symbol.symbol,
             )
             if (symbol) {
+              // Spec 015 §7.4 Chain B. Combo included on review — §2/§3's
+              // zeroing now covers combo's own (balance-based, not
+              // multiplier-based) TP formula too, via the same
+              // tpQuantityFeeIsThirdAssetOnly getTPOrder already computes,
+              // so there is now something for this fallback to catch there.
+              const isZeroedFeeSizeTp =
+                !this.futures &&
+                findDeal.deal.feeSizingFallback?.status !== 'confirmed' &&
+                this.currentDealFeeIsThirdAssetOnly(
+                  findDeal.deal._id,
+                  findDeal.deal.symbol?.baseAsset,
+                  findDeal.deal.symbol?.quoteAsset,
+                )
+              const sendOptions: OrderAdditionalParams = {
+                dealId: findDeal.deal._id,
+                type:
+                  count === this.slippageRetry
+                    ? OrderTypeEnum.limit
+                    : forceMarket
+                      ? OrderTypeEnum.market
+                      : closeType === CloseDCATypeEnum.closeByLimit
+                        ? OrderTypeEnum.limit
+                        : OrderTypeEnum.market,
+                reduceOnly: !!this.futures,
+                positionSide: this.hedge
+                  ? this.isLong
+                    ? PositionSide.LONG
+                    : PositionSide.SHORT
+                  : PositionSide.BOTH,
+              }
+              // Spec 015 §7.1 — mark the real-fee attempt distinguishable in
+              // logs/on the venue, mirroring the existing `...ac` suffix.
+              const realFeeOrder = isZeroedFeeSizeTp
+                ? {
+                    ...tpOrder,
+                    newClientOrderId: `${tpOrder.newClientOrderId.slice(
+                      0,
+                      tpOrder.newClientOrderId.length - 2,
+                    )}rf`,
+                  }
+                : tpOrder
               let result = await this.sendGridToExchange(
                 {
-                  ...tpOrder,
+                  ...realFeeOrder,
                   price: price
                     ? this.math.round(+price, symbol.priceAssetPrecision)
-                    : tpOrder.price,
+                    : realFeeOrder.price,
                 },
-                {
-                  dealId: findDeal.deal._id,
-                  type:
-                    count === this.slippageRetry
-                      ? OrderTypeEnum.limit
-                      : forceMarket
-                        ? OrderTypeEnum.market
-                        : closeType === CloseDCATypeEnum.closeByLimit
-                          ? OrderTypeEnum.limit
-                          : OrderTypeEnum.market,
-                  reduceOnly: !!this.futures,
-                  positionSide: this.hedge
-                    ? this.isLong
-                      ? PositionSide.LONG
-                      : PositionSide.SHORT
-                    : PositionSide.BOTH,
-                },
+                sendOptions,
                 symbol,
                 true,
               )
+              if (
+                isZeroedFeeSizeTp &&
+                typeof result === 'string' &&
+                this.isFeeSizingRejection(result)
+              ) {
+                // Spec 015 §7.4 — checked BEFORE the adaptive-close/notional
+                // branches below: those would just recompute the same
+                // too-small size again without this running first.
+                const fallbackResult = await this.runFeeSizingFallback(
+                  findDeal,
+                  slSource,
+                  sl,
+                  realFeeOrder,
+                  result,
+                  symbol,
+                  sendOptions,
+                )
+                if (fallbackResult !== undefined) {
+                  result = fallbackResult
+                }
+              }
               if (result) {
                 if (
                   typeof result === 'string' &&
@@ -6425,6 +6845,20 @@ function createDCABotHelper<
         findDeal.deal.updateTime = orderBo.updateTime
         findDeal.deal.levels.complete = findDeal.deal.levels.complete + 1
         findDeal.closeByTp = false
+        // Spec 022: make the base order's own fee visible immediately,
+        // rather than only retroactively once the deal closes. Independent
+        // save — this deal's other bookkeeping below is unrelated.
+        const baseOrderLedger = await this.computeObservedFeeLedger(
+          findDeal.deal,
+        )
+        if (baseOrderLedger) {
+          findDeal.deal.feeByAsset = baseOrderLedger.feeByAsset
+          findDeal.deal.feePaid = baseOrderLedger.feePaid
+          this.saveDeal(findDeal, {
+            feeByAsset: findDeal.deal.feeByAsset,
+            feePaid: findDeal.deal.feePaid,
+          })
+        }
         this.saveDeal(findDeal, {
           initialBalances: findDeal.deal.initialBalances,
           currentBalances: findDeal.deal.currentBalances,
@@ -6929,6 +7363,19 @@ function createDCABotHelper<
           }
         }
         findDeal.deal.updateTime = order.updateTime
+        // Spec 022: common to the roa/dealTP/regular branches below — an
+        // independent save so every fill this method handles (a safety
+        // order, an add-funds fill, a plain or reduce-funds TP) updates the
+        // deal's observed-fee ledger, not only the final closing TP.
+        const fillLedger = await this.computeObservedFeeLedger(findDeal.deal)
+        if (fillLedger) {
+          findDeal.deal.feeByAsset = fillLedger.feeByAsset
+          findDeal.deal.feePaid = fillLedger.feePaid
+          this.saveDeal(findDeal, {
+            feeByAsset: findDeal.deal.feeByAsset,
+            feePaid: findDeal.deal.feePaid,
+          })
+        }
         if (roa) {
           findDeal.deal.pendingAddFunds = (
             findDeal.deal.pendingAddFunds ?? []
@@ -7656,8 +8103,20 @@ function createDCABotHelper<
         // leaves the close short of the base it needs to pay its own fee. If you
         // ever set `oflags`, or add a venue whose fee currency differs again,
         // re-derive this per venue rather than trusting either explanation.
+        // Spec 015 §2/§3: a deal whose fees so far were ALL third-asset never
+        // had base/quote debited for fees — same "nothing base/quote-
+        // denominated left the quantity" precondition that already zeroes
+        // this for futures/short, so it zeroes the same way. Gated on the
+        // new-deal flag (014 §3) via feeByAsset only being populated there.
         const feeFactor =
-          this.futures || short
+          this.futures ||
+          short ||
+          (dealId &&
+            this.currentDealFeeIsThirdAssetOnly(
+              dealId,
+              ed.baseAsset.name,
+              ed.quoteAsset.name,
+            ))
             ? 1
             : settings.terminalDealType === TerminalDealTypeEnum.simple
               ? 1
@@ -13305,24 +13764,112 @@ function createDCABotHelper<
                 continue
               }
             }
-            const result = await this.sendGridToExchange(
-              order,
-              {
-                dealId,
-                type: order.market ? 'MARKET' : 'LIMIT',
-                reduceOnly: this.futures
-                  ? (this.isLong && order.side === OrderSideEnum.sell) ||
-                    (!this.isLong && order.side === OrderSideEnum.buy)
-                  : undefined,
-                positionSide: this.hedge
-                  ? this.isLong
-                    ? PositionSide.LONG
-                    : PositionSide.SHORT
-                  : PositionSide.BOTH,
-              },
-              ed,
-            )
-            if (result && result.status === 'FILLED') {
+            const sendOptions: OrderAdditionalParams = {
+              dealId,
+              type: order.market ? 'MARKET' : 'LIMIT',
+              reduceOnly: this.futures
+                ? (this.isLong && order.side === OrderSideEnum.sell) ||
+                  (!this.isLong && order.side === OrderSideEnum.buy)
+                : undefined,
+              positionSide: this.hedge
+                ? this.isLong
+                  ? PositionSide.LONG
+                  : PositionSide.SHORT
+                : PositionSide.BOTH,
+            }
+            // Spec 015 §7.4 Chain A — the routine per-fill/per-tick path.
+            // Combo included on review — see Chain B's comment above.
+            const isZeroedFeeSizeTp =
+              order.type === TypeOrderEnum.dealTP &&
+              !!deal &&
+              !this.futures &&
+              deal.deal.feeSizingFallback?.status !== 'confirmed' &&
+              this.currentDealFeeIsThirdAssetOnly(
+                deal.deal._id,
+                deal.deal.symbol?.baseAsset,
+                deal.deal.symbol?.quoteAsset,
+              )
+            // Spec 015 §7.1 — mark the real-fee attempt distinguishable in
+            // logs/on the venue, mirroring the `...ac`/`...ef` suffixes.
+            const realFeeOrder = isZeroedFeeSizeTp
+              ? {
+                  ...order,
+                  newClientOrderId: `${order.newClientOrderId.slice(
+                    0,
+                    order.newClientOrderId.length - 2,
+                  )}rf`,
+                }
+              : order
+            let result: Order | string | void
+            if (isZeroedFeeSizeTp) {
+              result = await this.sendGridToExchange(
+                realFeeOrder,
+                sendOptions,
+                ed,
+                true,
+              )
+              if (
+                typeof result === 'string' &&
+                this.isFeeSizingRejection(result) &&
+                deal
+              ) {
+                const fallbackResult = await this.runFeeSizingFallback(
+                  deal,
+                  false,
+                  false,
+                  realFeeOrder,
+                  result,
+                  ed,
+                  sendOptions,
+                )
+                if (fallbackResult !== undefined) {
+                  result = fallbackResult
+                }
+              }
+              // `returnError: true` above means sendOrderToExchange's own
+              // internal handleOrderErrors call never ran (it returns the
+              // reason string early instead, unlike the non-zeroed branch
+              // below, which still gets that handling for free) — a
+              // rejection that reaches here (not a fee-sizing rejection, or
+              // the fallback also failed) still needs to be surfaced, or a
+              // real TP rejection would go completely silent.
+              if (typeof result === 'string') {
+                this.handleOrderErrors(
+                  result,
+                  {
+                    symbol: ed.pair,
+                    orderId: '0',
+                    clientOrderId: realFeeOrder.newClientOrderId,
+                    transactTime: +new Date(),
+                    updateTime: +new Date(),
+                    price: `${realFeeOrder.price}`,
+                    origQty: `${realFeeOrder.qty}`,
+                    executedQty: '0',
+                    cummulativeQuoteQty: '0',
+                    status: 'CANCELED',
+                    type: 'MARKET',
+                    side: realFeeOrder.side,
+                    quoteAsset: ed.quoteAsset.name,
+                    baseAsset: ed.baseAsset.name,
+                    typeOrder: realFeeOrder.type,
+                    exchange: this.data.exchange,
+                    exchangeUUID: this.data.exchangeUUID,
+                    botId: this.botId,
+                    userId: this.userId,
+                    origPrice: `${realFeeOrder.price}`,
+                  },
+                  'placeOrders()',
+                  `Send new order request ${realFeeOrder.newClientOrderId}, qty ${realFeeOrder.qty}, price ${realFeeOrder.price}, side ${realFeeOrder.side}`,
+                )
+              }
+            } else {
+              result = await this.sendGridToExchange(order, sendOptions, ed)
+            }
+            if (
+              result &&
+              typeof result !== 'string' &&
+              result.status === 'FILLED'
+            ) {
               this.processFilledOrder(result)
             }
           } else {
@@ -13421,6 +13968,11 @@ function createDCABotHelper<
       aggregate = false,
       sl = false,
       price?: number,
+      // Spec 015 §7 — the estimated-fee resend passes true to force today's
+      // §1 sizing regardless of quantityFeeIsThirdAssetOnly/feeSizingFallback,
+      // without first writing 'confirmed' (that only happens if this resend
+      // succeeds).
+      forceFullFeeSizing = false,
     ) {
       if (this.data) {
         const ed = await this.getExchangeInfo(_symbol)
@@ -13604,8 +14156,36 @@ function createDCABotHelper<
         // worth of base as exactly the headroom that pays for it. See the long
         // note on `feeFactor` in `createOrder` before changing either side; they
         // are one mechanism and only balance as a pair.
+        // Spec 015 §2/§3: same all-third-asset precondition as getBaseOrder's
+        // feeFactor. Deliberately narrower than zeroing `maxFee` itself
+        // (the plan's original phrasing) — `maxFee` is also read further
+        // below inside the `this.combo` branch (spec §4: combo's TP path is
+        // untraced and explicitly out of scope), and `qty`'s value computed
+        // here is unconditionally overwritten there for a combo deal, so
+        // zeroing only the multiplier at this one non-combo site cannot
+        // reach combo's own maxFee usage at all.
+        const tpFeeDeal = this.getDeal(dealId)?.deal ?? deal
+        // Spec 015 §7.3: a CONFIRMED fallback overrides the predicate to "use
+        // the account-rate size" regardless of what it says — this is the
+        // "checked first, every subsequent TP build" half of §7.3. A
+        // PENDING-only record does not gate this; the predicate still runs
+        // and a real-fee attempt can be tried again.
+        const tpQuantityFeeIsThirdAssetOnly =
+          !forceFullFeeSizing &&
+          tpFeeDeal?.feeSizingFallback?.status !== 'confirmed' &&
+          this.currentDealFeeIsThirdAssetOnly(
+            dealId,
+            tpFeeDeal?.symbol?.baseAsset,
+            tpFeeDeal?.symbol?.quoteAsset,
+          )
         let qty =
-          _qty * (this.futures ? 1 : long ? 1 - maxFee : 1 / (1 - maxFee)) + add
+          _qty *
+            (this.futures || tpQuantityFeeIsThirdAssetOnly
+              ? 1
+              : long
+                ? 1 - maxFee
+                : 1 / (1 - maxFee)) +
+          add
         let origQty = qty
         const priceDisplacement = tpPriceDisplacement(priceFee, long)
         let tpPrice = this.math.round(
@@ -13667,7 +14247,17 @@ function createDCABotHelper<
                 ? +o.executedQty !== 0
                 : o.status === 'FILLED' || o.status === 'PARTIALLY_FILLED'),
           )
-          const f = filled.reduce((acc, v) => acc + +v.executedQty * maxFee, 0)
+          // Spec 015 §2/§3/§7, extended to combo on review: this subtraction
+          // was always the account-rate estimate, same gap DCA's plain path
+          // had. `tpQuantityFeeIsThirdAssetOnly` (computed above, before this
+          // branch) already carries the right answer for combo too — it's
+          // deal/order-level, not DCA-specific — and already respects a
+          // CONFIRMED feeSizingFallback/forceFullFeeSizing (the §7 resend),
+          // so reusing it here wires combo into the same two-stage placement
+          // as DCA for free.
+          const f = tpQuantityFeeIsThirdAssetOnly
+            ? 0
+            : filled.reduce((acc, v) => acc + +v.executedQty * maxFee, 0)
           qty -= f
           if (qty < symbol.baseAsset.minAmount && !this.futures) {
             this.handleDebug(

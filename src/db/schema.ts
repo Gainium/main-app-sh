@@ -424,6 +424,22 @@ const profitByAssets = [
   },
 ]
 
+/**
+ * Spec 015 §7.3 — see `FeeSizingFallback` in `types.ts`. `_id: false` for
+ * the same reason as `startBlocked`: a plain value object, not a sub-doc.
+ */
+const feeSizingFallback = {
+  type: {
+    status: String,
+    since: Number,
+    confirmedAt: Number,
+    reason: String,
+    triggeredByOrderId: String,
+  },
+  _id: false,
+  required: false,
+}
+
 const BuyTypeEnumDB = [BuyTypeEnum.X, BuyTypeEnum.all, BuyTypeEnum.proceed]
 
 const Symbols = {
@@ -608,6 +624,13 @@ const botSettings = new Schema({
 
 const botSchema: Schema<BotSchema> = new Schema({
   ...botCommon,
+  flags: [String],
+  feeByAsset: profitByAssets,
+  feePaid: {
+    base: Number,
+    quote: Number,
+  },
+  feeSizingFallback,
   feeBalance: Number,
   settings: botSettings,
   initialPrice: Number,
@@ -1945,6 +1968,7 @@ const startBlocked = {
 
 const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   startBlocked,
+  feeSizingFallback,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
   flags: [String],
   note: String,
@@ -1968,6 +1992,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     base: Number,
     quote: Number,
   },
+  feeByAsset: profitByAssets,
   avgPrice: Number,
   displayAvg: Number,
   commission: Number,
@@ -2126,6 +2151,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
 
 const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   startBlocked,
+  feeSizingFallback,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
   action: { type: String, enum: ActionsEnum },
   note: String,
@@ -2149,6 +2175,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     base: Number,
     quote: Number,
   },
+  feeByAsset: profitByAssets,
   avgPrice: Number,
   displayAvg: Number,
   commission: Number,
@@ -2779,6 +2806,7 @@ const comboMinigrid = new Schema<ComboMinigridSchema>({
     pureBase: Number,
     pureQuote: Number,
   },
+  feeByAsset: profitByAssets,
   feePaid: {
     base: Number,
     quote: Number,

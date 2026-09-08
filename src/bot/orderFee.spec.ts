@@ -23,6 +23,7 @@ import {
   hasObservedFee,
   observedFeeOnSide,
   observedFeeSplit,
+  streamFeeFields,
 } from './orderFee'
 
 const order = (over: Record<string, unknown>) =>
@@ -245,5 +246,49 @@ describe('orderFee', () => {
         expect(accrueStreamFee({}, msg)).to.deep.equal({})
       })
     }
+  })
+
+  // spec 019 §1.2/§3: `feeSide` is the one field paper-trading ever sets on
+  // the live stream (it never sets `feeAsset`) — dropping it here is the
+  // whole bug this function was extracted to fix.
+  describe('streamFeeFields', () => {
+    // `msg` is typed `ExecutionReport` (spot ∪ futures) — cast the fixture
+    // rather than fill in every unrelated required field this function
+    // never reads.
+    const msg = (over: Record<string, unknown>) => over as any
+
+    it('copies every present field, feeSide included', () => {
+      expect(
+        streamFeeFields(
+          msg({
+            feePaid: '0.6',
+            feeAsset: 'USDT',
+            feeBreakdown: [{ asset: 'USDT', amount: '0.6' }],
+            feePaidUsd: '0.6',
+            feeSide: 'quote',
+          }),
+        ),
+      ).to.deep.equal({
+        feePaid: '0.6',
+        feeAsset: 'USDT',
+        feeBreakdown: [{ asset: 'USDT', amount: '0.6' }],
+        feePaidUsd: '0.6',
+        feeSide: 'quote',
+      })
+    })
+
+    it('copies feeSide alone — the paper-trading shape', () => {
+      expect(streamFeeFields(msg({ feeSide: 'base' }))).to.deep.equal({
+        feeSide: 'base',
+      })
+    })
+
+    it('omits every field when the message carries none (never a claim of zero)', () => {
+      expect(streamFeeFields(msg({}))).to.deep.equal({})
+    })
+
+    it('ignores an empty feeBreakdown array', () => {
+      expect(streamFeeFields(msg({ feeBreakdown: [] }))).to.deep.equal({})
+    })
   })
 })

@@ -54,7 +54,12 @@ import {
   DCATypeEnum,
   getSellBuyCountReturn,
 } from '../../types'
-import { accrueStreamFee, hasObservedFee, observedFeeOf } from './orderFee'
+import {
+  accrueStreamFee,
+  hasObservedFee,
+  observedFeeOf,
+  streamFeeFields,
+} from './orderFee'
 import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
@@ -2956,7 +2961,10 @@ class MainBot<T extends IMainBot> {
     )
   }
 
-  private isErrorNotEnoughBalance(errorString: string): boolean {
+  // `protected`, not `private`: spec 015 §7.2's isFeeSizingRejection
+  // (dcaHelper.ts) is a subclass method that needs to compose this with
+  // isNotionalReason. No behavior change — same body, wider visibility.
+  protected isErrorNotEnoughBalance(errorString: string): boolean {
     for (const e of notEnoughErrors) {
       if (errorString.toLowerCase().indexOf(e.toLowerCase()) !== -1) {
         return true
@@ -5330,6 +5338,11 @@ class MainBot<T extends IMainBot> {
     // filled order arrives in slices. `accrueStreamFee` keeps that idempotent
     // against a replayed report via the trade-id high-water mark.
     Object.assign(order, accrueStreamFee(order, msg))
+    // Every other venue (`websocket-connector-sh` spec 003), plus paper
+    // trading's `feeSide` (spec 019): already order-level running totals by
+    // the time they reach here — ASSIGNED, not accumulated, unlike
+    // Binance's per-trade `commission` above.
+    Object.assign(order, streamFeeFields(msg))
     return order
   }
 

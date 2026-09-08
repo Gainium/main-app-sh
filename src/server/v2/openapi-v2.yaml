@@ -2300,9 +2300,32 @@ components:
                 BTC: 0.0118
                 USDT: 575
             feePaid:
-              type: number
-              description: Total fees paid
-              example: 2.5
+              type: object
+              description: Total base/quote fees paid, as an estimate or (when observed) the venue's own reported fee
+              properties:
+                base:
+                  type: number
+                quote:
+                  type: number
+              example:
+                base: 0
+                quote: 2.5
+            feeByAsset:
+              type: array
+              description: Per-asset fee ledger — one entry per asset a fee was ever observed to be paid in (spec 014). New deals only.
+              items:
+                type: object
+                properties:
+                  asset:
+                    type: string
+                  total:
+                    type: number
+                  totalUsd:
+                    type: number
+              example:
+                - asset: BNB
+                  total: 0.001
+                  totalUsd: 0.62
             usage:
               type: object
               description: Resource usage stats
@@ -2762,6 +2785,42 @@ components:
               type: string
               nullable: true
               example: null
+            flags:
+              type: array
+              nullable: true
+              description: Feature flags gating new bot-only behaviour (spec 014 §3)
+              items:
+                type: string
+              example: [feeByAsset]
+            feePaid:
+              type: object
+              nullable: true
+              description: Running base/quote fee total, updated on every transaction (spec 014 §2.5). New bots only.
+              properties:
+                base:
+                  type: number
+                quote:
+                  type: number
+              example:
+                base: 0.0002
+                quote: 0
+            feeByAsset:
+              type: array
+              nullable: true
+              description: Per-asset fee ledger — one entry per asset a fee was ever observed to be paid in (spec 014). New bots only.
+              items:
+                type: object
+                properties:
+                  asset:
+                    type: string
+                  total:
+                    type: number
+                  totalUsd:
+                    type: number
+              example:
+                - asset: BNB
+                  total: 0.0002
+                  totalUsd: 0.12
     GridBotListResponse:
       allOf:
         - $ref: "#/components/schemas/APIResponse"

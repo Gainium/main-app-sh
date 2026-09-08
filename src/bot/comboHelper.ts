@@ -54,6 +54,7 @@ import {
   DCACloseTriggerEnum,
 } from '../../types'
 import { observedFeeOnSide, observedFeeSplit } from './orderFee'
+import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import utils from '../utils'
 const { sleep } = utils
@@ -816,6 +817,8 @@ function createComboBotHelper<
       profitPureQuote: number
       pureFeeBase: number
       pureFeeQuote: number
+      feeLegs: { asset: string; amount: number; usdRate: number }[]
+      offPairFeeUsd: number
     }> {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('create transaction'))
@@ -916,20 +919,42 @@ function createComboBotHelper<
       // preserved here. An order whose fee could not be observed, or was
       // charged in an asset that is neither side of the pair, keeps the
       // estimate: it still cost something, and must not book as free.
+      const observedSplit = observedFeeSplit(
+        o,
+        minigrid.schema.symbol.baseAsset,
+        minigrid.schema.symbol.quoteAsset,
+      )
       const observedFee = observedFeeOnSide(
-        observedFeeSplit(
-          o,
-          minigrid.schema.symbol.baseAsset,
-          minigrid.schema.symbol.quoteAsset,
-        ),
+        observedSplit,
         o.side === OrderSideEnum.buy ? 'base' : 'quote',
         price,
       )
+      // Spec 014 §2.1/§2.2/§3: new deals only.
+      const feeByAssetGated = !!deal?.deal.flags?.includes(
+        DCADealFlags.feeByAsset,
+      )
+      const feeLegRaw = feeByAssetGated
+        ? observedFeeLegs(
+            o,
+            minigrid.schema.symbol.baseAsset,
+            minigrid.schema.symbol.quoteAsset,
+          )
+        : []
+      // Off-pair fee (spec 014 §2.2): the venue reported a fee but it matches
+      // neither side of the pair — book 0 on base/quote (never the estimate)
+      // and let the ledger below carry it, USD only.
+      const offPair = feeByAssetGated && !observedSplit && feeLegRaw.length > 0
       let comBase =
-        o.side === OrderSideEnum.buy ? (observedFee ?? qty * fee.maker) : 0
+        o.side === OrderSideEnum.buy
+          ? offPair
+            ? 0
+            : (observedFee ?? qty * fee.maker)
+          : 0
       let comQuote =
         o.side === OrderSideEnum.sell
-          ? (observedFee ?? qty * price * fee.maker)
+          ? offPair
+            ? 0
+            : (observedFee ?? qty * price * fee.maker)
           : 0
       let profitQuote = 0
       let matchedPrice = 0
@@ -939,6 +964,43 @@ function createComboBotHelper<
       let pureQuote = 0
       const pureFeeBase = comBase
       const pureFeeQuote = comQuote
+      // Spec 014 §2.1/§2.3: every observed leg is recorded on the ledger
+      // (on-pair legs included, spec §4 Q3 — the raw split, not the
+      // observedFeeOnSide-converted amount), priced in USD at capture time.
+      let cachedPrices:
+        | { pair: string; price: number; exchange: string }[]
+        | undefined
+      const feeLegs: { asset: string; amount: number; usdRate: number }[] = []
+      let offPairFeeUsd = 0
+      for (const leg of feeLegRaw) {
+        let usdRate: number
+        if (feeLegRaw.length === 1 && o.feePaidUsd !== undefined) {
+          const usd = +o.feePaidUsd
+          usdRate = leg.amount > 0 ? usd / leg.amount : 0
+        } else if (leg.asset === minigrid.schema.symbol.baseAsset) {
+          usdRate = await this.getUsdRate(pair, 'base')
+        } else if (leg.asset === minigrid.schema.symbol.quoteAsset) {
+          usdRate = await this.getUsdRate(pair, 'quote')
+        } else {
+          if (!cachedPrices) {
+            const pricesResult = await this.exchange?.getAllPrices(true)
+            cachedPrices =
+              pricesResult?.status === StatusEnum.ok
+                ? pricesResult.data.map((p) => ({ ...p, exchange: 'all' }))
+                : []
+          }
+          usdRate =
+            utils.findUSDRate(
+              leg.asset,
+              cachedPrices ?? [],
+              this.data?.exchange,
+            ) || 0
+        }
+        feeLegs.push({ asset: leg.asset, amount: leg.amount, usdRate })
+        if (offPair) {
+          offPairFeeUsd += leg.amount * usdRate
+        }
+      }
       let matchedId = ''
       let profitUsdt = 0
       let amountBaseBuy = o.side === 'SELL' ? 0 : parseFloat(o.origQty)
@@ -1256,6 +1318,8 @@ function createComboBotHelper<
           profitPureQuote: pureQuote - pureFeeQuote,
           pureFeeBase,
           pureFeeQuote,
+          feeLegs,
+          offPairFeeUsd,
         }
       }
       this.endMethod(_id)
@@ -2492,6 +2556,19 @@ function createComboBotHelper<
         base: (minigrid.schema.feePaid?.base ?? 0) + (tr?.pureFeeBase ?? 0),
         quote: (minigrid.schema.feePaid?.quote ?? 0) + (tr?.pureFeeQuote ?? 0),
       }
+      // Spec 014 §2.1/§4 Q2: mirrored onto both the minigrid and the owning
+      // deal, the same way feePaid already is above. Off-pair USD moves
+      // totalUsd only (§2.2) — total/pureBase/pureQuote already added above
+      // are unaffected.
+      for (const leg of tr?.feeLegs ?? []) {
+        minigrid.schema.feeByAsset = accrueFeeLedger(
+          minigrid.schema.feeByAsset,
+          leg.asset,
+          leg.amount,
+          leg.usdRate,
+        )
+      }
+      minigrid.schema.profit.totalUsd -= tr?.offPairFeeUsd ?? 0
 
       minigrid.schema.updateTime = order.updateTime
       if (deal) {
@@ -2508,6 +2585,15 @@ function createComboBotHelper<
           base: (deal.deal.feePaid?.base ?? 0) + (tr?.pureFeeBase ?? 0),
           quote: (deal.deal.feePaid?.quote ?? 0) + (tr?.pureFeeQuote ?? 0),
         }
+        for (const leg of tr?.feeLegs ?? []) {
+          deal.deal.feeByAsset = accrueFeeLedger(
+            deal.deal.feeByAsset,
+            leg.asset,
+            leg.amount,
+            leg.usdRate,
+          )
+        }
+        deal.deal.profit.totalUsd -= tr?.offPairFeeUsd ?? 0
         deal.deal.transactions = {
           buy:
             (deal.deal.transactions?.buy ?? 0) + (order.side === 'BUY' ? 1 : 0),
@@ -2532,6 +2618,7 @@ function createComboBotHelper<
           'settings.avgPrice': deal.deal.settings.avgPrice,
           displayAvg: deal.deal.displayAvg,
           feePaid: deal.deal.feePaid,
+          feeByAsset: deal.deal.feeByAsset,
           transactions: deal.deal.transactions,
           fullFee: deal.deal.fullFee,
           updateTime: deal.deal.updateTime,
@@ -2690,6 +2777,7 @@ function createComboBotHelper<
         lastSide: minigrid.schema.lastSide,
         avgPrice: minigrid.schema.avgPrice,
         feePaid: minigrid.schema.feePaid,
+        feeByAsset: minigrid.schema.feeByAsset,
       })
 
       if (
@@ -4546,7 +4634,10 @@ function createComboBotHelper<
       }
       const dealSettings = this.getInitalDealSettings()
       if (this.data && symbolData && dealSettings) {
-        const flags: DCADealFlags[] = [DCADealFlags.futuresPrecision]
+        const flags: DCADealFlags[] = [
+          DCADealFlags.futuresPrecision,
+          DCADealFlags.feeByAsset,
+        ]
         if (this.data.flags?.includes(BotFlags.externalSl)) {
           flags.push(DCADealFlags.externalSl)
         }
