@@ -25,11 +25,13 @@ process.env.NODE_ENV = 'testing'
  *
  * Run: `npm test` (mocha) from core/.
  */
-import { describe, it, beforeEach, after } from 'mocha'
+import { describe, it, before, beforeEach, after } from 'mocha'
 import { expect } from 'chai'
 import { StatusEnum, ExchangeEnum, BotMarginTypeEnum } from '../../types'
 import MainBot from './main'
 import ComplianceGuard from './complianceGuard'
+import AuthFailureGuard from './authGuard'
+import RedisClient from '../db/redis'
 import { MathHelper } from '../utils/math'
 import {
   QtyStepGuard,
@@ -153,8 +155,10 @@ const makeBot = (venue: (req: any) => Promise<any>) => {
     sharedRow: shared,
     data: {
       exchange: ExchangeEnum.bybit,
-      // Empty on purpose: skips `AuthFailureGuard.check`, which would reach
-      // Redis. The learned-step key uses `learnKeyUUID` below instead.
+      // Non-empty on purpose: `QtyStepGuard` keys every learned step on
+      // `exchangeUUID` (see `main.ts` `QtyStepGuard.peek(this.data?.exchangeUUID,
+      // symbol)`), so the behaviour under test cannot be exercised without it.
+      // It therefore also arms `AuthFailureGuard`, which `beforeEach` stubs.
       exchangeUUID: UUID,
       paperContext: false,
       settings: { leverage: 1, marginType: BotMarginTypeEnum.cross },
@@ -258,19 +262,60 @@ const refusesFinerThan = (maxDecimals: number) => {
 }
 
 const originalCheck = ComplianceGuard.check
+const originalAuthCheck = AuthFailureGuard.check
+const originalAuthRecord = AuthFailureGuard.record
+const originalAuthClaimAlert = AuthFailureGuard.claimAlert
 
 describe('bug #664 — a refused quantity precision must be learned (spec 018)', () => {
+  /**
+   * Nothing under this suite may CONSTRUCT a Redis client. `QtyStepGuard`
+   * itself is already careful — `peek`/`record`/`hydrate` consult
+   * `RedisClient._instance?.isReady` and never call `getInstance()` — but
+   * `sendOrderToExchange` gates its venue calls on `AuthFailureGuard.check`,
+   * which does, and `getInstance()` retries a dead server forever. That is why
+   * these tests passed on a dev box (Redis listening on :6379, so the client
+   * resolves even when it then fails NOAUTH) and timed out at 20s each on CI,
+   * whose `test.yml` declares no `services:`. Snapshotted rather than asserted
+   * `=== undefined` so that a client built by an EARLIER spec file in the same
+   * mocha process is not misreported as this suite's doing.
+   */
+  let redisInstanceAtStart: unknown
+
+  before(() => {
+    redisInstanceAtStart = RedisClient._instance
+  })
+
   beforeEach(() => {
     ComplianceGuard.check = (async () => ({
       restricted: false,
       reason: null,
       until: null,
     })) as any
+    // Not under test, and the only thing on this path that reaches Redis.
+    // `check` answers "no cooldown" so every call goes to the fake venue;
+    // `record`/`claimAlert` are the write-side twins and are inert here.
+    AuthFailureGuard.check = (async () => ({
+      failed: false,
+      reason: null,
+      until: null,
+    })) as any
+    AuthFailureGuard.record = (async () => 0) as any
+    // The real one fails OPEN (returns true) when it cannot reach Redis.
+    AuthFailureGuard.claimAlert = (async () => true) as any
     QtyStepGuard.resetForTests()
   })
 
   after(() => {
     ComplianceGuard.check = originalCheck
+    AuthFailureGuard.check = originalAuthCheck
+    AuthFailureGuard.record = originalAuthRecord
+    AuthFailureGuard.claimAlert = originalAuthClaimAlert
+    // Restores first, assertion last: a failure here must not leak the stubs
+    // into whichever spec file mocha runs next.
+    expect(
+      RedisClient._instance,
+      'this suite constructed a Redis client — it will hang on CI, where no Redis is running',
+    ).to.equal(redisInstanceAtStart)
   })
 
   describe('§4.1 recognising the refusal', () => {
