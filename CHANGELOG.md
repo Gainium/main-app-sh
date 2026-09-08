@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.58.13] - 2026-09-08
+
+### Fixed
+
+- `deal.commission` no longer double-books a fee that was observed but paid in an off-pair asset (BNB/BGB/KCS-style, or a `PAPER_FEE_ASSET_SYMBOLS` test symbol). `getCommDeal` only checked whether an order's fee resolved to base/quote and applied the full flat-rate estimate whenever it didn't — indistinguishable from "nothing was observed at all." It now books 0 for an order whose fee WAS observed, just off-pair — the same rule `closeDeal`'s `feeByAsset` ledger and `getTPOrder`'s TP-sizing gate already apply (spec 014/015), applied unconditionally (not gated behind the `feeByAsset` deal flag — this is a correctness fix, not a new-deals-only feature). Spec 021.
+
+### Added
+
+- A deal's observed-fee ledger (`feeByAsset`) and the on-pair portion of `feePaid` now update after every fill — base order, each safety/DCA order, every partial or reduce-funds TP — instead of only once, retroactively, at close. Extracted the observed-only portion of `closeDeal`'s existing computation into `computeObservedFeeLedger`, called from `startDeal` and `updateDeal`; always recomputed fresh from every filled order rather than accumulated incrementally, so it's safe to call after every fill without double-counting — `closeDeal`'s own loop now seeds `feeByAsset` from empty for the same reason. Gated the same way the ledger already is (`DCADealFlags.feeByAsset`, new deals only); no change to what `closeDeal` computes or persists at close. Spec 022.
+
+## [1.58.12] - 2026-09-08
+
+### Fixed
+
+- A closed DCA deal's off-pair fee ledger (`feeByAsset`) now actually reaches Mongo. `closeDeal` computes it correctly on every TP fill (spec 014 §2.1/§2.2), but the `saveDeal` call that persists the close passed an explicit field list that never included `feeByAsset` — `commission`/`profit`/`feePaid` were saved, the ledger itself wasn't, silently. Found live-testing spec 004's third-asset paper fee (`paper-trading-sh`): both `Order` documents carried a real `feeAsset`/`feePaid`, `getTPOrder` correctly skipped the TP gross-up for it, but the closed deal's `feeByAsset` stayed `[]`. The combo close path (`comboHelper.ts`) already saved this field correctly — the two were never in lockstep. Spec 020.
+
+## [1.58.11] - 2026-09-08
+
+### Fixed
+
+- The live order-update stream now carries a paper deal's observed fee. `convertExecutionReportToOrder`'s stream merge copied `feePaid`/`feeAsset`/`feeBreakdown`/`feePaidUsd` from the incoming message but never `feeSide` — the one field paper-trading ever sets (it never sets `feeAsset`) — so a paper fill's fee silently fell back to the estimate on this path even after the venue reported it, while the REST-poll merge (`mergeCommonOrderWithOrder`) was unaffected. The four-field copy is now `streamFeeFields` (`src/bot/orderFee.ts`), a fifth field added alongside the other four. Spec 019; companion fixes in `paper-trading-sh` (spec 003) and `websocket-connector-sh` (spec 005) are required for the fee to actually reach this merge.
+
 ## [1.58.1] - 2026-09-07
 
 ### Changed

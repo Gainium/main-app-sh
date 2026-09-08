@@ -54,7 +54,12 @@ import {
   DCATypeEnum,
   getSellBuyCountReturn,
 } from '../../types'
-import { accrueStreamFee, hasObservedFee, observedFeeOf } from './orderFee'
+import {
+  accrueStreamFee,
+  hasObservedFee,
+  observedFeeOf,
+  streamFeeFields,
+} from './orderFee'
 import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
@@ -5254,24 +5259,11 @@ class MainBot<T extends IMainBot> {
     // filled order arrives in slices. `accrueStreamFee` keeps that idempotent
     // against a replayed report via the trade-id high-water mark.
     Object.assign(order, accrueStreamFee(order, msg))
-    // Every other venue (`websocket-connector-sh` spec 003): `feePaid`/
-    // `feeAsset`/`feeBreakdown`/`feePaidUsd` are already order-level running
-    // totals by the time they reach here (spec 003 §2.1) — ASSIGNED, not
-    // accumulated, unlike Binance's per-trade `commission` above. Absent
-    // means "not observed" (never a claim the fee was zero), so only assign
-    // when the field is actually present on this message.
-    if ('feePaid' in msg && msg.feePaid !== undefined) {
-      order.feePaid = msg.feePaid
-    }
-    if ('feeAsset' in msg && msg.feeAsset !== undefined) {
-      order.feeAsset = msg.feeAsset
-    }
-    if ('feeBreakdown' in msg && msg.feeBreakdown?.length) {
-      order.feeBreakdown = msg.feeBreakdown
-    }
-    if ('feePaidUsd' in msg && msg.feePaidUsd !== undefined) {
-      order.feePaidUsd = msg.feePaidUsd
-    }
+    // Every other venue (`websocket-connector-sh` spec 003), plus paper
+    // trading's `feeSide` (spec 019): already order-level running totals by
+    // the time they reach here — ASSIGNED, not accumulated, unlike
+    // Binance's per-trade `commission` above.
+    Object.assign(order, streamFeeFields(msg))
     return order
   }
 

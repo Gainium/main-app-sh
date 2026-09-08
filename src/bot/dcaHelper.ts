@@ -89,7 +89,7 @@ import {
   OrderAdditionalParams,
 } from '../../types'
 import { observedFeeSplit } from './orderFee'
-import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
+import { observedFeeLegs, accrueFeeLedger, FeeLedgerEntry } from './feeLedger'
 import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
@@ -2191,6 +2191,23 @@ function createDCABotHelper<
               : observed.base * price + observed.quote)
           )
         }
+        // A fee was observed for this order, just not resolvable to
+        // base/quote (BNB/BGB/KCS-style, or a third-asset test symbol) —
+        // that is real information, not "we don't know." Book 0 for this
+        // order rather than the estimate, the same rule `closeDeal`'s
+        // feeByAsset loop and `ordersFeeIsThirdAssetOnly` already apply for
+        // `feePaid`/TP sizing (spec 014/015) — unconditional, not gated
+        // behind the `feeByAsset` deal flag, since this is a plain
+        // correctness question independent of that ledger feature.
+        if (
+          observedFeeLegs(
+            v,
+            findDeal.symbol?.baseAsset,
+            findDeal.symbol?.quoteAsset,
+          ).length
+        ) {
+          return acc
+        }
         return (
           acc +
           (profitBase
@@ -2201,6 +2218,95 @@ function createDCABotHelper<
               (v.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0)))
         )
       }, 0)
+    }
+    /**
+     * The observed-fee portion of `closeDeal`'s ledger (spec 014/020),
+     * recomputed FRESH from every filled order every time — never seeded
+     * from the deal's current `feeByAsset`/`feePaid`, so it's safe to call
+     * after every fill (spec 022), not only once at close: two calls over
+     * the same order set produce the same answer, not a doubled one.
+     *
+     * No estimate fallback and no `offPairFeeUsd`/profit interaction here —
+     * both stay close-only (spec 022's Design section). `null` means this
+     * deal isn't opted into the ledger (`DCADealFlags.feeByAsset`, "new
+     * deals only" per spec 014) — callers skip the save entirely rather
+     * than persist an empty ledger over a deal that never asked for one.
+     */
+    async computeObservedFeeLedger(deal: ExcludeDoc<Deal>): Promise<{
+      feeByAsset: FeeLedgerEntry[]
+      feePaid: { base: number; quote: number }
+    } | null> {
+      if (!deal._id || !deal.flags?.includes(DCADealFlags.feeByAsset)) {
+        return null
+      }
+      const dealOrders = this.getOrdersByStatusAndDealId({
+        dealId: `${deal._id}`,
+        status: ['FILLED', 'CANCELED'],
+      }).filter(
+        (o) =>
+          +o.executedQty > 0 &&
+          ![TypeOrderEnum.br, TypeOrderEnum.rebalance].includes(o.typeOrder),
+      )
+      let feeByAsset: FeeLedgerEntry[] = []
+      let feeBaseFull = 0
+      let feeQuoteFull = 0
+      let cachedPrices:
+        | { pair: string; price: number; exchange: string }[]
+        | undefined
+      const resolveLegUsdRate = async (
+        asset: string,
+        order: (typeof dealOrders)[number],
+        legAmount: number,
+        singleLeg: boolean,
+      ): Promise<number> => {
+        if (singleLeg && order.feePaidUsd !== undefined) {
+          const usd = +order.feePaidUsd
+          return legAmount > 0 ? usd / legAmount : 0
+        }
+        const { baseAsset, quoteAsset } = deal.symbol ?? {}
+        if (asset === baseAsset) {
+          return this.getUsdRate(deal.symbol.symbol, 'base')
+        }
+        if (asset === quoteAsset) {
+          return this.getUsdRate(deal.symbol.symbol, 'quote')
+        }
+        if (!cachedPrices) {
+          const pricesResult = await this.exchange?.getAllPrices(true)
+          cachedPrices =
+            pricesResult?.status === StatusEnum.ok
+              ? pricesResult.data.map((p) => ({ ...p, exchange: 'all' }))
+              : []
+        }
+        return (
+          utils.findUSDRate(asset, cachedPrices ?? [], this.data?.exchange) || 0
+        )
+      }
+      for (const o of dealOrders) {
+        const observed = observedFeeSplit(
+          o,
+          deal.symbol?.baseAsset,
+          deal.symbol?.quoteAsset,
+        )
+        const legs = observedFeeLegs(
+          o,
+          deal.symbol?.baseAsset,
+          deal.symbol?.quoteAsset,
+        )
+        for (const leg of legs) {
+          const rate = await resolveLegUsdRate(
+            leg.asset,
+            o,
+            leg.amount,
+            legs.length === 1,
+          )
+          feeByAsset = accrueFeeLedger(feeByAsset, leg.asset, leg.amount, rate)
+        }
+        if (observed) {
+          feeBaseFull += observed.base
+          feeQuoteFull += observed.quote
+        }
+      }
+      return { feeByAsset, feePaid: { base: feeBaseFull, quote: feeQuoteFull } }
     }
     /**
      * Close deal when TP is filled
@@ -2323,6 +2429,14 @@ function createDCABotHelper<
               ) || 0
             )
           }
+          // Seed fresh, not from the deal's current value: an incremental
+          // update (spec 022) may already have added these SAME orders'
+          // legs earlier in the deal's life. Seeding from `[]` and
+          // rebuilding the whole ledger from `dealOrders` below makes this
+          // loop idempotent regardless of what ran before it — the exact
+          // property spec 022 needs to call this safely after every fill,
+          // not just once at close.
+          findDeal.deal.feeByAsset = []
           for (const o of dealOrders) {
             // Prefer what the VENUE said it charged. `deal.feePaid` was
             // previously the sum of `qty * price * storedFeeRate` for every
@@ -2519,6 +2633,7 @@ function createDCABotHelper<
             size: findDeal.deal.size,
             tpHistory: filledTp,
             feePaid: findDeal.deal.feePaid,
+            feeByAsset: findDeal.deal.feeByAsset,
             feeBalance: findDeal.deal.feeBalance,
             ac: findDeal.deal.ac,
             closeTrigger: findDeal.deal.closeTrigger,
@@ -6706,6 +6821,20 @@ function createDCABotHelper<
         findDeal.deal.updateTime = orderBo.updateTime
         findDeal.deal.levels.complete = findDeal.deal.levels.complete + 1
         findDeal.closeByTp = false
+        // Spec 022: make the base order's own fee visible immediately,
+        // rather than only retroactively once the deal closes. Independent
+        // save — this deal's other bookkeeping below is unrelated.
+        const baseOrderLedger = await this.computeObservedFeeLedger(
+          findDeal.deal,
+        )
+        if (baseOrderLedger) {
+          findDeal.deal.feeByAsset = baseOrderLedger.feeByAsset
+          findDeal.deal.feePaid = baseOrderLedger.feePaid
+          this.saveDeal(findDeal, {
+            feeByAsset: findDeal.deal.feeByAsset,
+            feePaid: findDeal.deal.feePaid,
+          })
+        }
         this.saveDeal(findDeal, {
           initialBalances: findDeal.deal.initialBalances,
           currentBalances: findDeal.deal.currentBalances,
@@ -7210,6 +7339,19 @@ function createDCABotHelper<
           }
         }
         findDeal.deal.updateTime = order.updateTime
+        // Spec 022: common to the roa/dealTP/regular branches below — an
+        // independent save so every fill this method handles (a safety
+        // order, an add-funds fill, a plain or reduce-funds TP) updates the
+        // deal's observed-fee ledger, not only the final closing TP.
+        const fillLedger = await this.computeObservedFeeLedger(findDeal.deal)
+        if (fillLedger) {
+          findDeal.deal.feeByAsset = fillLedger.feeByAsset
+          findDeal.deal.feePaid = fillLedger.feePaid
+          this.saveDeal(findDeal, {
+            feeByAsset: findDeal.deal.feeByAsset,
+            feePaid: findDeal.deal.feePaid,
+          })
+        }
         if (roa) {
           findDeal.deal.pendingAddFunds = (
             findDeal.deal.pendingAddFunds ?? []

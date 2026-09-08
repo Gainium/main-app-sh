@@ -3609,6 +3609,13 @@ export interface SpotUpdate {
    */
   feePaid?: string
   feeAsset?: string
+  /**
+   * WHICH side of the pair the fee came out of. Only paper-trading sets
+   * this — it always knows the side deterministically and never sets
+   * `feeAsset` (paper-trading spec 003) — real venues report `feeAsset`
+   * instead.
+   */
+  feeSide?: 'base' | 'quote'
   feeBreakdown?: { asset: string; amount: string }[]
   /** Venue-computed USD value of the fee — only Kraken spot today. */
   feePaidUsd?: string
