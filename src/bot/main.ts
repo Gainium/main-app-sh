@@ -2630,6 +2630,7 @@ class MainBot<T extends IMainBot> {
       }
       // Refreshed on every occurrence, so a coalesced row reports the LATEST
       // state of the condition rather than a snapshot of the first time it fired.
+      // `symbol` is the exception — see `onEveryCoalesced` below.
       const onEvery = {
         botName,
         type: messageType,
@@ -2661,12 +2662,29 @@ class MainBot<T extends IMainBot> {
           bucket,
           // A per-contract subType gets one row per contract, so the user is
           // told about each one they have to act on separately rather than
-          // about whichever failed last. `symbol` is in `$set` either way, so
-          // for every other subType this is the same single row it always was —
-          // the field just moves under the row instead of over it.
+          // about whichever failed last.
           // `botMessageCoalesceKey` carries `symbol` for this to be insertable.
           ...(perSymbol ? { symbol } : {}),
         }
+        // `symbol` is part of the row's position in `botMessageCoalesceKey`, so
+        // it may only be written where it cannot MOVE the row. For a
+        // per-contract subType it is in the filter above, so `$set`ting it can
+        // only ever rewrite it to the value it already holds. For every other
+        // subType the filter has no `symbol` — `$set`ting it there moves the row
+        // inside a UNIQUE index, and a multi-pair bot's sibling children share
+        // one `messageBotId` while holding separate `processError` mutexes (the
+        // `@IdMute` id is the CHILD botId), so two of them can insert one row
+        // each in the same window: the index tolerates that pair because their
+        // symbols differ, and from then on every occurrence carrying the other
+        // contract tried to move its row onto its sibling and died on E11000 —
+        // in the upsert AND in the fold below, which re-used this same payload.
+        // Production dropped 119 of the 240 occurrences in one hour that way
+        // (spec 015). So pin it on insert instead: the row is labelled once,
+        // with the contract the window actually opened on, and never moves.
+        // Refreshing it was never right anyway — spec 007 §1.2.1 calls the
+        // resulting silent re-labelling out as a defect in its own right.
+        const { symbol: _movesTheRow, ...onEveryExceptSymbol } = onEvery
+        const onEveryCoalesced = perSymbol ? onEvery : onEveryExceptSymbol
         // `$inc` makes "is this the first occurrence in this window?" a property
         // of the write itself rather than of a separate read: count===1 means
         // this call created the row. Nothing else can observe a different answer.
@@ -2675,8 +2693,12 @@ class MainBot<T extends IMainBot> {
           {
             // `bucket` rides in $setOnInsert rather than the key spread so the
             // `always` path above can share `onInsert` without carrying a null.
-            $setOnInsert: { ...onInsert, bucket },
-            $set: onEvery,
+            $setOnInsert: {
+              ...onInsert,
+              bucket,
+              ...(perSymbol ? {} : { symbol }),
+            },
+            $set: onEveryCoalesced,
             $inc: { count: 1 },
           },
           true,
@@ -2693,7 +2715,7 @@ class MainBot<T extends IMainBot> {
           // coalescing exists to prevent.
           firstOccurrence = false
           const folded = await this.messagesDb.updateData(key, {
-            $set: onEvery,
+            $set: onEveryCoalesced,
             $inc: { count: 1 },
           })
           if (folded.status === StatusEnum.notok) {

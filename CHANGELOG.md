@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.7] - 2026-09-08
+
+### Fixed
+
+- A bot running several contracts at once could stop recording its error messages for the rest of an hour. Repeating errors are grouped into one row per bot per time window, so a standing problem counts up instead of flooding the list, and that row also names the contract the problem happened on. The contract is part of the row's identity in the database, so rewriting it on every occurrence moved the row — and when a multi-contract bot's legs had each opened a row in the same window, which they can do at the same instant, the move landed on top of the sibling row and was rejected. It was rejected on the retry too, so the occurrence was recorded nowhere and only a warning was logged; roughly half of the window's errors were lost this way, the half belonging to whichever contract the group had not settled on. The contract is now recorded once, when the row is opened, so the row never moves and every occurrence is counted. As a side effect the row no longer silently re-labels itself as other contracts fail — it names the contract the window opened on and keeps it. Errors that are genuinely per-contract, such as an exchange agreement that has to be signed for each contract separately, are unaffected: they already keep one row per contract.
+
 ## [1.58.6] - 2026-09-08
 
 ### Fixed
