@@ -13977,9 +13977,37 @@ function createDCABotHelper<
           dealId,
           status: 'FILLED',
         }).find((o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId)
+        // A `FILLED` take-profit only means "the deal closed" if the whole
+        // order actually sold. `checkFilledTp` has encoded that since 1.56.3
+        // (`underfilledTpQty(tp) > 0` at the `!useMultiTp && !useMultiSl`
+        // branch above); this block asked the same question for a different
+        // purpose — "should the ladder be pulled?" — and answered it without
+        // the guard, so the two reached opposite verdicts about the same order
+        // on the same pass. Issue #718, deal 6a90e161a76e7fe63ea3118f
+        // (B3-USDC, Coinbase): D-TP-TNTUX… persisted FILLED having sold 54,103
+        // of 878,966 (93.8% short), and every pass logged five `was closed
+        // during place orders` cancels seconds before `left open: TP … is
+        // FILLED but sold only 54103 of 878966`. checkFilledTp kept the deal
+        // open because the position is live; this cancelled the safety orders
+        // averaging it, leaving an open position with no take-profit and no
+        // ladder — silently, since nothing surfaces an uncovered deal.
+        //
+        // Guard the TP disjunct ONLY. `dealAfter.status === closed` is a direct
+        // statement that the deal closed, whatever any order row says, and a
+        // genuinely closed deal must still have its ladder pulled.
+        const tpAfterUnderfilled =
+          !!tpAfter && this.underfilledTpQty(tpAfter) > 0
+        if (tpAfterUnderfilled) {
+          this.handleLog(
+            `Deal ${dealId} not treated as closed during place orders: TP ${tpAfter?.clientOrderId} is FILLED but sold only ${tpAfter?.executedQty} of ${tpAfter?.origQty}`,
+          )
+        }
         if (
           ((dealAfter && dealAfter.deal.status === DCADealStatusEnum.closed) ||
-            (tpAfter && !settings.useMultiTp && !settings.useMultiSl)) &&
+            (tpAfter &&
+              !tpAfterUnderfilled &&
+              !settings.useMultiTp &&
+              !settings.useMultiSl)) &&
           !(
             this.data.settings.type === DCATypeEnum.terminal &&
             this.data.settings.terminalDealType === TerminalDealTypeEnum.simple

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.19] - 2026-09-09
+
+### Fixed
+
+- A deal that stays open because its close order only partly filled no longer has its remaining safety orders withdrawn. When an exchange reports a close order as complete, the deal is treated as finished and any orders still resting for it are pulled. Some exchanges report a close as complete while having sold only a fraction of what was asked; the engine already refuses to finish a deal on such a report, but the separate step that withdraws the resting orders did not apply that same test — so on a single pass the deal was correctly kept open while the safety orders averaging its position were cancelled. That leaves a live position with no close order and no safety orders resting, and nothing on screen marks a deal in that state, so it can persist unnoticed. Both steps now use the same test. A close order that genuinely filled in full still finishes the deal and pulls its resting orders, and a deal already recorded as finished is unaffected. Spec 027.
+
 ## [1.58.18] - 2026-09-09
 
 ### Fixed
