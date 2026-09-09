@@ -6444,6 +6444,20 @@ function createDCABotHelper<
               if (result) {
                 if (
                   typeof result === 'string' &&
+                  // Spot only, like the fee-sizing fallback above. Adaptive
+                  // close re-sizes the refused close to the WALLET's free
+                  // balance of the base asset. On spot that is the closeable
+                  // quantity. On futures it is not: a USD-M or Hyperliquid
+                  // wallet holds collateral (USDT/USDC/USDH), so the lookup
+                  // misses and the branch is a no-op — but a coin-m wallet IS
+                  // denominated in the base coin, so the lookup HITS and
+                  // compares coins against contracts. Since `toPlace` is a
+                  // `Math.min`, that can only under-close: it would rest a
+                  // take-profit smaller than the position and strand the
+                  // remainder on the venue. Reachable today via the
+                  // already-listed 'Margin is insufficient.'; gated here
+                  // before the venue strings below widen what matches.
+                  !this.futures &&
                   this.data.settings.adaptiveClose &&
                   notEnoughErrors.some((s) =>
                     `${result}`.toLowerCase().includes(s.toLowerCase()),

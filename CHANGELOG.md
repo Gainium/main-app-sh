@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.20] - 2026-09-09
+
+### Fixed
+
+- A closing order that Kraken or Hyperliquid refuses for lack of funds is now recognised as a funding problem rather than a general failure. The engine decides that a refusal means "the account could not pay for this" by matching the exchange's own wording against a list of known phrasings, and four behaviours hang off that decision: the plain-language "not enough balance" message shown on the bot, the pause that stops an unaffordable order being re-sent on every check, the retry that re-sizes a close when the fee was taken in the coin being sold, and the optional Adaptive Close setting. Kraken and Hyperliquid each word their refusal in a way that matched none of the known phrasings, so on those two exchanges none of the four ever ran: the refusal was reported as an ordinary bot error, a fresh alert was raised each time, and the same unaffordable order went out again on the next check with nothing to slow it down. A bot in that state could spend a long time failing to close a deal while appearing to try. Both wordings are now recognised, and a test holds the list to each exchange's specific phrasing so that a broad, over-eager match cannot be introduced later.
+- Adaptive Close now applies to spot bots only. It re-sizes a refused closing order to the amount of the traded coin sitting free in the wallet, which is the quantity that can actually be sold on a spot account. A futures wallet holds collateral rather than the coin, so on most futures accounts the lookup simply found nothing and the setting did nothing; on inverse (coin-margined) accounts, where the wallet is denominated in the coin itself, it could instead have matched a margin balance against a position size measured in contracts and placed a close smaller than the position, leaving the remainder open on the exchange. Spot bots are unchanged.
+
 ## [1.58.19] - 2026-09-09
 
 ### Fixed

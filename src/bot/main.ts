@@ -324,7 +324,33 @@ export const notEnoughErrors = [
   'Insufficient balance',
   'Insufficient position',
   'insufficientAvailableFunds',
+  // Kraken (spot) and Hyperliquid (perps) word their balance rejections in a
+  // way none of the patterns above match, so every not-enough-balance
+  // behaviour skipped both venues silently: the coalesced "Not enough balance"
+  // message (handleOrderErrors), the refused-order backoff and size memory
+  // (sendGridToExchange), the fee-sizing fallback and adaptive close. A
+  // rejection instead surfaced as a hard bot error and the same doomed order
+  // was re-sent on the next tick.
+  //
+  // Matched on the venue's own wording rather than a generic 'insufficient':
+  // a broad token would also catch coin-m margin rejections, and adaptive
+  // close cannot size those (see its `!this.futures` gate in dcaHelper).
+  'EOrder:Insufficient funds',
+  'insufficient margin to place order',
 ]
+
+/**
+ * Whether a venue rejected an order because the account could not fund it.
+ *
+ * Pure and exported so the venue-string list can be regression-tested without
+ * standing up a bot — the list is the whole behaviour here, and a venue
+ * rewording its rejection is exactly the failure this needs to catch.
+ * `Bot.isErrorNotEnoughBalance` is the in-class caller.
+ */
+export const matchesNotEnoughBalance = (errorString: string): boolean =>
+  notEnoughErrors.some(
+    (e) => errorString.toLowerCase().indexOf(e.toLowerCase()) !== -1,
+  )
 
 export const eventMap: { [x: string]: string } = {
   'bot update': 'data update',
@@ -2965,12 +2991,7 @@ class MainBot<T extends IMainBot> {
   // (dcaHelper.ts) is a subclass method that needs to compose this with
   // isNotionalReason. No behavior change — same body, wider visibility.
   protected isErrorNotEnoughBalance(errorString: string): boolean {
-    for (const e of notEnoughErrors) {
-      if (errorString.toLowerCase().indexOf(e.toLowerCase()) !== -1) {
-        return true
-      }
-    }
-    return false
+    return matchesNotEnoughBalance(errorString)
   }
 
   @IdMute(mutex, (botId: string) => `checkNotEnoughBalanceErrors${botId}`)
