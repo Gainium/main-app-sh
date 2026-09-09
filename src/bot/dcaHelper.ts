@@ -136,6 +136,7 @@ import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
+import { executedFillQty } from './dca/executedFill'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
@@ -2475,13 +2476,17 @@ function createDCABotHelper<
               tpOrder.clientOrderId,
               ...filledTp.map((d) => d.id),
             ])
+            // Spec `029` §4.5: replaying a row that never executed rebuilds a
+            // lost ledger into a phantom one, so the same "what did a venue
+            // actually execute" reading applies here as in
+            // `updateDealBalances`.
             const replay = dealOrders.filter(
-              (o) => !closedTp.has(o.clientOrderId),
+              (o) => !closedTp.has(o.clientOrderId) && executedFillQty(o) > 0,
             )
             if (replay.length) {
               const rebuilt = replay.reduce(
                 (acc, o) => {
-                  const oQty = +o.executedQty
+                  const oQty = executedFillQty(o)
                   const oPrice = +o.price
                   // Add-funds fills move `initialBalances` too — see the
                   // `roa` branch of `processFilledOrder` — so only the side
@@ -19799,12 +19804,28 @@ function createDCABotHelper<
               reduceFundsQuote
             : 0,
         }
+        // Spec `029`. This sum IS the deal's ledger, and everything in it is
+        // treated as funds the deal moved — so a row has to answer for what a
+        // venue actually executed, not for what it was planned to do.
+        // `executedFillQty` is where that judgement lives; it drops a cancelled
+        // order that never reached a venue (combo safety rows are persisted
+        // with `orderId: '-1'` and `executedQty === origQty` before they are
+        // placed, so cancelling one used to read as a full fill) and stops a
+        // row that reports `executedQty: '0'` from being counted at its
+        // `origQty` instead. Three of the former and one of the latter put
+        // +26.417 base on one deal against the -0.145 its fills support, and
+        // `closeDeal` marked the difference at `lastPrice` and booked it as
+        // realised profit.
         const filled = this.getOrdersByStatusAndDealId({
           dealId: findDeal.deal._id,
           status: ['FILLED', 'CANCELED'],
         })
           .filter(
             (o) =>
+              // Left reading the raw field: a row this admits but that executed
+              // nothing now contributes 0 on both legs anyway, and narrowing
+              // the membership test as well would change which rows are
+              // considered for no gain.
               (o.status === 'FILLED' || +o.executedQty !== 0) &&
               ![
                 TypeOrderEnum.fee,
@@ -19819,33 +19840,14 @@ function createDCABotHelper<
           )
         const filledBase =
           filled.reduce(
-            (acc, v) =>
-              acc +
-              (v.executedQty &&
-              !isNaN(+v.executedQty) &&
-              isFinite(+v.executedQty) &&
-              +v.executedQty
-                ? +v.executedQty
-                : v.typeOrder === TypeOrderEnum.dealStart
-                  ? +v.executedQty
-                  : +v.origQty) *
-                (v.side === 'BUY' ? 1 : -1),
+            (acc, v) => acc + executedFillQty(v) * (v.side === 'BUY' ? 1 : -1),
             0,
           ) +
           (findDeal.deal.parent ? qty : 0) * (orderBo.side === 'BUY' ? 1 : -1)
         const filledQuote =
           filled.reduce(
             (acc, v) =>
-              acc +
-              (v.executedQty &&
-              !isNaN(+v.executedQty) &&
-              isFinite(+v.executedQty) &&
-              +v.executedQty
-                ? +v.executedQty * +v.price
-                : v.typeOrder === TypeOrderEnum.dealStart
-                  ? +v.executedQty * +v.price
-                  : +v.origQty * +v.price) *
-                (v.side === 'BUY' ? -1 : 1),
+              acc + executedFillQty(v) * +v.price * (v.side === 'BUY' ? -1 : 1),
             0,
           ) +
           (findDeal.deal.parent ? qty * price : 0) *

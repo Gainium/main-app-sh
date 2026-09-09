@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.23] - 2026-09-09
+
+### Fixed
+
+- A deal's running record of what it has bought and sold no longer counts orders that never traded. Two kinds of row were being read as if they had filled: an order that was cancelled before it was ever sent to the exchange, which is stored with its planned size already written into the filled-quantity field, and an order that states it filled nothing, which was counted at the size it was planned for instead of at zero. Both add coin the deal does not hold to its record. That mattered most when a deal closed: the leftover is valued at the closing price and booked as profit, so a deal could report a gain many times its configured take-profit target while the account balance never moved — and the same overstated holding is what sizes the closing order, so the exchange rejects it for insufficient balance and the deal closes on whatever it could actually sell. A genuine partial fill on a cancelled order still counts in full, and a deal whose record already matched its trades is unchanged to the last decimal. Spec 029.
+
 ## [1.58.22] - 2026-09-09
 
 ### Fixed
