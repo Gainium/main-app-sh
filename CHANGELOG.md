@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.21] - 2026-09-09
+
+### Fixed
+
+- A combo bot with the fee-order setting on no longer asks the exchange to sell more of the traded coin than it holds when it closes a deal. When that setting is on, the bot buys a little extra of the coin so the exchange's fee can be paid without eating into the position, and the leftover is deliberately sold in the same order as the position when the deal closes — otherwise it is stranded, and on a pair with a large minimum order size it can never be sold at all. How much is left over is remembered as a running figure on the deal. A deal could inherit that figure without ever having bought any extra itself, and then add it to its closing order, asking the exchange for coins the account had never purchased. The exchange refuses the order, and because every figure behind the size is stored rather than recalculated, the identical order goes out again on the next check — a deal in that state can never close by itself and has to be closed by hand. The leftover is now capped at what the deal's own fee purchases actually bought: a deal that bought extra still sells it along with the position, and a deal that bought none closes at exactly what it holds.
+
 ## [1.58.20] - 2026-09-09
 
 ### Fixed

@@ -136,6 +136,7 @@ import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
+import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
   worstFee,
@@ -14366,14 +14367,27 @@ function createDCABotHelper<
                 : (_deal?.initialBalances.base ?? 0) -
                   (_deal?.currentBalances.base ?? 0)) +
             (this.isLong
-              ? Math.max(
-                  0,
-                  this.kucoinSpot &&
+              ? backedFeeDust({
+                  feeBalance:
+                    this.kucoinSpot &&
                     this.data?.flags?.includes(BotFlags.kucoinNewFee) &&
                     _deal
-                    ? (_deal?.feeBalance ?? 0) / _deal.initialPrice
-                    : (_deal?.feeBalance ?? 0),
-                )
+                      ? (_deal?.feeBalance ?? 0) / _deal.initialPrice
+                      : (_deal?.feeBalance ?? 0),
+                  // What this deal's OWN fee orders bought. A `feeBalance`
+                  // carried over from the bot describes base some earlier deal
+                  // bought, not base this one holds — see `./dca/comboFeeDust`.
+                  feeOrderBase: this.getOrdersByStatusAndDealId({
+                    status: ['FILLED', 'PARTIALLY_FILLED'],
+                    dealId,
+                  })
+                    .filter(
+                      (o) =>
+                        o.typeOrder === TypeOrderEnum.fee &&
+                        o.side === (this.isLong ? 'BUY' : 'SELL'),
+                    )
+                    .reduce((acc, o) => acc + +o.executedQty, 0),
+                })
               : 0)
           origQty = qty
           const filled = this.getOrdersByStatusAndDealId({
