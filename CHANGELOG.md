@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.22] - 2026-09-09
+
+### Fixed
+
+- An exchange answer that reports an order as complete while stating nothing at all about a trade — no filled quantity, no filled value, no fill time and no trade records — is no longer taken as proof that the order filled. Such an answer used to be copied over the order wholesale, which made a resting order permanently complete even though it was still sitting on the exchange, and replaced its price with zero. For a take-profit that meant the deal was closed on a sale that never happened: the quantity it was closed on could not be resolved to a number, so the deal record was rejected on save and only the order's change survived. The result was a position with its close order marked complete, the deal still open, and nothing left working to close it — a state nothing else can recover from, and one that leaves no trace in the logs because that write path was never narrated. The order now keeps the state we already have, keeps being re-checked so the next answer can resolve it properly, and the refusal is reported. A quantity or value the exchange does not state no longer erases the one already recorded, and an unresolvable price falls back to the order's own price instead of zero.
+- A deal is no longer closed on a take-profit that sold nothing. A close whose resolved quantity is zero, or cannot be resolved to a number at all, is refused and reported, and the deal is left open holding its position — where the existing take-profit coverage check can see it and re-arm it — instead of being half-closed with the order marked complete and the deal left open with no orders resting. Spec 028.
+
 ## [1.58.21] - 2026-09-09
 
 ### Fixed

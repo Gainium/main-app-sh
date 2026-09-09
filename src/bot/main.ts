@@ -60,6 +60,7 @@ import {
   observedFeeOf,
   streamFeeFields,
 } from './orderFee'
+import { isFillEvidenceFree, statesQuantity } from './fillEvidence'
 import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
@@ -5368,6 +5369,23 @@ class MainBot<T extends IMainBot> {
   }
 
   async mergeCommonOrderWithOrder(co: CommonOrder, o: Order): Promise<Order> {
+    // A quantity the payload does not STATE must not overwrite the one we
+    // already hold (spec 028 §4.3). `{ ...co }` rebuilds the order from the
+    // payload, so an absent field silently destroys ours — and the result of
+    // that is not a zero but an `undefined` that every consumer downstream
+    // reads as NaN. `closeDeal` read one as its close quantity and wrote
+    // `deal.size = NaN`. A stated `'0'` is a statement and still wins.
+    const executedQty = statesQuantity(co.executedQty)
+      ? co.executedQty
+      : o.executedQty
+    const cummulativeQuoteQty = statesQuantity(co.cummulativeQuoteQty)
+      ? co.cummulativeQuoteQty
+      : o.cummulativeQuoteQty
+    // Deliberately the PAYLOAD's own figures, not the fallbacks above: a
+    // venue that states an executed quantity but no executed value has always
+    // been priced as `co.price * co.executedQty`, and substituting our stale
+    // `cummulativeQuoteQty` there would silence that derivation with a `'0'`.
+    // The fallbacks decide what the ORDER carries; this decides its price.
     const quote =
       co.cummulativeQuoteQty && !this.sizedInContracts
         ? +co.cummulativeQuoteQty
@@ -5375,13 +5393,39 @@ class MainBot<T extends IMainBot> {
     const base = +co.executedQty
     let price = this.coinm
       ? +(o.avgPrice || '0') || +o.price
-      : +quote !== 0 && base !== 0
+      : // `Number.isFinite` and not `!== 0`: NaN is not equal to 0 either, so
+        // the old test PASSED for a payload stating neither figure and priced
+        // the order at `round(NaN / NaN)` -> NaN -> 0, writing a zero over the
+        // real limit price (spec 028 §4.4). Unresolvable now falls back to our
+        // own price, exactly like the zero case always has.
+        Number.isFinite(quote) &&
+          quote !== 0 &&
+          Number.isFinite(base) &&
+          base !== 0
         ? this.math.round(
             quote / base,
             (await this.getExchangeInfo(o.symbol))?.priceAssetPrecision,
           )
         : +o.price
     price = isNaN(price) ? 0 : price
+    // A `FILLED` the payload does nothing to support is not an answer about a
+    // fill, and acting on it is irreversible: the row goes terminal, the deal
+    // closes on it, and nothing re-opens either (spec 028 §4.2). Keep what we
+    // know and let the next poll — which normally carries real numbers —
+    // promote the order properly. NOT `quarantine`, which means "stop polling"
+    // and is the opposite of what this order needs.
+    const evidenceFreeFill =
+      co.status === 'FILLED' && o.status !== 'FILLED' && isFillEvidenceFree(co)
+    if (evidenceFreeFill) {
+      // The only narration this write path has ever had is `handleDebug`,
+      // which the bot services do not run at — so a promotion that stranded a
+      // deal left no log line anywhere at all. This one names itself.
+      this.handleWarn(
+        `Order ${o.clientOrderId} (${o.typeOrder}): ${this.data?.exchange} answered FILLED with no fill evidence ` +
+          `(executedQty ${co.executedQty}, cummulativeQuoteQty ${co.cummulativeQuoteQty}, updateTime ${co.updateTime}, ` +
+          `${co.fills?.length ?? 0} fill(s)) — keeping local status ${o.status} and re-asking`,
+      )
+    }
     return {
       ...co,
       // An observed fee already on the local order must survive a lookup that
@@ -5415,6 +5459,10 @@ class MainBot<T extends IMainBot> {
       quoteAsset: o.quoteAsset,
       origPrice: o.origPrice,
       price: `${price}` || o.price,
+      executedQty,
+      cummulativeQuoteQty,
+      status: evidenceFreeFill ? o.status : co.status,
+      updateTime: evidenceFreeFill ? o.updateTime : co.updateTime,
       tpSlTarget: o.tpSlTarget,
       minigridId: o.minigridId,
       minigridBudget: o.minigridBudget,

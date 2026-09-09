@@ -2388,6 +2388,36 @@ function createDCABotHelper<
             (d) => d.id !== tpOrder.clientOrderId,
           )
           const qty = orderQty + filledTp.reduce((acc, d) => acc + d.qty, 0)
+          // A take-profit that closed NOTHING does not close a deal (spec 028
+          // §4.5, #719). Zero and NaN are the same statement here — this
+          // take-profit sold nothing — and both are unusable: `price` below is
+          // `0 / 0`, everything built on it is NaN, `deal.size` becomes NaN and
+          // mongoose refuses the whole document (`CastError … at path "size"`).
+          // That refusal is only logged, so the close half-commits: the order
+          // is already terminal and `processDealClose` has cancelled the deal's
+          // remaining orders, while the deal itself stays `open` in Mongo — a
+          // position with nothing left working to close it, and no way back.
+          // Deals have been stranded that way by a venue answering `FILLED`
+          // with no executed quantity at all.
+          //
+          // Leaving the deal alone is the recoverable outcome: it keeps its
+          // position, keeps its in-memory copy (so a later close can still find
+          // it), and `checkTpCoverage` sees it as uncovered and can re-arm.
+          if (!Number.isFinite(qty) || qty <= 0) {
+            this.handleErrors(
+              `Deal ${dealId} not closed: take-profit ${tpOrder.clientOrderId} reports ${tpOrder.status} but closed nothing ` +
+                `(executedQty ${tpOrder.executedQty}, cummulativeQuoteQty ${tpOrder.cummulativeQuoteQty}, ` +
+                `updateTime ${tpOrder.updateTime}, ${tpOrder.fills?.length ?? 0} fill(s)) — leaving the deal open`,
+              'closeDeal',
+              '',
+              false,
+              false,
+              false,
+            )
+            this.pendingClose.delete(dealId)
+            this.endMethod(_id)
+            return
+          }
           const price =
             (orderPrice * orderQty +
               filledTp.reduce((acc, d) => acc + d.qty * d.price, 0)) /
