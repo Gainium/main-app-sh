@@ -89,6 +89,7 @@ import {
   OrderAdditionalParams,
 } from '../../types'
 import { observedFeeSplit } from './orderFee'
+import { ORDER_ID_MARKER, markOrderId } from './orderIdMarker'
 import { observedFeeLegs, accrueFeeLedger, FeeLedgerEntry } from './feeLedger'
 import { MathHelper } from '../utils/math'
 import MainBot, {
@@ -5920,10 +5921,10 @@ function createDCABotHelper<
       }
       const resendOrder = {
         ...fullSizeOrder,
-        newClientOrderId: `${rejectedOrder.newClientOrderId.slice(
-          0,
-          rejectedOrder.newClientOrderId.length - 2,
-        )}ef`,
+        newClientOrderId: markOrderId(
+          rejectedOrder.newClientOrderId,
+          ORDER_ID_MARKER.estimatedFee,
+        ),
       }
       const resendResult = await this.sendGridToExchange(
         resendOrder,
@@ -6402,10 +6403,10 @@ function createDCABotHelper<
               const realFeeOrder = isZeroedFeeSizeTp
                 ? {
                     ...tpOrder,
-                    newClientOrderId: `${tpOrder.newClientOrderId.slice(
-                      0,
-                      tpOrder.newClientOrderId.length - 2,
-                    )}rf`,
+                    newClientOrderId: markOrderId(
+                      tpOrder.newClientOrderId,
+                      ORDER_ID_MARKER.realFee,
+                    ),
                   }
                 : tpOrder
               let result = await this.sendGridToExchange(
@@ -6495,10 +6496,10 @@ function createDCABotHelper<
                                 symbol.priceAssetPrecision,
                               )
                             : tpOrder.price,
-                          newClientOrderId: `${tpOrder.newClientOrderId.slice(
-                            0,
-                            tpOrder.newClientOrderId.length - 2,
-                          )}ac`,
+                          newClientOrderId: markOrderId(
+                            tpOrder.newClientOrderId,
+                            ORDER_ID_MARKER.adaptiveClose,
+                          ),
                         },
                         {
                           dealId: findDeal.deal._id,
@@ -13886,10 +13887,10 @@ function createDCABotHelper<
             const realFeeOrder = isZeroedFeeSizeTp
               ? {
                   ...order,
-                  newClientOrderId: `${order.newClientOrderId.slice(
-                    0,
-                    order.newClientOrderId.length - 2,
-                  )}rf`,
+                  newClientOrderId: markOrderId(
+                    order.newClientOrderId,
+                    ORDER_ID_MARKER.realFee,
+                  ),
                 }
               : order
             let result: Order | string | void

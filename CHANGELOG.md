@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.58.18] - 2026-09-09
+
+### Fixed
+
+- A Hyperliquid deal whose fees were charged in a third asset can now place its take-profit again. Such a deal first tries the close at a size that leaves the fee out, and that attempt is tagged so the two tries can be told apart afterwards. On Hyperliquid the tag becomes part of the order's own identifier, and that exchange requires the identifier to be built only from the digits 0-9 and the letters a-f — the tag used two characters outside that set, so the exchange refused to read the request at all and answered that it could not interpret it. No close order was placed, and the attempt repeated on every later check. Tags are now kept to characters the identifier allows, in one place, and a test rejects any future tag that steps outside them. Deals on every other exchange, and Hyperliquid deals that never take this branch, are unchanged.
+
 ## [1.58.17] - 2026-09-08
 
 ### Fixed
