@@ -8129,16 +8129,12 @@ class Bot<T extends UserSchema = UserSchema> {
         ],
       })
 
-      this.botEventDb.createData({
-        userId: userId,
-        botId,
-        botType: BotType.dca,
-        event: 'Close DCA deal',
-        description: `DCA deal closed manually, id: ${dealId}`,
-        paperContext: !!paperContext,
-        deal: dealId,
-        symbol: findDeal.data.result.symbol.symbol,
-      })
+      // No confirmation event here. At this point the close has only been
+      // POSTED to the worker, and a request the worker cannot action is dropped
+      // inside it — so "closed manually" would record a close that never
+      // happened, which is exactly what the user reads to believe it did. A
+      // confirmed close writes its own deal event from `processDealClose`, and
+      // the `leave` path writes one from `announceLeftOpenPosition`.
       return {
         status: StatusEnum.ok as StatusEnum.ok,
         reason: null,
@@ -8222,16 +8218,8 @@ class Bot<T extends UserSchema = UserSchema> {
         botData.data.result.settings.type ?? DCATypeEnum.regular,
       )
 
-      this.botEventDb.createData({
-        userId: userId,
-        botId: _botId,
-        botType: BotType.dca,
-        event: 'Close DCA deal',
-        description: `DCA deal closed manually, id: ${dealId}`,
-        paperContext: !!paperContext,
-        deal: dealId,
-        symbol: findDeal.data.result.symbol.symbol,
-      })
+      // No confirmation event on dispatch — see the sibling branch above. The
+      // bot was not even running yet here, so this one claimed even less.
       return {
         status: StatusEnum.ok as StatusEnum.ok,
         reason: null,
@@ -8454,16 +8442,9 @@ class Bot<T extends UserSchema = UserSchema> {
         ],
       })
 
-      this.botEventDb.createData({
-        userId: userId,
-        botId,
-        botType: BotType.combo,
-        event: 'Close Combo deal',
-        description: `Combo deal closed manually, id: ${dealId}`,
-        paperContext: !!paperContext,
-        deal: dealId,
-        symbol: findDeal.data.result.symbol.symbol,
-      })
+      // No confirmation event on dispatch — same defect as `closeDCADeal`: the
+      // combo close is posted to the worker and dropped there if the deal is
+      // not in its map, so this event would confirm a close that never ran.
       return {
         status: StatusEnum.ok as StatusEnum.ok,
         reason: null,
@@ -8546,16 +8527,7 @@ class Bot<T extends UserSchema = UserSchema> {
         !!paperContext,
       )
 
-      this.botEventDb.createData({
-        userId: userId,
-        botId: _botId,
-        botType: BotType.combo,
-        event: 'Close Combo deal',
-        description: `Combo deal closed manually, id: ${dealId}`,
-        paperContext: !!paperContext,
-        deal: dealId,
-        symbol: findDeal.data.result.symbol.symbol,
-      })
+      // No confirmation event on dispatch — see the sibling branch above.
       return {
         status: StatusEnum.ok as StatusEnum.ok,
         reason: null,

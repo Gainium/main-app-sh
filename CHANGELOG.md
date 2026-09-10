@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.24] - 2026-09-10
+
+### Fixed
+
+- A request to close or cancel a deal is no longer reported as done when the engine never acted on it. The close is handed to the bot in the background and answered immediately, so a request the bot could not match to a deal it was tracking was dropped with nothing but an internal log line, while the deal stayed open — and the person who made the request was told it had worked. Believing the position closed, they could sell it by hand at the exchange, or walk away from a position that is in fact still live and still being managed. When the deal record still shows the deal as open, the dropped request is now raised as a warning on the bot, naming the deal and its pair and asking for the close to be tried again. A request for a deal that had already finished closing stays quiet as before — that is a duplicate, not a failure — and the new check only reads the deal, never writes to it, so deals that already closed are left untouched. A dropped request is raised as a warning rather than an error: the bot itself is healthy and is not put into an error state.
+- The event-log line saying a deal was "closed manually" was written the instant the close was handed off rather than when it completed, so it recorded closes that never happened — and it was the record used to confirm one had. It has been removed; the event written when a close genuinely completes, and the one written when a deal is abandoned with volume still on the exchange, are unchanged. Spec 030.
+
 ## [1.58.23] - 2026-09-09
 
 ### Fixed

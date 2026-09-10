@@ -70,3 +70,63 @@ export const leftOpenPositionMessage = (deal: DealOutcome): string =>
   `Deal ${deal._id} was left open on the exchange: ${dealLeftOpenSize(
     deal.size,
   )} ${deal.symbol.baseAsset} on ${deal.symbol.symbol}. ${unmanaged}`
+
+/**
+ * What to do about a close request that found no deal in the worker's map.
+ *
+ * The dispatch path answers the caller `ok` before the engine has looked at
+ * anything, so by the time we get here the user has already been told the close
+ * succeeded. Two very different situations arrive at the same branch:
+ *
+ *  - the deal really is finished, and this is a duplicate request — the common
+ *    case, and nothing worth telling anyone about;
+ *  - the database still holds the deal as live, so the request was accepted,
+ *    dropped, and never actioned. That is the one the user has to hear about:
+ *    they will otherwise act on a position they believe is closed.
+ *
+ * The live set is the COMPLEMENT of `{closed, canceled}` rather than a list of
+ * live statuses on purpose — it is the same predicate the dispatcher itself uses
+ * to admit the request (`status: {$nin: [closed, canceled]}`), so the two cannot
+ * drift apart, and a status added later is treated as live rather than silently
+ * unreportable.
+ *
+ * Gated on the trigger because only `manual` and `api` have a caller who was
+ * answered `ok`. Every other trigger is the engine calling itself, where there
+ * is nobody to inform and a report would be pure noise — one deal stuck in a
+ * retry loop accounts for the overwhelming majority of these warnings.
+ */
+export type MissingDealCloseVerdict = 'silent' | 'report'
+
+/** Triggers that come from a caller who was answered `ok`. */
+const dispatchedTriggers: readonly string[] = ['manual', 'api']
+
+export const verdictForMissingDealOnClose = (
+  status: DCADealStatusEnum | undefined | null,
+  closeTrigger?: string,
+): MissingDealCloseVerdict => {
+  if (!status) {
+    return 'silent'
+  }
+  const terminal =
+    status === DCADealStatusEnum.closed || status === DCADealStatusEnum.canceled
+  if (terminal) {
+    return 'silent'
+  }
+  return closeTrigger && dispatchedTriggers.includes(closeTrigger)
+    ? 'report'
+    : 'silent'
+}
+
+/**
+ * Bot-message text for a close request the engine never actioned.
+ *
+ * Deliberately tells the user the deal is STILL OPEN and what to do about it:
+ * the whole harm of this defect is someone treating an open position as closed.
+ * Avoids the phrase "was left open on the exchange" — `errorDict` maps that to
+ * the `Position left open` subType, and this is a different condition.
+ */
+export const unactionedCloseMessage = (
+  dealId: string,
+  symbol: string,
+): string =>
+  `Close request for deal ${dealId} on ${symbol} could not be applied - the deal is still open and the bot is no longer tracking it. Please retry closing it, and check the position on the exchange.`

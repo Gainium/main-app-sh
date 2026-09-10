@@ -487,6 +487,19 @@ export const complianceRestriction = 'Compliance restriction'
  */
 export const positionLeftOpen = 'Position left open'
 
+/**
+ * A close request was accepted and answered `ok`, but the engine could not act
+ * on it and the deal is still live. Not a malfunction of the bot — the request
+ * was lost — but the user believes a position is closed when it is not, so it
+ * must reach them. Its own subType so the admin rules can tune it without
+ * touching real errors.
+ *
+ * Raised by calling `processError` with this subType directly; deliberately NOT
+ * in `errorDict`, which matches on message text and would then also claim any
+ * unrelated message that happened to contain the same words.
+ */
+export const closeNotActioned = 'Close request not actioned'
+
 export const errorDict = {
   'Leverage cannot exceed': futuresPosition,
   'was left open on the exchange': positionLeftOpen,

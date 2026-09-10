@@ -132,7 +132,12 @@ import {
   DCACloseTriggerEnum,
 } from '../../types'
 import { ExchangeIntervals } from '../../types'
-import { convertDCABot, convertComboBot, positionLeftOpen } from './utils'
+import {
+  closeNotActioned,
+  convertDCABot,
+  convertComboBot,
+  positionLeftOpen,
+} from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
@@ -151,6 +156,8 @@ import {
   dealCloseEventDescription,
   dealLeftOpenSize,
   leftOpenPositionMessage,
+  unactionedCloseMessage,
+  verdictForMissingDealOnClose,
 } from './dca/dealOutcome'
 import {
   classifyTpCloseAttempt,
@@ -3190,6 +3197,75 @@ function createDCABotHelper<
         // bots in a row has to report both positions, not just the first.
         true,
         deal.symbol.symbol,
+      )
+    }
+
+    /**
+     * Tell the user that a close request they were told had succeeded was never
+     * actioned.
+     *
+     * `closeDCADeal` dispatches to this worker with `postMessage` — fire and
+     * forget — and answers the caller `ok` before the engine has looked at
+     * anything. When the deal is missing from the worker's map the request is
+     * dropped, and until now the only trace was a `[WARN]` in the engine log.
+     * The caller is told the close succeeded, the deal stays live, and nothing
+     * on the deal or in the event feed contradicts that — so the position can
+     * go on being treated as closed indefinitely.
+     *
+     * Deliberately READ-ONLY. Re-entering close from here would re-close the
+     * deals that are already terminal, which is the large majority of the ones
+     * that reach this branch — the whole point of the lookup is to tell those
+     * apart, not to act on them. See
+     * {@link verdictForMissingDealOnClose} for the decision itself.
+     *
+     * A warning, not an error: the bot is fine, the request was lost. Forced
+     * past the re-raise backoff because cancelling two deals in a row has to
+     * report both, not just the first.
+     */
+    async reportUnactionedClose(
+      dealId: string,
+      closeTrigger?: DCACloseTriggerEnum,
+    ) {
+      const read = await this.dealsDb.readData({ _id: dealId } as any, {
+        status: 1,
+        symbol: 1,
+      })
+      if (read.status === StatusEnum.notok) {
+        return
+      }
+      const deal = read.data.result
+      if (
+        !deal ||
+        verdictForMissingDealOnClose(deal.status, closeTrigger) !== 'report' ||
+        !this.shouldProceed()
+      ) {
+        return
+      }
+      const symbol = deal.symbol.symbol
+      const message = unactionedCloseMessage(dealId, symbol)
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: message,
+        paperContext: !!this.data?.paperContext,
+        deal: dealId,
+        symbol,
+        type: MessageTypeEnum.warning,
+      })
+      await this.processError(
+        this.botId,
+        closeNotActioned,
+        // @ts-ignore
+        this.data?.settings.type === DCATypeEnum.terminal,
+        false,
+        true,
+        message,
+        +new Date(),
+        message,
+        true,
+        symbol,
       )
     }
 
@@ -6243,7 +6319,13 @@ function createDCABotHelper<
           this.stop()
         }
         this.endMethod(_id)
-        return this.handleWarn(`Deal ${dealId} not found when close`)
+        const warned = this.handleWarn(`Deal ${dealId} not found when close`)
+        // This warning is the ONLY trace a dropped close used to leave, and the
+        // caller was already answered `ok` by the fire-and-forget dispatch in
+        // `closeDCADeal`. Tell the user when the database says the deal is in
+        // fact still live. Read-only — see `reportUnactionedClose`.
+        await this.reportUnactionedClose(dealId, closeTrigger)
+        return warned
       }
       if (
         checkProfit &&
