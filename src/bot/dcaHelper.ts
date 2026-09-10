@@ -5574,10 +5574,16 @@ function createDCABotHelper<
         )
         return
       }
+      // Spec `032`: each `startDca` indicator IS one ladder level, so signal
+      // `index` belongs to a deal that has consumed exactly `index` of them.
+      // `levels.complete` is that number only until an add-funds order fills —
+      // `updateDeal`'s add-funds branch increments the same counter — after
+      // which the deal answered the wrong signal and the level it was due
+      // never fired again.
       const deals = this.getDealsByStatusAndSymbol({
         status: DCADealStatusEnum.open,
         symbol,
-      }).filter((d) => d.deal.levels.complete === index + 1)
+      }).filter((d) => nextLadderLevel(d.deal) === index + 1)
       this.handleDebug(
         `DCA Signals | Received add DCA signal for index ${index}@${symbol}@${new Date(
           time,

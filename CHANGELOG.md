@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.2] - 2026-09-10
+
+### Fixed
+
+- On a DCA bot whose safety orders fire on indicator signals, adding funds to an
+  open deal no longer moves the deal past the signal it is waiting for. Each
+  configured indicator is one level of the ladder, and an addition was counted
+  as if a level had been taken: the signal the deal was due stopped matching it
+  and never fired again, and the next signal to arrive bought a deeper level
+  early, at that level's size. Deals already in that state start answering the
+  right signal again as soon as the fix is running — nothing to re-run.
+
 ## [1.59.1] - 2026-09-10
 
 ### Fixed
