@@ -34,6 +34,13 @@ export type LadderOrderRow = {
   typeOrder?: TypeOrderEnum
   addFundsId?: string
   /**
+   * Accepted so a caller can pass a whole `Order`, and so the specs can pin
+   * that it is IGNORED. Nothing in this module reads it — see
+   * {@link isAddFundsOrder} for why the client order id cannot decide this on
+   * OKX.
+   */
+  clientOrderId?: string
+  /**
    * Does this order spend one of the bot's configured levels? Overrides the
    * `addFundsId` default in both directions. Unset on every order today.
    */
@@ -61,6 +68,30 @@ export function isLadderOrder(order: LadderOrderRow): boolean {
     return order.consumesLadderLevel
   }
   return !order.addFundsId
+}
+
+/**
+ * Is this order an add-funds top-up rather than a ladder order?
+ *
+ * The complement of {@link isLadderOrder}, from the same field, and it must
+ * stay that way: `updateDeal` used to ask the CLIENT ORDER ID instead
+ * (`clientOrderId.indexOf('ROA') !== -1`), and on OKX that is not a question
+ * the id can answer. `getOrderId` mints `<broker>D-RO-<tail>` for a safety
+ * order and `<broker>D-ROA-<tail>` for an addition, then strips every dash for
+ * OKX — so a safety order whose random tail begins with `A` becomes
+ * `<broker>DROA…`, character for character an addition, to the same length.
+ * Measured at 1 in 60.8 safety orders on OKX, and an anchored test scores the
+ * same: the distinction is destroyed at generation, not merely obscured.
+ * Spec `033` §2.
+ *
+ * So: never read the id here. `addDealFunds` is the only producer of an
+ * addition and always sets `addFundsId`, which survives the venue round trip,
+ * the user stream, the DB and a restart (spec `033` §2.3). An order without it
+ * is a ladder order — including one synthesised from a `Grid`, which has no
+ * such field and never represents an addition.
+ */
+export function isAddFundsOrder(order: LadderOrderRow): boolean {
+  return !!order.addFundsId
 }
 
 /** One entry of `deal.funds` — an add-funds fill, as `updateDeal` records it. */
@@ -95,4 +126,26 @@ export function nextLadderLevel(deal: LadderPosition): number {
     (f) => f?.consumesLadderLevel !== true,
   ).length
   return deal.levels.complete - outsideLadder
+}
+
+/**
+ * How many of the bot's configured ladder levels the deal has still to place.
+ *
+ * `updateUsage` caps a deal's reported maximum usage once its ladder is spent,
+ * and used to decide that with `levels.complete === levels.all`. Those two
+ * counters treat additions differently — `complete` counts them, and on an
+ * indicator ladder `all` does not — so on that path they meet after enough
+ * additions alone, and a deal that had fired no safety order at all reported
+ * that it would never spend again. Spec `034` §2.
+ *
+ * `ladderSize` is `dcaLadderSize(settings)`: `ordersCount`, the custom-step
+ * count, or the number of `startDca` indicators, whichever the deal's
+ * `dcaCondition` uses. Pass 0 for a deal with DCA switched off — it has no
+ * ladder, so nothing is left to place from the moment it opens.
+ */
+export function remainingLadderLevels(
+  deal: LadderPosition,
+  ladderSize: number,
+): number {
+  return ladderSize - (nextLadderLevel(deal) - 1)
 }

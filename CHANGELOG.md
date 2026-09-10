@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.59.4] - 2026-09-10
+
+### Fixed
+
+- On OKX, roughly one DCA safety order in sixty was recorded as though the user
+  had added funds to the deal by hand. The two are told apart by a marker in the
+  order id, and OKX order ids are built without separators, which makes a safety
+  order whose random part happens to begin with the right letter identical to an
+  addition. The deal then gained an entry it never took, its level count grew,
+  its running record of what it had bought was not updated for that fill, and no
+  safety-order notification was sent for it. Orders are now told apart by the
+  field that records the addition itself, which no venue's id format can blur.
+  Deals affected in the past keep the extra entry in their history; the fix
+  stops new ones.
+- A deal whose safety orders fire on indicator signals no longer reports that it
+  will never spend again after enough funds have been added to it by hand. Its
+  maximum-usage figure was capped once two internal level counts met, and adding
+  funds moved one of them without moving the other, so on that type of bot three
+  additions were enough to cap a deal that had not fired a single safety order.
+  The figure now follows the levels the bot was actually configured with.
+
 ## [1.59.3] - 2026-09-10
 
 ### Fixed

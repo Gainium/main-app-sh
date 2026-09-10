@@ -142,7 +142,12 @@ import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { executedFillQty } from './dca/executedFill'
-import { isLadderOrder, nextLadderLevel } from './dca/ladderLevels'
+import {
+  isAddFundsOrder,
+  isLadderOrder,
+  nextLadderLevel,
+  remainingLadderLevels,
+} from './dca/ladderLevels'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
@@ -7591,9 +7596,11 @@ function createDCABotHelper<
         this.orders &&
         findDeal.deal.status === DCADealStatusEnum.open
       ) {
-        const roa =
-          order.clientOrderId.indexOf('-ROA-') !== -1 ||
-          order.clientOrderId.indexOf('ROA') !== -1
+        // Spec `033`: keyed on `addFundsId`, never on the client order id.
+        // OKX strips every dash out of the id, which makes a safety order whose
+        // random tail begins with `A` byte-identical to an addition — 1 in 60.8
+        // of them, booking a level the user never added.
+        const roa = isAddFundsOrder(order)
         findDeal.deal.lastPrice = this.isLong
           ? Math.min(findDeal.deal.lastPrice, parseFloat(order.price))
           : Math.max(findDeal.deal.lastPrice, parseFloat(order.price))
@@ -9520,9 +9527,21 @@ function createDCABotHelper<
                   (findDeal.deal.currentBalances.quote - quote)
                 : 0
             : 0) / leverage
+        // Spec `034`: "the ladder is spent" asked of the ladder, not of the
+        // two level counters. `levels.complete` counts add-funds fills and, on
+        // an indicator ladder, `levels.all` does not — so the two met after
+        // enough additions alone and a deal that had fired no safety order
+        // reported it would never spend again.
+        const usageSettings = await this.getAggregatedSettings(findDeal.deal)
+        // `dcaLadderSize` reports `ordersCount` whether or not DCA is on; a
+        // deal with it off has no ladder, and must still cap once its base
+        // order fills, as `levels.all === 1` made it do before.
+        const ladderSize = usageSettings.useDca
+          ? this.dcaLadderSize(usageSettings)
+          : 0
         if (
           findDeal.deal.levels.complete > 0 &&
-          findDeal.deal.levels.complete === findDeal.deal.levels.all
+          remainingLadderLevels(findDeal.deal, ladderSize) <= 0
         ) {
           if (maxQuote > 0 && maxQuote > currentQuote) {
             maxQuote = currentQuote
@@ -14594,7 +14613,11 @@ function createDCABotHelper<
         // is 0"), and the same refusal `addDealFunds` already makes for its own
         // quantity. Placed after the combo branch so its balance-derived `qty`
         // is covered too, and before the order exists at all.
-        if (!Number.isFinite(qty) || !Number.isFinite(tpPrice) || tpPrice <= 0) {
+        if (
+          !Number.isFinite(qty) ||
+          !Number.isFinite(tpPrice) ||
+          tpPrice <= 0
+        ) {
           this.handleErrors(
             `Close order qty is not a number. Deal ${dealId || '(new)'} qty ${qty}, price ${tpPrice}, base order qty ${boQty}, counted fills ${filledQty}`,
             'getTPOrder',
