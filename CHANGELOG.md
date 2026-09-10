@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.59.3] - 2026-09-10
+
+### Fixed
+
+- The safety-order-filled notification named the wrong order number on a deal
+  that had taken add funds. The number came from the counter an addition also
+  increments, so each top-up shifted every later notification by one — a deal
+  with one addition announced its first safety order as "safety order 2". It is
+  now derived from the configured ladder, which subtracts those additions back
+  out.
+
 ## [1.59.2] - 2026-09-10
 
 ### Fixed

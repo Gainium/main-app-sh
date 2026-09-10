@@ -22,6 +22,7 @@ import type {
 } from '../../types'
 import type { InitialGrid } from './helper'
 import type { FullDeal } from './dcaHelper'
+import { nextLadderLevel } from './dca/ladderLevels'
 import {
   minigridDb,
   comboTransactionsDb,
@@ -2119,13 +2120,13 @@ function createComboBotHelper<
           })
           this.updateBotDealStats(dealId)
           this.updateAssets(dealId)
-          // `levels.complete` counts the base order as 1, so the safety-order
-          // number the user sees is one less. Sent after the save so the alert
-          // quotes the persisted average price, not the pre-fill one.
+          // The user-facing safety-order number — see the DCA call site. Uses
+          // `nextLadderLevel` so an add-funds fill, which increments the same
+          // counter, does not shift every later alert by one.
           this.sendSafetyOrderFilledAlert(
             findDeal.deal,
             order,
-            findDeal.deal.levels.complete - 1,
+            nextLadderLevel(findDeal.deal) - 1,
           )
         })
 

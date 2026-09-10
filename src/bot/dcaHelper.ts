@@ -7992,13 +7992,15 @@ function createDCABotHelper<
             this.updateUsage(dealId)
             this.updateDealLastPrices(this.botId)
             this.updateAssets(dealId)
-            // `levels.complete` counts the base order as 1, so the safety-order
-            // number the user sees is one less. Sent after the save so the
-            // alert quotes the persisted average price, not the pre-fill one.
+            // The user-facing safety-order number. `nextLadderLevel` is
+            // `levels.complete` minus the add-funds fills that also incremented
+            // it (spec `031`), so this does not drift by one per addition the
+            // way a raw `levels.complete - 1` does; minus one more because that
+            // counter starts at the base order.
             this.sendSafetyOrderFilledAlert(
               findDeal.deal,
               order,
-              findDeal.deal.levels.complete - 1,
+              nextLadderLevel(findDeal.deal) - 1,
             )
           })
 
