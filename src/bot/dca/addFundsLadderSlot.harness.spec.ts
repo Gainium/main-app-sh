@@ -377,6 +377,23 @@ describe('add funds and the configured DCA ladder (spec 031)', () => {
       expect(prices).to.deep.equal([2455.22, 2430.42, 2405.62, 2380.82])
     })
 
+    it('§6 an addition FLAGGED as consuming a level does retire one', async () => {
+      // The seam a "replace the next available DCA level" opt-in needs, driven
+      // through the real method. Nothing sets this flag today.
+      const prices = await ladderPrices(
+        [
+          BASE_ORDER,
+          { ...ADD_FUNDS_ORDER, consumesLadderLevel: true },
+          ...restingRows([1, 2, 3, 4]),
+        ],
+        deal({
+          levels: { all: 6, complete: 2 },
+          funds: [{ price: 2480.02, qty: 0.004, consumesLadderLevel: true }],
+        }),
+      )
+      expect(prices).to.deep.equal([2430.42, 2405.62, 2380.82])
+    })
+
     it('§4.3 a filled SAFETY order still retires its level, nearest first', async () => {
       const prices = await ladderPrices(
         [BASE_ORDER, FILLED_SAFETY_ORDER, ...restingRows([2, 3, 4])],
@@ -423,6 +440,22 @@ describe('add funds and the configured DCA ladder (spec 031)', () => {
       await bot.executeNextDcaLevel('bot', DEAL_ID)
       expect(bot.sentGrids.map((g: any) => g.levelNumber)).to.deep.equal([1])
       expect(bot.cancelled).to.deep.equal(['D-RO-level1'])
+    })
+
+    it('§6 an addition that took level 1 sends execute-next to level 2', async () => {
+      const bot: any = buildBot({
+        orders: [
+          BASE_ORDER,
+          { ...ADD_FUNDS_ORDER, consumesLadderLevel: true },
+          ...restingRows([2, 3, 4]),
+        ],
+        dealDoc: deal({
+          levels: { all: 6, complete: 2 },
+          funds: [{ price: 2480.02, qty: 0.004, consumesLadderLevel: true }],
+        }),
+      })
+      await bot.executeNextDcaLevel('bot', DEAL_ID)
+      expect(bot.sentGrids.map((g: any) => g.levelNumber)).to.deep.equal([2])
     })
 
     it('§4.3/§5.1 a real safety fill still advances it to level 2', async () => {

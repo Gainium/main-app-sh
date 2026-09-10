@@ -58,6 +58,48 @@ describe('ladderLevels (spec 031)', () => {
     })
   })
 
+  // §6 — the seam a "replace the next available DCA level" opt-in needs. The
+  // flag decides in BOTH directions, and nothing sets it today, so every case
+  // above is what the engine actually does right now.
+  describe('consumesLadderLevel overrides the default — §6', () => {
+    it('an addition flagged as consuming a level IS one', () => {
+      expect(
+        isLadderOrder({ ...addFundsOrder, consumesLadderLevel: true }),
+      ).to.equal(true)
+    })
+
+    it('and a safety order flagged as not consuming one is NOT', () => {
+      expect(
+        isLadderOrder({ ...safetyOrder, consumesLadderLevel: false }),
+      ).to.equal(false)
+    })
+
+    it('the flag cannot promote a row that is not dealRegular at all', () => {
+      // A take profit is not a ladder level whatever it claims: the ladder is
+      // built from `dealRegular` rows and nothing else is a candidate.
+      expect(
+        isLadderOrder({
+          typeOrder: TypeOrderEnum.dealTP,
+          consumesLadderLevel: true,
+        }),
+      ).to.equal(false)
+      expect(
+        isLadderOrder({
+          typeOrder: TypeOrderEnum.dealStart,
+          consumesLadderLevel: true,
+        }),
+      ).to.equal(false)
+    })
+
+    it('executeNextDcaLevel keeps counting: neither field set', () => {
+      // It deliberately sets no `addFundsId` and keeps the `D-RO` prefix so its
+      // early fill spends the slot. That must survive the seam.
+      expect(isLadderOrder({ typeOrder: TypeOrderEnum.dealRegular })).to.equal(
+        true,
+      )
+    })
+  })
+
   describe('nextLadderLevel — §5.1', () => {
     it('a deal whose base order has filled is at safety level 1', () => {
       expect(nextLadderLevel({ levels: { complete: 1 } })).to.equal(1)
@@ -84,6 +126,29 @@ describe('ladderLevels (spec 031)', () => {
           ],
         }),
       ).to.equal(2)
+    })
+
+    it('§6 an addition that consumed a level is left in the count', () => {
+      // The opt-in case: `levels.complete` 2, one addition, and that addition
+      // took ladder level 1 — so the next level is 2, not 1.
+      expect(
+        nextLadderLevel({
+          levels: { complete: 2 },
+          funds: [{ price: 2480.02, qty: 0.004, consumesLadderLevel: true }],
+        }),
+      ).to.equal(2)
+    })
+
+    it('§6 a mixed deal subtracts only the additions outside the ladder', () => {
+      expect(
+        nextLadderLevel({
+          levels: { complete: 4 },
+          funds: [
+            { price: 2480.02, qty: 0.004 },
+            { price: 2470.0, qty: 0.004, consumesLadderLevel: true },
+          ],
+        }),
+      ).to.equal(3)
     })
 
     it('a deal that has taken no add funds is unchanged by the correction', () => {
