@@ -15799,7 +15799,7 @@ function createDCABotHelper<
           ]
           let currentOrders: Grid[] = []
           const long = this.isLong
-          // Spec `030`: a CONFIGURED ladder level, not merely a `dealRegular`
+          // Spec `031`: a CONFIGURED ladder level, not merely a `dealRegular`
           // row. `addDealFunds` builds its order as `dealRegular` too, and
           // counting it here retired the deal's next safety order — one per
           // addition, whatever the amount added.
@@ -21099,7 +21099,7 @@ function createDCABotHelper<
       // `levels.complete` counts the base order as 1, and `createInitialDealOrders`
       // numbers safety orders from 1 — so the next safety order's `levelNumber`
       // IS `levels.complete`, MINUS the add-funds fills that also incremented
-      // it (spec `030` §5). `deal.funds` records exactly those, and is the same
+      // it (spec `031` §5). `deal.funds` records exactly those, and is the same
       // correction `getDealDCAByMarketToCheck` applies to the same two fields.
       const level = nextLadderLevel(deal.deal)
       if (!ladderSize || level > ladderSize) {

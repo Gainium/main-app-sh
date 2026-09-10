@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.59.1] - 2026-09-10
+
+### Fixed
+
+- Adding funds to an open DCA deal no longer cancels the deal's next safety
+  order. An addition is an entry outside the configured ladder, not one of its
+  levels, so the ladder now keeps every level it was configured with, at its
+  original prices. The same correction keeps "execute next DCA order" aimed at
+  the next unused ladder level on a deal that has taken added funds.
+
 ## [1.59.0] - 2026-09-10
 
 ### Added
