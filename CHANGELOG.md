@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.59.9] - 2026-09-10
+
+### Fixed
+
+- A DCA deal could be left in the starting state holding no order at all. The
+  deal record is written before the entry order it exists to hold is built, and
+  building that order can fail — an order sized as a percentage of the account
+  balance cannot be built when the exchange refuses to report the balance, which
+  is what happens while an API key is expired, revoked or blocked by an IP
+  restriction. The reason was reported, but the deal record was left behind: it
+  showed no cost and no average price, its actions menu was unavailable because
+  the deal had never opened, and it still counted towards the bot's limit on
+  active deals — so a bot could gradually fill up with deals that had never
+  placed anything and then stop opening new ones. A deal whose entry order
+  cannot be built and which holds no order of any kind is now cancelled instead
+  of being left behind, so the active-deal count keeps reflecting only deals
+  that really exist. Deals already left in that state are cleared the next time
+  the bot starts. A deal holding any order at all — resting, cancelled or partly
+  filled — is never touched by this, and the reason the entry could not be built
+  is still reported exactly as before.
+
 ## [1.59.8] - 2026-09-10
 
 ### Fixed

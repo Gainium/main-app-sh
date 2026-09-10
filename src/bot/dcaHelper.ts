@@ -143,6 +143,7 @@ import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { executedFillQty } from './dca/executedFill'
 import { shouldSettlePartialBaseEntry } from './dca/partialBaseEntry'
+import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
   isAddFundsOrder,
   isLadderOrder,
@@ -8847,6 +8848,42 @@ function createDCABotHelper<
           orderSizeType,
           forceLimit,
         )
+        if (
+          dealId &&
+          shouldDiscardUnbuiltBaseEntry({
+            baseOrderBuilt: !!baseOrder,
+            dealStatus: this.getDeal(dealId)?.deal.status,
+            orderCount: this.getOrdersByStatusAndDealId({ dealId }).length,
+          })
+        ) {
+          // `createDeal` writes the deal row BEFORE the order that row exists
+          // to hold can be built, and every statement below is behind
+          // `if (baseOrder)` — so an entry that cannot be sized or priced (a
+          // percentage-of-balance order whose balance read the venue refused is
+          // the production case) skipped straight past all of it and returned,
+          // leaving the row behind. That deal holds no order at all, yet counts
+          // against the bot's active-deal limit, and the dashboard cannot close
+          // it because its actions need status `open`. Nothing sweeps `start`
+          // deals, and the once-per-bot-start replay in `restoreWork` re-enters
+          // this same silent return — so it stayed for good.
+          //
+          // Retire it here. The reason the entry could not be built has already
+          // been reported by `getBaseOrder` on its way out, so this adds no
+          // second message. `reopen` must stay false: the reopen branch of
+          // `processDealClose` calls `openNewDeal`, which re-enters this method
+          // for the same symbol. Spec `specs/039…`.
+          this.handleLog(
+            `Cannot build a base order for deal ${dealId}. Cancelling it rather than leaving it in start holding no order`,
+          )
+          await this.closeDealById(
+            this.botId,
+            dealId,
+            CloseDCATypeEnum.cancel,
+            false,
+          )
+          this.endMethod(_id)
+          return
+        }
         if (forceMarket && sizes && this.useCompountReduce && baseOrder) {
           const deal = this.getDeal(dealId)
           if (deal && deal.deal.sizes) {
