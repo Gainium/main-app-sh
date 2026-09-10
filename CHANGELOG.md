@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.59.6] - 2026-09-10
+
+### Fixed
+
+- A DCA deal could be left holding a funded position with no take-profit order
+  covering it. When sizing a closing order, the bot adds up how much each of the
+  deal's own orders actually filled. If one of those records arrived from the
+  exchange without a readable filled amount, the addition produced "not a
+  number" rather than skipping that record, and every later step passed the
+  result along unchanged — including the checks meant to catch an impossible
+  quantity, which cannot compare against a value that is not a number. The
+  closing order was then refused as unusable, so nothing was placed and the
+  position rested unprotected until the deal was closed by hand. A record whose
+  filled amount cannot be read now counts as zero, matching how the rest of the
+  deal-coverage code already reads the same field, and the remainder is
+  recovered from the deal's own recorded position — so the closing order is
+  placed at the correct quantity.
+
 ## [1.59.5] - 2026-09-10
 
 ### Fixed

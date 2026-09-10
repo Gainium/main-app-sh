@@ -14371,11 +14371,26 @@ function createDCABotHelper<
                   .includes(dh.id),
             )
             .reduce((acc, d) => acc + d.qty, 0) -
-          filledCloseOrders.reduce((acc, v) => acc + +v.executedQty, 0) -
+          filledCloseOrders.reduce(
+            (acc, v) => acc + (parseFloat(`${v.executedQty}`) || 0),
+            0,
+          ) -
           pendingReduceFunds.base -
           reduceFundsBase
+        // Spec `036`. A row whose `executedQty` cannot be read as a number
+        // contributes 0, never NaN. `+undefined` is NaN — the order map holds
+        // whatever the venue payload assigned, and an absent field is
+        // `undefined` at runtime however `Order` types it — and one such row
+        // poisons the whole sum: `resolveBaseOrderQty` cannot sanitise it
+        // (`Math.max(0, gross - NaN)` is NaN and `NaN > x` is false), so
+        // spec `023`'s guard refuses the order and the deal is left with NO
+        // take-profit at all. Under-counting is the safe direction here and
+        // only here: whatever this sum fails to see is picked back up from
+        // `deal.size` by `resolveBaseOrderQty` below. Same expression as
+        // `./dca/tpCoverageReconcile`'s `trackedPosition`/`restingTpQty`, which
+        // measure this position and were always meant to agree with it.
         const filledQty = filledOrders.reduce(
-          (acc, v) => acc + +v.executedQty,
+          (acc, v) => acc + (parseFloat(`${v.executedQty}`) || 0),
           0,
         )
         const bo = this.findBaseOrderByDeal(dealId)
