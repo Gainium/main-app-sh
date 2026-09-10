@@ -2119,6 +2119,14 @@ function createComboBotHelper<
           })
           this.updateBotDealStats(dealId)
           this.updateAssets(dealId)
+          // `levels.complete` counts the base order as 1, so the safety-order
+          // number the user sees is one less. Sent after the save so the alert
+          // quotes the persisted average price, not the pre-fill one.
+          this.sendSafetyOrderFilledAlert(
+            findDeal.deal,
+            order,
+            findDeal.deal.levels.complete - 1,
+          )
         })
 
         const gridOrders = await this.createMinigrid(

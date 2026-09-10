@@ -142,6 +142,7 @@ import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { executedFillQty } from './dca/executedFill'
+import { isLadderOrder, nextLadderLevel } from './dca/ladderLevels'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
@@ -6996,6 +6997,19 @@ function createDCABotHelper<
     }
 
     /**
+     * Fired when a safety order (a DCA ladder level, not the base order) fills.
+     * `level` is the 1-based safety-order number as the user counts them, i.e.
+     * `levels.complete` minus the base order.
+     */
+    async sendSafetyOrderFilledAlert(
+      _deal: ExcludeDoc<Deal>,
+      _order: Order,
+      _level: number,
+    ) {
+      return
+    }
+
+    /**
      * Start deal when BO is filled
      *
      * @param {Order} orderBo Base order
@@ -7972,6 +7986,14 @@ function createDCABotHelper<
             this.updateUsage(dealId)
             this.updateDealLastPrices(this.botId)
             this.updateAssets(dealId)
+            // `levels.complete` counts the base order as 1, so the safety-order
+            // number the user sees is one less. Sent after the save so the
+            // alert quotes the persisted average price, not the pre-fill one.
+            this.sendSafetyOrderFilledAlert(
+              findDeal.deal,
+              order,
+              findDeal.deal.levels.complete - 1,
+            )
           })
 
           await this.placeOrders(
@@ -15777,10 +15799,14 @@ function createDCABotHelper<
           ]
           let currentOrders: Grid[] = []
           const long = this.isLong
+          // Spec `030`: a CONFIGURED ladder level, not merely a `dealRegular`
+          // row. `addDealFunds` builds its order as `dealRegular` too, and
+          // counting it here retired the deal's next safety order — one per
+          // addition, whatever the amount added.
           const filledRegular = this.getOrdersByStatusAndDealId({
             status: ['FILLED', 'PARTIALLY_FILLED'],
             dealId,
-          }).filter((o) => o.typeOrder === TypeOrderEnum.dealRegular)
+          }).filter((o) => isLadderOrder(o))
           let left = 0
           try {
             left = dcaOrdersCount - filledRegular.length
@@ -17825,11 +17851,13 @@ function createDCABotHelper<
       ) {
         this.allowedMethods.add('sendDealClosedAlert')
         this.allowedMethods.add('sendDealOpenedAlert')
+        this.allowedMethods.add('sendSafetyOrderFilledAlert')
         this.allowedMethods.add('sendEightyAlert')
         this.allowedMethods.add('sendHundredAlert')
       } else {
         this.allowedMethods.delete('sendDealClosedAlert')
         this.allowedMethods.delete('sendDealOpenedAlert')
+        this.allowedMethods.delete('sendSafetyOrderFilledAlert')
         this.allowedMethods.delete('sendEightyAlert')
         this.allowedMethods.delete('sendHundredAlert')
       }
@@ -21070,10 +21098,10 @@ function createDCABotHelper<
       const ladderSize = this.dcaLadderSize(settings)
       // `levels.complete` counts the base order as 1, and `createInitialDealOrders`
       // numbers safety orders from 1 — so the next safety order's `levelNumber`
-      // IS `levels.complete`. This is the same identity `addDCAOrderByIndicator`
-      // relies on when it matches `levels.complete === index + 1` against
-      // `levelNumber === index + 1`.
-      const level = deal.deal.levels.complete
+      // IS `levels.complete`, MINUS the add-funds fills that also incremented
+      // it (spec `030` §5). `deal.funds` records exactly those, and is the same
+      // correction `getDealDCAByMarketToCheck` applies to the same two fields.
+      const level = nextLadderLevel(deal.deal)
       if (!ladderSize || level > ladderSize) {
         return fail(
           `This deal has no DCA levels left to execute (${level - 1}/${ladderSize} used)`,

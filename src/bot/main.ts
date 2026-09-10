@@ -284,6 +284,7 @@ type AllowedMethods =
   | 'checkClosedDeals'
   | 'sendDealClosedAlert'
   | 'sendDealOpenedAlert'
+  | 'sendSafetyOrderFilledAlert'
   | 'checkInDynamicRange'
   | 'checkInRange'
   | 'checkMaxDealsPerPair'

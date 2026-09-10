@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.59.0] - 2026-09-10
+
+### Added
+
+- The bot engine now reports a filled safety order to the notification layer,
+  with the number of the level that filled and how many the deal has in total.
+  Previously only the base order, the 80% and 100% ladder marks and the close
+  were reported, so a deal working its way down its ladder produced nothing in
+  between. Applies to DCA and combo bots, including their hedge counterparts.
+
 ## [1.58.24] - 2026-09-10
 
 ### Fixed
