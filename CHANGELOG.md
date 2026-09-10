@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.59.7] - 2026-09-10
+
+### Fixed
+
+- The protections added in the previous release for a closing order priced far
+  from the market covered a deal closing with a single order, but not a deal
+  closing through a take-profit or stop-loss ladder. A ladder builds each of its
+  steps from the deal's average entry price by the same sequence, so when that
+  price was unavailable a ladder step could still be turned into a well-formed
+  but badly wrong price: the rule meant to nudge a step one tick off the entry
+  price treated the missing price as an ordinary value, and a second rule then
+  raised the result to whatever cleared the exchange's minimum order value. That
+  same minimum-order rule could also inflate a legitimately priced ladder step
+  whose size fell below the minimum, leaving a closing order resting above the
+  price the trader actually asked for. Ladder steps are now refused when the
+  price they derive from is unusable, they reach the exchange's minimum by
+  adjusting size rather than price and never for more than the deal holds, and
+  every closing order — single or laddered — is checked against the live market
+  before it is placed.
+
 ## [1.59.6] - 2026-09-10
 
 ### Fixed

@@ -363,6 +363,29 @@ const maxTimeout = 2 ** 31 - 1
  */
 const MAX_CLOSE_PRICE_DEVIATION = 10
 
+/**
+ * Spec `037` §4.3 (#731). The `035` deviation test, extracted so the single
+ * close order and both close-price LADDERS are judged by one rule instead of
+ * three copies of it. Deliberately one-sided: a close priced away from the
+ * market in the harmless direction just rests unfilled, which is a legitimate
+ * thing to ask for (a fixed take-profit far above market). Only the direction
+ * that gives value away is refused — a SELL far below the market, or a BUY far
+ * above it. An unknown market (0 or non-finite) fails open, because the price
+ * feed being down is exactly when this is asked and a missing reference is not
+ * evidence of a bad price.
+ */
+const closeGivesValueAway = (
+  orderPrice: number,
+  marketPrice: number,
+  isLong: boolean,
+) =>
+  Number.isFinite(marketPrice) &&
+  marketPrice > 0 &&
+  Number.isFinite(orderPrice) &&
+  (isLong
+    ? orderPrice * MAX_CLOSE_PRICE_DEVIATION < marketPrice
+    : orderPrice > marketPrice * MAX_CLOSE_PRICE_DEVIATION)
+
 // Helper function to apply decorators to methods
 /* export function applyMethodDecorator(
   decorator: MethodDecorator,
@@ -14902,21 +14925,16 @@ function createDCABotHelper<
         // far above market). Only the direction that gives value away is
         // refused: a SELL far below the market, or a BUY far above it.
         const marketPrice = _price
-        if (Number.isFinite(marketPrice) && marketPrice > 0) {
-          const givesValueAway = this.isLong
-            ? tpOrder.price * MAX_CLOSE_PRICE_DEVIATION < marketPrice
-            : tpOrder.price > marketPrice * MAX_CLOSE_PRICE_DEVIATION
-          if (givesValueAway) {
-            this.handleErrors(
-              `Close order price is too far from the market. Deal ${dealId || '(new)'} ${this.isLong ? 'sell' : 'buy'} at ${tpOrder.price} against a market of ${marketPrice}`,
-              'getTPOrder',
-              '',
-              false,
-              false,
-              false,
-            )
-            return []
-          }
+        if (closeGivesValueAway(tpOrder.price, marketPrice, this.isLong)) {
+          this.handleErrors(
+            `Close order price is too far from the market. Deal ${dealId || '(new)'} ${this.isLong ? 'sell' : 'buy'} at ${tpOrder.price} against a market of ${marketPrice}`,
+            'getTPOrder',
+            '',
+            false,
+            false,
+            false,
+          )
+          return []
         }
         try {
           const mod = +new Big(tpOrder.qty)
@@ -14968,6 +14986,11 @@ function createDCABotHelper<
         if (!sl && settings.useMultiTp) {
           let restQty = tpOrder.qty
           let end = false
+          // Spec `037` §4.1 (#731). Set when any level's price cannot be
+          // derived; the whole ladder is then refused below. Refusing the call
+          // rather than dropping the level is deliberate — a ladder missing a
+          // rung is not a smaller close plan, it is a wrong one.
+          let ladderPriceUnusable = false
           tpOrders = []
           const usedTp = (settings.multiTp ?? [])
             .filter((mtp) =>
@@ -14992,6 +15015,19 @@ function createDCABotHelper<
                       (settings.useFixedTPPrices ? 1 : priceDisplacement),
                 symbol.priceAssetPrecision,
               )
+              // Spec `037` §4.1 (#731). The same guard spec `035` put on the
+              // single close order, on the ladder's own price. It has to run
+              // BEFORE the nudge below: the nudge breaks a tie between a
+              // legitimately computed level and a legitimate `avgPrice`, but
+              // `0 === 0` satisfies it too, so on a deal whose price inputs
+              // came back 0 it turns "unknown" into "one tick". `035`'s guard
+              // cannot see this — it checks `tpPrice`, which is a different
+              // value derived a different way, and a caller-supplied or fixed
+              // close price keeps it healthy while every ladder level is 0.
+              if (!Number.isFinite(price) || price <= 0) {
+                ladderPriceUnusable = true
+                return null
+              }
               if (price === avgPrice) {
                 price = this.math.round(
                   avgPrice +
@@ -15001,6 +15037,13 @@ function createDCABotHelper<
                 )
               }
               price = this.math.round(price, ed.priceAssetPrecision)
+              // Re-assert after the second rounding: `ed.priceAssetPrecision`
+              // can be coarser than `symbol`'s, so a legitimately small level
+              // can round to 0 here, below the nudge that would launder it.
+              if (!Number.isFinite(price) || price <= 0) {
+                ladderPriceUnusable = true
+                return null
+              }
 
               let qty = this.math.round(
                 tpOrder.qty * (+tp.amount / (100 - usedTp)),
@@ -15022,25 +15065,21 @@ function createDCABotHelper<
                 !this.futures &&
                 !settings.useFixedTPPrices
               ) {
-                const newQty = this.math.round(
+                // Spec `037` §4.2 (#731). Meet the venue's notional floor by
+                // moving QUANTITY, never price — the same correction spec
+                // `035` made on the single close order. This rounds UP so the
+                // floor is actually cleared; the previous rounding-down left
+                // `quote` a hair under it and the branch then rewrote PRICE to
+                // `ceil(minAmount / qty)`. That expression is not incidental:
+                // it is the exact arithmetic behind every giveaway close in
+                // this issue, and it is what turned a one-tick garbage price
+                // into a *tradeable* one the venue would accept.
+                qty = this.math.round(
                   symbol.quoteAsset.minAmount / price,
                   precision,
+                  false,
                   true,
                 )
-                const quote = newQty * price
-                if (qty === newQty || quote < symbol.quoteAsset.minAmount) {
-                  price = this.math.round(
-                    symbol.quoteAsset.minAmount / qty,
-                    symbol.priceAssetPrecision,
-                    false,
-                    true,
-                  )
-                  if (quote < symbol.quoteAsset.minAmount) {
-                    qty = newQty
-                  }
-                } else {
-                  qty = newQty
-                }
               }
               try {
                 const modQty = +new Big(qty)
@@ -15088,6 +15127,18 @@ function createDCABotHelper<
                 tpOrders.push(o)
               }
             })
+          // Spec `037` §4.1 (#731).
+          if (ladderPriceUnusable) {
+            this.handleErrors(
+              `Close order price is not a number. Deal ${dealId || '(new)'} take-profit ladder has no usable price, avg price ${avgPrice}`,
+              'getTPOrder',
+              'multi tp',
+              false,
+              false,
+              false,
+            )
+            return []
+          }
         }
         if (
           sl &&
@@ -15096,6 +15147,8 @@ function createDCABotHelper<
         ) {
           let restQty = tpOrder.qty
           let end = false
+          // Spec `037` §4.1 (#731) — see the take-profit ladder above.
+          let ladderPriceUnusable = false
           tpOrders = []
           const usedSl = (settings.multiSl ?? [])
             .filter((mtp) =>
@@ -15120,6 +15173,15 @@ function createDCABotHelper<
                       (settings.useFixedSLPrices ? 1 : priceDisplacement),
                 symbol.priceAssetPrecision,
               )
+              // Spec `037` §4.1 (#731) — see the take-profit ladder above.
+              // This is the branch the production call site reaches: it passes
+              // the requested close price as the explicit `price` argument
+              // with `sl: true`, which keeps `035`'s guard on `tpPrice` happy
+              // while every stop-loss level is still derived from `avgPrice`.
+              if (!Number.isFinite(price) || price <= 0) {
+                ladderPriceUnusable = true
+                return null
+              }
               if (price === avgPrice) {
                 price = this.math.round(
                   avgPrice +
@@ -15129,6 +15191,10 @@ function createDCABotHelper<
                 )
               }
               price = this.math.round(price, ed.priceAssetPrecision)
+              if (!Number.isFinite(price) || price <= 0) {
+                ladderPriceUnusable = true
+                return null
+              }
 
               let qty = this.math.round(
                 tpOrder.qty * (+tp.amount / (100 - usedSl)),
@@ -15150,25 +15216,13 @@ function createDCABotHelper<
                 !this.futures &&
                 !settings.useFixedSLPrices
               ) {
-                const newQty = this.math.round(
+                // Spec `037` §4.2 (#731) — see the take-profit ladder above.
+                qty = this.math.round(
                   symbol.quoteAsset.minAmount / price,
                   precision,
+                  false,
                   true,
                 )
-                const quote = newQty * price
-                if (qty === newQty || quote < symbol.quoteAsset.minAmount) {
-                  price = this.math.round(
-                    symbol.quoteAsset.minAmount / qty,
-                    symbol.priceAssetPrecision,
-                    false,
-                    true,
-                  )
-                  if (quote < symbol.quoteAsset.minAmount) {
-                    qty = newQty
-                  }
-                } else {
-                  qty = newQty
-                }
               }
               try {
                 const modQty = +new Big(qty)
@@ -15218,6 +15272,39 @@ function createDCABotHelper<
                 tpOrders.push(o)
               }
             })
+          // Spec `037` §4.1 (#731).
+          if (ladderPriceUnusable) {
+            this.handleErrors(
+              `Close order price is not a number. Deal ${dealId || '(new)'} stop-loss ladder has no usable price, avg price ${avgPrice}`,
+              'getTPOrder',
+              'multi sl',
+              false,
+              false,
+              false,
+            )
+            return []
+          }
+        }
+        // Spec `037` §4.3 (#731). The single-order deviation check above runs
+        // before either ladder is built, so until now no ladder level had ever
+        // been compared to the market. Judge whatever is actually about to be
+        // returned. Harmless for the single-order path, which already passed
+        // the identical test on the identical value.
+        const givingValueAway = tpOrders.filter((o) =>
+          closeGivesValueAway(o.price, _price, this.isLong),
+        )
+        if (givingValueAway.length) {
+          this.handleErrors(
+            `Close order price is too far from the market. Deal ${dealId || '(new)'} ${this.isLong ? 'sell' : 'buy'} at ${givingValueAway
+              .map((o) => o.price)
+              .join(', ')} against a market of ${_price}`,
+            'getTPOrder',
+            '',
+            false,
+            false,
+            false,
+          )
+          return []
         }
         return tpOrders
       }
