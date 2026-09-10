@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.59.5] - 2026-09-10
+
+### Fixed
+
+- When the price feed was briefly unavailable, a deal closing at that moment
+  could place its closing order at a small fraction of the market price. The
+  closing price is derived from the deal's average entry price, so when that
+  arrived as zero the result was zero too. A rule meant to nudge a closing
+  price one tick off the entry price — there to break a tie between two
+  legitimate prices — treated that zero as an ordinary value and turned it into
+  one tick, and the existing check that rejects a closing price of zero ran
+  later in the sequence and so never saw it. A second rule, which lifts an
+  order up to the exchange's minimum order value, then raised that tick to a
+  price the exchange would accept. A closing price that cannot be derived is
+  now refused before either rule can rewrite it, the minimum-order-value rule
+  adjusts quantity rather than price, and a closing order priced far enough
+  from the market to give away value is refused outright.
+
 ## [1.59.4] - 2026-09-10
 
 ### Fixed

@@ -352,6 +352,17 @@ const positionAlreadyClosedReasons = [
 
 const maxTimeout = 2 ** 31 - 1
 
+/**
+ * Spec `035` §4.4 (#731). How far a deal-close price may sit from the live
+ * market, in the value-losing direction only, before `getTPOrder` refuses to
+ * build it. An order of magnitude is far wider than any real close: a stop
+ * loss is a few percent from entry, and even a total-loss exit is nowhere near
+ * 10x. It is meant to catch a price that is not merely aggressive but
+ * arithmetically wrong — the SWFTC-USDC close that went out at 0.00002 against
+ * a 0.002561 market was off by 128x.
+ */
+const MAX_CLOSE_PRICE_DEVIATION = 10
+
 // Helper function to apply decorators to methods
 /* export function applyMethodDecorator(
   decorator: MethodDecorator,
@@ -14503,6 +14514,28 @@ function createDCABotHelper<
                   (settings.useFixedTPPrices ? 1 : priceDisplacement)),
           symbol.priceAssetPrecision,
         )
+        // Spec `035` §4.1 (#731). This has to run BEFORE the nudge below.
+        // Spec `023`'s `tpPrice <= 0` guard further down is the right check on
+        // the right value, but it sits 100+ lines later — and the nudge gets
+        // there first. The nudge exists to break a tie when a legitimately
+        // computed close lands exactly on a legitimate `avgPrice`; `0 === 0`
+        // satisfies it too, so on a deal whose price inputs came back 0 it
+        // converts "unknown" into "one tick" (`1e-priceAssetPrecision`) and the
+        // guard that exists for exactly this value never sees it. Downstream,
+        // the `quoteAsset.minAmount` clamp then raised that tick to whatever
+        // cleared the venue's notional floor, and a SELL of a real position
+        // went out ~128x below the market and filled.
+        if (!Number.isFinite(tpPrice) || tpPrice <= 0) {
+          this.handleErrors(
+            `Close order price is not a number. Deal ${dealId || '(new)'} price ${tpPrice}, avg price ${avgPrice}, requested price ${price}`,
+            'getTPOrder',
+            '',
+            false,
+            false,
+            false,
+          )
+          return []
+        }
         if (tpPrice === avgPrice) {
           tpPrice = this.math.round(
             avgPrice +
@@ -14512,6 +14545,21 @@ function createDCABotHelper<
           )
         }
         tpPrice = this.math.round(tpPrice, ed.priceAssetPrecision)
+        // Spec `035` §4.1 (#731). Re-assert the guard AFTER the second rounding
+        // too: `ed.priceAssetPrecision` can be coarser than `symbol`'s, so a
+        // legitimately small price can round to 0 here, below the nudge that
+        // would otherwise launder it.
+        if (!Number.isFinite(tpPrice) || tpPrice <= 0) {
+          this.handleErrors(
+            `Close order price is not a number. Deal ${dealId || '(new)'} price ${tpPrice}, avg price ${avgPrice}`,
+            'getTPOrder',
+            '',
+            false,
+            false,
+            false,
+          )
+          return []
+        }
         if (this.combo) {
           if (findDeal) {
             this.updateDealBalances(findDeal)
@@ -14792,20 +14840,67 @@ function createDCABotHelper<
           !this.futures &&
           !settings.useFixedTPPrices
         ) {
-          if (this.isLong) {
-            tpOrder.price = this.math.round(
-              symbol.quoteAsset.minAmount / tpOrder.qty,
-              symbol.priceAssetPrecision,
+          // Spec `035` §4.3 (#731). Both sides now meet the venue's notional
+          // floor by moving QUANTITY. The long branch used to move PRICE
+          // instead — `ceil(minAmount / qty)` — which is the wrong free
+          // variable twice over: price carries the trader's intent, and the
+          // rewrite is what turned a one-tick garbage price into a *tradeable*
+          // one (0.000001 -> 0.00002 cleared the floor, so the venue accepted
+          // a close it had rejected moments earlier).
+          //
+          // A long close SELLs the position, so it cannot be raised past what
+          // the deal actually holds — `tpOrder.qty` here, already capped to the
+          // position by the `Math.min` above. When the floor cannot be reached
+          // without overselling, refuse: this position genuinely cannot be
+          // closed at this size on this venue, and saying so beats resting an
+          // order at an invented price that can never fill.
+          const positionQty = tpOrder.qty
+          const qtyForFloor = this.math.round(
+            symbol.quoteAsset.minAmount / tpOrder.price,
+            precision,
+            false,
+            true,
+          )
+          if (
+            !Number.isFinite(qtyForFloor) ||
+            qtyForFloor <= 0 ||
+            (this.isLong && qtyForFloor > positionQty)
+          ) {
+            this.handleErrors(
+              `Close order is below the exchange minimum. Deal ${dealId || '(new)'} qty ${positionQty} at price ${tpOrder.price} is under ${symbol.quoteAsset.minAmount} ${symbol.quoteAsset.name ?? ''}`.trim(),
+              'getTPOrder',
+              '',
               false,
-              true,
-            )
-          } else {
-            tpOrder.qty = this.math.round(
-              symbol.quoteAsset.minAmount / tpOrder.price,
-              precision,
               false,
-              true,
+              false,
             )
+            return []
+          }
+          tpOrder.qty = qtyForFloor
+        }
+        // Spec `035` §4.4 (#731). Last line of defence, and the only check that
+        // can see this class of defect at all: every value involved is finite,
+        // positive and on tick, so no finiteness guard anywhere downstream can
+        // catch a close price that is simply WRONG. Deliberately one-sided —
+        // a close priced away from the market in the harmless direction just
+        // rests unfilled, which is a legitimate thing to ask for (a fixed TP
+        // far above market). Only the direction that gives value away is
+        // refused: a SELL far below the market, or a BUY far above it.
+        const marketPrice = _price
+        if (Number.isFinite(marketPrice) && marketPrice > 0) {
+          const givesValueAway = this.isLong
+            ? tpOrder.price * MAX_CLOSE_PRICE_DEVIATION < marketPrice
+            : tpOrder.price > marketPrice * MAX_CLOSE_PRICE_DEVIATION
+          if (givesValueAway) {
+            this.handleErrors(
+              `Close order price is too far from the market. Deal ${dealId || '(new)'} ${this.isLong ? 'sell' : 'buy'} at ${tpOrder.price} against a market of ${marketPrice}`,
+              'getTPOrder',
+              '',
+              false,
+              false,
+              false,
+            )
+            return []
           }
         }
         try {
