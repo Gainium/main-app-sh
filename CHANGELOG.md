@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.59.8] - 2026-09-10
+
+### Fixed
+
+- A DCA deal whose base order was only partly filled by the time its entry
+  timers ran out could stay in the starting state indefinitely. The engine
+  checks the entry once more when the timer for entering at market price
+  expires, but a partly filled order was treated as nothing to act on — so that
+  check cleared the deal's remaining timer and stopped. The deal was left
+  showing no cost and no average price, with its actions menu unavailable, while
+  the quantity already bought sat on the exchange with no take profit and no
+  stop loss and the deal held one of the bot's active slots. A partly filled
+  entry that nothing else is scheduled to look at again now has its unfilled
+  remainder cancelled and opens the deal on the quantity that actually executed,
+  so average price, cost, usage and the closing orders are all derived from the
+  real position. Deals already left in that state are recovered the next time
+  the bot starts. Repositioning is unchanged: while the enter-at-market check is
+  still pending, a partly filled entry is left to carry on filling.
+
 ## [1.59.7] - 2026-09-10
 
 ### Fixed

@@ -142,6 +142,7 @@ import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { executedFillQty } from './dca/executedFill'
+import { shouldSettlePartialBaseEntry } from './dca/partialBaseEntry'
 import {
   isAddFundsOrder,
   isLadderOrder,
@@ -8154,6 +8155,22 @@ function createDCABotHelper<
             return
           }
           if (
+            find?.dealId &&
+            shouldSettlePartialBaseEntry({
+              orderStatus: find.status,
+              dealStatus: this.getDeal(find.dealId)?.deal.status,
+              // This branch is the reposition timer while the bot is running,
+              // and the restore path just after it starts. Timer state for the
+              // deal is what tells the two apart: `placeBaseOrder` sets it the
+              // moment it arms anything, and a process that has not placed this
+              // deal's base order holds nothing for it — so there is no
+              // callback left to look at the order again. Spec 038 §4.2/§4.3.
+              hasPendingCheck: this.dealTimersMap.has(find.dealId),
+            })
+          ) {
+            return await this.settlePartialBaseEntry(find, find.dealId)
+          }
+          if (
             find &&
             find.status !== 'FILLED' &&
             find.status !== 'PARTIALLY_FILLED'
@@ -8216,6 +8233,20 @@ function createDCABotHelper<
             }`,
           )
           if (
+            find &&
+            shouldSettlePartialBaseEntry({
+              orderStatus: find.status,
+              dealStatus: findDeal?.deal.status,
+              // Nothing is coming after this one: the reposition timer was just
+              // cleared above, and this call IS the enter-market timer firing.
+              // Returning here without acting is what left the deal in `start`
+              // with an executed position it never recorded. Spec 038 §4.2.
+              hasPendingCheck: false,
+            })
+          ) {
+            return await this.settlePartialBaseEntry(find, dealId)
+          }
+          if (
             (find &&
               find.status !== 'FILLED' &&
               find.status !== 'PARTIALLY_FILLED') ||
@@ -8262,6 +8293,45 @@ function createDCABotHelper<
           }
         }
       }
+    }
+
+    /**
+     * Close out a base order that stopped part-filled, so its deal stops
+     * hanging in `start`.
+     *
+     * The venue has executed part of the entry, which is a real position the
+     * account holds and which only this deal would ever close — but a deal is
+     * opened solely from a `FILLED` base order, so until this runs the position
+     * has no average price, no cost, no usage, no take profit and no stop loss,
+     * and it occupies one of the bot's active deal slots.
+     *
+     * Nothing here is new machinery: `cancelOrderOnExchange` already cancels the
+     * remainder and, for any row that is not a take profit, promotes a
+     * cancelled-with-fills order to `FILLED` at the quantity that actually
+     * executed; `handleUnknownOrder` already routes such a row to
+     * `processFilledOrder` -> `startDeal`, which sizes the deal from
+     * `executedQty`. It is the same chain the sibling branch above runs for a
+     * cancel that raced a fill. A MARKET entry that stopped part-filled has no
+     * remainder left to cancel — the venue's unknown-order path answers with
+     * what really happened, which is the same answer.
+     *
+     * A refusal is left alone rather than retried on a timer: the bot's restore
+     * path checks every `start` deal on the next start and reaches this again.
+     * Spec 038 §4.4.
+     */
+    async settlePartialBaseEntry(order: Order, dealId: string) {
+      this.handleLog(
+        `Deal ${dealId} base order ${order.clientOrderId} stopped at ${order.executedQty} of ${order.origQty} and nothing else will check it. Cancelling the remainder and opening the deal on what filled`,
+      )
+      const settled = await this.cancelOrderOnExchange(order)
+      if (settled?.status === 'FILLED') {
+        return await this.handleUnknownOrder(settled)
+      }
+      this.handleWarn(
+        `Deal ${dealId} base order ${order.clientOrderId} could not be settled (${
+          settled?.status ?? 'no answer from exchange'
+        }). Deal stays in start until the bot restarts`,
+      )
     }
 
     async getBaseOrder(
