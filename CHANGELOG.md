@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.12] - 2026-09-12
+
+### Fixed
+
+- Dismissing a hedge bot's error/warning banner now clears the flag on both
+  legs when the dashboard names them with the hedge bot type
+  (`hedgeCombo`/`hedgeDca`). Those types were looked up among grid bots, where
+  a leg never matches, so the banner came back on the next load. The flag is
+  now cleared in the combo or DCA bots the legs belong to. The mutation also
+  answers only once the flag has been saved, and reports an error if saving
+  fails, instead of reporting success before anything was written.
+
 ## [1.59.11] - 2026-09-11
 
 ### Fixed

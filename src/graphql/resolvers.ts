@@ -5187,18 +5187,35 @@ const resolvers = <
         return user
       }
 
-      for (const d of data) {
-        const instance =
-          d.type === BotType.dca
-            ? dcaBotDb
-            : d.type === BotType.combo
-              ? comboBotDb
-              : botDb
-        //@ts-ignore
-        instance.updateData(
-          { _id: d.id },
-          { $set: { showErrorWarning: 'none' } },
-        )
+      const userId = user.data._id.toString()
+      // The flag is written by the bot a worker runs — for a hedge bot, its
+      // legs — so hedge types are cleared in their legs' collection. Every
+      // write is scoped to the caller. An id that cannot be an ObjectId could
+      // never match, and inside an `$in` it would fail the whole write.
+      const idsFor = (...types: BotType[]) =>
+        (data ?? [])
+          .filter(
+            (d) => d && types.includes(d.type) && Types.ObjectId.isValid(d.id),
+          )
+          .map((d) => d.id)
+      const dcaIds = idsFor(BotType.dca, BotType.hedgeDca)
+      const comboIds = idsFor(BotType.combo, BotType.hedgeCombo)
+      const gridIds = idsFor(BotType.grid)
+      const reset = { $set: { showErrorWarning: 'none' as const } }
+      const results = await Promise.all([
+        dcaIds.length
+          ? dcaBotDb.updateManyData({ _id: { $in: dcaIds }, userId }, reset)
+          : null,
+        comboIds.length
+          ? comboBotDb.updateManyData({ _id: { $in: comboIds }, userId }, reset)
+          : null,
+        gridIds.length
+          ? botDb.updateManyData({ _id: { $in: gridIds }, userId }, reset)
+          : null,
+      ])
+      const failed = results.find((r) => r?.status === StatusEnum.notok)
+      if (failed) {
+        return failed
       }
 
       return {
