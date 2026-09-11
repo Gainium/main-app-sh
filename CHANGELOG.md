@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.59.11] - 2026-09-11
+
+### Fixed
+
+- A futures bot started right after the opposite-side bot on the same symbol
+  was stopped with a market close is no longer refused because that position is
+  still closing. On a one-way account the exchange keeps one net position per
+  symbol, so a long/short flip — for example one TradingView signal that stops
+  the short bot and starts the long bot — reached the start check while the
+  close was still being filled. The start was refused with "Side in active
+  position is SHORT, but bot will open LONG", and the position was gone a
+  second later. The start now looks at the position again for up to 10 seconds
+  before refusing; if a position on the other side is really still open, the
+  bot is refused exactly as before. Bots restarting with the service, and bots
+  that already have active deals, are unaffected.
+
 ## [1.59.10] - 2026-09-11
 
 ### Fixed

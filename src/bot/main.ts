@@ -139,6 +139,10 @@ import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
 import RetryBackoff from './retryBackoff'
 import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
 import { PriceStreamGapTracker } from './priceStreamGap'
+import {
+  OPPOSING_POSITION_SETTLE,
+  awaitPositionFlat,
+} from './opposingPositionSettle'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
 import { updateUserSteps } from '../utils/user'
@@ -3983,15 +3987,40 @@ class MainBot<T extends IMainBot> {
                         : 'SHORT'
                       : findPosition.positionSide
                   if (side !== requiredSide) {
-                    this.handleErrors(
-                      `Cannot start when existing position not met bot settings. Side in active position is ${side}, but bot will open ${requiredSide}. Symbol: ${symbol}`,
-                      'load data',
-                      'check positions',
-                      false,
-                    )
-                    if (!skipFuturesError) {
-                      this.endMethod(id)
-                      return true
+                    // Spec 041: a long/short flip starts this bot while the
+                    // opposite bot's market close is still in flight, so one
+                    // read sees a position that is gone a second later. Look
+                    // again for a few seconds before refusing — but only when
+                    // the refusal would stop the bot, and never on a service
+                    // restart, where nothing is closing it.
+                    const exchange = this.exchange
+                    const settled =
+                      !skipFuturesError && !this.serviceRestart
+                        ? await awaitPositionFlat(
+                            () =>
+                              allPositions
+                                ? exchange.futures_getPositions()
+                                : exchange.futures_getPositions(symbol),
+                            symbol,
+                            { ...OPPOSING_POSITION_SETTLE, sleep },
+                          )
+                        : undefined
+                    if (settled) {
+                      this.handleLog(
+                        `Active ${side} position on ${symbol} closed while starting, continue`,
+                      )
+                      positionsRequest = settled
+                    } else {
+                      this.handleErrors(
+                        `Cannot start when existing position not met bot settings. Side in active position is ${side}, but bot will open ${requiredSide}. Symbol: ${symbol}`,
+                        'load data',
+                        'check positions',
+                        false,
+                      )
+                      if (!skipFuturesError) {
+                        this.endMethod(id)
+                        return true
+                      }
                     }
                   }
                 }
