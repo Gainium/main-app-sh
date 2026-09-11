@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.59.10] - 2026-09-11
+
+### Fixed
+
+- A futures deal closed by an exchange liquidation now shows the closing order.
+  The liquidation is recorded against the bot, but it was stored without the
+  deal it belonged to, and everything the deal view reads is looked up by deal
+  — so the deal's order history listed only the orders that opened the
+  position, and its chart drew no closing marker. A deal that ended at a loss
+  therefore offered nothing that said why, which reads as though it had been
+  closed for no reason. The liquidation is now linked to the deal (or deals) it
+  closed, so it appears in the history and on the chart at the price the
+  position went away at. It is recorded as a link only: nothing about how or
+  when a position is liquidated changes, and the deal's profit, average price
+  and volume are unaffected.
+
 ## [1.59.9] - 2026-09-10
 
 ### Fixed

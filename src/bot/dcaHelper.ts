@@ -145,6 +145,10 @@ import { executedFillQty } from './dca/executedFill'
 import { shouldSettlePartialBaseEntry } from './dca/partialBaseEntry'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
+  dealsClosedByLiquidation,
+  liquidationDealLinks,
+} from './dca/liquidationDealLink'
+import {
   isAddFundsOrder,
   isLadderOrder,
   nextLadderLevel,
@@ -16718,6 +16722,7 @@ function createDCABotHelper<
 
       const price = +order.price
       if (compareSide && !isNaN(price) && isFinite(price)) {
+        const openBefore = activeDeals.map((d) => `${d.deal._id}`)
         await this.closeAllDeals(
           undefined,
           symbol,
@@ -16728,6 +16733,7 @@ function createDCABotHelper<
           price > 0 ? price : await this.getLatestPrice(symbol),
           DCACloseTriggerEnum.liquidation,
         )
+        await this.linkLiquidationOrderToDeals(order, openBefore)
       }
       this.handleErrors(
         `Deals on ${
@@ -16740,6 +16746,71 @@ function createDCABotHelper<
         false,
         true,
       )
+    }
+
+    /**
+     * Record the liquidation as the closing order of the deal(s) it ended —
+     * spec `040`.
+     *
+     * `MainBot` has already persisted this order (`processOrderQueue` saves it
+     * before handing it here), but it builds it in code shared by every bot
+     * type, where the deal is not known yet — so the row lands with no
+     * `dealId`, and every per-deal read is keyed on exactly that. The deal
+     * therefore shows only its entry orders: no closing order in its history,
+     * and no close marker on the chart, which builds its markers from the same
+     * list. A deal that ends `closeTrigger: liquidation` looks, to the user,
+     * like it stopped at a loss for no reason.
+     *
+     * This is the first point that knows the answer, and it measures it rather
+     * than assuming it (§4.4): the deals that stopped being open across the
+     * close are the deals this liquidation closed.
+     *
+     * Purely a link. The row keeps the `origQty`/`executedQty` of `'0'` that
+     * `MainBot` wrote (§4.3) — a liquidation is not an order we placed, and
+     * every quantity-bearing consumer either excludes `typeOrder: liquidation`
+     * outright (`loadOrders`, `mergeDeals`) or filters on `executedQty > 0`.
+     * Nothing is fed back into the engine either: the liquidation row is
+     * excluded from the order load whether or not it names a deal.
+     *
+     * Runs after the close and never affects it (§4.5) — the position is
+     * already gone; a bookkeeping write that fails is a log line, not a reason
+     * to leave the deal open.
+     */
+    async linkLiquidationOrderToDeals(
+      order: Order,
+      openBefore: string[],
+    ): Promise<void> {
+      try {
+        const openAfter = this.getOpenDeals(false, order.symbol).map(
+          (d) => `${d.deal._id}`,
+        )
+        const links = liquidationDealLinks(
+          order.clientOrderId,
+          dealsClosedByLiquidation(openBefore, openAfter),
+        )
+        for (const link of links) {
+          if (link.kind === 'claim') {
+            await this.ordersDb.updateData(
+              { clientOrderId: link.clientOrderId },
+              { dealId: link.dealId },
+              false,
+              true,
+            )
+          } else {
+            await this.saveOrderToDb({
+              ...order,
+              clientOrderId: link.clientOrderId,
+              dealId: link.dealId,
+            })
+          }
+        }
+      } catch (e) {
+        this.handleWarn(
+          `Cannot link liquidation order ${order.clientOrderId} to its deal(s): ${
+            (e as Error)?.message ?? e
+          }`,
+        )
+      }
     }
     /**
      * Process canceled order from queue<br />
