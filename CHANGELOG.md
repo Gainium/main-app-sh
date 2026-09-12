@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.59.13] - 2026-09-12
+
+### Fixed
+
+- A deal closed by a liquidation that took several positions at once now
+  records its closing order. Some exchanges close every position in one
+  liquidation under a single client order id, and only one order can be stored
+  under a given id, so linking each deal by that id alone moved that one order
+  from deal to deal: the last deal kept it and the others were left showing
+  only their entry orders, with no closing trade and no close marker on the
+  chart. Each deal is now given its own record of the liquidation unless the
+  stored one is the bot's own, for that bot and that pair.
+
 ## [1.59.12] - 2026-09-12
 
 ### Fixed

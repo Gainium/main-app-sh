@@ -110,8 +110,18 @@ type Written = {
  * A bot holding `openDeals` on the symbol whose `closeAllDeals` closes
  * `closes` of them — so a test can express "the close did not take" as well as
  * the ordinary path.
+ *
+ * `rowIsOurs` models the only thing the claim depends on in the database: is
+ * there a persisted liquidation row matching the whole filter — this bot, this
+ * symbol, that client order id? It is false when the venue reused the id on a
+ * position that belongs to another bot or symbol, and the unique index
+ * therefore kept only that one.
  */
-const buildBot = (openDeals: string[], closes: string[] = openDeals) => {
+const buildBot = (
+  openDeals: string[],
+  closes: string[] = openDeals,
+  rowIsOurs = true,
+) => {
   const written: Written = { updates: [], saved: [], warns: [] }
   let open = [...openDeals]
   class TestBot extends Helper {
@@ -128,9 +138,14 @@ const buildBot = (openDeals: string[], closes: string[] = openDeals) => {
       return LIQ_PRICE
     }
     ordersDb = {
+      // `updateData(..., returnDoc = true)` answers with the document when one
+      // matched and with `data: null` when nothing did — that null is the
+      // whole signal the claim reads.
       updateData: async (filter: any, update: any) => {
         written.updates.push({ filter, update })
-        return { status: 'OK', data: { result: null } }
+        return rowIsOurs
+          ? { status: 'OK', data: { _id: 'row', ...filter, ...update } }
+          : { status: 'OK', reason: 'Data updated', data: null }
       },
     }
     async saveOrderToDb(order: any) {
@@ -150,8 +165,12 @@ const buildBot = (openDeals: string[], closes: string[] = openDeals) => {
   return new TestBot()
 }
 
-const liquidate = async (openDeals: string[], closes?: string[]) => {
-  const bot: any = buildBot(openDeals, closes)
+const liquidate = async (
+  openDeals: string[],
+  closes?: string[],
+  rowIsOurs = true,
+) => {
+  const bot: any = buildBot(openDeals, closes, rowIsOurs)
   await bot.processLiquidationOrder(liquidationOrder())
   return bot.written as Written
 }
@@ -234,6 +253,61 @@ describe('a liquidated deal records no closing order (spec 040)', () => {
       expect(written.updates).to.have.length(1)
       expect(written.updates[0].update.dealId).to.equal(DEAL_A)
       expect(written.saved).to.have.length(0)
+    })
+
+    it('the claim only ever offers to stamp this bot and this symbol', async () => {
+      const written = await liquidate([DEAL_A])
+      const { filter } = written.updates[0]
+      expect(filter.clientOrderId).to.equal(LIQ_ID)
+      expect(filter.botId, 'another bot may hold the row').to.equal(BOT_ID)
+      expect(filter.symbol, 'another symbol may hold it').to.equal(
+        SYMBOL.symbol,
+      )
+      expect(filter.typeOrder).to.equal(TypeOrderEnum.liquidation)
+    })
+  })
+
+  describe('a venue that reuses one client order id across a cascade', () => {
+    /**
+     * Binance liquidating a whole account sends the same
+     * `autoclose-<eventId>` for every position it closes. `clientOrderId` is
+     * uniquely indexed, so only the first bot/symbol to persist keeps a row;
+     * a claim keyed on that id alone then walks it from deal to deal, and the
+     * deals it walks away from are left with no close order at all.
+     */
+    it('a deal whose row another bot owns still records its close', async () => {
+      const written = await liquidate([DEAL_A], undefined, false)
+      expect(written.updates, 'the claim was attempted').to.have.length(1)
+      expect(written.saved, 'and fell back to a row of our own').to.have.length(
+        1,
+      )
+      expect(written.saved[0].dealId).to.equal(DEAL_A)
+      expect(written.saved[0].clientOrderId).to.equal(
+        liquidationCopyClientOrderId(LIQ_ID, DEAL_A),
+      )
+      expect(written.saved[0].botId, 'ours, not the row owner’s').to.equal(
+        BOT_ID,
+      )
+      expect(written.saved[0].symbol).to.equal(SYMBOL.symbol)
+      expect(written.saved[0].typeOrder).to.equal(TypeOrderEnum.liquidation)
+    })
+
+    it('every deal it closed records one, not just the last claimant', async () => {
+      const written = await liquidate([DEAL_A, DEAL_B], undefined, false)
+      expect(written.saved.map((o) => o.dealId)).to.deep.equal([DEAL_A, DEAL_B])
+      // Distinct ids, or the unique index would drop the second one exactly
+      // the way it dropped the rows this whole case is about.
+      expect(new Set(written.saved.map((o) => o.clientOrderId)).size).to.equal(
+        2,
+      )
+    })
+
+    it('a foreign row is never stamped — the fallback writes instead', async () => {
+      const written = await liquidate([DEAL_A], undefined, false)
+      expect(
+        written.updates.filter((u) => u.filter.botId !== BOT_ID),
+        'no claim was aimed outside this bot',
+      ).to.have.length(0)
     })
   })
 })

@@ -146,6 +146,7 @@ import { shouldSettlePartialBaseEntry } from './dca/partialBaseEntry'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
   dealsClosedByLiquidation,
+  liquidationCopyClientOrderId,
   liquidationDealLinks,
 } from './dca/liquidationDealLink'
 import {
@@ -16789,20 +16790,26 @@ function createDCABotHelper<
           dealsClosedByLiquidation(openBefore, openAfter),
         )
         for (const link of links) {
-          if (link.kind === 'claim') {
-            await this.ordersDb.updateData(
-              { clientOrderId: link.clientOrderId },
-              { dealId: link.dealId },
-              false,
-              true,
-            )
-          } else {
-            await this.saveOrderToDb({
-              ...order,
-              clientOrderId: link.clientOrderId,
-              dealId: link.dealId,
-            })
+          if (
+            link.kind === 'claim' &&
+            (await this.claimLiquidationRow(order, link.dealId))
+          ) {
+            continue
           }
+          // Either this deal was never the claimant, or the row the claim
+          // wanted is not ours to stamp. Both end the same way: the deal gets
+          // its own row, under its own id.
+          await this.saveOrderToDb({
+            ...order,
+            clientOrderId:
+              link.kind === 'copy'
+                ? link.clientOrderId
+                : liquidationCopyClientOrderId(
+                    order.clientOrderId,
+                    link.dealId,
+                  ),
+            dealId: link.dealId,
+          })
         }
       } catch (e) {
         this.handleWarn(
@@ -16811,6 +16818,46 @@ function createDCABotHelper<
           }`,
         )
       }
+    }
+
+    /**
+     * Stamp the deal onto the liquidation row THIS bot persisted for THIS
+     * symbol, and say whether there was one.
+     *
+     * The row is matched on more than its `clientOrderId`, because that id is
+     * the venue's and the venue does not promise it is unique per symbol: when
+     * Binance liquidates a whole account it sends the same
+     * `autoclose-<eventId>` for every position it closes, each with its own
+     * `orderId`. `orders.clientOrderId` is uniquely indexed, so exactly one of
+     * those rows can exist — whichever bot and symbol reached `saveOrderToDb`
+     * first, the rest being dropped as duplicates — and a claim keyed on the
+     * id alone repoints that single row at each bot's deal in turn. What the
+     * user is left with is one deal linked, every other deal still showing no
+     * close, and the surviving row naming a deal that belongs to another bot
+     * and another symbol, which `getDealOrders` (`{ dealId, botId, status }`)
+     * will not return for either of them.
+     *
+     * So a claim is only ever allowed to touch our own row. When the persisted
+     * row belongs to someone else the caller writes the deal its own copy
+     * instead, which is what every deal beyond the first already gets.
+     */
+    async claimLiquidationRow(order: Order, dealId: string): Promise<boolean> {
+      const claimed = await this.ordersDb.updateData(
+        {
+          clientOrderId: order.clientOrderId,
+          botId: this.botId,
+          symbol: order.symbol,
+          typeOrder: TypeOrderEnum.liquidation,
+        },
+        { dealId },
+        true,
+        true,
+      )
+      return (
+        claimed?.status === StatusEnum.ok &&
+        'data' in claimed &&
+        Boolean(claimed.data)
+      )
     }
     /**
      * Process canceled order from queue<br />
