@@ -18950,7 +18950,7 @@ function createDCABotHelper<
           multiSl,
           useFixedSLPrices,
           fixedSlPrice,
-          multiTp,
+          useMultiTp,
           slPerc,
           moveSLValue,
         } = await this.getAggregatedSettings(d.deal)
@@ -18988,8 +18988,32 @@ function createDCABotHelper<
           await this.saveDeal(d, { moveSlArmed: d.deal.moveSlArmed }, false)
         }
         let trailing = false
+        // Spec 042: this decides the deal's recorded `closeTrigger`, so it has
+        // to name the same arm `getDealStopLossPrice` took when it chose
+        // `priceToClose` — the only authoritative statement that the level just
+        // hit was the TRAILING level and not a plain stop loss. Two things it
+        // used to get wrong:
+        //
+        //  - it tested `!multiTp`. `multiTp` is the multi-take-profit TARGET
+        //    ARRAY, not the toggle, and both Mongo schemas declare it
+        //    `[multiTP]` — so mongoose materialises `[]` on every bot that
+        //    never configured one, `![]` is false, and the trailing-take-profit
+        //    arm was unreachable for every bot in existence. Every trailing
+        //    take-profit exit was therefore recorded as a stop loss, including
+        //    on bots with stop loss switched off. The toggle is `useMultiTp` —
+        //    what the stop-loss arm below already uses (`!useMultiSl`) and what
+        //    `getTrailingSettings` uses in `skipTp`.
+        //  - it did not require the trailing level to be ARMED. Without that,
+        //    a bot offering trailing take profit whose trailing has not started
+        //    yet is registered for its real stop-loss level, and a genuine
+        //    stop-loss close there would now be labelled `trailing` — the
+        //    mislabel in the other direction, which is what gating the label on
+        //    this flag was introduced to fix in the first place.
+        const trailingLevelArmed =
+          !!d.deal.trailingMode && !!d.deal.trailingLevel
         if (
           close &&
+          trailingLevelArmed &&
           ((trailingSl &&
             !useMultiSl &&
             !moveSL &&
@@ -18997,7 +19021,7 @@ function createDCABotHelper<
             dealCloseConditionSL === CloseConditionEnum.tp) ||
             (trailingTp &&
               useTp &&
-              !multiTp &&
+              !useMultiTp &&
               dealCloseCondition === CloseConditionEnum.tp))
         ) {
           this.handleLog(

@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.59.14] - 2026-09-12
+
+### Fixed
+
+- A deal closed by the trailing take profit is recorded as closed by the
+  trailing take profit again, instead of being recorded as a stop loss. The
+  check that decides which trigger closed the deal tested the multi take
+  profit target *list* rather than the multi take profit toggle, and that list
+  is always present (empty when unused), so the trailing take-profit branch
+  could never be taken. Bots with stop loss switched off showed profitable
+  trailing exits labelled "stop loss", and per-trigger statistics counted them
+  as stop losses. A deal closed at a real stop-loss level is still recorded as
+  a stop loss, including on bots that also offer trailing take profit but have
+  not armed it. Deals already closed keep the trigger they were stamped with.
+
 ## [1.59.13] - 2026-09-12
 
 ### Fixed
