@@ -3231,6 +3231,10 @@ export const registerIndexes = () => {
   // instead of an in-memory sort over all of a user's bots.
   botSchema.index({ userId: 1, status: 1, created: -1 })
   botSchema.index({ userId: 1, created: -1 })
+  // Global-variable usage count — see the dcaBotSchema note below. Grid bots
+  // carry no variables today, so this index is ~empty; it is declared anyway
+  // because `getBotsByGlobalVar` counts all three collections unconditionally.
+  botSchema.index({ 'vars.list': 1 })
 
   comboBotSchema.index({ userId: 1 })
   comboBotSchema.index({ userId: 1, status: 1, created: -1 })
@@ -3238,6 +3242,8 @@ export const registerIndexes = () => {
   // Hedge-sibling lookup — see the dcaBotSchema note below; identical shape,
   // same call sites (`core/src/bot/main.ts` picks comboBotDb for combo bots).
   comboBotSchema.index({ parentBotId: 1 })
+  // Global-variable usage count — see the dcaBotSchema note below.
+  comboBotSchema.index({ 'vars.list': 1 })
 
   comboDealSchema.index({ userId: 1 })
   comboDealSchema.index({ botId: 1 })
@@ -3264,6 +3270,26 @@ export const registerIndexes = () => {
   // an anti-predicate that cannot bound an index scan, and a hedge pair is 2 docs
   // — the equality on `parentBotId` alone already takes the scan to those 2 keys.
   dcaBotSchema.index({ parentBotId: 1 })
+  // "Which bots use global variable V?" — `getBotsByGlobalVar`
+  // (`core/src/bot/utils.ts:757`) asks every bot collection
+  // `{isDeleted:{$ne:true}, 'vars.list': V}`, and `countData` turns that into
+  // Mongoose `countDocuments`, i.e. an aggregate [$match,$group]. `vars.list`
+  // had no index, so that shape had no candidate plan at all and read the
+  // whole collection — a live prod explain returned GROUP <- COLLSCAN,
+  // keysExamined 0, 51,755 docs examined to answer one count, and the shape
+  // ran 12,043 times in the slow-query window at p50 380ms / max 2.8s. It is
+  // called once per variable on the bot from bot create/save/clone/delete
+  // (`core/src/bot/index.ts`), paper reset and user maintenance, so one bot
+  // save at the measured average of 7.4 variables per bot costs ~22 full
+  // collection scans. Measured on prod dcabots: 9,465 of 51,755 bots carry a
+  // variable, over 447 distinct variables and 69,740 (variable,bot) pairs —
+  // 156 bots per variable on average and 1,320 for the most-used one, so the
+  // scan is 39x larger than the largest possible answer and ~330x the average
+  // one. NOT compound with `isDeleted`: the `$ne` is an anti-predicate that
+  // cannot bound an index scan (same reasoning as `parentBotId` above), and
+  // `isDeleted` is mutable while `vars.list` changes only when a user attaches
+  // or detaches a variable — never on a per-tick or per-fill write.
+  dcaBotSchema.index({ 'vars.list': 1 })
 
   hedgeComboBotSchema.index({ userId: 1 })
   hedgeComboBotSchema.index({ userId: 1, status: 1, created: -1 })

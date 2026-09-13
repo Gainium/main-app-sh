@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.59.16] - 2026-09-13
+
+### Fixed
+
+- Counting the bots attached to a global variable no longer reads every bot
+  record. The lookup filters on the variable list, which carried no index, so
+  each count scanned a whole bot collection — and it runs once per variable on
+  the bot every time a bot is created, saved, cloned or deleted. The variable
+  list is now indexed on all three bot collections.
+
 ## [1.59.15] - 2026-09-13
 
 ### Fixed
