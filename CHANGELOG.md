@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.59.15] - 2026-09-13
+
+### Fixed
+
+- A DCA deal whose close would sit under the exchange's minimum order value is
+  now closed whenever the venue's own rules allow it, instead of being refused
+  every time. The check that decided this compared the minimum against the
+  already fee-netted, step-rounded close size rather than against the quantity
+  the deal holds, and on a long that comparison could only ever refuse — so a
+  position large enough to close was left with no close order at all, retrying
+  quietly. The close is now sized to the smallest quantity that meets the
+  minimum and never more than the deal owns; where no quantity can reach it,
+  the take profit rests at the lowest price the exchange will accept, bounded
+  to an order of magnitude from the market. A position that genuinely cannot be
+  closed at any allowed size now raises a visible warning on the bot instead of
+  failing in silence. Stop losses are never re-priced above the market, and the
+  guards that refuse a zero or far-from-market close price are unchanged.
+
 ## [1.59.14] - 2026-09-12
 
 ### Fixed

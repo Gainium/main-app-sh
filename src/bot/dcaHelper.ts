@@ -371,6 +371,19 @@ const maxTimeout = 2 ** 31 - 1
 const MAX_CLOSE_PRICE_DEVIATION = 10
 
 /**
+ * Spec `043` §4.3 (#755). How many consecutive `getTPOrder` notional-floor
+ * refusals on one deal before the user is told.
+ *
+ * The refusal recurs roughly once a minute per deal, so this is a few minutes
+ * of a condition that is genuinely standing — and it cannot be reached by one
+ * bad cycle, which matters because the position this measures can be
+ * transiently under-read while a restarted worker is still loading a deal's
+ * orders (the `resolveBaseOrderQty` fallbacks above exist for exactly that). A
+ * spurious user-facing error is worse than a late one.
+ */
+const CLOSE_BELOW_MINIMUM_REPORT_AFTER = 5
+
+/**
  * Spec `037` §4.3 (#731). The `035` deviation test, extracted so the single
  * close order and both close-price LADDERS are judged by one rule instead of
  * three copies of it. Deliberately one-sided: a close priced away from the
@@ -523,6 +536,15 @@ function createDCABotHelper<
     openNewDealTimer: Map<string, NodeJS.Timeout> = new Map()
     /** Close deal timers */
     closeDealTimer: Map<string, NodeJS.Timeout | null> = new Map()
+    /**
+     * Spec `043` §4.3 (#755). Consecutive `getTPOrder` notional-floor refusals
+     * per deal, so a condition that keeps holding is reported once instead of
+     * never. In memory rather than Redis for the reason {@link ConditionLatch}
+     * documents: this gates whether a REPORT is written, a bot lives in one
+     * worker at a time, and a restarted worker re-reporting once is correct —
+     * it has no record that the user was ever told.
+     */
+    closeBelowMinimumStreak: Map<string, number> = new Map()
 
     blockCheck = false
 
@@ -14990,43 +15012,134 @@ function createDCABotHelper<
           !this.futures &&
           !settings.useFixedTPPrices
         ) {
-          // Spec `035` §4.3 (#731). Both sides now meet the venue's notional
-          // floor by moving QUANTITY. The long branch used to move PRICE
+          // Spec `035` §4.3 (#731). Both sides meet the venue's notional floor
+          // by moving QUANTITY first. The long branch used to move PRICE
           // instead — `ceil(minAmount / qty)` — which is the wrong free
-          // variable twice over: price carries the trader's intent, and the
-          // rewrite is what turned a one-tick garbage price into a *tradeable*
-          // one (0.000001 -> 0.00002 cleared the floor, so the venue accepted
-          // a close it had rejected moments earlier).
+          // variable to reach for first: price carries the trader's intent, and
+          // rewriting it is what turned a one-tick garbage price into a
+          // *tradeable* one (0.000001 -> 0.00002 cleared the floor, so the
+          // venue accepted a close it had rejected moments earlier).
           //
-          // A long close SELLs the position, so it cannot be raised past what
-          // the deal actually holds — `tpOrder.qty` here, already capped to the
-          // position by the `Math.min` above. When the floor cannot be reached
-          // without overselling, refuse: this position genuinely cannot be
-          // closed at this size on this venue, and saying so beats resting an
-          // order at an invented price that can never fill.
-          const positionQty = tpOrder.qty
+          // Spec `043` §4.1 (#755) fixes WHICH quantity that is measured
+          // against. `tpOrder.qty` is the close SIZE — netted for fee and
+          // floored onto the base grid — not the position, and `035` compared
+          // the floor against it while calling it `positionQty`. Entering this
+          // block already says `minAmount / price > tpOrder.qty`, so
+          // `ceil(minAmount / price) > tpOrder.qty` holds by construction and
+          // the long branch could only ever refuse. It did, roughly once a
+          // minute per deal, leaving positions that were perfectly closeable
+          // with no close order at all: a HYPE-USDC deal holding 0.13 was sized
+          // at 0.12 by fee-netting onto a 0.01 grid, and 0.12 x 81.449 misses a
+          // 10 USDC floor that 0.13 x 81.449 clears.
+          //
+          // The cap is what the deal HOLDS. `trackedPosition` is the measure
+          // that already exists for this and is algebraically the `|dealSize| +
+          // add` this method already sizes from, so the close can be raised to
+          // the smallest quantity that clears the floor without ever selling
+          // base the deal does not own.
+          //
+          // `findDeal` first, exactly as `dealSize` above resolves it: the
+          // history has to be subtracted from the size it belongs to. Reading
+          // the size off the live in-memory deal and the closes off the caller's
+          // copy would overstate what is left the moment the two differ, and
+          // overstating is the direction that oversells.
+          const heldDeal = findDeal?.deal ?? deal
+          const heldQty = this.math.round(
+            trackedPosition({
+              size: dealSize,
+              tpHistory: heldDeal?.tpHistory ?? [],
+              filledCloseOrders,
+              reduceFundsBase,
+              pendingReduceFundsBase: pendingReduceFunds.base,
+            }),
+            precision,
+            true,
+          )
           const qtyForFloor = this.math.round(
             symbol.quoteAsset.minAmount / tpOrder.price,
             precision,
             false,
             true,
           )
-          if (
-            !Number.isFinite(qtyForFloor) ||
-            qtyForFloor <= 0 ||
-            (this.isLong && qtyForFloor > positionQty)
-          ) {
-            this.handleErrors(
-              `Close order is below the exchange minimum. Deal ${dealId || '(new)'} qty ${positionQty} at price ${tpOrder.price} is under ${symbol.quoteAsset.minAmount} ${symbol.quoteAsset.name ?? ''}`.trim(),
-              'getTPOrder',
-              '',
-              false,
-              false,
-              false,
-            )
-            return []
+          // Spec `043` §4.3/§4.4 (#755). One exit for all three refusals so
+          // their reporting cannot drift apart. A refusal with no `dealId` is
+          // `checkBalance` pricing a ladder for a deal that does not exist
+          // (`createCurrentDealOrders` with `dealId: ''`) — ~98% of this line's
+          // volume, and never a user's problem, so it is a debug line and
+          // nothing more. A real deal's refusal is standing by nature: nothing
+          // the bot does will clear it, so it is reported to the USER once the
+          // streak proves it is not one bad cycle. `setError` stays false
+          // throughout — `processError` turns it into `setRangeOrError(error)`,
+          // and one unclosable dust position must not stop a bot still trading
+          // its other pairs.
+          const refuseBelowMinimum = () => {
+            const line =
+              `Close order is below the exchange minimum. Deal ${dealId || '(new)'} qty ${heldQty} at price ${tpOrder.price} is under ${symbol.quoteAsset.minAmount} ${symbol.quoteAsset.name ?? ''}`.trim()
+            if (!dealId) {
+              this.handleDebug(line)
+              return [] as Grid[]
+            }
+            const streak = (this.closeBelowMinimumStreak.get(dealId) ?? 0) + 1
+            this.closeBelowMinimumStreak.set(dealId, streak)
+            const raise = streak === CLOSE_BELOW_MINIMUM_REPORT_AFTER
+            this.handleErrors(line, 'getTPOrder', '', false, raise, raise)
+            return [] as Grid[]
           }
-          tpOrder.qty = qtyForFloor
+          if (!Number.isFinite(qtyForFloor) || qtyForFloor <= 0) {
+            return refuseBelowMinimum()
+          }
+          if (this.isLong && qtyForFloor > heldQty) {
+            // Spec `043` §4.2 (#755). The held quantity cannot reach the floor
+            // at this price, so the only remaining free variable is price —
+            // and `minAmount / heldQty` is not an invented number, it is the
+            // LOWEST price at which this venue will accept this close at all.
+            // Restored from the pre-`035` behaviour, now bounded and
+            // take-profit only.
+            //
+            // `035`'s guards are untouched and both still stand between this
+            // and #731: §4.1 refuses a zero or non-finite `tpPrice` before the
+            // one-tick nudge can launder it, and §4.4 judges the result below.
+            // Raising a long close moves it AWAY from the giveaway direction,
+            // so it cannot reach §4.4 — hence the explicit ceiling here, the
+            // same `MAX_CLOSE_PRICE_DEVIATION` mirrored. Past an order of
+            // magnitude the order is clutter rather than a trade and the user
+            // is told instead. Fails open on an unknown market for the reason
+            // `closeGivesValueAway` documents: the feed being down is exactly
+            // when this is asked, and a missing reference is not evidence of a
+            // bad price.
+            //
+            // Stop losses are excluded: a long stop loss resting above the
+            // market is a take-profit wearing a stop-loss's name.
+            const floorPrice = this.math.round(
+              symbol.quoteAsset.minAmount / heldQty,
+              symbol.priceAssetPrecision,
+              false,
+              true,
+            )
+            const withinBound =
+              Number.isFinite(_price) && _price > 0
+                ? floorPrice <= _price * MAX_CLOSE_PRICE_DEVIATION
+                : true
+            if (
+              sl ||
+              heldQty <= 0 ||
+              !Number.isFinite(floorPrice) ||
+              floorPrice <= tpOrder.price ||
+              !withinBound
+            ) {
+              return refuseBelowMinimum()
+            }
+            tpOrder.price = floorPrice
+            tpOrder.qty = heldQty
+          } else {
+            tpOrder.qty = qtyForFloor
+          }
+        }
+        // Spec `043` §4.3 (#755). A close of acceptable notional was built, so
+        // whatever refusal streak this deal had is over and a later recurrence
+        // is news again.
+        if (dealId) {
+          this.closeBelowMinimumStreak.delete(dealId)
         }
         // Spec `035` §4.4 (#731). Last line of defence, and the only check that
         // can see this class of defect at all: every value involved is finite,

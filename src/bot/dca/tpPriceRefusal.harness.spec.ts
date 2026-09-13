@@ -302,11 +302,26 @@ describe('getTPOrder zero-price refusal (spec 035, issue #731)', () => {
     expect(Math.round(MARKET / 0.00002)).to.equal(128)
   })
 
-  it('§4.3 the notional floor is met by quantity, never by rewriting price', async () => {
-    // A legitimately-priced long whose close notional sits under the venue's
-    // minAmount: 100 units at 0.002561 is 0.256 USDC, below the floor of 1.
-    // The pre-fix long branch raised PRICE to ceil(1/100) = 0.01 — a 4x
-    // overpriced close that simply never fills. The fix must move QUANTITY.
+  it('§4.3 the notional floor is met by quantity where quantity can reach it', async () => {
+    // AMENDED by spec `043` §4.2 (issue #755). This case originally asserted
+    // that the floor is met by quantity and NEVER by rewriting price. The
+    // quantity half stands and is what `043` §4.1 restores; the "never by
+    // price" half did not survive production. Refusing outright left 48 live
+    // bots with no close order at all, retrying about once a minute for days,
+    // because for a long `ceil(minAmount / price) > tpOrder.qty` holds by
+    // construction the moment this block is entered — the branch could only
+    // ever refuse. `043` reinstates the raise as the SECOND resort, bounded by
+    // `MAX_CLOSE_PRICE_DEVIATION` and take-profit only.
+    //
+    // What #731 was actually about is untouched and still asserted by §4.1 and
+    // §4.4 above: a close price that is zero or non-finite never reaches here,
+    // and a close priced into the giveaway direction is refused after. Raising
+    // a long close moves it away from that direction, so it cannot reach §4.4.
+    //
+    // 100 units at 0.002561 is 0.256 USDC against a floor of 1. The position
+    // cannot reach the floor at any size it owns, so the close rests at
+    // ceil(1 / 100) = 0.01 — the lowest price coinbase will accept it at,
+    // 3.9x the market and inside the bound.
     const smallDeal: any = {
       ...HEALTHY_DEAL,
       size: 100,
@@ -319,18 +334,15 @@ describe('getTPOrder zero-price refusal (spec 035, issue #731)', () => {
       cummulativeQuoteQty: '0.2561',
     }
     const { tps, errors } = await buildTp(smallDeal, { orders: [smallEntry] })
-    if (tps.length) {
-      // Whatever it decides to do, it may not invent a price far from market.
-      expect(tps[0].price).to.be.closeTo(
-        MARKET * 1.015,
-        MARKET * 0.5,
-        `close priced at ${tps[0].price} against a ${MARKET} market`,
-      )
-    } else {
-      // The other legitimate outcome: refuse, and say why. A long cannot reach
-      // the floor by selling more than it holds.
-      expect(errors.join('\n')).to.match(/minimum/i)
-    }
+    expect(tps).to.have.length(1, errors.join('\n'))
+    expect(tps[0].qty).to.equal(100)
+    expect(tps[0].price).to.equal(0.01)
+    // The invariant that outlives the amendment: whatever it does, the close
+    // must clear the venue floor and must stay inside the §4.4 bound.
+    expect(tps[0].qty * tps[0].price).to.be.at.least(
+      EXCHANGE_INFO.quoteAsset.minAmount,
+    )
+    expect(tps[0].price).to.be.at.most(MARKET * 10)
   })
 
   it('§4.4 refuses a close priced orders of magnitude from the live market', async () => {
