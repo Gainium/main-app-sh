@@ -94,6 +94,7 @@ import {
   noteErrorRuleHit,
 } from './errorRulesCache'
 import QuantRulesGuard, { LEVEL2_VIOLATIONS } from './quantRulesGuard'
+import { poisonedSnapshotProfitField } from './redisSnapshotGuard'
 import QtyStepGuard, {
   decimalsToStep,
   deriveAcceptedDecimals,
@@ -3631,7 +3632,20 @@ class MainBot<T extends IMainBot> {
     this.handleLog('Load data start')
     if (this.serviceRestart && !this.secondRestart && !SKIP_REDIS) {
       const botData = await this.getFromRedis<typeof this.data>('botData')
-      if (botData) {
+      const poisoned = poisonedSnapshotProfitField(botData)
+      if (botData && poisoned) {
+        // The snapshot laundered a NaN into `null` (see redisSnapshotGuard).
+        // Restoring it would reset the bot's realized profit to zero; the
+        // database copy below is the last value Mongo accepted.
+        this.handleErrors(
+          `Redis bot snapshot has a non-finite ${poisoned}, loading bot data from the database instead`,
+          'loadData()',
+          'Load bot data',
+          false,
+          false,
+          false,
+        )
+      } else if (botData) {
         if (realStatus && botData.status !== realStatus) {
           this.handleLog(
             `Skip load from redis, redis status ${botData.status}, real status ${realStatus}`,

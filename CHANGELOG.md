@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.59.17] - 2026-09-14
+
+### Fixed
+
+- A bot's realized profit is no longer reset to zero by a restart that follows a
+  failed profit calculation. The bot's cached snapshot stored the invalid figure
+  as empty, and restoring it made the bot count its profit from scratch; such a
+  snapshot is now ignored and the bot loads its last saved figures instead.
+
 ## [1.59.16] - 2026-09-13
 
 ### Fixed
