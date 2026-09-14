@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.18] - 2026-09-14
+
+### Fixed
+
+- A grid bot's closing result now reaches the account profit statistics. Profit
+  from each completed grid round-trip was recorded there, but the profit or loss
+  realized when the bot closed its remaining position was only written to the
+  bot itself — so a bot that ended in the red kept its round-trip gains in the
+  statistics and dropped the closing loss. Both the futures position close and
+  the spot stop fill now record that result once, against the hour of the
+  closing fill. Statistics from before this change are unaffected.
+
 ## [1.59.17] - 2026-09-14
 
 ### Fixed

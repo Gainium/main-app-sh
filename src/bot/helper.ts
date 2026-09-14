@@ -2634,6 +2634,13 @@ function createBotHelper<
       }
       this.updateData({ profit: this.data.profit })
       this.emit('bot settings update', { profit: this.data.profit })
+      // The closing leg carries the position's whole un-round-tripped result,
+      // and `userProfitByHour` is the only thing the account statistics read —
+      // without this the statistics keep the grid round-trips booked by
+      // `createTransaction` and silently drop the close. Booked once per fill:
+      // the `position.qty === 0` guard above plus the `resetPosition()` every
+      // caller runs straight after mean a replayed fill returns before here.
+      this.saveProfitToDb(profitUsd, result.updateTime || +new Date())
     }
     private async processSellAtStop(
       type: CloseGRIDTypeEnum.closeByLimit | CloseGRIDTypeEnum.closeByMarket,
@@ -2842,6 +2849,12 @@ function createBotHelper<
               ...res,
               _id: `${res.data._id}`,
             })
+            // Same reason as in `profitAfterPositionClosed`, for the spot close.
+            // Gated on the insert, as `createTransaction` is: `index` is the
+            // fill's clientOrderId under a unique index, so a fill already
+            // booked by `closeBotByTp` or by an earlier delivery is refused
+            // here and cannot be counted twice.
+            this.saveProfitToDb(profitUsd, res.data.updateTime)
           }
           const data = {
             currentBalances,
@@ -4615,6 +4628,12 @@ function createBotHelper<
                   ...res,
                   _id: `${res.data._id}`,
                 })
+                // Gated on the insert for the same reason as the one in
+                // `processFilledStop`: both methods handle the same closing
+                // fill — this one the venue's synchronous answer, that one the
+                // user stream's delivery — and the unique `index` is what
+                // decides which of them books it.
+                this.saveProfitToDb(profitUsd, res.data.updateTime)
               }
               const data = {
                 currentBalances,
@@ -4624,10 +4643,6 @@ function createBotHelper<
                   totalUsd: this.data.profit.totalUsd + profitUsd,
                 },
               }
-              this.saveProfitToDb(
-                profitUsd,
-                res.data?.updateTime ?? +new Date(),
-              )
               this.emit('bot settings update', data)
               this.updateData({ ...data })
             }
