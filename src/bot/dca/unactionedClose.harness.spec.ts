@@ -2,7 +2,7 @@ process.env.NODE_ENV = 'testing'
 
 /**
  * Regression tests for spec `030` — a manual deal close reports success without
- * acting.
+ * acting — and for spec `046`, which narrows it.
  *
  * Two layers:
  *
@@ -17,8 +17,10 @@ process.env.NODE_ENV = 'testing'
  *    still `open`, and the user — told the cancel had succeeded — sold the coins
  *    by hand at the exchange.
  *
- * Nothing here writes: the branch under test must stay read-only, or it would
- * re-close the deals that are already terminal (spec 030 §3).
+ * The branch stays read-only for every shape spec `030` measured. Spec `046`
+ * carves out exactly one: a deal the database reports as `start` whose every
+ * order row carries the no-venue-id placeholder, which the hourly stuck-start
+ * sweep could otherwise never retire.
  *
  * Run: `npm test` (mocha).
  */
@@ -28,7 +30,12 @@ import { createRequire } from 'module'
 import {
   verdictForMissingDealOnClose,
   unactionedCloseMessage,
+  strandedStartCancelMessage,
 } from './dealOutcome'
+import {
+  isRetirableStrandedStart,
+  STRANDED_START_GRACE_MS,
+} from './strandedStartClose'
 import { closeNotActioned } from '../utils'
 import {
   DCACloseTriggerEnum,
@@ -71,15 +78,32 @@ type Raised = {
   events: any[]
   errors: any[]
   warns: string[]
-  dbWrites: number
+  dbWrites: any[]
 }
+
+/** The production row of deal `6a86d694…`: written, never acknowledged. */
+const UNACKED_BASE_ROW = {
+  orderId: '-1',
+  status: 'NEW',
+  type: 'MARKET',
+  typeOrder: 'dealStart',
+  origQty: '0.04',
+  executedQty: '0',
+}
+
+/** Old enough that no placement could still be in flight. */
+const LONG_AGO = () => Date.now() - 26 * 24 * 60 * 60 * 1000
 
 /**
  * A bot whose in-memory map is empty — the production state — over a database
  * that reports `dbStatus` for the deal (or nothing at all when it is `null`).
  */
-const buildBot = (dbStatus: DCADealStatusEnum | null) => {
-  const raised: Raised = { events: [], errors: [], warns: [], dbWrites: 0 }
+const buildBot = (
+  dbStatus: DCADealStatusEnum | null,
+  orders: any[] = [UNACKED_BASE_ROW],
+  createTime: number = LONG_AGO(),
+) => {
+  const raised: Raised = { events: [], errors: [], warns: [], dbWrites: [] }
   class TestBot extends Helper {
     raised = raised
     /** The defect's precondition: the deal is simply not here. */
@@ -94,14 +118,23 @@ const buildBot = (dbStatus: DCADealStatusEnum | null) => {
         status: 'OK',
         data: {
           result: dbStatus
-            ? { _id: DEAL_ID, botId: BOT_ID, status: dbStatus, symbol: SYMBOL }
+            ? {
+                _id: DEAL_ID,
+                botId: BOT_ID,
+                status: dbStatus,
+                symbol: SYMBOL,
+                createTime,
+              }
             : null,
         },
       }),
-      updateData: async () => {
-        raised.dbWrites++
-        return { status: 'OK', data: { result: null } }
+      updateData: async (search: any, update: any) => {
+        raised.dbWrites.push({ search, update })
+        return { status: 'OK', data: { _id: DEAL_ID } }
       },
+    }
+    ordersDb = {
+      readData: async () => ({ status: 'OK', data: { result: orders } }),
     }
     botEventDb = {
       createData: async (row: any) => {
@@ -130,8 +163,10 @@ const buildBot = (dbStatus: DCADealStatusEnum | null) => {
 const closeMissing = async (
   dbStatus: DCADealStatusEnum | null,
   trigger?: DCACloseTriggerEnum,
+  orders?: any[],
+  createTime?: number,
 ) => {
-  const bot: any = buildBot(dbStatus)
+  const bot: any = buildBot(dbStatus, orders, createTime)
   await bot.closeDealById(
     BOT_ID,
     DEAL_ID,
@@ -256,15 +291,23 @@ describe('a manual close reports success without acting (spec 030)', () => {
     })
 
     it('the hourly internal retry stays a log line', async () => {
+      // A `start` deal whose entry order DID reach the venue: spec `046` leaves
+      // it exactly where spec `030` did, because something may still be resting
+      // on the exchange.
       const raised = await closeMissing(
         DCADealStatusEnum.start,
         DCACloseTriggerEnum.timer,
+        [{ ...UNACKED_BASE_ROW, orderId: '6aa0f18f6ec3ef5f4b3e5fec' }],
       )
       expect(raised.events).to.have.length(0)
       expect(raised.errors).to.have.length(0)
     })
 
     it('§5.3 the branch never writes to the deal', async () => {
+      // Narrowed by spec `046` §4.3: every shape here is one it does NOT act on
+      // — `start` carries a venue-acked order row, so only the exact stranded
+      // shape in the `046` block below is allowed through.
+      const acked = [{ ...UNACKED_BASE_ROW, orderId: '77771234' }]
       for (const status of [
         DCADealStatusEnum.open,
         DCADealStatusEnum.start,
@@ -272,8 +315,12 @@ describe('a manual close reports success without acting (spec 030)', () => {
         DCADealStatusEnum.closed,
         null,
       ]) {
-        const raised = await closeMissing(status, DCACloseTriggerEnum.manual)
-        expect(raised.dbWrites, `${status}`).to.equal(0)
+        const raised = await closeMissing(
+          status,
+          DCACloseTriggerEnum.manual,
+          acked,
+        )
+        expect(raised.dbWrites, `${status}`).to.have.length(0)
       }
     })
 
@@ -283,6 +330,172 @@ describe('a manual close reports success without acting (spec 030)', () => {
         DCACloseTriggerEnum.manual,
       )
       expect(raised.warns.join()).to.contain('not found when close')
+    })
+  })
+
+  describe('the sweep can retire a forgotten stranded start (spec 046)', () => {
+    describe('§4.1 the predicate', () => {
+      const base = {
+        dealStatus: DCADealStatusEnum.start,
+        createTime: LONG_AGO(),
+        now: Date.now(),
+        orders: [UNACKED_BASE_ROW],
+      }
+
+      it('the production shape is retirable', () => {
+        expect(isRetirableStrandedStart(base)).to.equal(true)
+      })
+
+      it('only a `start` deal is retirable', () => {
+        for (const dealStatus of [
+          DCADealStatusEnum.open,
+          DCADealStatusEnum.error,
+          DCADealStatusEnum.closed,
+          DCADealStatusEnum.canceled,
+          undefined,
+          null,
+        ]) {
+          expect(
+            isRetirableStrandedStart({ ...base, dealStatus } as any),
+            `${dealStatus}`,
+          ).to.equal(false)
+        }
+      })
+
+      it('a venue-acked order row blocks the retirement', () => {
+        // Deal `6aa0f18f…`: a resting LIMIT entry with a real venue id. Marking
+        // the deal cancelled would orphan an order that can still fill.
+        expect(
+          isRetirableStrandedStart({
+            ...base,
+            orders: [
+              { ...UNACKED_BASE_ROW, orderId: '6aa0f18f6ec3ef5f4b3e5fec' },
+            ],
+          }),
+        ).to.equal(false)
+        // One acked row among many is still one too many.
+        expect(
+          isRetirableStrandedStart({
+            ...base,
+            orders: [UNACKED_BASE_ROW, { ...UNACKED_BASE_ROW, orderId: '991' }],
+          }),
+        ).to.equal(false)
+      })
+
+      it('a row that moved base blocks the retirement', () => {
+        // The combo placeholder shape spec `029` describes: no venue id, yet
+        // `executedQty === origQty`.
+        expect(
+          isRetirableStrandedStart({
+            ...base,
+            orders: [
+              {
+                ...UNACKED_BASE_ROW,
+                typeOrder: 'dealRegular',
+                executedQty: '0.04',
+              },
+            ],
+          }),
+        ).to.equal(false)
+      })
+
+      it('a deal young enough to be a placement in flight is left alone', () => {
+        const now = Date.now()
+        expect(
+          isRetirableStrandedStart({
+            ...base,
+            now,
+            createTime: now - (STRANDED_START_GRACE_MS - 1000),
+          }),
+          'inside the grace',
+        ).to.equal(false)
+        expect(
+          isRetirableStrandedStart({
+            ...base,
+            now,
+            createTime: now - (STRANDED_START_GRACE_MS + 1000),
+          }),
+          'outside the grace',
+        ).to.equal(true)
+      })
+
+      it('an unreadable creation time is left alone', () => {
+        for (const createTime of [undefined, null, NaN, 'soon' as any]) {
+          expect(
+            isRetirableStrandedStart({ ...base, createTime }),
+            `${createTime}`,
+          ).to.equal(false)
+        }
+      })
+
+      it('a deal holding no order row at all is retirable', () => {
+        // The spec `039` shape, reached after the fact rather than at placement.
+        expect(isRetirableStrandedStart({ ...base, orders: [] })).to.equal(true)
+      })
+
+      it('the message names the deal and its pair', () => {
+        const message = strandedStartCancelMessage(DEAL_ID, SYMBOL.symbol)
+        expect(message).to.contain(DEAL_ID)
+        expect(message).to.contain(SYMBOL.symbol)
+      })
+    })
+
+    describe('§4.2 the engine', () => {
+      before(function () {
+        this.timeout(180000)
+        Helper = loadModule('../dcaHelper').default(FakeBase as any)
+      })
+
+      it('the sweep retires the stranded deal and records it', async () => {
+        const raised = await closeMissing(
+          DCADealStatusEnum.start,
+          DCACloseTriggerEnum.auto,
+        )
+        expect(raised.dbWrites, 'deal write').to.have.length(1)
+        const { search, update } = raised.dbWrites[0]
+        // Never clobber a deal that moved on between the read and the write.
+        expect(search).to.deep.equal({
+          _id: DEAL_ID,
+          status: DCADealStatusEnum.start,
+        })
+        expect(update.$set.status).to.equal(DCADealStatusEnum.canceled)
+        expect(update.$set.closeTrigger).to.equal(DCACloseTriggerEnum.auto)
+        expect(update.$set.closeTime).to.be.a('number')
+        expect(update.$set.updateTime).to.be.a('number')
+
+        expect(raised.events, 'bot event').to.have.length(1)
+        expect(raised.events[0].deal).to.equal(DEAL_ID)
+        expect(raised.events[0].symbol).to.equal(SYMBOL.symbol)
+        // Nothing is broken for the user to act on, and the sweep can catch up
+        // on many of these at once.
+        expect(raised.errors, 'no notification').to.have.length(0)
+        // The "not actioned" report is the other outcome, not a second one.
+        expect(
+          raised.events[0].description,
+          'not the unactioned-close wording',
+        ).to.not.contain('Please retry closing it')
+      })
+
+      it('a user-initiated close of the same deal retires it too', async () => {
+        const raised = await closeMissing(
+          DCADealStatusEnum.start,
+          DCACloseTriggerEnum.manual,
+        )
+        expect(raised.dbWrites).to.have.length(1)
+        expect(raised.dbWrites[0].update.$set.closeTrigger).to.equal(
+          DCACloseTriggerEnum.manual,
+        )
+        // …and is NOT also told the request was dropped: it was not.
+        expect(raised.errors).to.have.length(0)
+      })
+
+      it('the warning is still logged', async () => {
+        const raised = await closeMissing(
+          DCADealStatusEnum.start,
+          DCACloseTriggerEnum.auto,
+        )
+        expect(raised.warns.join()).to.contain('not found when close')
+      })
     })
   })
 })

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.59.19] - 2026-09-15
+
+### Fixed
+
+- A deal left in "start" that the exchange never accepted an entry order for is
+  now cancelled by the hourly sweep instead of being retried forever. The sweep
+  asked the running bot to close the deal, and a bot that no longer held that
+  deal in memory could only answer with a log line - so the deal stayed listed
+  as starting, could not be closed from the dashboard, and was re-attempted
+  every hour. The close now falls back to the stored deal, and cancels it only
+  when every one of its orders is still without an exchange id, so nothing
+  resting on an exchange can be abandoned.
+
 ## [1.59.18] - 2026-09-14
 
 ### Fixed

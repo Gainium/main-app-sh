@@ -169,9 +169,11 @@ import {
   dealCloseEventDescription,
   dealLeftOpenSize,
   leftOpenPositionMessage,
+  strandedStartCancelMessage,
   unactionedCloseMessage,
   verdictForMissingDealOnClose,
 } from './dca/dealOutcome'
+import { isRetirableStrandedStart } from './dca/strandedStartClose'
 import {
   classifyTpCloseAttempt,
   tpCloseBlockedMessage,
@@ -3339,6 +3341,103 @@ function createDCABotHelper<
     }
 
     /**
+     * Retire a `start` deal the worker has forgotten and no exchange ever knew
+     * about. Answers whether it acted.
+     *
+     * The hourly stuck-start sweep (`closeOldStartDeals`) reaches
+     * {@link DCABotHelper#closeDealById} through the same dispatch as a user
+     * click, and the map miss above makes it a no-op — so the sweep re-selects
+     * the same deal an hour later and writes the same warning, forever. One
+     * production deal has done that hourly since 2026-08-20 without its document
+     * ever being written to.
+     *
+     * The database can settle it without any venue call for exactly one shape:
+     * a deal still in `start` whose every order row carries `orderId: '-1'`, the
+     * placeholder for "no venue-side identifier". Nothing was acknowledged, so
+     * nothing is resting and no position exists — see
+     * {@link isRetirableStrandedStart} for the full predicate and the grace that
+     * keeps a placement still in flight out of it.
+     *
+     * Everything else stays read-only exactly as spec `030` §3 left it, and
+     * falls through to {@link DCABotHelper#reportUnactionedClose}. The write is
+     * filtered on `status: start` so a deal that moved on between the read and
+     * the write can never be clobbered. Spec `specs/046…`.
+     *
+     * No `processError`: nothing here is broken for the user to act on, and the
+     * sweep can retire a backlog of these in one pass. The bot's `deals.active`
+     * counter is deliberately untouched — it tracks the worker's map, which
+     * never held this deal.
+     */
+    async retireStrandedStartDeal(
+      dealId: string,
+      closeTrigger?: DCACloseTriggerEnum,
+    ): Promise<boolean> {
+      if (!this.shouldProceed()) {
+        return false
+      }
+      const read = await this.dealsDb.readData({ _id: dealId } as any, {
+        status: 1,
+        symbol: 1,
+        createTime: 1,
+      })
+      if (read.status === StatusEnum.notok || !read.data.result) {
+        return false
+      }
+      const deal = read.data.result
+      const orders = await this.ordersDb.readData(
+        { dealId } as any,
+        { orderId: 1, status: 1, executedQty: 1, origQty: 1, typeOrder: 1 },
+        {},
+        true,
+      )
+      if (orders.status === StatusEnum.notok) {
+        return false
+      }
+      if (
+        !isRetirableStrandedStart({
+          dealStatus: deal.status,
+          createTime: deal.createTime,
+          now: +new Date(),
+          orders: orders.data.result ?? [],
+        })
+      ) {
+        return false
+      }
+      const closeTime = +new Date()
+      const written = await this.dealsDb.updateData(
+        { _id: dealId, status: DCADealStatusEnum.start } as any,
+        {
+          $set: {
+            status: DCADealStatusEnum.canceled,
+            closeTrigger: closeTrigger ?? DCACloseTriggerEnum.auto,
+            closeTime,
+            updateTime: closeTime,
+          } as any,
+        },
+        true,
+      )
+      if (written.status === StatusEnum.notok || !written.data) {
+        return false
+      }
+      const symbol = deal.symbol.symbol
+      this.handleLog(
+        `Deal ${dealId} (${symbol}) was still in start with no order the exchange ever acknowledged. Cancelling it rather than leaving it for the sweep to retry hourly`,
+      )
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: strandedStartCancelMessage(dealId, symbol),
+        paperContext: !!this.data?.paperContext,
+        deal: dealId,
+        symbol,
+        type: MessageTypeEnum.warning,
+      })
+      return true
+    }
+
+    /**
      * Process deal close
      *
      * @param {string} dealId Id of the deal
@@ -6395,6 +6494,14 @@ function createDCABotHelper<
         }
         this.endMethod(_id)
         const warned = this.handleWarn(`Deal ${dealId} not found when close`)
+        // The map is not the last word. A deal the database still holds in
+        // `start` with no order any exchange ever acknowledged can be retired
+        // from here with no venue call at all — otherwise the hourly
+        // stuck-start sweep re-selects it and writes this same warning for
+        // good. Spec `046`.
+        if (await this.retireStrandedStartDeal(dealId, closeTrigger)) {
+          return warned
+        }
         // This warning is the ONLY trace a dropped close used to leave, and the
         // caller was already answered `ok` by the fire-and-forget dispatch in
         // `closeDCADeal`. Tell the user when the database says the deal is in

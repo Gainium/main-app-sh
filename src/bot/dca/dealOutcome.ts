@@ -130,3 +130,18 @@ export const unactionedCloseMessage = (
   symbol: string,
 ): string =>
   `Close request for deal ${dealId} on ${symbol} could not be applied - the deal is still open and the bot is no longer tracking it. Please retry closing it, and check the position on the exchange.`
+
+/**
+ * Bot-message text for a `start` deal retired because nothing it holds ever
+ * reached an exchange (spec `046`).
+ *
+ * The opposite outcome to {@link unactionedCloseMessage} and worded so the two
+ * can never be mistaken for each other: this one says the deal is FINISHED and
+ * that there is nothing on the exchange to check. Avoids "was left open on the
+ * exchange" and "still open" — `errorDict` keys off those phrases.
+ */
+export const strandedStartCancelMessage = (
+  dealId: string,
+  symbol: string,
+): string =>
+  `Deal ${dealId} on ${symbol} never opened - its entry order was never accepted by the exchange, so the deal has been cancelled. No position was taken and there is nothing to close on the exchange.`
