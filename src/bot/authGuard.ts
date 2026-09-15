@@ -56,6 +56,11 @@ export const AUTH_FAILURE_SIGNATURES = [
   'api key not exists',
   'apikey not exists',
   'api-passphrase', // KuCoin wrong passphrase
+  // Kraken answers a dead credential with `EAPI:Invalid key`. VENUE-PREFIXED on
+  // purpose: a bare `invalid key` would widen the allowlist past what we have
+  // seen, and Kraken's neighbouring `EAPI:Invalid nonce` / `EAPI:Invalid
+  // signature` are genuinely retryable and must stay transient.
+  'eapi:invalid key',
 ]
 
 /** Does this exchange rejection describe a dead credential? */

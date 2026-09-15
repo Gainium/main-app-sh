@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.59.21] - 2026-09-15
+
+### Fixed
+
+- Kraken's wording for a rejected API key is now recognised as a permanent key
+  problem rather than a temporary glitch. Until now every background check kept
+  re-sending the same request on a Kraken connection the exchange had already
+  refused. Kraken answers repeated refused logins by temporarily locking out the
+  address the request came from - not just the key - so one unusable connection
+  could delay other Kraken accounts sharing that route. A refused Kraken key now
+  goes on the same cooldown every other exchange already uses: re-checked after
+  five minutes, then progressively less often, and picked up right away once the
+  key is fixed.
+
 ## [1.59.20] - 2026-09-15
 
 ### Fixed
