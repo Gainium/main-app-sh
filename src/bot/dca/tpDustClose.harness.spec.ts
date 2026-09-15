@@ -32,8 +32,36 @@ process.env.NODE_ENV = 'testing'
 import { describe, it, before } from 'mocha'
 import { expect } from 'chai'
 import { MathHelper } from '../../utils/math'
-import { ExchangeEnum } from '../../../types'
+import { ExchangeEnum, StatusEnum } from '../../../types'
 import { createRequire } from 'module'
+import RedisClient from '../../db/redis'
+
+/**
+ * Spec `047` §4.3 reuses `005`'s two-agreeing-probes rule, which is a
+ * `RetryBackoff` and therefore Redis-backed. `RetryBackoff` fails OPEN, so
+ * without a store every probe reads as the first one and the second reading can
+ * never arrive — the rule under test would be untestable rather than merely
+ * unreached. Back it with a Map instead, and drive the clock by rewinding the
+ * stored windows (see `passProbeWindow`).
+ */
+const backoffStore = new Map<string, string>()
+;(RedisClient as any).getInstance = async () => ({
+  get: async (k: string) => backoffStore.get(k) ?? null,
+  set: async (k: string, v: string) => {
+    backoffStore.set(k, v)
+  },
+  del: async (k: string) => {
+    backoffStore.delete(k)
+  },
+})
+
+/** Five minutes pass: every open cooldown window falls into the past. */
+const passProbeWindow = () => {
+  for (const [k, v] of backoffStore) {
+    const state = JSON.parse(v)
+    backoffStore.set(k, JSON.stringify({ ...state, until: 0 }))
+  }
+}
 
 const settings: any = {
   useTp: true,
@@ -72,6 +100,18 @@ const AMP: any = {
   baseAsset: { minAmount: 1, step: 1, name: 'AMP' },
   quoteAsset: { minAmount: 5, step: 0.000001, name: 'USDT' },
   priceAssetPrecision: 6,
+}
+
+/**
+ * binance EDUUSDT — spec `047`. Whole-unit base steps against a 5 USDT floor,
+ * and the pair of the deal that stayed `open` for eleven months after its
+ * position was fully exited.
+ */
+const EDU: any = {
+  pair: 'EDUUSDT',
+  baseAsset: { minAmount: 1, step: 1, name: 'EDU' },
+  quoteAsset: { minAmount: 5, step: 0.0001, name: 'USDT' },
+  priceAssetPrecision: 4,
 }
 
 const DEAL_ID = '6aa487f0408f26f90486d71a'
@@ -119,6 +159,21 @@ const entryFor = (size: number, price: number): any => ({
   newClientOrderId: 'D-BO-tpDustClose',
 })
 
+const closeFor = (size: number, price: number): any => ({
+  dealId: DEAL_ID,
+  typeOrder: 'dealTP',
+  type: 'dealTP',
+  status: 'FILLED',
+  side: 'sell',
+  executedQty: `${size}`,
+  origQty: `${size}`,
+  price: `${price}`,
+  cummulativeQuoteQty: `${size * price}`,
+  orderId: '2',
+  clientOrderId: 'D-TP-tpDustClose',
+  newClientOrderId: 'D-TP-tpDustClose',
+})
+
 /** The three production states, with the close price each was refused at. */
 const HYPE_DEAL = dealFor('HYPE-USDC', 'HYPE', 'USDC', 0.13, 78.966)
 const HYPE_CLOSE_PRICE = 81.449
@@ -126,6 +181,19 @@ const GRAM_DEAL = dealFor('GRAMUSDT', 'GRAM', 'USDT', 2.42, 1.608)
 const GRAM_CLOSE_PRICE = 1.608
 const AMP_DEAL = dealFor('AMPUSDT', 'AMP', 'USDT', 553, 0.000884)
 const AMP_CLOSE_PRICE = 0.000884
+
+/**
+ * Spec `047` §2.3. The eleven-month deal: `size: 0`, an empty `tpHistory`, and
+ * exactly two orders — BUY 68 @ 0.0894 and SELL 68 @ 0.0935, both FILLED the
+ * day it opened. `trackedPosition` therefore evaluates to `0 - 68 = -68`, which
+ * is what the production refusal printed.
+ */
+const EDU_DEAL = {
+  ...dealFor('EDUUSDT', 'EDU', 'USDT', 0, 0.0894),
+  currentBalances: { base: 0, quote: 6.358 },
+}
+const EDU_ORDERS = [entryFor(68, 0.0894), closeFor(68, 0.0935)]
+const EDU_CLOSE_PRICE = 0.0912
 
 type Reported = {
   message: string
@@ -169,11 +237,41 @@ const buildBot = (
   market: number,
   isLong: boolean,
   fee: { maker: number; taker: number },
+  /**
+   * Spec `047` §4.3. What `getBalancesFromExchange()` answers. `undefined`
+   * leaves the bot without an exchange at all, which is every case written
+   * before `047` and keeps them on the pre-`047` path.
+   */
+  balances?: { asset: string; free: number; locked: number }[] | 'unavailable',
 ) => {
   class TestBot extends Helper {
     public reported: Reported[] = []
     public debugs: string[] = []
     public isLong = isLong
+    public closed: string[] = []
+    public events: string[] = []
+    public balanceCalls = 0
+    public exchange: any = balances === undefined ? undefined : {}
+    public hedge = false
+    public botEventDb: any = {
+      createData: (d: any) => {
+        this.events.push(`${d.description}`)
+      },
+    }
+
+    shouldProceed() {
+      return true
+    }
+    async getBalancesFromExchange() {
+      this.balanceCalls++
+      if (balances === 'unavailable') {
+        return { status: StatusEnum.notok, reason: 'timeout', data: null }
+      }
+      return { status: StatusEnum.ok, data: balances ?? [] }
+    }
+    async closeDeal(_botId: string, dealId: string) {
+      this.closed.push(dealId)
+    }
 
     getDeal(id: string) {
       return deal && id === DEAL_ID
@@ -294,6 +392,7 @@ const once = async (
     fee?: { maker: number; taker: number }
     orders?: any[]
     dealId?: string
+    balances?: { asset: string; free: number; locked: number }[] | 'unavailable'
   } = {},
 ) => {
   const bot: any = buildBot(
@@ -303,6 +402,7 @@ const once = async (
     opts.market ?? price,
     opts.isLong ?? true,
     opts.fee ?? HL_FEE,
+    opts.balances,
   )
   const tps = await buildTp(bot, deal, info, price, {
     sl: opts.sl,
@@ -397,22 +497,22 @@ describe('getTPOrder dust-close refusal (spec 043, issue #755)', () => {
     }
   })
 
-  it('§4.3 reports a standing refusal to the user on the Nth try', async () => {
-    const bot: any = buildBot(
-      AMP_DEAL,
-      [entryFor(AMP_DEAL.size, AMP_DEAL.avgPrice)],
-      AMP,
-      AMP_CLOSE_PRICE,
-      true,
-      { maker: 0, taker: 0 },
-    )
-    for (let i = 0; i < 8; i++) {
-      await buildTp(bot, AMP_DEAL, AMP, AMP_CLOSE_PRICE)
-    }
+  // Spec `047` §4.1 replaces `043` §4.3's consecutive-refusal counter. That
+  // counter lived in per-process memory and needed 5 refusals in one worker
+  // lifetime; in production this refusal fires ONCE PER WORKER START, so no
+  // deal ever reached it and not one of the rows written since `043` shipped
+  // was visible to a user. The rate limit that does survive a restart is
+  // `processError`'s per-(bot, subType) `errorRaiseBackoff`, so the raise is
+  // handed to it unconditionally.
+  it('047 §4.1 reports a standing refusal on the first occurrence', async () => {
+    const { tps, bot } = await once(AMP_DEAL, AMP, AMP_CLOSE_PRICE, {
+      fee: { maker: 0, taker: 0 },
+    })
+    expect(tps).to.have.length(0)
     const visible = bot.reported.filter((r: Reported) => r.sendError)
     expect(visible).to.have.length(
       1,
-      `${visible.length} user-visible reports over 8 refusals`,
+      'the first refusal on a real deal reached nobody',
     )
     expect(visible[0].setEvent).to.equal(true)
     // Never an error STATE: one unclosable dust deal must not stop a bot that
@@ -420,7 +520,9 @@ describe('getTPOrder dust-close refusal (spec 043, issue #755)', () => {
     expect(visible[0].setError).to.equal(false)
   })
 
-  it('§4.3 a deal that closes again starts over', async () => {
+  it('047 §4.1 keeps raising while the condition stands', async () => {
+    // Every occurrence is handed to `processError`; deduplication is its job,
+    // and its window is Redis-backed so a worker restart cannot reset it.
     const bot: any = buildBot(
       AMP_DEAL,
       [entryFor(AMP_DEAL.size, AMP_DEAL.avgPrice)],
@@ -429,17 +531,87 @@ describe('getTPOrder dust-close refusal (spec 043, issue #755)', () => {
       true,
       { maker: 0, taker: 0 },
     )
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 3; i++) {
       await buildTp(bot, AMP_DEAL, AMP, AMP_CLOSE_PRICE)
     }
-    // One build that clears the floor — the condition ended.
-    const tps = await buildTp(bot, AMP_DEAL, AMP, 0.02)
-    expect(tps).to.have.length(1)
-    // ...so a fresh episode reports afresh rather than staying silent forever.
-    for (let i = 0; i < 8; i++) {
-      await buildTp(bot, AMP_DEAL, AMP, AMP_CLOSE_PRICE)
+    expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(3)
+  })
+
+  it('047 §4.2 never names a negative holding', async () => {
+    // `trackedPosition` is a signed ledger residual: a deal recorded `size: 0`
+    // with one FILLED close of 68 evaluates to -68, and that is what production
+    // printed at the user. A deal cannot hold less than nothing.
+    const { bot } = await once(EDU_DEAL, EDU, EDU_CLOSE_PRICE, {
+      orders: EDU_ORDERS,
+      fee: { maker: 0, taker: 0 },
+    })
+    const lines = [
+      ...bot.reported.map((r: Reported) => r.message),
+      ...bot.debugs,
+    ].filter((l: string) => /below the exchange minimum/i.test(l))
+    expect(lines).to.have.length.greaterThan(0, 'the deal was not refused')
+    for (const line of lines) {
+      expect(line, `refusal named a negative holding: ${line}`).to.match(
+        /qty (?!-)/,
+      )
+      expect(line).to.contain('qty 0 ')
     }
+  })
+
+  it('047 §4.4 settles a deal whose base is gone instead of refusing forever', async () => {
+    const { bot } = await once(EDU_DEAL, EDU, EDU_CLOSE_PRICE, {
+      orders: EDU_ORDERS,
+      fee: { maker: 0, taker: 0 },
+      balances: [{ asset: 'USDT', free: 412.5, locked: 0 }],
+    })
+    // First reading agrees with the ledger but is only one reading — `005`'s
+    // rule holds, so the deal is not settled yet and the refusal is reported.
+    expect(bot.closed).to.have.length(0)
+    expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(1)
+
+    passProbeWindow()
+    const tps = await buildTp(bot, EDU_DEAL, EDU, EDU_CLOSE_PRICE)
+    expect(tps).to.have.length(0)
+    expect(bot.closed, 'the deal was never settled').to.deep.equal([DEAL_ID])
+    // Settled, not refused: the condition is over, so it is not reported again.
+    expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(1)
+    // ...and the user is told why a deal closed with no closing order.
+    expect(bot.events.join('\n')).to.contain(DEAL_ID)
+    expect(bot.events.join('\n')).to.contain('EDUUSDT')
+  })
+
+  it('047 §4.4 leaves the deal alone while the account still holds base', async () => {
+    const { bot } = await once(EDU_DEAL, EDU, EDU_CLOSE_PRICE, {
+      orders: EDU_ORDERS,
+      fee: { maker: 0, taker: 0 },
+      balances: [{ asset: 'EDU', free: 68, locked: 0 }],
+    })
+    passProbeWindow()
+    await buildTp(bot, EDU_DEAL, EDU, EDU_CLOSE_PRICE)
+    expect(bot.closed).to.have.length(0)
     expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(2)
+  })
+
+  it('047 §4.4 never settles a deal on a venue that did not answer', async () => {
+    const { bot } = await once(EDU_DEAL, EDU, EDU_CLOSE_PRICE, {
+      orders: EDU_ORDERS,
+      fee: { maker: 0, taker: 0 },
+      balances: 'unavailable',
+    })
+    passProbeWindow()
+    await buildTp(bot, EDU_DEAL, EDU, EDU_CLOSE_PRICE)
+    expect(bot.closed).to.have.length(0)
+  })
+
+  it('047 §4.4 does not probe a deal that still holds something', async () => {
+    // AMPUSDT holds 553 units of genuine dust. The ledger says there IS a
+    // position, so there is nothing to reconcile and no venue round trip.
+    const { bot } = await once(AMP_DEAL, AMP, AMP_CLOSE_PRICE, {
+      fee: { maker: 0, taker: 0 },
+      balances: [],
+    })
+    expect(bot.balanceCalls).to.equal(0)
+    expect(bot.closed).to.have.length(0)
   })
 
   it('§4.4 the hypothetical pre-open ladder never reports', async () => {

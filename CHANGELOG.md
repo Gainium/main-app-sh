@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.59.20] - 2026-09-15
+
+### Fixed
+
+- A deal close that the exchange would reject as too small is now reported to
+  you the first time it happens. The warning was held back until the same
+  refusal had been seen five times in a row within one bot process, counted in
+  memory - but the refusal is re-checked when a bot worker starts, not
+  continuously, so the count was reset before it could ever be reached and the
+  message never arrived. Repeats are now spaced out by the same per-bot cooldown
+  every other bot notification uses, which survives a restart.
+- The quantity named in that warning could be shown as a negative number on a
+  deal whose recorded closes exceed its recorded size. It is now reported as
+  zero, which is what the deal actually holds. Only the wording changed - the
+  decision to refuse was always made on the correct value.
+- A spot deal whose asset has left the account is now settled instead of
+  retrying a close forever. The check that settles a deal once the exchange no
+  longer holds its position existed for futures only, because spot has no
+  position to ask about; it now reads the account balance instead, and closes
+  the deal - keeping the profit it had already realised - only when the account
+  holds less of the asset than the pair's minimum order size, and only after two
+  readings agree. An exchange that does not answer never settles a deal.
+
 ## [1.59.19] - 2026-09-15
 
 ### Fixed

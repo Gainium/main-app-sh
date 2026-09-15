@@ -181,6 +181,8 @@ import {
 import {
   dealPositionGoneMessage,
   reconcileDealAgainstVenue,
+  reconcileSpotDealAgainstVenue,
+  type PositionReconcileVerdict,
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
 import {
@@ -373,19 +375,6 @@ const maxTimeout = 2 ** 31 - 1
 const MAX_CLOSE_PRICE_DEVIATION = 10
 
 /**
- * Spec `043` §4.3 (#755). How many consecutive `getTPOrder` notional-floor
- * refusals on one deal before the user is told.
- *
- * The refusal recurs roughly once a minute per deal, so this is a few minutes
- * of a condition that is genuinely standing — and it cannot be reached by one
- * bad cycle, which matters because the position this measures can be
- * transiently under-read while a restarted worker is still loading a deal's
- * orders (the `resolveBaseOrderQty` fallbacks above exist for exactly that). A
- * spurious user-facing error is worse than a late one.
- */
-const CLOSE_BELOW_MINIMUM_REPORT_AFTER = 5
-
-/**
  * Spec `037` §4.3 (#731). The `035` deviation test, extracted so the single
  * close order and both close-price LADDERS are judged by one rule instead of
  * three copies of it. Deliberately one-sided: a close priced away from the
@@ -538,15 +527,6 @@ function createDCABotHelper<
     openNewDealTimer: Map<string, NodeJS.Timeout> = new Map()
     /** Close deal timers */
     closeDealTimer: Map<string, NodeJS.Timeout | null> = new Map()
-    /**
-     * Spec `043` §4.3 (#755). Consecutive `getTPOrder` notional-floor refusals
-     * per deal, so a condition that keeps holding is reported once instead of
-     * never. In memory rather than Redis for the reason {@link ConditionLatch}
-     * documents: this gates whether a REPORT is written, a bot lives in one
-     * worker at a time, and a restarted worker re-reporting once is correct —
-     * it has no record that the user was ever told.
-     */
-    closeBelowMinimumStreak: Map<string, number> = new Map()
 
     blockCheck = false
 
@@ -15168,32 +15148,63 @@ function createDCABotHelper<
             false,
             true,
           )
-          // Spec `043` §4.3/§4.4 (#755). One exit for all three refusals so
-          // their reporting cannot drift apart. A refusal with no `dealId` is
-          // `checkBalance` pricing a ladder for a deal that does not exist
-          // (`createCurrentDealOrders` with `dealId: ''`) — ~98% of this line's
-          // volume, and never a user's problem, so it is a debug line and
-          // nothing more. A real deal's refusal is standing by nature: nothing
-          // the bot does will clear it, so it is reported to the USER once the
-          // streak proves it is not one bad cycle. `setError` stays false
-          // throughout — `processError` turns it into `setRangeOrError(error)`,
-          // and one unclosable dust position must not stop a bot still trading
-          // its other pairs.
-          const refuseBelowMinimum = () => {
+          // Spec `043` §4.3/§4.4 (#755), amended by `047` §4.1/§4.2/§4.4
+          // (#763). One exit for all three refusals so their reporting cannot
+          // drift apart. A refusal with no `dealId` is `checkBalance` pricing a
+          // ladder for a deal that does not exist (`createCurrentDealOrders`
+          // with `dealId: ''`) — ~98% of this line's volume, and never a user's
+          // problem, so it is a debug line and nothing more (`043` §4.4,
+          // unchanged).
+          //
+          // A real deal's refusal is standing by nature: nothing the bot does
+          // will clear it, so it goes to the USER on its FIRST occurrence.
+          // `043` §4.3 gated that on a 5-refusal streak counted in a per-process
+          // Map, on the assumption that the refusal recurs about once a minute.
+          // It does not — it recurs once per WORKER START — so no deal ever
+          // reached 5 and not one row written in the 5 days after `043` shipped
+          // was visible to anyone. The rate limit that does work is already
+          // `processError`'s per-(bot, subType) `errorRaiseBackoff`: Redis-backed,
+          // so unlike an in-memory streak it survives the restart that produces
+          // the occurrence in the first place.
+          //
+          // `setError` stays false throughout — `processError` turns it into
+          // `setRangeOrError(error)`, and one unclosable dust position must not
+          // stop a bot still trading its other pairs.
+          const refuseBelowMinimum = async () => {
+            // Spec `047` §4.2. `heldQty` is a SIGNED ledger residual, so a deal
+            // recorded `size: 0` carrying a filled close of 68 evaluates to -68
+            // and printed exactly that at the user. The comparisons above keep
+            // the signed value — they are correct either way — but a holding
+            // cannot be negative, so only the reading is clamped.
             const line =
-              `Close order is below the exchange minimum. Deal ${dealId || '(new)'} qty ${heldQty} at price ${tpOrder.price} is under ${symbol.quoteAsset.minAmount} ${symbol.quoteAsset.name ?? ''}`.trim()
+              `Close order is below the exchange minimum. Deal ${dealId || '(new)'} qty ${Math.max(heldQty, 0)} at price ${tpOrder.price} is under ${symbol.quoteAsset.minAmount} ${symbol.quoteAsset.name ?? ''}`.trim()
             if (!dealId) {
               this.handleDebug(line)
               return [] as Grid[]
             }
-            const streak = (this.closeBelowMinimumStreak.get(dealId) ?? 0) + 1
-            this.closeBelowMinimumStreak.set(dealId, streak)
-            const raise = streak === CLOSE_BELOW_MINIMUM_REPORT_AFTER
-            this.handleErrors(line, 'getTPOrder', '', false, raise, raise)
+            // Spec `047` §4.4. A holding at or below zero is this engine saying
+            // its OWN ledger has nothing left to close — the deal has been
+            // fully exited and is refusing a close it can never build, once per
+            // worker start, forever. That is the point to ask the venue whether
+            // there is anything there at all; `005`'s cooldown and its
+            // two-agreeing-probes rule bound the round trips and the risk.
+            if (
+              heldQty <= 0 &&
+              findDeal &&
+              (await this.reconcileDealPosition(
+                findDeal,
+                'refused: under the venue notional floor',
+                'could not be closed within the exchange minimum order size',
+              ))
+            ) {
+              // Settled, not standing: there is nothing left to report.
+              return [] as Grid[]
+            }
+            this.handleErrors(line, 'getTPOrder', '', false, true, true)
             return [] as Grid[]
           }
           if (!Number.isFinite(qtyForFloor) || qtyForFloor <= 0) {
-            return refuseBelowMinimum()
+            return await refuseBelowMinimum()
           }
           if (this.isLong && qtyForFloor > heldQty) {
             // Spec `043` §4.2 (#755). The held quantity cannot reach the floor
@@ -15234,19 +15245,13 @@ function createDCABotHelper<
               floorPrice <= tpOrder.price ||
               !withinBound
             ) {
-              return refuseBelowMinimum()
+              return await refuseBelowMinimum()
             }
             tpOrder.price = floorPrice
             tpOrder.qty = heldQty
           } else {
             tpOrder.qty = qtyForFloor
           }
-        }
-        // Spec `043` §4.3 (#755). A close of acceptable notional was built, so
-        // whatever refusal streak this deal had is over and a later recurrence
-        // is news again.
-        if (dealId) {
-          this.closeBelowMinimumStreak.delete(dealId)
         }
         // Spec `035` §4.4 (#731). Last line of defence, and the only check that
         // can see this class of defect at all: every value involved is finite,
@@ -19789,17 +19794,31 @@ function createDCABotHelper<
      * way, re-arming every ~15 s against positions `paperFutures` had closed on
      * the day they opened.
      *
+     * Spec `047` §4.3 (#763) extends it to long SPOT deals, which have the same
+     * shape and were excluded only because there is no position endpoint to
+     * ask: a binance spot deal whose 68 units were bought and sold on the day
+     * it opened was still `status: 'open'` eleven months later, re-refusing a
+     * close on every worker start. The spot reading is the account's base
+     * balance and it can only ever veto — see `reconcileSpotDealAgainstVenue`.
+     *
+     * @param trigger what the deal was doing when the probe ran, for the
+     *   user-facing event. Defaults to `checkTPLevel`'s wording.
      * @returns true when the deal was booked closed and the caller must stop
      *   working it.
      */
     private async reconcileDealPosition(
       deal: FullDeal<ExcludeDoc<Deal>>,
       outcome: string,
+      trigger?: string,
     ): Promise<boolean> {
       const dealId = `${deal.deal._id}`
       const symbol = deal.deal.symbol.symbol
-      if (!this.futures || !this.exchange) {
-        // Spot has no position to reconcile against.
+      if (!this.exchange) {
+        return false
+      }
+      if (!this.futures && !this.isLong) {
+        // A short spot deal's position is not base, so the balance reading
+        // below answers a different question. Out of scope for `047`.
         return false
       }
       // One venue round trip per deal per cooldown, and only for a deal sitting
@@ -19817,20 +19836,38 @@ function createDCABotHelper<
         [this.botId, dealId],
         outcome,
       )
-      const positions = await this.exchange.futures_getPositions(symbol)
-      const verdict = reconcileDealAgainstVenue(
-        positions?.status === StatusEnum.ok && positions.data
-          ? { kind: 'positions', positions: positions.data }
-          : // A venue that did not answer must never settle a deal: closing one
-            // whose position is in fact still open abandons it with no take
-            // profit and no stop loss, which is worse than the deal being stuck.
-            { kind: 'unavailable' },
-        symbol,
-        this.isLong ? 'LONG' : 'SHORT',
-        !!this.hedge,
-      )
+      // A venue that did not answer must never settle a deal: closing one whose
+      // position is in fact still open abandons it with no take profit and no
+      // stop loss, which is worse than the deal being stuck. Tracked separately
+      // from the verdict because it is also what decides whether an earlier
+      // probe's window may be cleared below.
+      let answered = false
+      let verdict: PositionReconcileVerdict
+      if (this.futures) {
+        const positions = await this.exchange.futures_getPositions(symbol)
+        answered = positions?.status === StatusEnum.ok
+        verdict = reconcileDealAgainstVenue(
+          answered && positions.data
+            ? { kind: 'positions', positions: positions.data }
+            : { kind: 'unavailable' },
+          symbol,
+          this.isLong ? 'LONG' : 'SHORT',
+          !!this.hedge,
+        )
+      } else {
+        const ed = await this.getExchangeInfo(symbol)
+        const balances = await this.getBalancesFromExchange()
+        answered = balances?.status === StatusEnum.ok
+        verdict = reconcileSpotDealAgainstVenue(
+          answered && balances?.data
+            ? { kind: 'balances', balances: balances.data }
+            : { kind: 'unavailable' },
+          `${ed?.baseAsset.name ?? ''}`,
+          ed?.baseAsset.minAmount ?? 0,
+        )
+      }
       if (!verdict.closeDeal) {
-        if (positions?.status === StatusEnum.ok) {
+        if (answered) {
           // The position is there — any window opened by an earlier probe is
           // stale, so this cannot slide forward forever.
           await positionProbeBackoff.clear([this.botId, dealId])
@@ -19866,6 +19903,7 @@ function createDCABotHelper<
             dealId,
             symbol,
             exchange: `${this.data?.exchange ?? ''}`,
+            trigger,
           }),
           paperContext: !!this.data?.paperContext,
           deal: dealId,
