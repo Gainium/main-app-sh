@@ -91,6 +91,8 @@ type Raised = {
   started: any[]
   /** Re-placements, the existing behaviour for a base order that never filled. */
   replaced: string[]
+  /** User-visible deal events — spec 048 §4.4 writes one per settle. */
+  events: any[]
   warns: string[]
 }
 
@@ -117,6 +119,7 @@ const buildBot = (opts: {
     cancelled: [],
     started: [],
     replaced: [],
+    events: [],
     warns: [],
   }
   const deal = {
@@ -139,6 +142,13 @@ const buildBot = (opts: {
     orders = new Map<string, any>(order ? [[order.clientOrderId, order]] : [])
     processedFilled = new Map<string, Set<string>>()
     dealTimersMap = new Map<string, any>(timers ? [[DEAL_ID, timers]] : [])
+    // A settle now tells the user their entry was cut short — spec 048 §4.4.
+    botEventDb = {
+      createData: async (d: any) => {
+        raised.events.push(d)
+        return { status: 'OK' }
+      },
+    }
     getOrderFromMap(id: string) {
       return this.orders.get(id)
     }
@@ -279,6 +289,8 @@ describe('a partly filled base order strands the deal in start (spec 038)', () =
       expect(raised.started, 'deal opened').to.have.length(1)
       // Opened on the quantity the venue executed, not the quantity requested.
       expect(raised.started[0].executedQty).to.equal('109')
+      // And the user is told once that the entry was cut short — spec 048 §4.4.
+      expect(raised.events, 'one user-visible event').to.have.length(1)
       expect(raised.started[0].origQty).to.equal('1461')
       expect(raised.started[0].typeOrder).to.equal(TypeOrderEnum.dealStart)
     })

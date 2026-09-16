@@ -18,7 +18,14 @@ import { DCADealStatusEnum, OrderStatusType } from '../../../types'
  * anything will look at again. There is no periodic sweep for `start` deals;
  * the bot's restore path is the only other visitor, and it runs once per start.
  *
- * Spec `specs/038…`.
+ * The same stranding has a second, worse shape: the VENUE ends the order while
+ * it is part filled, so the row goes straight to `CANCELED`/`EXPIRED` carrying
+ * its executed quantity. `checkBaseOrder` cannot even be the one to notice,
+ * because its timers are armed only for a LIMIT entry — a MARKET entry arms
+ * nothing, and for it the order queue's cancel callback is the engine's whole
+ * knowledge of the order.
+ *
+ * Specs `specs/038…` and `specs/048…`.
  */
 export type PartialBaseEntryInputs = {
   /** Status of the deal's `dealStart` row, as the engine currently holds it. */
@@ -39,6 +46,52 @@ export type PartialBaseEntryInputs = {
    * the restore path's situation after a bot start.
    */
   hasPendingCheck: boolean
+  /**
+   * What the venue reports as executed on the row, as the engine holds it.
+   *
+   * Only consulted for a TERMINAL status — a `PARTIALLY_FILLED` row states a
+   * fill by being that status, and spec 038 deliberately does not ask how much.
+   */
+  executedQty?: string | number | null
+  /**
+   * When the venue last touched the row.
+   *
+   * Only consulted for a TERMINAL status, and for the reason
+   * `processCanceledOrder` already applies it to a cancelled take-profit: a
+   * cancel row written from a REST response rather than a stream event can
+   * carry a bogus `executedQty` alongside `updateTime: -1`, and production
+   * holds such rows. Opening a deal on an invented fill is worse — and
+   * silently so — than the stranding this settles. Spec 048 §4.1.
+   */
+  updateTime?: number | null
+}
+
+/** Statuses after which the venue will never move the order again. */
+const terminalStatuses = new Set(['CANCELED', 'EXPIRED'])
+
+/**
+ * A terminal row that nonetheless holds a position: the venue ended the order
+ * and told us, in the same message, how much of it had already executed.
+ *
+ * No upper bound on the quantity. The cancelled-take-profit rule declines at
+ * `executedQty >= origQty` because a full execution is the `FILLED` path's to
+ * close; here the equivalent guard is the deal's own status (below), and
+ * refusing a fully-executed-but-only-reported-as-cancelled entry would leave
+ * exactly the stranding this exists to remove. Spec 048 §4.1.
+ */
+function terminalEntryHoldsAFill(
+  orderStatus: OrderStatusType | string | null | undefined,
+  executedQty: string | number | null | undefined,
+  updateTime: number | null | undefined,
+): boolean {
+  if (!orderStatus || !terminalStatuses.has(`${orderStatus}`)) {
+    return false
+  }
+  const executed = +(executedQty ?? 0)
+  if (!isFinite(executed) || executed <= 0) {
+    return false
+  }
+  return typeof updateTime === 'number' && updateTime > 0
 }
 
 /**
@@ -58,8 +111,12 @@ export type PartialBaseEntryInputs = {
 export function shouldSettlePartialBaseEntry(
   args: PartialBaseEntryInputs,
 ): boolean {
-  const { orderStatus, dealStatus, hasPendingCheck } = args
-  if (orderStatus !== 'PARTIALLY_FILLED') {
+  const { orderStatus, dealStatus, hasPendingCheck, executedQty, updateTime } =
+    args
+  if (
+    orderStatus !== 'PARTIALLY_FILLED' &&
+    !terminalEntryHoldsAFill(orderStatus, executedQty, updateTime)
+  ) {
     return false
   }
   // Re-opening a deal that is already open, or reviving a terminal one, would
@@ -68,4 +125,38 @@ export function shouldSettlePartialBaseEntry(
     return false
   }
   return !hasPendingCheck
+}
+
+/** The `dealStart` rows a deal has, as the restore path reads them. */
+export type RestoreBaseEntryRow = {
+  status: OrderStatusType | string | null | undefined
+  executedQty?: string | number | null
+  updateTime?: number | null
+}
+
+/**
+ * Which of a `start` deal's `dealStart` rows the restore path should act on.
+ *
+ * The read this replaces filtered `CANCELED` out in the query, which made a
+ * base order the venue had cancelled after a partial fill invisible: the deal
+ * fell through to "never started" and the entry was RE-PLACED, buying on top of
+ * a position the account was already holding. Production shows that happening
+ * twice on consecutive worker starts for one deal.
+ *
+ * Strictly additive to that behaviour — whenever the old query returned a row,
+ * this returns the same one. A cancelled row is used only when nothing else is
+ * there AND it carries an executed quantity; a cancelled row with no fill is
+ * still ignored, so a deal whose entry was cancelled outright still re-places
+ * it and no venue round trip is added for it. Spec 048 §4.2.
+ */
+export function pickRestoreBaseEntry<T extends RestoreBaseEntryRow>(
+  rows: T[] | null | undefined,
+): T | undefined {
+  const notCanceled = (rows ?? []).find((r) => r.status !== 'CANCELED')
+  if (notCanceled) {
+    return notCanceled
+  }
+  return (rows ?? []).find((r) =>
+    terminalEntryHoldsAFill(r.status, r.executedQty, r.updateTime),
+  )
 }

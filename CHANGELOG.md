@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.59.24] - 2026-09-16
+
+### Fixed
+
+- A DCA deal whose opening order was cancelled by the exchange after it had
+  already bought part of the requested amount now opens on the amount that was
+  actually bought, and says so in the deal's history. Before, the executed part
+  was discarded: the deal stayed at 0 of N levels with no cost, no average
+  price, no take profit and no stop loss, while the coins it had bought sat in
+  the account outside any deal, and nothing told you it had happened. The
+  bot's next start made it worse by treating the deal as never started and
+  sending the opening order a second time, on top of the position already held.
+  This shape reaches deals entered at market, which arm none of the timers the
+  previous fix in this area relied on.
+
 ## [1.59.23] - 2026-09-16
 
 ### Fixed

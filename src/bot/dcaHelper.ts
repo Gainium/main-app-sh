@@ -142,7 +142,10 @@ import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { executedFillQty } from './dca/executedFill'
-import { shouldSettlePartialBaseEntry } from './dca/partialBaseEntry'
+import {
+  pickRestoreBaseEntry,
+  shouldSettlePartialBaseEntry,
+} from './dca/partialBaseEntry'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
   dealsClosedByLiquidation,
@@ -8274,6 +8277,11 @@ function createDCABotHelper<
             shouldSettlePartialBaseEntry({
               orderStatus: find.status,
               dealStatus: this.getDeal(find.dealId)?.deal.status,
+              // A row the venue took to a terminal state still holds whatever
+              // it executed, and on the restore path below this is the only
+              // visitor it gets. Spec 048 §4.2.
+              executedQty: find.executedQty,
+              updateTime: find.updateTime,
               // This branch is the reposition timer while the bot is running,
               // and the restore path just after it starts. Timer state for the
               // deal is what tells the two apart: `placeBaseOrder` sets it the
@@ -8352,6 +8360,8 @@ function createDCABotHelper<
             shouldSettlePartialBaseEntry({
               orderStatus: find.status,
               dealStatus: findDeal?.deal.status,
+              executedQty: find.executedQty,
+              updateTime: find.updateTime,
               // Nothing is coming after this one: the reposition timer was just
               // cleared above, and this call IS the enter-market timer firing.
               // Returning here without acting is what left the deal in `start`
@@ -8433,13 +8443,26 @@ function createDCABotHelper<
      * A refusal is left alone rather than retried on a timer: the bot's restore
      * path checks every `start` deal on the next start and reaches this again.
      * Spec 038 §4.4.
+     *
+     * An order the venue has ALREADY ended takes the same chain from one step
+     * later, because it has no remainder to cancel and asking for one is not
+     * harmless: the venue answers "unknown order", `_handleUnknownOrder` returns
+     * `null` for anything that is not `FILLED`, so the settle would report
+     * failure and the deal would stay stranded — and each attempt spends a
+     * rate-limited private call on a venue that may be in an auth lockout. The
+     * row is promoted locally instead, at the quantity the venue reported.
+     * Spec 048 §4.3.
      */
     async settlePartialBaseEntry(order: Order, dealId: string) {
       this.handleLog(
         `Deal ${dealId} base order ${order.clientOrderId} stopped at ${order.executedQty} of ${order.origQty} and nothing else will check it. Cancelling the remainder and opening the deal on what filled`,
       )
-      const settled = await this.cancelOrderOnExchange(order)
+      const settled =
+        order.status === 'CANCELED' || order.status === 'EXPIRED'
+          ? this.promoteEndedBaseEntry(order)
+          : await this.cancelOrderOnExchange(order)
       if (settled?.status === 'FILLED') {
+        this.reportBaseEntryCutShort(settled, dealId)
         return await this.handleUnknownOrder(settled)
       }
       this.handleWarn(
@@ -8447,6 +8470,54 @@ function createDCABotHelper<
           settled?.status ?? 'no answer from exchange'
         }). Deal stays in start until the bot restarts`,
       )
+    }
+
+    /**
+     * Record a base order the venue has already ended as `FILLED` at what it
+     * executed, so the deal can be opened on it.
+     *
+     * `executedQty` is used verbatim. It has already been through the
+     * contract / coin-margined conversion — `convertExecutionReportToOrder`
+     * applies it to every stream report, and `loadOrders` restores the row as
+     * persisted — so converting again would double-count the position. This is
+     * the one difference from `cancelOrderOnExchange`, which converts because
+     * the quantity it promotes came raw from the venue's cancel response.
+     */
+    promoteEndedBaseEntry(order: Order): Order {
+      const promoted: Order = { ...order, status: 'FILLED' }
+      this.emit('bot update', promoted)
+      this.setOrder(promoted)
+      this.updateOrderOnDb(promoted)
+      return promoted
+    }
+
+    /**
+     * Tell the user, once, that their entry was cut short.
+     *
+     * Written on the SETTLE rather than on the cancel report, so an entry the
+     * reposition machinery completes normally stays silent and a settle that
+     * cannot reach an already-open deal cannot reach this either. A `Deal` event
+     * and not an error: the deal is being opened correctly on what executed, and
+     * a new error subType would raise the bot's error state for a condition the
+     * engine has just handled.
+     *
+     * The venue's OWN reason for the cancel is not available here — no field of
+     * `Order` carries it, because websocket-connector does not parse it onto the
+     * execution report — so this states the mechanism the engine can see.
+     * Spec 048 §4.4.
+     */
+    reportBaseEntryCutShort(order: Order, dealId: string) {
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: `${order.symbol} base order filled ${order.executedQty} of ${order.origQty} before it ended. The deal is opening on the quantity that was actually bought`,
+        paperContext: !!this.data?.paperContext,
+        deal: dealId,
+        symbol: order.symbol,
+        type: MessageTypeEnum.warning,
+      })
     }
 
     async getBaseOrder(
@@ -11329,25 +11400,45 @@ function createDCABotHelper<
       )
       if (startDeals.length > 0) {
         for (const d of startDeals) {
+          // Deliberately NOT filtered on status. `status: { $ne: 'CANCELED' }`
+          // hid a base order the venue had cancelled after a partial fill, so
+          // this deal fell through to "never started" below and its entry was
+          // RE-PLACED — a second order on top of a position the account was
+          // already holding. `pickRestoreBaseEntry` keeps the old choice
+          // wherever the old query made one; a cancelled row is used only when
+          // it is the only thing there and it carries a fill. Spec 048 §4.2.
           const inDb = await this.ordersDb.readData<{
             symbol: string
             clientOrderId: string
             status: OrderStatusType
+            executedQty: string
+            updateTime: number
           }>(
             {
               botId: this.botId,
               dealId: d.deal._id,
               typeOrder: TypeOrderEnum.dealStart,
-              status: { $ne: 'CANCELED' },
             },
-            { symbol: 1, clientOrderId: 1, status: 1 },
+            {
+              symbol: 1,
+              clientOrderId: 1,
+              status: 1,
+              executedQty: 1,
+              updateTime: 1,
+            },
+            {},
+            true,
           )
-          if (inDb && inDb.status === StatusEnum.ok && inDb.data.result) {
-            if (inDb.data.result.status !== 'FILLED') {
+          const baseRow =
+            inDb && inDb.status === StatusEnum.ok
+              ? pickRestoreBaseEntry(inDb.data.result)
+              : undefined
+          if (baseRow) {
+            if (baseRow.status !== 'FILLED') {
               await this.checkBaseOrder(
                 this.botId,
-                inDb.data.result.symbol,
-                inDb.data.result.clientOrderId,
+                baseRow.symbol,
+                baseRow.clientOrderId,
                 d.deal._id,
               )
             } else {
@@ -11355,13 +11446,13 @@ function createDCABotHelper<
                 `Deal ${d.deal._id} in status start, but found filled base order`,
               )
               const full = await this.ordersDb.readData({
-                clientOrderId: inDb.data.result.clientOrderId,
+                clientOrderId: baseRow.clientOrderId,
               })
               if (full.data?.result) {
                 await this.startDeal(full.data.result)
               } else {
                 this.handleWarn(
-                  `Cannot find full order for ${inDb.data.result.clientOrderId}`,
+                  `Cannot find full order for ${baseRow.clientOrderId}`,
                 )
               }
             }
@@ -17107,6 +17198,36 @@ function createDCABotHelper<
       // such an order OPEN), so the cancel is the only report that is
       // guaranteed to arrive. It keys on clientOrderId, so seeing both events
       // records the qty once.
+      //
+      // A base entry the venue ends part filled has the same problem and no
+      // other reporter at all. `checkBaseOrder` — where spec 038 settles a
+      // stranded entry — is only ever scheduled by `placeBaseOrder`'s timer
+      // block, which is behind `startOrderType === limit || sentType === limit`:
+      // a MARKET entry arms no timer, so this callback is the ONLY thing that
+      // ever hears about the order. Dropped here, the quantity the venue
+      // executed is a position no deal is tracking and nothing will ever close.
+      // Spec 048 §1.2.
+      if (order.typeOrder === TypeOrderEnum.dealStart) {
+        if (
+          order.dealId &&
+          shouldSettlePartialBaseEntry({
+            orderStatus: order.status,
+            dealStatus: this.getDeal(order.dealId)?.deal.status,
+            executedQty: order.executedQty,
+            updateTime: order.updateTime,
+            // Timer state is what tells a cancel the ENGINE issued from one the
+            // venue issued: a reposition cancels the resting base order and
+            // re-places it, and for as long as this process holds timers for the
+            // deal that machinery owns the order and settles it itself. A market
+            // entry holds none, which is the case this is here for. Same reading
+            // as spec 038 §4.2/§4.3.
+            hasPendingCheck: this.dealTimersMap.has(order.dealId),
+          })
+        ) {
+          await this.settlePartialBaseEntry(order, order.dealId)
+        }
+        return
+      }
       if (order.typeOrder !== TypeOrderEnum.dealTP) {
         return
       }
