@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.59.28] - 2026-09-16
+
+### Fixed
+
+- A trailing take profit could close a deal at a loss. Once the trailing take
+  profit is armed, the deal has already traded through its take-profit price
+  and the trail exists to capture more than it. The close, however, was decided
+  purely by the price crossing the armed level, with no reference to what the
+  deal had cost — so if anything left that level armed while the price walked
+  away from it, the trail acted as an unbounded stop loss and closed at
+  whatever the price had since become. That could happen when the exchange
+  rejected the closing order, since the trail was left armed and the guard that
+  suppresses a repeat attempt only lives as long as the process does; when a
+  restart re-registered the stale level; or after a safety order filled, which
+  makes the trail re-arm just under the current price while the deal is under
+  water. On a bot with stop loss switched off, the trailing take profit is the
+  only thing that can close a deal, so nothing else bounded the result. A
+  trailing take profit now refuses to close below the deal's break-even price
+  — its average entry plus the round-trip taker fee — and disarms instead,
+  re-arming only once price is back above the take profit. A trailing stop
+  loss and an ordinary stop loss are unchanged: they exist to take losses. A
+  closing order the exchange rejects outright now disarms the trail as well,
+  rather than leaving the level to fire later.
+
+## [1.59.27] - 2026-09-16
+
+### Fixed
+
+- Changing a bot's order sizing erased its P&L trend chart. Editing base order
+  size, order size, the number of safety orders, volume scale, order size type,
+  the maximum number of open deals, or turning DCA on or off resets the bot's
+  statistics, because every average and ratio in them is measured against a
+  starting balance the edit has just changed. That reset also cleared the daily
+  equity series behind the mini trend chart on the bot card and the performance
+  chart in the bot drawer — a record of what the account was actually worth on
+  each of the last 90 days, which a change to the size of future orders does
+  not invalidate. The series is only ever rebuilt while a bot is running, once
+  a day or as deals close, so a bot stopped after such an edit showed "No data"
+  permanently, and one with a single day of closed deals since showed a lone
+  point with no line. The equity series now survives an order-sizing change;
+  changing the profit currency still clears the statistics in full, since it
+  re-denominates them. Bots whose series was already cleared rebuild it as they
+  keep trading.
+
 ## [1.59.26] - 2026-09-16
 
 ### Fixed

@@ -140,6 +140,7 @@ import {
 } from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
+import { emptyBotStats } from './dca/botStatsReset'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { executedFillQty } from './dca/executedFill'
 import {
@@ -6891,6 +6892,18 @@ function createDCABotHelper<
                         'limitOrders()',
                         `Send new order request ${tpOrder.newClientOrderId}, qty ${tpOrder.qty}, price ${tpOrder.price}, side ${tpOrder.side}`,
                       )
+                      // Spec 049: the close has terminally failed — the
+                      // slippage retry and the position-already-closed branches
+                      // both returned before this one. An armed trail left
+                      // behind here outlives the attempt: `closeBySl` is only
+                      // in memory, so the next worker start re-registers the
+                      // same level through `setDealForStopLoss` and closes at
+                      // whatever the price has become by then. Disarm instead;
+                      // if the move is still on, `checkTrailing` re-arms from
+                      // the current price on the next tick.
+                      if (findDeal?.deal.trailingMode) {
+                        await this.disarmTrailing(findDeal)
+                      }
                       if (fastClose) {
                         await closeBuy()
                       }
@@ -17562,6 +17575,25 @@ function createDCABotHelper<
       return (trailingSl && !skipSl) || (trailingTp && !skipTp)
     }
 
+    /**
+     * Clear a deal's armed trailing state and persist it (spec 049).
+     *
+     * `bestPrice` has to go back to 0 as well, not just the level: left at the
+     * old extreme, `checkTrailing` only recomputes the level once price beats
+     * that extreme again (`old.price !== d.deal.bestPrice`), so the deal would
+     * re-arm against a high it may never revisit.
+     */
+    async disarmTrailing(d: FullDeal<ExcludeDoc<Deal>>) {
+      d.deal.trailingLevel = 0
+      d.deal.trailingMode = undefined
+      d.deal.bestPrice = 0
+      await this.saveDeal(d, {
+        trailingLevel: d.deal.trailingLevel,
+        trailingMode: d.deal.trailingMode,
+        bestPrice: d.deal.bestPrice,
+      })
+    }
+
     async triggerTrailing(dealId: string, price: number) {
       const d = this.getDeal(dealId)
       if (!d) {
@@ -19299,6 +19331,7 @@ function createDCABotHelper<
           useMultiTp,
           slPerc,
           moveSLValue,
+          avgPrice,
         } = await this.getAggregatedSettings(d.deal)
         const dealId = d.deal._id
         let closeBySl = true
@@ -19421,6 +19454,49 @@ function createDCABotHelper<
           this.handleLog(
             `Deal: ${dealId} closing by stop loss. SL price: ${priceToClose}, current price : ${last}`,
           )
+        }
+        // Spec 049: `ttp` is the armed state of a trailing TAKE PROFIT — the
+        // deal has already traded through its take profit, and the trail is
+        // there to capture more than it while giving back at most
+        // `trailingTpPerc`. It is a profit-taking instrument, and on a bot with
+        // stop loss switched off it is the only thing that can close the deal.
+        //
+        // The test above is only `last` against the armed level, with no
+        // reference to what the deal actually cost. So anything that left a
+        // level armed while price walked away from it turned the take-profit
+        // trail into an unbounded stop loss, closing at whatever the price had
+        // become: a close the venue rejected (which disarms nothing, and whose
+        // in-memory `closeBySl` guard dies with the worker), a restart
+        // re-registering the stale level through `setDealForStopLoss`, or a
+        // safety-order fill, which zeroes `bestPrice` and so makes
+        // `checkTrailing` recompute the level just under the CURRENT price
+        // while the deal is under water.
+        //
+        // All of those arrive here, so this is the one place a floor fixes all
+        // of them. Refuse below break even and disarm, rather than holding the
+        // level: `checkTrailing` then re-arms only once price is back above the
+        // take profit. The floor is break even and not the take-profit price
+        // because the level arms up to `trailingTpPerc` BELOW the take profit,
+        // so a take-profit floor would block the ordinary — still profitable —
+        // retrace right after arming.
+        if (close && trailing && d.deal.trailingMode === TrailingModeEnum.ttp) {
+          const refAvg = dealRefPrice(avgPrice, d.deal.avgPrice)
+          const fee = await this.getUserFee(d.deal.symbol.symbol)
+          const diff = this.isLong ? last - refAvg : refAvg - last
+          // Same net-return shape as `checkMinTp`, which cannot cover this: it
+          // is gated on `useMinTP` and a techInd/webhook close condition.
+          const net = diff / refAvg - (fee?.taker ?? 0.001) * 2
+          if (!(net > 0)) {
+            this.handleLog(
+              `Deal: ${dealId} trailing take profit refused below break even. Level: ${d.deal.trailingLevel}, price: ${last}, avg: ${refAvg}. Disarming trailing`,
+            )
+            await this.disarmTrailing(d)
+            // Drop the stale level and re-register whatever the deal still
+            // qualifies for — a real stop loss, if one is configured.
+            this.dealsForStopLoss.delete(dealId)
+            await this.setDealForStopLoss(d)
+            continue
+          }
         }
         if (close) {
           this.triggerStopLoss(
@@ -22773,107 +22849,10 @@ function createDCABotHelper<
         usd: 0,
         asset: 0,
       })
-      const series = () => ({
-        count: 0,
-        max: 0,
-        value: usdAsset(),
-        minValue: usdAsset(),
-        maxValue: usdAsset(),
-        perc: 0,
-      })
       return {
-        stats: {
-          numerical: {
-            profit: {
-              grossProfit: usdAsset(),
-              grossProfitPerc: 0,
-              maxDealProfit: usdAsset(),
-              maxDealProfitPerc: 0,
-              avgDealProfit: usdAsset(),
-              avgDealProfitPerc: 0,
-              maxRunUp: usdAsset(),
-              maxRunUpPerc: 0,
-              maxConsecutiveWins: 0,
-              standardDeviationOfPositiveReturns: 0,
-              series: series(),
-            },
-            loss: {
-              grossLoss: usdAsset(),
-              grossLossPerc: 0,
-              maxDealLoss: usdAsset(),
-              maxDealLossPerc: 0,
-              avgDealLoss: usdAsset(),
-              avgDealLossPerc: 0,
-              maxDrawdown: usdAsset(),
-              maxDrawdownPerc: 0,
-              maxEquityDrawdown: usdAsset(),
-              maxEquityDrawdownPerc: 0,
-              maxConsecutiveLosses: 0,
-              standardDeviationOfNegativeReturns: 0,
-              standardDeviationOfDownside: 0,
-              series: series(),
-              seriesEquity: {
-                value: 0,
-                min: 0,
-                max: 0,
-                perc: 0,
-              },
-            },
-            general: {
-              netProfitPerc: 0,
-              avgDaily: usdAsset(),
-              avgDailyPerc: 0,
-              annualizedReturn: 0,
-              startBalance: usdAsset(),
-              maxDCAOrdersTriggered: 0,
-              avgDCAOrdersTriggered: 0,
-              coveredPriceDeviation: 0,
-              actualPriceDeviation: 0,
-              confidenceGrade: '',
-            },
-            ratios: {
-              profitFactor: 0,
-              sharpeRatio: 0,
-              sortinoRatio: 0,
-              cwr: 0,
-              buyAndHold: {
-                result: 0,
-                perc: 0,
-                symbol: '',
-                startPrice: 0,
-              },
-            },
-            usage: {
-              maxTheoreticalUsage: 0,
-              maxActualUsage: 0,
-              avgDealUsage: 0,
-            },
-            deals: {
-              profit: 0,
-              loss: 0,
-            },
-          },
-          duration: {
-            profit: {
-              avgWinningTradeDuration: 0,
-              maxWinningTradeDuration: 0,
-              totalTime: 0,
-            },
-            loss: {
-              avgLosingTradeDuration: 0,
-              maxLosingTradeDuration: 0,
-              totalTime: 0,
-            },
-            general: {
-              maxDealDuration: 0,
-              avgDealDuration: 0,
-              dealsPerDay: 0,
-              workingTime: 0,
-              totalTime: 0,
-            },
-          },
-          chart: [],
-        },
+        // Shared with the settings-change reset in `bot/index.ts`, which has no
+        // bot instance to ask for the shape.
+        stats: emptyBotStats(),
         symbolStats: (this.data?.settings.pair ?? []).map((symbol) => ({
           numerical: {
             deals: {

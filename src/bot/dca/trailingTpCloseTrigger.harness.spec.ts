@@ -196,6 +196,15 @@ const triggerFor = async (c: Case) => {
     async getAggregatedSettings() {
       return c.settings
     }
+    /**
+     * Defined on the real bot base class, not on `FakeBase`. The trailing arm
+     * now measures a take-profit close against the deal's break-even price
+     * (spec 049), so it reads the user's fee; every fixture here closes well
+     * clear of break even, so none of the expectations below move.
+     */
+    async getUserFee() {
+      return { maker: 0.001, taker: 0.001 }
+    }
     /** The real `triggerStopLoss` runs; this is where the value lands. */
     async closeDealById(
       _botId: string,
