@@ -76,10 +76,18 @@ const logPrefix = '[AuthFailureGuard]'
 
 const AUTH_MIN_MS = 5 * 60 * 1000
 
+const AUTH_MAX_MS = 60 * 60 * 1000
+
 const backoff = new RetryBackoff({
   namespace: 'af',
   minMs: AUTH_MIN_MS,
-  maxMs: 60 * 60 * 1000,
+  maxMs: AUTH_MAX_MS,
+  // Remember the last window for longer than the slowest caller's cadence.
+  // The position reconciler re-reads every account every 15 min; with the
+  // default memory (2x window = 10 min after the first rejection) each visit
+  // found no state, restarted at 5 min, and was never suppressed — a dead key
+  // was re-sent once per cycle forever. Two hours covers the 1 h ceiling.
+  memoryMs: 2 * AUTH_MAX_MS,
 })
 
 /** Redis key holding "an alert already went out for this account's window". */

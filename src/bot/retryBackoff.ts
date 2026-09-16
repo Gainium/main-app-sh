@@ -91,6 +91,16 @@ export type RetryBackoffOptions = {
   maxMs: number
   /** Growth per consecutive rejection. Default 2. */
   factor?: number
+  /**
+   * How long a recorded rejection is remembered for ESCALATION, ms. Default:
+   * twice the current window. A caller that re-probes less often than that
+   * (the position reconciler asks every 15 min; the first window is 5 min)
+   * would otherwise find the key already expired on every visit, start over at
+   * `minMs`, and never be suppressed at all. Set it above `maxMs` for guards
+   * whose callers are slow. It only lengthens the memory of the last interval;
+   * `check()` still suppresses for `until` alone.
+   */
+  memoryMs?: number
 }
 
 export class RetryBackoff {
@@ -135,7 +145,7 @@ export class RetryBackoff {
       await redis.set(
         key,
         JSON.stringify(state),
-        Math.ceil((interval * 2) / 1000),
+        Math.ceil(Math.max(interval * 2, this.opts.memoryMs ?? 0) / 1000),
       )
       return state
     } catch (e) {

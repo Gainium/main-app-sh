@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.22] - 2026-09-16
+
+### Fixed
+
+- The shared auth-failure cooldown now remembers a refused credential for
+  longer than the slowest background check's cadence. Before, a checker that
+  asked less often than the first cooldown window found nothing recorded on its
+  next visit, started the window over, and so re-sent the refused request on
+  every pass; on Kraken that kept the shared route in a temporary lockout that
+  also delayed working accounts. A refused key now backs off to the hourly
+  re-probe as intended.
+
 ## [1.59.21] - 2026-09-15
 
 ### Fixed
