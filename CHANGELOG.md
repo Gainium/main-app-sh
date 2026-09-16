@@ -8,8 +8,8 @@
   longer than the slowest background check's cadence. Before, a checker that
   asked less often than the first cooldown window found nothing recorded on its
   next visit, started the window over, and so re-sent the refused request on
-  every pass; on Kraken that kept the shared route in a temporary lockout that
-  also delayed working accounts. A refused key now backs off to the hourly
+  every pass; on Kraken that kept the connection in a temporary lockout. A
+  refused key now backs off to the hourly
   re-probe as intended.
 
 ## [1.59.21] - 2026-09-15
@@ -19,9 +19,8 @@
 - Kraken's wording for a rejected API key is now recognised as a permanent key
   problem rather than a temporary glitch. Until now every background check kept
   re-sending the same request on a Kraken connection the exchange had already
-  refused. Kraken answers repeated refused logins by temporarily locking out the
-  address the request came from - not just the key - so one unusable connection
-  could delay other Kraken accounts sharing that route. A refused Kraken key now
+  refused. Kraken answers repeated refused logins with a temporary lockout, so
+  an unusable connection kept re-triggering it. A refused Kraken key now
   goes on the same cooldown every other exchange already uses: re-checked after
   five minutes, then progressively less often, and picked up right away once the
   key is fixed.
