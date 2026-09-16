@@ -72,6 +72,47 @@ export const isHardAuthFailure = (reason?: string | null): boolean => {
   return AUTH_FAILURE_SIGNATURES.some((s) => r.includes(s))
 }
 
+/**
+ * Lower-cased substrings that mark a venue LOCKOUT — a different condition from
+ * a dead credential, and deliberately a different list.
+ *
+ * Kraken answers too many sequential `EAPI:Invalid key` attempts with
+ * `EGeneral:Temporary lockout`, and **every further attempt with that key
+ * restarts the lockout timer**. Two consequences follow, and together they are
+ * why a dead-credential allowlist cannot cover this case:
+ *
+ * 1. While locked, the venue stops returning the dead-key wording — the lockout
+ *    MASKS the only signature {@link isHardAuthFailure} knows. A caller gated
+ *    solely on that list therefore never records anything for a locked account
+ *    and re-asks on its next cycle, forever.
+ * 2. That re-ask is itself what keeps the lockout alive. The condition hiding
+ *    the signature is sustained by the calls the missing signature fails to
+ *    gate.
+ *
+ * The only exit is silence for longer than the lockout window, after which the
+ * venue answers honestly again — either OK, or the dead-key wording, which the
+ * hard-auth guard above then handles as it always did. The two gates compose.
+ *
+ * Kept OUT of {@link AUTH_FAILURE_SIGNATURES} on purpose: that list also drives
+ * the hourly fee cron's consecutive-failure key-disable, and a lockout does not
+ * mean the key is bad — an account can be locked out by its own retry loop while
+ * its credentials are perfectly valid.
+ */
+export const VENUE_LOCKOUT_SIGNATURES = [
+  // Venue-prefixed for the same reason `eapi:invalid key` is: a bare `lockout`
+  // would widen the allowlist past the wording we have actually observed.
+  'egeneral:temporary lockout',
+]
+
+/** Is this exchange rejection a venue lockout that must be waited out? */
+export const isVenueLockout = (reason?: string | null): boolean => {
+  if (!reason) {
+    return false
+  }
+  const r = reason.toLowerCase()
+  return VENUE_LOCKOUT_SIGNATURES.some((s) => r.includes(s))
+}
+
 const logPrefix = '[AuthFailureGuard]'
 
 const AUTH_MIN_MS = 5 * 60 * 1000
@@ -89,6 +130,78 @@ const backoff = new RetryBackoff({
   // was re-sent once per cycle forever. Two hours covers the 1 h ceiling.
   memoryMs: 2 * AUTH_MAX_MS,
 })
+
+/**
+ * First lockout cooldown. Has to clear TWO different things at once:
+ * - Kraken's own lockout window, which its docs describe as temporary
+ *   (minutes) but which restarts on every attempt made during it;
+ * - the slowest gated caller's cadence — the position reconciler asks every
+ *   `PR_CYCLE_MS` (15 min default). A window below that re-probes on the very
+ *   next cycle and produces no silence at all.
+ *
+ * 30 minutes is 2x that cycle, so at least one whole cycle passes untouched.
+ */
+export const VENUE_LOCKOUT_MIN_MS = 30 * 60 * 1000
+
+/**
+ * Ceiling for an account that is STILL locked after a silent window — i.e. one
+ * that some other, ungated caller is also probing. Backing off further is the
+ * only response that does not add to the cause.
+ */
+export const VENUE_LOCKOUT_MAX_MS = 4 * 60 * 60 * 1000
+
+const lockoutBackoff = new RetryBackoff({
+  namespace: 'lk',
+  minMs: VENUE_LOCKOUT_MIN_MS,
+  maxMs: VENUE_LOCKOUT_MAX_MS,
+  // Above `maxMs` by construction. A memory shorter than the caller's cadence
+  // is what made the first hard-auth gate here ship inert: `check()` found an
+  // expired key on every visit, restarted at `minMs`, and suppressed nothing.
+  memoryMs: 2 * VENUE_LOCKOUT_MAX_MS,
+})
+
+/**
+ * Venue-lockout cooldown, keyed per ACCOUNT like the auth guard above and built
+ * on the same shared {@link RetryBackoff}.
+ *
+ * Separate from {@link AuthFailureGuard} rather than folded into it: that
+ * guard's `check()` sits on four live bot-engine call sites, and the two
+ * conditions are genuinely different — a dead key needs the USER to act, a
+ * lockout needs only time, and their windows must be able to run independently
+ * without either clearing the other.
+ *
+ * Fail-open on any Redis trouble, exactly like the auth guard: a blip reads as
+ * "no cooldown" and the call goes to the venue.
+ */
+export class VenueLockoutGuard {
+  /**
+   * Remember a lockout the venue actually returned. Never call this for a
+   * locally suppressed attempt — that would slide the window forward forever
+   * and the account would never be re-probed.
+   */
+  static async record(input: {
+    exchangeUUID: string
+    reason: string
+  }): Promise<number> {
+    const state = await lockoutBackoff.record([input.exchangeUUID], input.reason)
+    return state.until
+  }
+
+  /** Is this account inside a lockout cooldown? Replays the venue's wording. */
+  static async check(exchangeUUID: string): Promise<AuthCheckResult> {
+    const res = await lockoutBackoff.check([exchangeUUID])
+    return {
+      failed: res.suppressed,
+      reason: res.reason,
+      until: res.until,
+    }
+  }
+
+  /** Drop a lockout cooldown — e.g. when the user re-enters the key (and by tests). */
+  static async clear(exchangeUUID: string): Promise<void> {
+    return lockoutBackoff.clear([exchangeUUID])
+  }
+}
 
 /** Redis key holding "an alert already went out for this account's window". */
 const alertKey = (exchangeUUID: string) => `af:alert:${exchangeUUID}`

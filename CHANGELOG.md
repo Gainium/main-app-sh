@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.59.25] - 2026-09-16
+
+### Fixed
+
+- Some exchanges answer repeated failed authentication by temporarily locking
+  the account, and restart that lock on every further attempt made while it is
+  in force. Background readers treated the lockout as an ordinary transient
+  error and kept re-checking the account on their normal schedule, so the lock
+  was continually renewed and an account could stay locked indefinitely — even
+  when the API key itself was fine. A lockout now puts the account on its own
+  cooldown, long enough to outlast both the exchange's lock and the slowest
+  background schedule, so the lock is left alone and allowed to expire. Once it
+  does, the exchange's real answer is visible again and the existing handling
+  for a genuinely invalid key applies unchanged. Expired- and revoked-key
+  detection is untouched: a lockout is not treated as a bad key, so it cannot
+  cause a working key to be disabled.
+
 ## [1.59.24] - 2026-09-16
 
 ### Fixed
