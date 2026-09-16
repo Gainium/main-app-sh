@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.23] - 2026-09-16
+
+### Fixed
+
+- The container now starts again. A test-only helper — the in-memory database
+  used by the automated test suite — was being loaded at startup even though it
+  is only ever used when the test suite runs. That helper is deliberately not
+  installed in the released image, so the process aborted while loading its
+  modules, before it read any configuration or contacted the database. Every
+  workload built from the image failed the same way and restarted in a loop.
+  The helper is now loaded only if the test suite actually asks for it.
+
 ## [1.59.22] - 2026-09-16
 
 ### Fixed

@@ -1,4 +1,3 @@
-import { MongoMemoryServer } from 'mongodb-memory-server'
 import {
   MONGO_DB_NAME,
   MONGO_DB_USERNAME,
@@ -16,6 +15,10 @@ const getMongooseConnect = async () => {
   // point at one.
   if (process.env.NODE_ENV === 'testing') {
     if (MONGO_DB_URI) return MONGO_DB_URI
+    // Loaded lazily: mongodb-memory-server is a test-only dependency and is
+    // not installed in the production image, so a top-level import would
+    // crash the process at module load before it ever reaches this branch.
+    const { MongoMemoryServer } = await import('mongodb-memory-server')
     const mongoServer = await MongoMemoryServer.create()
     const uri = mongoServer.getUri()
     process.env.MONGO_DB_URI = uri
