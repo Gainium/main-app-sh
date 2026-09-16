@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.59.26] - 2026-09-16
+
+### Fixed
+
+- Sharing a backtest that the server no longer holds failed with no
+  explanation. Backtest runs that are not marked to keep are cleaned up
+  automatically after 30 days, and a run whose save never reached the server is
+  only ever held in the browser — in both cases the dashboard still lists the
+  result, and pressing Share on it produced a generic failure with nothing to
+  act on. Every share action (DCA, Combo, Grid and both Hedge types) now
+  answers "Backtest not found" for an id that resolves to no stored backtest,
+  including one that cannot be a stored id at all. Sharing a backtest the
+  server does hold is unchanged, and a result that was already shared still
+  returns its existing link.
+
 ## [1.59.25] - 2026-09-16
 
 ### Fixed

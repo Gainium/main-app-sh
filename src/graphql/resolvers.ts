@@ -113,7 +113,7 @@ import {
   hedgeDcaBacktestDb,
   brokerCodesDb,
 } from '../db/dbInit'
-import { errorAccess } from './errorResponse'
+import { backtestNotFound, errorAccess } from './errorResponse'
 import {
   createPaperUser,
   isPaper,
@@ -8788,10 +8788,23 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      // Two ways the id resolves to nothing, both ordinary. A backtest that
+      // is not `savePermanent` is swept 30 days after it ran, while the
+      // dashboard keeps listing its own copy of the row; and a run whose save
+      // never reached the server is listed under a `<SYMBOL>-<time>` id the
+      // dashboard synthesized, which Mongo cannot cast. Neither is a `notok`
+      // read — a miss comes back as a SUCCESSFUL read holding an undefined
+      // result — so `status` alone does not say the document is there.
+      if (!Types.ObjectId.isValid(input._id)) {
+        return backtestNotFound()
+      }
       const filter = { _id: input._id, userId: user.data._id.toString() }
       const get = await backtestDb.readData(filter)
       if (get.status === StatusEnum.notok) {
         return get
+      }
+      if (!get.data.result) {
+        return backtestNotFound()
       }
       if (get.data.result.shareId) {
         return {
@@ -8827,10 +8840,16 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      if (!Types.ObjectId.isValid(input._id)) {
+        return backtestNotFound()
+      }
       const filter = { _id: input._id, userId: user.data._id.toString() }
       const get = await comboBacktestDb.readData(filter)
       if (get.status === StatusEnum.notok) {
         return get
+      }
+      if (!get.data.result) {
+        return backtestNotFound()
       }
       if (get.data.result.shareId) {
         return {
@@ -8865,10 +8884,16 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      if (!Types.ObjectId.isValid(input._id)) {
+        return backtestNotFound()
+      }
       const filter = { _id: input._id, userId: user.data._id.toString() }
       const get = await hedgeComboBacktestDb.readData(filter)
       if (get.status === StatusEnum.notok) {
         return get
+      }
+      if (!get.data.result) {
+        return backtestNotFound()
       }
       if (get.data.result.shareId) {
         return {
@@ -8903,10 +8928,16 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      if (!Types.ObjectId.isValid(input._id)) {
+        return backtestNotFound()
+      }
       const filter = { _id: input._id, userId: user.data._id.toString() }
       const get = await hedgeDcaBacktestDb.readData(filter)
       if (get.status === StatusEnum.notok) {
         return get
+      }
+      if (!get.data.result) {
+        return backtestNotFound()
       }
       if (get.data.result.shareId) {
         return {
@@ -8941,10 +8972,16 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      if (!Types.ObjectId.isValid(input._id)) {
+        return backtestNotFound()
+      }
       const filter = { _id: input._id, userId: user.data._id.toString() }
       const get = await gridBacktestDb.readData(filter)
       if (get.status === StatusEnum.notok) {
         return get
+      }
+      if (!get.data.result) {
+        return backtestNotFound()
       }
       if (get.data.result.shareId) {
         return {

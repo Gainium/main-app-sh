@@ -44,6 +44,19 @@ export const insufficientFunds = () => ({
   data: null,
 })
 
+/**
+ * No backtest behind the requested id. One refusal covers every way that
+ * happens — never saved to the server, deleted, cleaned up by the 30-day
+ * sweep of non-permanent runs, owned by somebody else, or not an id at all —
+ * because the caller cannot act differently on any of them, and telling them
+ * apart would report whether an id they do not own exists.
+ */
+export const backtestNotFound = () => ({
+  status: StatusEnum.notok,
+  reason: 'Backtest not found',
+  data: null,
+})
+
 export const errorAccess = () => ({
   status: StatusEnum.notok,
   reason: 'Cannot access',
