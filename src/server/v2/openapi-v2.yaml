@@ -2464,6 +2464,43 @@ components:
               nullable: true
               description: Deal close timestamp (null if active)
               example: null
+            trailingClose:
+              type: object
+              nullable: true
+              description: "Present only when a trailing take-profit close was refused by the exchange. `retrying` means the bot is re-sending the closing order on a progressive backoff (up to 5 retries, 30s to 1m apart) and nothing else will close the deal meanwhile. `paused` means every retry was refused: the deal is still open, the trail has been disarmed, and it will not arm again until the price crosses back over the take-profit level - the deal needs managing in the meantime. Absent on a deal whose trailing take profit has not failed."
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - retrying
+                    - paused
+                  example: paused
+                attempts:
+                  type: integer
+                  description: Failed close attempts, the first one included
+                  example: 6
+                since:
+                  type: number
+                  description: First refusal in this run (ms)
+                  example: 1705823400000
+                lastAttempt:
+                  type: number
+                  description: Most recent refusal (ms)
+                  example: 1705823625000
+                nextAttempt:
+                  type: number
+                  nullable: true
+                  description: When the next retry is due (ms). `retrying` only
+                  example: 1705823685000
+                reason:
+                  type: string
+                  description: The exchange's own rejection text
+                  example: EGeneral:Temporary lockout
+                rearmReady:
+                  type: boolean
+                  nullable: true
+                  description: "`paused` only. True once the price has been seen back on the far side of the take-profit level, so the next crossing re-arms the trail."
+                  example: false
     DcaBacktestRequest:
       type: object
       required:
@@ -2791,7 +2828,8 @@ components:
               description: Feature flags gating new bot-only behaviour (spec 014 §3)
               items:
                 type: string
-              example: [feeByAsset]
+              example:
+                - feeByAsset
             feePaid:
               type: object
               nullable: true

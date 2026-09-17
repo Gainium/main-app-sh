@@ -130,6 +130,7 @@ import {
   SettingsIndicatorGroup,
   CleanComboDealsSchema,
   DCACloseTriggerEnum,
+  TrailingCloseRetry,
 } from '../../types'
 import { ExchangeIntervals } from '../../types'
 import {
@@ -137,6 +138,7 @@ import {
   convertDCABot,
   convertComboBot,
   positionLeftOpen,
+  trailingCloseFailed,
 } from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
@@ -178,6 +180,14 @@ import {
   verdictForMissingDealOnClose,
 } from './dca/dealOutcome'
 import { isRetirableStrandedStart } from './dca/strandedStartClose'
+import {
+  closeIsAboveBreakEven,
+  isRetryableTrailingCloseRejection,
+  isTrailingRetryPending,
+  trailingCloseFailedMessage,
+  trailingRetryStateAfterRefusal,
+  trailingTpArmingPermitted,
+} from './dca/trailingCloseRetry'
 import {
   classifyTpCloseAttempt,
   tpCloseBlockedMessage,
@@ -588,6 +598,14 @@ function createDCABotHelper<
         enterMarketTimer: NodeJS.Timeout | null
       }
     > = new Map()
+    /**
+     * Pending trailing-take-profit close retries, one `setTimeout` per deal
+     * (spec `050`). In memory by design — the durable half of the retry is
+     * `deal.trailingClose.nextAttempt`, which `resumeTrailingCloseRetry`
+     * re-arms these from on every restore. Cleared wholesale by
+     * `clearClassProperties`, so a stopped bot leaves nothing holding it.
+     */
+    trailingRetryTimers: Map<string, NodeJS.Timeout> = new Map()
     dealsForMoveSl: Map<string, number> = new Map()
     dealsForTrailing: Map<string, TrailingDeal> = new Map()
     dealsForStopLoss: Map<string, number> = new Map()
@@ -3439,6 +3457,11 @@ function createDCABotHelper<
       order?: Order,
     ): Promise<boolean> {
       this.removeDealFromStopLossMethods(dealId)
+      // Spec 050: the deal is finished, so a retry timer still pointed at it
+      // has nothing left to retry. Deliberately here and not in
+      // `removeDealFromStopLossMethods`, which the settings-change path also
+      // calls for a deal that is still very much open and mid-retry.
+      this.clearTrailingRetryTimer(dealId)
       DealStats.getInstance().removeStats({ event: 'removeStats', dealId })
       const deal = this.getDeal(dealId)
       this.pendingClose.delete(dealId)
@@ -6901,7 +6924,20 @@ function createDCABotHelper<
                       // whatever the price has become by then. Disarm instead;
                       // if the move is still on, `checkTrailing` re-arms from
                       // the current price on the next tick.
-                      if (findDeal?.deal.trailingMode) {
+                      //
+                      // Spec 050: unless this was a trailing TAKE PROFIT and
+                      // the venue's reason is one of its own (a lockout, a
+                      // ban, a 5xx). Then the deal was in profit a moment ago
+                      // and the answer is very likely to change in seconds, so
+                      // the trail keeps its level and the close is retried on
+                      // a progressive backoff — up to five times — before the
+                      // disarm below becomes the answer after all.
+                      const retrying = await this.handleTrailingCloseRefusal(
+                        findDeal,
+                        `${result}`,
+                        closeTrigger,
+                      )
+                      if (!retrying && findDeal?.deal.trailingMode) {
                         await this.disarmTrailing(findDeal)
                       }
                       if (fastClose) {
@@ -11597,6 +11633,9 @@ function createDCABotHelper<
             continue
           }
           await this.setCloseByTimer(d.deal)
+          // Spec 050 §6.2: a refused trailing take profit may have a retry
+          // outstanding. Its deadline is on the deal; the timer is not.
+          await this.resumeTrailingCloseRetry(d)
           if (!serviceRestart) {
             this.updateDealBalances(d)
             const completeLevels =
@@ -17594,6 +17633,321 @@ function createDCABotHelper<
       })
     }
 
+    /**
+     * Is a trailing-take-profit close in flight for this deal (spec `050`
+     * §6.3)?
+     *
+     * Read from the DEAL, not from `closeBySl`: that flag lives on the
+     * `FullDeal` wrapper, so it dies with the worker while the armed level it
+     * was guarding survives in Mongo — which is how spec 049's stale level
+     * came to fire on a restart. Self-releasing, so a record nothing ever
+     * acted on cannot leave a deal unmanaged (see `isTrailingRetryPending`).
+     */
+    isTrailingCloseInFlight(d: FullDeal<ExcludeDoc<Deal>>) {
+      return isTrailingRetryPending(d.deal.trailingClose, +new Date())
+    }
+
+    /** Drop a deal's pending retry timer, if any. */
+    clearTrailingRetryTimer(dealId: string) {
+      const timer = this.trailingRetryTimers.get(dealId)
+      if (timer) {
+        clearTimeout(timer)
+      }
+      this.trailingRetryTimers.delete(dealId)
+    }
+
+    /**
+     * Drop every pending retry timer. Called from `clearClassProperties`, i.e.
+     * from every start / stop / reload path: a timer left armed both fires a
+     * close against a stopped bot and keeps this helper (and everything it
+     * closes over) alive for up to a minute after the bot is gone.
+     */
+    clearTrailingRetryTimers() {
+      for (const [id, timer] of this.trailingRetryTimers.entries()) {
+        if (timer) {
+          clearTimeout(timer)
+        }
+        this.trailingRetryTimers.delete(id)
+      }
+      this.trailingRetryTimers = new Map()
+    }
+
+    /** One timer per deal; a fresh refusal replaces the previous one. */
+    scheduleTrailingRetry(dealId: string, delay: number) {
+      this.clearTrailingRetryTimer(dealId)
+      const wait = Math.min(Math.max(delay, 0), maxTimeout)
+      const timer = setTimeout(() => {
+        this.trailingRetryTimers.delete(dealId)
+        void this.retryTrailingClose(dealId)
+      }, wait)
+      this.trailingRetryTimers.set(dealId, timer)
+    }
+
+    /**
+     * End a retry sequence without pausing the trail: clear the record, drop
+     * the timer and release the deal so everything else manages it again.
+     */
+    async clearTrailingRetry(d: FullDeal<ExcludeDoc<Deal>>) {
+      this.clearTrailingRetryTimer(d.deal._id)
+      if (!d.deal.trailingClose) {
+        return
+      }
+      d.deal.trailingClose = undefined
+      d.closeBySl = false
+      await this.saveDeal(d, { trailingClose: undefined })
+    }
+
+    /**
+     * Is a close at the live price still a profit for this deal? Spec 049's
+     * floor, asked of the CURRENT average (a safety-order fill moves it) and
+     * the CURRENT tick.
+     */
+    async trailingCloseStillProfitable(d: FullDeal<ExcludeDoc<Deal>>) {
+      const last = this.getLastStreamData(d.deal.symbol.symbol)?.price
+      if (!last) {
+        // No tick, no evidence. Treat as not provable rather than assume.
+        return false
+      }
+      const { avgPrice } = await this.getAggregatedSettings(d.deal)
+      const fee = await this.getUserFee(d.deal.symbol.symbol)
+      return closeIsAboveBreakEven({
+        last,
+        avg: dealRefPrice(avgPrice, d.deal.avgPrice),
+        taker: fee?.taker ?? 0.001,
+        isLong: this.isLong,
+      })
+    }
+
+    /**
+     * A trailing take profit the venue refused (spec `050`). Answers whether
+     * this took ownership of the refusal — `false` means the caller keeps spec
+     * 049's disarm.
+     *
+     * A trailing TAKE PROFIT fires on a deal that is in profit, and that
+     * profit lasts only as long as the price does. A refusal the VENUE owns (a
+     * lockout, a ban, a 5xx) will very likely succeed seconds later, so it is
+     * worth asking again; a refusal the ORDER or the ACCOUNT owns cannot be
+     * changed by asking again, and one whose outcome is unknown must not be
+     * asked again at all. `isRetryableTrailingCloseRejection` is that split.
+     *
+     * Scoped to `ttp` and to a trailing close: a trailing STOP LOSS and a
+     * plain stop loss are loss-taking instruments, and there is no profit to
+     * secure. An existing record still counts, because a retry re-enters
+     * `closeDealById` and comes back through here.
+     */
+    async handleTrailingCloseRefusal(
+      d: FullDeal<ExcludeDoc<Deal>> | undefined,
+      reason: string,
+      closeTrigger?: DCACloseTriggerEnum,
+    ): Promise<boolean> {
+      if (!d) {
+        return false
+      }
+      const isTrailingTp =
+        closeTrigger === DCACloseTriggerEnum.trailing &&
+        d.deal.trailingMode === TrailingModeEnum.ttp
+      if (!isTrailingTp && !d.deal.trailingClose) {
+        return false
+      }
+      const dealId = d.deal._id
+      if (!isRetryableTrailingCloseRejection(reason)) {
+        this.handleLog(
+          `Deal: ${dealId} trailing take profit refused by the exchange with a reason retrying cannot fix (${reason}). Not retrying`,
+        )
+        // §6.5: a balance refusal on the third retry ENDS the sequence, it
+        // does not pause the trail — the caller's disarm is the whole answer.
+        await this.clearTrailingRetry(d)
+        return false
+      }
+      const state = trailingRetryStateAfterRefusal(
+        d.deal.trailingClose,
+        `${reason}`,
+        +new Date(),
+      )
+      if (state.status === 'paused') {
+        await this.pauseTrailingAfterFailedClose(d, state)
+        return true
+      }
+      d.deal.trailingClose = state
+      // Keep the level armed and the deal guarded: this close is not over.
+      d.closeBySl = true
+      await this.saveDeal(d, { trailingClose: state })
+      this.scheduleTrailingRetry(dealId, (state.nextAttempt ?? 0) - +new Date())
+      this.handleLog(
+        `Deal: ${dealId} trailing take profit refused by the exchange (${reason}). Attempt ${state.attempts}, retrying at ${new Date(
+          state.nextAttempt ?? 0,
+        ).toISOString()}`,
+      )
+      return true
+    }
+
+    /**
+     * Re-send a refused trailing take-profit close, if everything it was
+     * decided on still holds (spec `050` §4.4).
+     */
+    async retryTrailingClose(dealId: string) {
+      const d = this.getDeal(dealId)
+      const state = d?.deal.trailingClose
+      if (!d || !state || state.status !== 'retrying') {
+        return
+      }
+      if (!this.shouldProceed() || this.data?.status === BotStatusEnum.closed) {
+        // The bot is stopping or stopped. Leave the record alone: the next
+        // start re-arms the timer from it (`resumeTrailingCloseRetry`).
+        return
+      }
+      if (d.deal.status !== DCADealStatusEnum.open) {
+        // An earlier attempt reached the venue after all, or the deal ended
+        // some other way. A second market order here would open a position.
+        this.handleLog(
+          `Deal: ${dealId} is ${d.deal.status}, abandoning the trailing take profit retry`,
+        )
+        await this.clearTrailingRetry(d)
+        return
+      }
+      if (!(await this.trailingCloseStillProfitable(d))) {
+        // Spec 049's floor. The retry must not become the below-break-even
+        // close that floor exists to refuse; disarm and let `checkTrailing`
+        // re-arm above the take profit, exactly as 049 does.
+        this.handleLog(
+          `Deal: ${dealId} is no longer above break even, abandoning the trailing take profit retry. Disarming trailing`,
+        )
+        await this.clearTrailingRetry(d)
+        await this.disarmTrailing(d)
+        this.dealsForStopLoss.delete(dealId)
+        await this.setDealForStopLoss(d)
+        return
+      }
+      this.handleLog(
+        `Deal: ${dealId} retrying the trailing take profit close, attempt ${
+          state.attempts + 1
+        } (previous refusal: ${state.reason})`,
+      )
+      d.closeBySl = true
+      await this.closeDealById(
+        this.botId,
+        dealId,
+        CloseDCATypeEnum.closeByMarket,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        DCACloseTriggerEnum.trailing,
+      )
+    }
+
+    /**
+     * Re-arm a persisted retry after a restart (spec `050` §6.2). Called per
+     * active deal from `restoreWork` — and from combo's own override of it,
+     * which does not call through to this one.
+     *
+     * A deadline already in the past fires immediately, which is the point:
+     * the alternative is the spec-049 story where a worker comes back days
+     * later and the only thing that survived was the armed level.
+     */
+    async resumeTrailingCloseRetry(d: FullDeal<ExcludeDoc<Deal>>) {
+      const state = d.deal.trailingClose
+      if (!state || state.status !== 'retrying') {
+        return
+      }
+      // The close is still in flight as far as this deal is concerned, and
+      // that fact did not survive the restart on its own.
+      d.closeBySl = true
+      const delay = (state.nextAttempt ?? 0) - +new Date()
+      this.handleLog(
+        `Deal: ${d.deal._id} has a trailing take profit retry outstanding (attempt ${
+          state.attempts
+        }), resuming in ${Math.max(delay, 0)}ms`,
+      )
+      this.scheduleTrailingRetry(d.deal._id, delay)
+    }
+
+    /**
+     * Every retry refused (spec `050` §6.6): disarm, pause, release the deal,
+     * and tell the user it is theirs now.
+     *
+     * Disarming is not optional — an armed level outliving the attempt is what
+     * spec 049 is about. Pausing on top of the disarm is what stops the trail
+     * re-arming on the very next tick (the price is usually still above the
+     * arming line right after a refusal) and spending another five retries
+     * every four minutes, which for a venue lockout also sustains its own
+     * cause.
+     */
+    async pauseTrailingAfterFailedClose(
+      d: FullDeal<ExcludeDoc<Deal>>,
+      state: TrailingCloseRetry,
+    ) {
+      const dealId = d.deal._id
+      this.clearTrailingRetryTimer(dealId)
+      await this.disarmTrailing(d)
+      d.deal.trailingClose = state
+      // Release the deal: everything else — a configured stop loss, a manual
+      // close, the resting take profit — manages it again from here.
+      d.closeBySl = false
+      d.notCheckSl = false
+      await this.saveDeal(d, { trailingClose: state })
+      this.handleLog(
+        `Deal: ${dealId} trailing take profit could not be executed after ${state.attempts} attempts (${state.reason}). Trailing paused until price returns above the take profit`,
+      )
+      await this.reportTrailingCloseFailed(d, state)
+      // Re-register whatever the deal still qualifies for, as spec 049 does
+      // after its own disarm.
+      this.dealsForStopLoss.delete(dealId)
+      await this.setDealForStopLoss(d)
+    }
+
+    /**
+     * Tell the user a trailing take profit could not be executed.
+     *
+     * A warning rather than a hard error: the bot is fine and the venue said
+     * no, but the user is left holding an open position that nothing will
+     * close for them, so it has to reach them. Forced past the re-raise
+     * throttle for the same reason `announceLeftOpenPosition` is — two deals
+     * failing this way must report twice, not once.
+     */
+    async reportTrailingCloseFailed(
+      d: FullDeal<ExcludeDoc<Deal>>,
+      state: TrailingCloseRetry,
+    ) {
+      if (!this.shouldProceed()) {
+        return
+      }
+      const symbol = d.deal.symbol.symbol
+      const message = trailingCloseFailedMessage(
+        `${d.deal._id}`,
+        symbol,
+        state.reason,
+        state.attempts,
+      )
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: message,
+        paperContext: !!this.data?.paperContext,
+        deal: `${d.deal._id}`,
+        symbol,
+        type: MessageTypeEnum.warning,
+      })
+      await this.processError(
+        this.botId,
+        trailingCloseFailed,
+        // @ts-ignore
+        this.data?.settings.type === DCATypeEnum.terminal,
+        false,
+        true,
+        message,
+        +new Date(),
+        message,
+        true,
+        symbol,
+      )
+    }
+
     async triggerTrailing(dealId: string, price: number) {
       const d = this.getDeal(dealId)
       if (!d) {
@@ -19307,7 +19661,12 @@ function createDCABotHelper<
           d.deal.blockSl ||
           d.notCheckSl ||
           d.deal.symbol.symbol !== symbol ||
-          d.deal.status !== DCADealStatusEnum.open
+          d.deal.status !== DCADealStatusEnum.open ||
+          // Spec 050: a trailing take-profit close is already in flight, with
+          // a retry due. `closeBySl` says the same thing but only until the
+          // worker restarts, and the armed level survives that restart — which
+          // is how the same level came to fire again at a far worse price.
+          this.isTrailingCloseInFlight(d)
         ) {
           continue
         }
@@ -19482,11 +19841,17 @@ function createDCABotHelper<
         if (close && trailing && d.deal.trailingMode === TrailingModeEnum.ttp) {
           const refAvg = dealRefPrice(avgPrice, d.deal.avgPrice)
           const fee = await this.getUserFee(d.deal.symbol.symbol)
-          const diff = this.isLong ? last - refAvg : refAvg - last
-          // Same net-return shape as `checkMinTp`, which cannot cover this: it
-          // is gated on `useMinTP` and a techInd/webhook close condition.
-          const net = diff / refAvg - (fee?.taker ?? 0.001) * 2
-          if (!(net > 0)) {
+          // Spec 050: the floor moved into `closeIsAboveBreakEven` because the
+          // retry path re-asks it minutes later, and the two callers must not
+          // be able to disagree about what "profitable" means.
+          if (
+            !closeIsAboveBreakEven({
+              last,
+              avg: refAvg,
+              taker: fee?.taker ?? 0.001,
+              isLong: this.isLong,
+            })
+          ) {
             this.handleLog(
               `Deal: ${dealId} trailing take profit refused below break even. Level: ${d.deal.trailingLevel}, price: ${last}, avg: ${refAvg}. Disarming trailing`,
             )
@@ -19703,7 +20068,10 @@ function createDCABotHelper<
           d.closeBySl ||
           d.deal.blockSl ||
           d.notCheckSl ||
-          d.deal.status !== DCADealStatusEnum.open
+          d.deal.status !== DCADealStatusEnum.open ||
+          // Spec 050: leave the armed level exactly as the close that is being
+          // retried found it.
+          this.isTrailingCloseInFlight(d)
         ) {
           continue
         }
@@ -19720,6 +20088,14 @@ function createDCABotHelper<
           mode: d.deal.trailingMode,
           level: d.deal.trailingLevel,
         }
+        // Spec 050. Deferred to the end of the iteration: every other write in
+        // this loop reaches the database through `triggerTrailing`, and
+        // `saveDeal` swaps the deal in the map for a copy — so a save made
+        // before the level is computed below would keep the copy and lose the
+        // level, arming a trail at 0.
+        let retryPatch: {
+          trailingClose: TrailingCloseRetry | undefined
+        } | null = null
         if (!d.deal.bestPrice) {
           d.deal.bestPrice = last
           this.handleDebug(
@@ -19745,7 +20121,30 @@ function createDCABotHelper<
           !skipTp &&
           trailingTpPrice
         ) {
-          if (
+          // Spec 050 §5.2: a trail that spent its whole retry budget is
+          // PAUSED, and the price sitting on the profitable side of the arming
+          // line is not enough to lift that — right after a refused close it
+          // usually is, so arming on it would spend another five retries every
+          // four minutes for as long as the venue condition lasts. A real
+          // crossing is required: a tick on the far side, then the tick back.
+          // Same rule, and the same reason, as `moveSlArmed`.
+          const gate = trailingTpArmingPermitted(
+            d.deal.trailingClose,
+            last,
+            trailingTpPrice,
+            this.isLong,
+          )
+          if (!gate.permitted) {
+            const paused = d.deal.trailingClose
+            if (paused && !!paused.rearmReady !== gate.rearmReady) {
+              // A crossing is an event, so persist that one was earned — but
+              // at the END of this iteration, not here: `saveDeal` replaces
+              // the deal in the map with a copy, and the level computed below
+              // is written to THIS object, which a save here would strand.
+              d.deal.trailingClose = { ...paused, rearmReady: gate.rearmReady }
+              retryPatch = { trailingClose: d.deal.trailingClose }
+            }
+          } else if (
             (this.isLong && last >= trailingTpPrice) ||
             (!this.isLong && last <= trailingTpPrice)
           ) {
@@ -19753,6 +20152,17 @@ function createDCABotHelper<
             this.handleDebug(
               `Trailing: Set TTP trailing mode, deal: ${d.deal._id}, price : ${last}, deal trailing tp price %: ${trailingTpPrice}, price ${last} `,
             )
+            if (d.deal.trailingClose) {
+              // Spec 050 §5.3 — a full re-arm: the next close gets a fresh
+              // initial attempt and a fresh budget of five retries. Persisted
+              // at the end of the iteration, for the reason above.
+              this.handleLog(
+                `Deal: ${d.deal._id} price is back above the take profit, re-arming the trailing take profit after a paused close`,
+              )
+              this.clearTrailingRetryTimer(deal)
+              d.deal.trailingClose = undefined
+              retryPatch = { trailingClose: undefined }
+            }
           }
         }
         if (
@@ -19772,6 +20182,13 @@ function createDCABotHelper<
           old.price !== d.deal.bestPrice
         ) {
           await this.triggerTrailing(deal, last)
+        }
+        if (retryPatch) {
+          // Last write of the iteration, and onto whatever `triggerTrailing`
+          // left in the map rather than onto this now-possibly-stale wrapper.
+          const fresh = this.getDeal(deal) ?? d
+          fresh.deal.trailingClose = retryPatch.trailingClose
+          await this.saveDeal(fresh, retryPatch)
         }
       }
     }
@@ -20614,6 +21031,7 @@ function createDCABotHelper<
         }
         this.openNewDealTimer.delete(id)
       }
+      this.clearTrailingRetryTimers()
       for (const [id, timer] of this.dealTimersMap.entries()) {
         if (timer.enterMarketTimer) {
           clearTimeout(timer.enterMarketTimer)

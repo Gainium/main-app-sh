@@ -7,7 +7,7 @@ This document contains detailed schema definitions for all API endpoints.
 All schemas include field descriptions, types, validation rules, and examples.
 This documentation is automatically generated from the OpenAPI specification.
 
-**Last Updated:** 2026-08-29T02:55:26.135Z
+**Last Updated:** 2026-09-17T09:33:32.991Z
 
 ---
 

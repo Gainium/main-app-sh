@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.59.29] - 2026-09-17
+
+### Fixed
+
+- A trailing take profit the exchange refused was never retried. When the
+  trailing take profit fires, the deal has already traded through its take
+  profit and is in profit — and that profit only lasts as long as the price
+  does. The engine made exactly one attempt: if the exchange refused the
+  closing order for a reason of its own — a temporary lockout, a rate-limit
+  ban, a 5xx — the exit was simply abandoned, nothing was said about it, and on
+  a bot with stop loss switched off there was nothing else left to close the
+  deal. Such a close is now retried up to five times, waiting progressively
+  longer between attempts (30 seconds to a minute), and the retry is recorded
+  on the deal so it survives a restart of the platform and so no price tick can
+  fire a second, overlapping close while it is outstanding. Refusals that
+  retrying cannot fix are unchanged: not enough balance, insufficient margin, a
+  rejected order size or price, a dead API key, a trading restriction, or a
+  failure whose outcome is unknown (a timeout, where the order may in fact have
+  reached the exchange). Each retry re-checks that the deal is still open and
+  still above break even first, so a retry can never become a closing order at
+  a loss. If every retry is refused, the bot now says so: the deal is reported
+  as needing your attention, with the exchange's own reason, and the trailing
+  take profit is paused rather than left armed — so a bot restarted days later
+  cannot close the deal at whatever the price has become by then. The pause
+  lifts, and the whole trailing take profit re-arms with a fresh set of
+  retries, once the price crosses back over the take-profit level.
+
+### Added
+
+- Deals returned by the public API v2 now carry `trailingClose` on the
+  `standard` field preset: it says whether a trailing take-profit close is
+  being retried or has been paused after failing, how many attempts were
+  refused, when the next one is due, and the exchange's own reason.
+
 ## [1.59.28] - 2026-09-16
 
 ### Fixed

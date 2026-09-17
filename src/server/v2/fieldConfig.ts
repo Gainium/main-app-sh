@@ -212,6 +212,12 @@ export const DCA_DEAL_STANDARD_FIELDS = [
   // preset, and the people who most need it are the ones polling a deal after
   // an automation opened it.
   'startBlocked',
+  // A trailing take-profit close the exchange refused, and the retry or pause
+  // that followed (spec 050). Standard for the same reason as `startBlocked`:
+  // a caller polling a deal needs to know a profitable exit was attempted and
+  // could not be executed, because while it is `paused` nothing will try
+  // again until price returns to the take profit.
+  'trailingClose',
 ] as const
 
 /**
