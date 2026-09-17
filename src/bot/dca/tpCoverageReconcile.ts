@@ -202,6 +202,18 @@ export const reconcileTpCoverage = (
      * pre-#700 behaviour. See {@link unexplainedDrift}.
      */
     feeRate?: number
+    /**
+     * What the two quantities are COUNTED IN — display only, and the one thing
+     * this module knows about units.
+     *
+     * Every figure here is whatever the caller handed in, and on a
+     * contract-sized venue that is not base (issue #788, spec `051`): a
+     * sentence reading `more base than the deal owns` under a contract count
+     * is the very confusion the defect is made of. Defaults to `base`, and the
+     * wording is byte-identical to the pre-#788 line when it is, so the
+     * `013`/`014`/`016`/`017` suites still assert on exactly what they pinned.
+     */
+    unit?: string
   },
 ): TpCoverageVerdict => {
   if (probe.kind === 'unavailable') {
@@ -250,13 +262,17 @@ export const reconcileTpCoverage = (
   // and this is not the fix that should be making it.
   const staleTps = live.filter((o) => o.status === 'PARTIALLY_FILLED')
   const state: TpCoverageState = drift < 0 ? 'under' : 'over'
+  const unit = venue.unit || 'base'
+  // Named only when it is NOT base, so the base wording stays exactly what it
+  // has always been and the existing suites keep asserting on it verbatim.
+  const suffix = unit === 'base' ? '' : ` ${unit}`
   const verdict =
     state === 'under'
-      ? `${fmtQty(-drift)} of ${fmtQty(tracked)} has no take-profit covering it ` +
+      ? `${fmtQty(-drift)} of ${fmtQty(tracked)}${suffix} has no take-profit covering it ` +
         `(${live.length} live take-profit(s) resting ${fmtQty(resting)})`
       : `take-profits offer ${fmtQty(resting)} against a tracked position of ${fmtQty(
           tracked,
-        )} — ${fmtQty(drift)} more base than the deal owns`
+        )} — ${fmtQty(drift)} more ${unit} than the deal owns`
 
   return {
     ...base,

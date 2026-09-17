@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.59.30] - 2026-09-17
+
+### Fixed
+
+- The check that watches whether a deal's resting take profit still covers the
+  position it protects measured contract-based futures markets in the wrong
+  unit. Those markets are sized in contracts rather than in the traded coin,
+  and the check was comparing the exchange's contract count against a position
+  measured in coin. A deal whose take profit was sized exactly right could
+  therefore be reported as offering far more — or far less — cover than the
+  deal actually owned, and by the same mismatch a position that genuinely had
+  too little cover could be reported as safe. Both sides of the comparison are
+  now brought into a single unit first. On inverse (coin-margined) markets that
+  unit is contracts, with each part of the position converted at the price it
+  actually traded at, and the message now says which unit it counted in; on the
+  other contract-based futures markets the exchange's figure is converted back
+  to the traded coin instead. Nothing changes for markets that are not
+  contract-based, and the check still only reports unless the repair is
+  explicitly switched on.
+
 ## [1.59.29] - 2026-09-17
 
 ### Fixed

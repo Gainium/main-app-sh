@@ -10699,6 +10699,78 @@ function createDCABotHelper<
         // resting; `reconcileTpCoverage` still answers for the empty case, but
         // deciding it is not this caller's business.
         if (!confirmed.length && !unresolvedDeals.has(dealId)) continue
+        const ed = await this.getExchangeInfo(symbol)
+        if (!ed) continue
+        // On an inverse (COIN-M) deal the two sides of this comparison arrive
+        // in DIFFERENT units, and base is not the one to settle on. Spec
+        // `051`, issue #788.
+        //
+        // `sendOrderToExchange` sends `round(origQty * price / contractSize)`
+        // (`main.ts:7188`), so the venue holds CONTRACTS and the `origQty` it
+        // answers with is a contract count — 1158, not the 1.3944 BTC on our
+        // own row. `executedQty` is not: `getOrder` puts that one field back
+        // through `convertOrderExecutedQty` (`main.ts:6988`) and it comes back
+        // BASE. `trackedPosition` then measures `deal.size`, base again. So
+        // the check was subtracting base from contracts and comparing the
+        // result against a third quantity — reported as 1158 against 1.50115,
+        // a 772x "over" on a take-profit that was sized exactly right.
+        //
+        // Contracts is the unit to normalise to, not base: the same 1158
+        // contracts are 1.3944 BTC at the take-profit price and 1.5007 BTC at
+        // the average entry price, so converting the venue's figure to base
+        // and comparing it against `deal.size` reports a healthy deal as
+        // `under` by the whole take-profit distance. Base simply is not
+        // conserved on an inverse contract; the contract count is.
+        //
+        // Same predicate as the two conversions above, so this check cannot
+        // disagree with the code that placed the order.
+        const inContracts = this.coinm && !this.isBitget
+        // On COIN-M `quoteAsset.minAmount` IS the contract size — $100 of
+        // notional per contract on BTCUSD.
+        const contractSize = ed.quoteAsset.minAmount || 1
+        // `deal.avgPrice` carries the position itself: on a futures deal
+        // `getAvgPrice` builds it by folding every fill through
+        // `calculateAbstractPosition` (`main.ts:5591`), which is the
+        // contract-weighted average — the one price at which this position's
+        // base size and its contract count correspond. `lastPrice` is only
+        // the fallback for a deal whose average has not been written yet, and
+        // it is the last-resort price for any term that states none of its
+        // own: converting such a term to zero would drop a quantity that was
+        // really sold and report a covered deal as `under`.
+        const dealPrice = deal.avgPrice || deal.lastPrice || 0
+        const toContracts = (qty: number, price: number) => {
+          const p = Number.isFinite(price) && price > 0 ? price : dealPrice
+          return Number.isFinite(qty) && p > 0 ? (qty * p) / contractSize : 0
+        }
+        // OKX and KuCoin futures size in contracts too, and the SAME asymmetry
+        // reaches this check there — `sendOrderToExchange` multiplies by
+        // `getOKXDenominator` (`main.ts:7203`) and `convertOrderExecutedQty`
+        // divides only `executedQty` back (`main.ts:7002`). It is measured:
+        // of the deals this check reported, nine are `okxLinear` against the
+        // one COIN-M deal, and DOGE-USDT rested a 450-base take-profit the
+        // venue answers for as `0.45` — read as 99.9% UNCOVERED, the branch
+        // that re-arms once the repair is armed.
+        //
+        // Unlike COIN-M this multiplier is FIXED, so base is conserved and
+        // nothing else has to move: the venue's `origQty` is put back into
+        // base exactly as its own `executedQty` already was, and the tracked
+        // side stays the untouched base path. COIN-M wins when a venue is
+        // somehow both (`okxInverse` carrying `settings.coinm`), the same
+        // precedence those two conversions use.
+        const denominator =
+          !inContracts && this.sizedInContracts
+            ? await this.getOKXDenominator(symbol)
+            : 0
+        const toBase = (qty: string | number) => {
+          const q = parseFloat(`${qty}`)
+          // A quantity the venue did not state is handed through UNTOUCHED,
+          // not turned into a 0: `restingTpQty` carries the NaN into the
+          // drift, `isActionable` answers false and the deal reads `covered`,
+          // which is the fail-safe this module is written around. A 0 would
+          // instead read as the whole position `under` and re-arm.
+          return Number.isFinite(q) ? q / denominator : qty
+        }
+        const perContract = Number.isFinite(denominator) && denominator > 0
         const probe: TpCoverageProbe = unresolvedDeals.has(dealId)
           ? { kind: 'unavailable' }
           : {
@@ -10707,13 +10779,20 @@ function createDCABotHelper<
                 (o): LiveTpOrder => ({
                   clientOrderId: o.clientOrderId,
                   status: o.status,
-                  origQty: o.origQty,
-                  executedQty: o.executedQty,
+                  // Already contracts on COIN-M — the venue's own figure.
+                  // On OKX/KuCoin futures it is a contract count that has to
+                  // come back to base, the unit everything else here is in.
+                  origQty: perContract ? toBase(o.origQty) : o.origQty,
+                  // Converted back with the same price it was divided by.
+                  executedQty: inContracts
+                    ? toContracts(
+                        parseFloat(`${o.executedQty}`) || 0,
+                        +o.price || +o.origPrice || 0,
+                      )
+                    : o.executedQty,
                 }),
               ),
             }
-        const ed = await this.getExchangeInfo(symbol)
-        if (!ed) continue
         // The same terms `getTPOrder` sizes a replacement from, so a healthy
         // deal cannot read as drifted: `tpHistory` minus the entries already
         // booked as filled closes, minus base withdrawn by reduce funds.
@@ -10724,25 +10803,59 @@ function createDCABotHelper<
           (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
         )
         const pendingReduce = this.getPendingReduceFunds(findDeal)
+        // `trackedPosition` is `size` less everything already sold, and it is
+        // unit-agnostic: hand it contracts and it answers in contracts. Every
+        // term is converted AT ITS OWN PRICE, which is the whole point —
+        // netting in base first and converting the remainder once would value
+        // a close taken at the take-profit price as though it had happened at
+        // the average entry price. On the production deal, 400 contracts sold
+        // at 83041.7 come back as 372 when measured that way, and a covered
+        // deal reads 29 contracts `under`.
         const tracked = trackedPosition({
-          size: deal.size ?? 0,
-          tpHistory: deal.tpHistory ?? [],
-          filledCloseOrders,
+          size: inContracts
+            ? toContracts(deal.size ?? 0, dealPrice)
+            : (deal.size ?? 0),
+          tpHistory: (deal.tpHistory ?? []).map((h) =>
+            inContracts ? { ...h, qty: toContracts(h.qty, h.price) } : h,
+          ),
+          filledCloseOrders: inContracts
+            ? filledCloseOrders.map((o) => ({
+                ...o,
+                executedQty: toContracts(
+                  parseFloat(`${o.executedQty}`) || 0,
+                  +o.price || +o.origPrice || 0,
+                ),
+              }))
+            : filledCloseOrders,
           reduceFundsBase: (deal.reduceFunds ?? []).reduce(
-            (acc, v) => acc + v.qty,
+            (acc, v) =>
+              acc + (inContracts ? toContracts(v.qty, v.price) : v.qty),
             0,
           ),
-          pendingReduceFundsBase: pendingReduce.base,
+          // `getPendingReduceFunds` already returns the quote amount of the
+          // pending withdrawal, and on an inverse contract the quote amount IS
+          // the notional — so the contract count is a plain division, with no
+          // price to pick.
+          pendingReduceFundsBase: inContracts
+            ? pendingReduce.quote / contractSize
+            : pendingReduce.base,
         })
         const verdict = reconcileTpCoverage(probe, tracked, {
           baseMinAmount: ed.baseAsset.minAmount,
           quoteMinAmount: ed.quoteAsset.minAmount,
-          price: deal.lastPrice || deal.avgPrice || 0,
+          // In contract space the price of one unit is the contract size, so
+          // `isActionable`'s notional test reads "worth at least one contract"
+          // — the venue's own floor, with no new constant.
+          price: inContracts
+            ? contractSize
+            : deal.lastPrice || deal.avgPrice || 0,
           // The fee `getTPOrder` sizes the take-profit net of, so a healthy
           // deal does not read as drifted by exactly that fee (issue #700,
           // spec `014`). Same accessor `getTPOrder` uses, so a `zeroFee` key
           // answers 0 here exactly as it does there.
           feeRate: worstFee(await this.getUserFee(symbol)),
+          // Log wording only — the line has to say what it counted.
+          unit: inContracts ? 'contracts' : 'base',
         })
         const latchKey = standingConditionKey(tpCoverageDrift, dealId)
         if (verdict.state === 'covered' || verdict.state === 'unknown') {
