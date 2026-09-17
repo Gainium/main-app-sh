@@ -31,6 +31,8 @@ process.env.NODE_ENV = 'testing'
 import { describe, it, before } from 'mocha'
 import { expect } from 'chai'
 import { createRequire } from 'module'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { MathHelper } from '../../utils/math'
 import {
   DCACloseTriggerEnum,
@@ -330,17 +332,17 @@ describe('trailing take profit break-even floor (spec 049)', () => {
     // must hold is that the branch writing the CANCELED MARKET row through
     // `handleOrderErrors` — the one the venue lockout took — disarms before it
     // returns, rather than leaving the level armed for the next worker start.
-    const src = require('fs').readFileSync(
-      require('path').join(__dirname, '..', 'dcaHelper.ts'),
-      'utf8',
-    ) as string
+    const src = readFileSync(join(__dirname, '..', 'dcaHelper.ts'), 'utf8')
     const marker = src.indexOf('Send new order request ${tpOrder.')
     expect(marker, 'the close-rejection branch still exists').to.be.greaterThan(
       -1,
     )
     // Wide enough to span the branch's own body, narrow enough that a
-    // `disarmTrailing` somewhere else in the file cannot satisfy it.
-    const branch = src.slice(marker, marker + 1500)
+    // `disarmTrailing` somewhere else in the file cannot satisfy it. Widened
+    // for spec 050, which put the retry decision ahead of the disarm in this
+    // same branch — the disarm is still what happens when the refusal is not
+    // one worth retrying.
+    const branch = src.slice(marker, marker + 2500)
     expect(branch).to.contain('disarmTrailing')
   })
 

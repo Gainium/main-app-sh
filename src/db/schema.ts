@@ -1966,8 +1966,28 @@ const startBlocked = {
   required: false,
 }
 
+/**
+ * A refused trailing take-profit close and its retry — see
+ * `TrailingCloseRetry` in `types.ts`. `_id: false` for the same reason as
+ * `startBlocked`: a plain value object, not a sub-document.
+ */
+const trailingClose = {
+  type: {
+    status: String,
+    attempts: Number,
+    since: Number,
+    lastAttempt: Number,
+    nextAttempt: Number,
+    reason: String,
+    rearmReady: Boolean,
+  },
+  _id: false,
+  required: false,
+}
+
 const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   startBlocked,
+  trailingClose,
   feeSizingFallback,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
   flags: [String],
@@ -2151,6 +2171,8 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
 
 const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   startBlocked,
+  // Combo inherits the trail, and the retry with it, through the DCA mixin.
+  trailingClose,
   feeSizingFallback,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
   action: { type: String, enum: ActionsEnum },

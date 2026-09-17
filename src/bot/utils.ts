@@ -500,6 +500,19 @@ export const positionLeftOpen = 'Position left open'
  */
 export const closeNotActioned = 'Close request not actioned'
 
+/**
+ * A trailing TAKE PROFIT could not be executed: the exchange refused the
+ * closing order, every retry was refused too, and the deal is still open with
+ * its trail paused. Not a malfunction of the bot — the venue said no — but the
+ * user has an open, profitable-when-it-fired position that nothing will close
+ * for them now, so it must reach them. See spec `050`.
+ *
+ * Raised by calling `processError` with this subType directly; deliberately
+ * NOT in `errorDict`, which matches on message text and would then also claim
+ * any unrelated message that happened to contain the same words.
+ */
+export const trailingCloseFailed = 'Trailing take profit not executed'
+
 export const errorDict = {
   'Leverage cannot exceed': futuresPosition,
   'was left open on the exchange': positionLeftOpen,

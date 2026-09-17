@@ -1399,6 +1399,26 @@ export interface DCADealsSchema extends SchemaI {
    */
   startBlocked?: DealStartBlock
   /**
+   * A trailing TAKE PROFIT close the exchange refused, and what the engine is
+   * doing about it. Spec `050`.
+   *
+   * When the trail fires the deal is in profit, and that profit lasts only as
+   * long as the price does — so a refusal the venue owns (a lockout, a
+   * rate-limit ban, a 5xx) is retried on a progressive backoff rather than
+   * abandoned. This field is what makes that retry real rather than a timer in
+   * one worker's memory: it carries the deadline across a restart, and it is
+   * also the only "a trailing close is in flight" statement that survives one
+   * (`closeBySl` does not — it lives on the `FullDeal` wrapper, not here).
+   *
+   * `retrying` suppresses every other close path for this deal, so it is
+   * deliberately self-releasing: see `isTrailingRetryPending`. `paused` means
+   * the budget is spent, the trail is disarmed and the user has been told; it
+   * suppresses nothing, and it is cleared the moment the trail re-arms.
+   *
+   * Descriptive only — it never changes deal status.
+   */
+  trailingClose?: TrailingCloseRetry
+  /**
    * Spec 015 §7 — set only for a deal that zeroed its TP quantity gross-up
    * (spec §2, `quantityFeeIsThirdAssetOnly`) and had that real-fee-sized TP
    * rejected by the venue in a way that looks size-shaped. `pending` is
@@ -1425,6 +1445,35 @@ export type FeeSizingFallback = {
   reason: string
   /** clientOrderId of the real-fee attempt that got rejected. */
   triggeredByOrderId: string
+}
+
+/**
+ * A refused trailing take-profit close and the retry the engine scheduled for
+ * it — see `DCADealsSchema['trailingClose']` and `bot/dca/trailingCloseRetry`.
+ */
+export type TrailingCloseRetry = {
+  /**
+   * `retrying` — an attempt is due at `nextAttempt`; nothing else may close
+   * this deal. `paused` — the budget is spent, the trail is disarmed, and it
+   * will not arm again until price crosses back over the arming line.
+   */
+  status: 'retrying' | 'paused'
+  /** Failed close attempts in this run, the initial one included. */
+  attempts: number
+  /** ms epoch of the first refusal in this run. */
+  since: number
+  /** ms epoch of the most recent refusal. */
+  lastAttempt: number
+  /** ms epoch the next attempt is due. `retrying` only. */
+  nextAttempt?: number
+  /** The venue's own rejection text, verbatim. */
+  reason: string
+  /**
+   * `paused` only: a tick has been observed on the far side of the arming
+   * line, so the tick that crosses back re-arms the trail. Persisted because
+   * a crossing is an event, and a restart must not forget one was earned.
+   */
+  rearmReady?: boolean
 }
 
 /**
