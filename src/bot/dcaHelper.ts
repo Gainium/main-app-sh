@@ -989,6 +989,158 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * The base THIS deal still holds — never a wallet total.
+     *
+     * Spec `053` §4.3. `trackedPosition` is the same pure measure the coverage
+     * reconcile uses (`dcaHelper.ts:10868`), so the two cannot disagree about
+     * what a deal owns. Base-denominated only: the one caller is gated on
+     * `!this.futures`, so there is no contract conversion to do here.
+     */
+    protected dealOwnBasePosition(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+    ): number {
+      const deal = findDeal.deal
+      return trackedPosition({
+        size: deal.size ?? 0,
+        tpHistory: deal.tpHistory ?? [],
+        // `tpHistory` and a filled close order are two records of one event, so
+        // an entry present in both is counted once.
+        filledCloseOrders: this.getOrdersByStatusAndDealId({
+          status: 'FILLED',
+          dealId: `${deal._id}`,
+        }).filter(
+          (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
+        ),
+        reduceFundsBase: (deal.reduceFunds ?? []).reduce(
+          (acc, v) => acc + v.qty,
+          0,
+        ),
+        pendingReduceFundsBase: this.getPendingReduceFunds(findDeal).base,
+      })
+    }
+
+    /**
+     * Put a close back on the book after the venue refused the replacement.
+     *
+     * Spec `053` §4.1, issue #784. Closing a deal is a REPLACEMENT, but
+     * `closeDealById` cancels first and places second: `cancelAllOrder(0,
+     * dealId, true)` pulls the resting take-profit, and when the replacement is
+     * refused the branch above reports and returns. The deal is then `open`,
+     * holding its whole position, with nothing on the book — and since coverage
+     * is only ever re-established as a side effect of a fill, there is nothing
+     * left that can fill. Such a deal cannot recover on its own: it stays open
+     * and uncovered until someone intervenes by hand.
+     *
+     * Re-arms through `getTPOrder` + `placeOrders`, the same pair the
+     * tp-coverage correction calls below. That matters twice: it is the one
+     * function that knows how this deal's take-profit is sized, and it sizes
+     * from the DEAL's own position — never from a wallet balance shared with
+     * the account's other bots, which the code owner has explicitly ruled out
+     * as a thing the platform may compensate for (§3.4).
+     *
+     * Place-then-cancel was the alternative and is wrong on spot: the resting
+     * take-profit HOLDS the base, so sending the replacement first would be
+     * refused for funds by construction, turning an intermittent failure into a
+     * universal one.
+     *
+     * @returns whether this deal has a close on the book now.
+     */
+    protected async restoreCloseAfterRefusal(
+      dealId: string,
+      symbol: string,
+      reason: string,
+    ): Promise<boolean> {
+      // Every check reads LIVE state, not the locals the refusal branch is
+      // holding: between the refusal and here the close may in fact have
+      // landed, and re-arming on top of it would double the position.
+      const live = this.getDeal(dealId)
+      if (!live || live.deal.status !== DCADealStatusEnum.open) {
+        return true
+      }
+      const resting = () =>
+        this.getOrdersByStatusAndDealId({
+          dealId,
+          status: ['NEW', 'PARTIALLY_FILLED'],
+        })
+      if (resting().length) {
+        return true
+      }
+      const deal = live.deal
+      const tpOrders = await this.getTPOrder(
+        symbol,
+        deal.lastPrice,
+        live.initialOrders,
+        deal.avgPrice,
+        deal.initialPrice,
+        dealId,
+        deal,
+      )
+      if (tpOrders?.length) {
+        this.handleLog(
+          `close refused | deal ${dealId} (${symbol}) restoring take-profit ${tpOrders
+            .map((o) => o.qty)
+            .join(', ')} after ${reason}`,
+        )
+        // `cancel: []` — there is nothing to replace, which is the whole
+        // problem. Same call shape as the coverage correction.
+        await this.placeOrders(this.botId, symbol, dealId, {
+          new: tpOrders,
+          cancel: [],
+        })
+      }
+      return resting().length > 0
+    }
+
+    /**
+     * Say so when a deal cannot be closed from its own allocation.
+     *
+     * Spec `053` §4.2. Once `notEnoughBalance.thresholdPassed` latches, further
+     * attempts are served from the local cooldown and the coalesced daily
+     * message stops being refreshed — so a deal can sit uncovered for weeks
+     * while the user is told nothing and the deal itself looks ordinary.
+     *
+     * `force` is what makes this different from the per-order rejection
+     * `handleOrderErrors` has already reported: it bypasses the coalescing, so
+     * the uncovered position is stated even when the venue rejection behind it
+     * has long since been collapsed away. `setError` stays false — the deal
+     * needs attention, but stopping the whole bot is a heavier answer than the
+     * condition warrants.
+     */
+    protected async reportUncoveredAfterRefusal(
+      dealId: string,
+      symbol: string,
+      reason: string,
+    ): Promise<void> {
+      const message =
+        `Deal ${dealId} (${symbol}) is open with no close order on the ` +
+        `exchange: the close could not be funded from this bot's own ` +
+        `position (${reason}). The position is not being closed until the ` +
+        `balance for this pair is restored.`
+      this.handleWarn(`close refused | ${message}`)
+      try {
+        await this.processError(
+          this.botId,
+          this.getErrorSubType(reason),
+          false,
+          false,
+          true,
+          message,
+          +new Date(),
+          message,
+          true,
+          symbol,
+        )
+      } catch (e) {
+        // Never let reporting break the order path — see markDealStartBlocked.
+        this.handleWarn(
+          `reportUncoveredAfterRefusal failed for deal ${dealId}: ${
+            (e as Error)?.message ?? e
+          }`,
+        )
+      }
+    }
+
     getDealsByStatusAndSymbol({
       status,
       symbol,
@@ -6794,6 +6946,18 @@ function createDCABotHelper<
                         true,
                       ),
                       tpOrder.qty,
+                      // Spec 053 §4.3. `find.free` is the WHOLE wallet's free
+                      // base, which on a spot account is shared with every other
+                      // bot and deal the user runs on this asset. A bot accounts
+                      // against its OWN isolated allocation (§3.4), so the close
+                      // is capped at what this deal still holds even when the
+                      // wallet — or a take-profit drifted oversized by the
+                      // #694/#696 family — would allow more. Being a third term
+                      // of a `Math.min` it can only ever close LESS, so it
+                      // cannot refuse a close that is fundable today, and it
+                      // subtracts nothing belonging to a sibling deal: the
+                      // measure is deal-local and never looks at the account.
+                      this.dealOwnBasePosition(findDeal),
                     )
                     this.handleDebug(
                       `Found free ${find.free}, to place ${toPlace}`,
@@ -6948,6 +7112,33 @@ function createDCABotHelper<
                       }
                       if (fastClose) {
                         await closeBuy()
+                      }
+                      // Spec 053 §4.1/§4.2, issue #784. The close is terminally
+                      // refused and the resting take-profit was cancelled at the
+                      // top of this block, so without what follows the deal is
+                      // left `open` holding its whole position with NOTHING on
+                      // the book — and nothing that can ever fill to put one
+                      // back. Last, so it cannot change how any of the reporting
+                      // above behaves.
+                      //
+                      // Not when spec 050 is going to retry the close in a few
+                      // seconds: that retry re-enters this method and re-arms
+                      // through the normal path, and re-arming here as well
+                      // would be the duplicate take-profit of #694 all over
+                      // again.
+                      if (!retrying) {
+                        const covered = await this.restoreCloseAfterRefusal(
+                          dealId,
+                          symbol.pair,
+                          `${result}`,
+                        )
+                        if (!covered) {
+                          await this.reportUncoveredAfterRefusal(
+                            dealId,
+                            symbol.pair,
+                            `${result}`,
+                          )
+                        }
                       }
                     }
                   } else {

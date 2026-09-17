@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.59.32] - 2026-09-17
+
+### Fixed
+
+- Closing a deal replaces its resting take-profit: the take-profit is cancelled
+  and a close is sent in its place. If the exchange refused that close — most
+  often because the account could not fund it — the engine reported the refusal
+  and stopped there, leaving the deal open, still holding its whole position,
+  with no order of any kind on the exchange. Because a take-profit is otherwise
+  only re-armed as a side effect of an order filling, and there was no longer
+  anything that could fill, such a deal could not recover on its own and stayed
+  open indefinitely. A refused close now restores a take-profit sized from that
+  deal's own position, and only when the deal is still open and has nothing
+  resting — so it can neither duplicate a live order nor act on a deal that has
+  since closed.
+- When even that restored take-profit cannot be placed, the deal is genuinely
+  unfundable from its own position. That is now stated to the user as its own
+  message rather than being folded into the daily-coalesced balance warning,
+  which stops being refreshed once the repeated-refusal guard engages — so a
+  position could sit uncovered for weeks with nothing to show for it.
+- Adaptive close re-sizes a refused close to the free balance of the base asset.
+  That balance belongs to the whole wallet, which on a spot account is shared
+  with every other bot and deal trading the same asset, so the re-sized close
+  could be larger than the position the deal itself holds. It is now also capped
+  at that deal's own remaining position. A bot accounts against its own
+  allocation only; no balance belonging to another deal is inspected or
+  subtracted.
+
 ## [1.59.31] - 2026-09-17
 
 ### Fixed
