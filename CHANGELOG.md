@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.59.31] - 2026-09-17
+
+### Fixed
+
+- When an exchange refuses a market base order because the order book is in
+  limit-only mode, the bot re-places that base order as a limit order so the
+  deal still enters rather than being left with nothing on the exchange. That
+  substitution is now reported to the user instead of only being written to the
+  engine log: a bot message names the pair, says the venue would not accept a
+  market entry, says the base order was placed as a limit order instead, and
+  asks for the bot's entry settings to be changed. A bot configured to enter at
+  market could previously keep entering at limit indefinitely with nothing to
+  show for it. The message is raised once per deal rather than once per
+  reposition attempt, and is grouped per trading pair, since limit-only mode
+  applies to one pair at a time. Both entry configurations are covered: a limit
+  entry that falls back to market after its timeout, and a market entry whose
+  very first order is refused.
+
 ## [1.59.30] - 2026-09-17
 
 ### Fixed

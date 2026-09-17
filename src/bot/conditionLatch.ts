@@ -90,6 +90,20 @@ export const notEnoughBalanceNewDeal = 'notEnoughBalanceNewDeal'
 export const tpCoverageDrift = 'tpCoverageDrift'
 
 /**
+ * A market base order the venue refused for limit-only mode, re-placed as a
+ * LIMIT one (issue #789, spec `052`).
+ *
+ * Standing by nature: while the book stays in limit-only mode the reposition
+ * timer re-sends the market entry, the venue refuses it again and the fallback
+ * runs again, once per tick. Only the first of those is news.
+ *
+ * Keyed by DEAL rather than by pair, like {@link tpCoverageDrift}: the report
+ * names the deal whose entry was substituted, and two deals have their entries
+ * substituted independently.
+ */
+export const limitOnlyEntryFallback = 'limitOnlyEntryFallback'
+
+/**
  * How long a standing condition may hold before it is reported again. Matches
  * the `logWindowSec: 86400` the `Cannot start deal` subType is already
  * configured with, so the user's existing daily reminder is unchanged while the

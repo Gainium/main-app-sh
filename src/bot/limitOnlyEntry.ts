@@ -35,6 +35,25 @@ export function isLimitOnlyReason(text: string): boolean {
 }
 
 /**
+ * Bot-message text for a market base order the venue replaced with a limit one.
+ *
+ * Says the three things spec `052` §1.1 requires and the user cannot get
+ * anywhere else: WHY the market entry was refused (the book is in limit-only
+ * mode), WHAT the bot did instead (placed the base order as a LIMIT, so the
+ * deal is not left with nothing on the exchange), and WHAT is theirs to do —
+ * change the bot's entry settings, because the engine will keep substituting
+ * for as long as the book stays limit-only and that is not what they configured.
+ *
+ * Avoids the phrase "was left open on the exchange": `errorDict` maps that to
+ * the `Position left open` subType, which is a different condition.
+ */
+export const limitOnlyEntryReplacedMessage = (
+  symbol: string,
+  dealId: string,
+): string =>
+  `${symbol} is in limit-only mode on the exchange, so it refused the market base order for deal ${dealId}. The base order was placed as a LIMIT order instead, so the deal still entered rather than being stranded with no order. While the book stays in limit-only mode a market entry cannot be accepted on this pair, so please change this bot's entry settings.`
+
+/**
  * Whether a refused base order should be re-sent as a LIMIT instead of being
  * abandoned.
  *

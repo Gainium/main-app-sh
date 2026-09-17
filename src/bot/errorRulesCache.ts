@@ -336,7 +336,16 @@ export function getSubTypeLogPolicy(
  * change to work; an admin can still override it per subType by setting
  * `perSymbol` on the row.
  */
-const DEFAULT_PER_SYMBOL_SUBTYPES = new Set<string>(['Agreement required'])
+const DEFAULT_PER_SYMBOL_SUBTYPES = new Set<string>([
+  'Agreement required',
+  // `limitOnlyEntryReplaced` (bot/utils.ts). Limit-only mode is a property of
+  // one PRODUCT — Coinbase opens it for a single pair during a volatility
+  // auction — and the user has to change the entry settings per affected pair.
+  // Keyed per bot instead, a multi-pair Coinbase bot would own one row naming
+  // whichever pair failed last. Spelled rather than imported: `bot/utils.ts`
+  // pulls in the bot engine, and this module is loaded by it. Spec `052` §4.3.
+  'Market entry replaced with limit',
+])
 
 /** Does this subType describe one contract rather than the whole bot? */
 export function isPerSymbolSubType(

@@ -99,7 +99,11 @@ import MainBot, {
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
 import { underfilledTpQty } from './dca/partialTp'
-import { normalizeReason, shouldFallBackToLimitEntry } from './limitOnlyEntry'
+import {
+  limitOnlyEntryReplacedMessage,
+  normalizeReason,
+  shouldFallBackToLimitEntry,
+} from './limitOnlyEntry'
 import utils from '../utils'
 import {
   gt,
@@ -137,6 +141,7 @@ import {
   closeNotActioned,
   convertDCABot,
   convertComboBot,
+  limitOnlyEntryReplaced,
   positionLeftOpen,
   trailingCloseFailed,
 } from './utils'
@@ -230,6 +235,7 @@ import {
 import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
 import { getSubTypeBehavior } from './errorRulesCache'
 import {
+  limitOnlyEntryFallback,
   notEnoughBalanceNewDeal,
   standingConditionKey,
   tpCoverageDrift,
@@ -9302,6 +9308,22 @@ function createDCABotHelper<
             true,
           )
           if (result) {
+            if (
+              typeof result !== 'string' &&
+              dealId &&
+              sentType === OrderTypeEnum.market
+            ) {
+              // The venue took a MARKET order, so limit-only mode is over for
+              // this deal: the next refusal is a new occurrence and reports
+              // again. It must be a market acceptance specifically — the
+              // fallback's own substituted LIMIT is also an accepted send, and
+              // clearing on that would un-latch the condition on the very tick
+              // it was latched, putting the per-tick flood straight back. Spec
+              // `052` §4.2.
+              this.standingConditionLatch.clear(
+                standingConditionKey(limitOnlyEntryFallback, dealId),
+              )
+            }
             if (typeof result !== 'string' && forceMarket) {
               // The venue accepted the forced market entry, so only NOW is it
               // true that this deal entered at market. Latching this before the
@@ -9343,6 +9365,25 @@ function createDCABotHelper<
                 this.handleLog(
                   `${symbol} book is in limit only mode, cannot enter at market. Re-placing base order as limit`,
                 )
+                // The substitution is the user's to know about: they configured
+                // a market entry, they got a limit one, and only they can change
+                // that. Until spec `052` this branch wrote the log line above
+                // and nothing else, so the refusal that used to reach them
+                // through `handleOrderErrors` — before this branch was inserted
+                // ahead of that `else` — became invisible.
+                //
+                // Latched per DEAL: while the book stays in limit-only mode the
+                // reposition timer re-sends the market entry and lands here
+                // again on every tick, and none of those is news.
+                if (
+                  dealId &&
+                  this.standingConditionLatch.shouldReport(
+                    standingConditionKey(limitOnlyEntryFallback, dealId),
+                    +new Date(),
+                  )
+                ) {
+                  await this.reportLimitOnlyEntryReplaced(dealId, symbol)
+                }
                 await sleep(250)
                 this.placeBaseOrder(
                   this.botId,
@@ -18049,6 +18090,52 @@ function createDCABotHelper<
       await this.processError(
         this.botId,
         trailingCloseFailed,
+        // @ts-ignore
+        this.data?.settings.type === DCATypeEnum.terminal,
+        false,
+        true,
+        message,
+        +new Date(),
+        message,
+        true,
+        symbol,
+      )
+    }
+
+    /**
+     * Tell the user that a market base order was refused for limit-only mode
+     * and re-placed as a LIMIT one.
+     *
+     * Not an error: the entry succeeded and the bot keeps trading, so
+     * `setError` is false and the row is a warning. But it is a change to what
+     * they configured that only they can undo, so `sendError` is true.
+     *
+     * `force` is true — the caller's per-deal {@link ConditionLatch} is the rate
+     * limit. The per-`(bot, subType)` re-raise backoff layered on top of it
+     * would swallow the FIRST report of the next deal, which is the one thing
+     * this must never do. Same reasoning as `reportTrailingCloseFailed`.
+     *
+     * Deliberately has no `shouldProceed()` guard, unlike that method: this runs
+     * inside `placeBaseOrder`, which has already acted on this bot and already
+     * sent an order, and a gate that could silently drop the report is the
+     * defect spec `052` exists to remove.
+     */
+    async reportLimitOnlyEntryReplaced(dealId: string, symbol: string) {
+      const message = limitOnlyEntryReplacedMessage(symbol, dealId)
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Bot warning',
+        botType: this.botType,
+        description: `Warning: ${message}`,
+        paperContext: !!this.data?.paperContext,
+        deal: dealId,
+        symbol,
+        type: MessageTypeEnum.warning,
+      })
+      await this.processError(
+        this.botId,
+        limitOnlyEntryReplaced,
         // @ts-ignore
         this.data?.settings.type === DCATypeEnum.terminal,
         false,

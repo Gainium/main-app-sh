@@ -513,6 +513,19 @@ export const closeNotActioned = 'Close request not actioned'
  */
 export const trailingCloseFailed = 'Trailing take profit not executed'
 
+/**
+ * The venue refused a MARKET base order because its book is in limit-only mode,
+ * so the entry was re-placed as a LIMIT one instead of being abandoned. Not a
+ * malfunction of the bot — the substitution is the right call and it worked —
+ * but the user configured a market entry and got a limit one, and only they can
+ * change the bot's entry settings, so it must reach them. See spec `052`.
+ *
+ * Raised by calling `processError` with this subType directly; deliberately
+ * NOT in `errorDict`, which matches on message text and would then also claim
+ * any unrelated message that happened to contain the same words.
+ */
+export const limitOnlyEntryReplaced = 'Market entry replaced with limit'
+
 export const errorDict = {
   'Leverage cannot exceed': futuresPosition,
   'was left open on the exchange': positionLeftOpen,
