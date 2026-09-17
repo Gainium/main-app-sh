@@ -5432,6 +5432,13 @@ export interface MigrationSchema extends SchemaI {
 export type MigrationJob = {
   version: number
   job: () => Promise<void>
+  /**
+   * Optional read-only preview of {@link job}: counts the documents `job()`
+   * would touch, using the same filter, and writes nothing. Lets an operator
+   * size a bulk data migration before running it. A migration that has no
+   * cheap count, or nothing countable to preview, simply omits this.
+   */
+  dryRun?: () => Promise<number>
 }
 
 export enum BotServiceQueues {
