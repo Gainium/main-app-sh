@@ -89,6 +89,7 @@ import {
   isXperpPair,
   updateRelatedBotsInVar,
 } from './utils'
+import { statsAfterReset } from './dca/botStatsReset'
 import { IdMute, IdMutex } from '../utils/mutex'
 import { mapDataGridOptionsToMongoOptions } from '../db/utils'
 import RabbitClient from '../db/rabbit'
@@ -4816,7 +4817,16 @@ class Bot<T extends UserSchema = UserSchema> {
             { _id: id },
             {
               $set: {
-                stats: null,
+                // A sizing change invalidates the aggregates, which are all
+                // denominated against a starting balance it just moved — but
+                // not `stats.chart`, the daily equity series the bot card
+                // plots. Only a running bot ever rebuilds that series, so
+                // clearing it here left a bot stopped afterwards showing
+                // "No data" for good.
+                stats: statsAfterReset(
+                  oldSettings.stats,
+                  resetStats ? 'all' : 'keepChart',
+                ),
                 symbolStats: null,
                 resetStatsAfter: +new Date(),
               },
@@ -5035,7 +5045,13 @@ class Bot<T extends UserSchema = UserSchema> {
             { _id: id },
             {
               $set: {
-                stats: null,
+                // Same scoping as `changeDCABot` above: keep the equity series
+                // across an order-sizing change, clear it only when the profit
+                // currency re-denominates the whole document.
+                stats: statsAfterReset(
+                  oldSettings.stats,
+                  resetStats ? 'all' : 'keepChart',
+                ),
                 symbolStats: null,
                 resetStatsAfter: +new Date(),
               },
