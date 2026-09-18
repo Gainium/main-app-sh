@@ -154,6 +154,7 @@ import { executedFillQty } from './dca/executedFill'
 import {
   pickRestoreBaseEntry,
   shouldSettlePartialBaseEntry,
+  shouldTopUpSettledBaseEntry,
 } from './dca/partialBaseEntry'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
@@ -8720,14 +8721,60 @@ function createDCABotHelper<
           ? this.promoteEndedBaseEntry(order)
           : await this.cancelOrderOnExchange(order)
       if (settled?.status === 'FILLED') {
-        this.reportBaseEntryCutShort(settled, dealId)
-        return await this.handleUnknownOrder(settled)
+        const booked = await this.topUpSettledBaseEntry(settled)
+        // Spec `057` §4.6: the entry is no longer cut short once the top-up has
+        // completed it. Anything that cannot be shown to be whole still
+        // reports, so a row with an unreadable size stays as loud as it was.
+        const requested = +booked.origQty
+        if (!isFinite(requested) || +booked.executedQty < requested) {
+          this.reportBaseEntryCutShort(booked, dealId)
+        }
+        return await this.handleUnknownOrder(booked)
       }
       this.handleWarn(
         `Deal ${dealId} base order ${order.clientOrderId} could not be settled (${
           settled?.status ?? 'no answer from exchange'
         }). Deal stays in start until the bot restarts`,
       )
+    }
+
+    /**
+     * Buy back the part of the entry the venue did not execute, so the deal
+     * opens on the base order size its owner configured.
+     *
+     * Settling on its own only answers half the question. `startDeal` sizes the
+     * deal — take profit, safety-order ladder, usage — from `executedQty`, so a
+     * settle alone opens a deal a fraction of the requested size and averages
+     * into it with safety orders many times its base. Production settles a
+     * median 39.6 % of what was asked for.
+     *
+     * Nothing new is placed, priced or merged here: `fillPartiallyFilledOrder`
+     * already owns `allowToProcessBr`, the per-order mutex, the
+     * `partiallyFilledFilledSet` de-duplication and `buyRemainder` itself,
+     * which sends the MARKET difference, declines a remainder below the venue's
+     * minimum, merges the fill back into this same row at the blended average
+     * and falls through to the row it has when the venue refuses. Doing it
+     * BEFORE `handleUnknownOrder` is what keeps it to one open at one price.
+     *
+     * Only while the entry decision is still current — see
+     * `shouldTopUpSettledBaseEntry`. The restore path settles rows measured in
+     * hours; buying into one of those at today's price is not the market entry
+     * the user asked for. Spec `057` §4.1/§4.2/§4.3.
+     */
+    async topUpSettledBaseEntry(settled: Order): Promise<Order> {
+      if (
+        !shouldTopUpSettledBaseEntry({
+          executedQty: settled.executedQty,
+          origQty: settled.origQty,
+          updateTime: settled.updateTime,
+          now: Date.now(),
+          entryWindowMs:
+            this.orderLimitRepositionTimeout + this.enterMarketTimeout,
+        })
+      ) {
+        return settled
+      }
+      return (await this.fillPartiallyFilledOrder(settled, true)) ?? settled
     }
 
     /**

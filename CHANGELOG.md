@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.59.37] - 2026-09-18
+
+### Fixed
+
+- A DCA base order that only filled part way now has the missing part bought at
+  market before the deal opens, so the deal is sized on the base order size you
+  configured. Previously the entry was settled on whatever had executed and the
+  rest was simply dropped: the deal's take profit, safety-order ladder and usage
+  were all derived from the fraction that filled, which could leave the first
+  safety order many times the size of the base it was averaging into. The
+  top-up reuses the existing remainder machinery, so a remainder below the
+  exchange's minimum order size is still left alone, and it only applies while
+  the entry decision is current — an entry recovered hours later by a bot
+  restart is opened on what filled, as before (spec `057`). Coinbase market
+  orders are immediate-or-cancel and report a partial fill as cancelled; that
+  shape is now recognised, so a partly filled top-up is recorded against the
+  deal instead of being lost.
+
 ## [1.59.36] - 2026-09-18
 
 ### Fixed

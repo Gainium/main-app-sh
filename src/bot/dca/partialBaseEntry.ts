@@ -127,6 +127,79 @@ export function shouldSettlePartialBaseEntry(
   return !hasPendingCheck
 }
 
+/** What the top-up decision reads. */
+export type TopUpSettledBaseEntryInputs = {
+  /** What the settled row executed, as the venue reported it. */
+  executedQty?: string | number | null
+  /** What it asked for — the user's configured base order size, in base units. */
+  origQty?: string | number | null
+  /** When the venue last touched the row. */
+  updateTime?: number | null
+  /** Now. */
+  now: number
+  /**
+   * The bot's own entry window —
+   * `orderLimitRepositionTimeout + enterMarketTimeout`.
+   *
+   * Not a constant: a bot that widened its `limitTimeout` widened the period
+   * in which "enter at market" is still the answer it asked for, and this
+   * widens with it.
+   */
+  entryWindowMs: number
+}
+
+/**
+ * How much later than the venue's last touch a settle may still buy the
+ * missing part of the entry: the bot's entry window plus this, for venue and
+ * order-queue latency between the last fill and the settle firing.
+ */
+const topUpSlackMs = 60_000
+
+/**
+ * Whether a settled base entry should be topped back up to the size its owner
+ * configured, with a market order for the difference.
+ *
+ * `settlePartialBaseEntry` opens the deal on whatever executed. That is right
+ * — the account is holding it — but it is only half the answer: the user asked
+ * for a base order of a stated size, and the entry machinery is allowed to
+ * change how that size is bought, not how much. Production settles a median
+ * 39.6 % of the requested quantity.
+ *
+ * AGE is what decides it, not which caller is settling. Two of the three act
+ * seconds after the venue last touched the order — the enter-market timer, and
+ * the order queue's cancel callback for a MARKET entry, which arms no timer at
+ * all — while the third is the bot's restore path, which spec `038` measured
+ * recovering rows 2 h 41 m and 9.9 h old. Buying into a nine-hour-old entry at
+ * today's price is not the market entry the user asked for. Both live paths sit
+ * inside the bot's own entry window; the restore path's rows are orders of
+ * magnitude outside it.
+ *
+ * Spec `057` §4.1/§4.2.
+ */
+export function shouldTopUpSettledBaseEntry(
+  args: TopUpSettledBaseEntryInputs,
+): boolean {
+  const { executedQty, origQty, updateTime, now, entryWindowMs } = args
+  const executed = Number(executedQty)
+  const requested = Number(origQty)
+  if (
+    !isFinite(executed) ||
+    !isFinite(requested) ||
+    requested <= 0 ||
+    executed <= 0 ||
+    executed >= requested
+  ) {
+    return false
+  }
+  // Same reason `terminalEntryHoldsAFill` insists on it: a row written from a
+  // REST response can carry `updateTime: -1`, and a row that cannot be dated
+  // cannot be shown to be current.
+  if (typeof updateTime !== 'number' || updateTime <= 0) {
+    return false
+  }
+  return now - updateTime <= entryWindowMs + topUpSlackMs
+}
+
 /** The `dealStart` rows a deal has, as the restore path reads them. */
 export type RestoreBaseEntryRow = {
   status: OrderStatusType | string | null | undefined

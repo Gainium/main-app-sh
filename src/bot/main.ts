@@ -65,6 +65,7 @@ import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
 } from './reduceOnlyRemainder'
+import { isVenueCanceledRemainderFill } from './remainderFill'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
@@ -5790,10 +5791,14 @@ class MainBot<T extends IMainBot> {
           if (
             buyRemainderOrder &&
             (buyRemainderOrder.status === 'FILLED' ||
-              ([ExchangeEnum.bybit].includes(order.exchange) &&
-                order.type === 'MARKET' &&
-                buyRemainderOrder.status === 'CANCELED' &&
-                +buyRemainderOrder.executedQty > 0))
+              // A remainder order the venue ended after executing part of it.
+              // Anything not recognised here is dropped from the row while
+              // still having been bought — see the predicate. Spec `057` §4.5.
+              isVenueCanceledRemainderFill(
+                order.exchange,
+                order.type,
+                buyRemainderOrder,
+              ))
           ) {
             this.handleLog(
               `Buy remainder executed - ${buyRemainderOrder.clientOrderId}, ${
@@ -5836,16 +5841,31 @@ class MainBot<T extends IMainBot> {
     return order
   }
 
+  /**
+   * @param settledBaseEntry the caller is a DCA base entry the engine has
+   * already settled — the row is terminal, its quantities are venue-reported
+   * BASE amounts, and the deal it opens has not been booked yet. Only that
+   * caller may pass `true`, and it is the only way past the `coinbase` skip
+   * inside. Spec `057` §4.4.
+   */
   @IdMute(
     mutex,
     (order: Order) =>
       `${order.botId}${order.clientOrderId}fillPartiallyFilledOrder`,
   )
-  async fillPartiallyFilledOrder(order: Order): Promise<Order> {
+  async fillPartiallyFilledOrder(
+    order: Order,
+    settledBaseEntry = false,
+  ): Promise<Order> {
     if (!this.allowToProcessBr(order.clientOrderId, order.typeOrder)) {
       return order
     }
-    if (this.data?.exchange === ExchangeEnum.coinbase) {
+    // Undocumented, and older than this repository's history — so it is kept
+    // for the stream-driven path it was written for rather than removed on a
+    // guess. A settled base entry opts out: the remainder it sends is a fresh
+    // MARKET order, and `sendOrderToExchange` is what applies Coinbase's
+    // quote-denomination to it.
+    if (!settledBaseEntry && this.data?.exchange === ExchangeEnum.coinbase) {
       return order
     }
     if (this.partiallyFilledFilledSet.has(order.clientOrderId)) {
