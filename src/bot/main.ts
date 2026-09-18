@@ -4324,6 +4324,16 @@ class MainBot<T extends IMainBot> {
   ): Promise<Map<string, FreeAsset[0]> | undefined> {
     this.handleLog('Check assets start')
     const asset: Map<string, FreeAsset[0]> = new Map()
+    // A balance READ that failed is not a balance of zero. Callers score a
+    // missing entry as `?? 0`, so answering an unreadable account with an
+    // empty Map is indistinguishable from a successful read of an account
+    // that genuinely holds none of the pair's assets — and that is how a
+    // funded user gets told "available: 0". `undefined` is already in this
+    // method's declared return type and every caller already reads through
+    // `?.get(...)`, so it is the signal no successful read can produce.
+    // Partial DB figures are still data: serve them rather than discarding
+    // them just because the venue call that followed did not land.
+    const unreadable = () => (asset.size ? asset : undefined)
     let finish = false
     const bnfcr = await this.isBNFCR()
     if (this.exchange) {
@@ -4416,7 +4426,7 @@ class MainBot<T extends IMainBot> {
               ).toISOString()}: ${cooldown.reason}`,
             )
             if (returnData) {
-              return asset
+              return unreadable()
             }
             return
           }
@@ -4434,7 +4444,7 @@ class MainBot<T extends IMainBot> {
           }
           this.handleErrors(balances.reason, 'checkAssets()', 'getBalance')
           if (returnData) {
-            return asset
+            return unreadable()
           }
           return
         }
@@ -4470,7 +4480,9 @@ class MainBot<T extends IMainBot> {
       }
     }
 
-    return asset
+    // No exchange client at all means nothing was read either — same
+    // "unknown", not an account that holds nothing.
+    return this.exchange ? asset : unreadable()
   }
 
   getLastStreamData(symbol: string) {

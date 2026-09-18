@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.59.33] - 2026-09-18
+
+### Fixed
+
+- A failed balance read is no longer reported as a balance of zero. When the
+  engine could not read an account's balances — a venue timeout, a connector
+  error, a dropped connection — the balance check scored every asset as 0 and
+  the bot warned "Not enough balance to start new deal … available: 0" against
+  accounts that were fully funded. A read that did not land is now
+  distinguishable from an account that genuinely holds nothing: the deal is
+  skipped for that cycle and the pair re-armed, exactly as when the latest
+  price is unavailable, and the read failure is reported once on its own
+  instead of a second, contradictory message about the user's funds. A genuine
+  shortfall is reported exactly as before.
+- The "not enough balance to start new deal" alert now names the pair the
+  refusal happened on, instead of the bot's first configured pair.
+
 ## [1.59.32] - 2026-09-17
 
 ### Fixed

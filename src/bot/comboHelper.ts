@@ -4054,7 +4054,17 @@ function createComboBotHelper<
       }
       return []
     }
-    override async checkBalance(symbol: string) {
+    override async checkBalance(symbol: string): Promise<{
+      status: boolean
+      required: number
+      available: number
+      price: number
+      /**
+       * The balance could not be READ. This is not a statement about what
+       * the account holds — callers must not price a shortfall off it.
+       */
+      unknown?: boolean
+    }> {
       const result = {
         status: true,
         required: 0,
@@ -4080,6 +4090,18 @@ function createComboBotHelper<
       }
       const ex = await this.getExchangeInfo(symbol)
       const balance = await this.checkAssets(true, true)
+      if (!balance) {
+        // Same defect and same reasoning as the DCA path; see
+        // `dcaHelper.checkBalance` and spec 054.
+        this.handleDebug('Cannot read balances, bypass check balance')
+        return {
+          status: false,
+          required: 0,
+          available: 0,
+          price: 0,
+          unknown: true,
+        }
+      }
       const leverage = await this.getLeverageMultipler()
       const latestPrice = await this.getLatestPrice(symbol)
       if (latestPrice === 0) {
@@ -5183,10 +5205,25 @@ function createComboBotHelper<
           let checkBalance = await this.checkBalance(symbol)
           if (!checkBalance.status) {
             this.handleDebug(
-              `Not enough balance to start new deal. Required: ${checkBalance.required}, available: ${checkBalance.available}, repeat check in 5 seconds`,
+              checkBalance.unknown
+                ? `Cannot read balance to start new deal ${symbol}, repeat check in 5 seconds`
+                : `Not enough balance to start new deal. Required: ${checkBalance.required}, available: ${checkBalance.available}, repeat check in 5 seconds`,
             )
             await sleep(5000)
             checkBalance = await this.checkBalance(symbol)
+          }
+          if (checkBalance.unknown) {
+            // Same defect and same reasoning as the DCA path, latch policy
+            // included; see `dcaHelper.openNewDeal` and spec 054.
+            this.handleDebug(
+              `Cannot read balance, wont open new deal ${symbol}`,
+            )
+            this.endMethod(_id)
+            this.resetPending(this.botId, symbol)
+            if (cbIfNotOpened) {
+              cbIfNotOpened()
+            }
+            return
           }
           if (checkBalance.status) {
             // The shortfall cleared — re-arm so a return of it is reported.
@@ -5292,7 +5329,18 @@ function createComboBotHelper<
                 +new Date(),
               )
             ) {
-              this.handleErrors(msg, 'openNewDeal', '', false, true)
+              // `symbol` (8th arg) so the alert names the pair the refusal
+              // actually happened on; see `dcaHelper.openNewDeal`.
+              this.handleErrors(
+                msg,
+                'openNewDeal',
+                '',
+                false,
+                true,
+                true,
+                false,
+                symbol,
+              )
             }
             this.resetPending(this.botId, symbol)
             if (cbIfNotOpened) {
