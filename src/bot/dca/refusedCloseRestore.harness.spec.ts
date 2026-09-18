@@ -210,7 +210,19 @@ const buildBot = (o: Opts = {}) => {
     async getTPOrder() {
       return o.rearm === null ? [] : (o.rearm ?? [{ qty: TP_QTY, price: TP_PRICE }])
     }
-    async placeOrders(_b: string, _s: string, _d: string, orders: any) {
+    /**
+     * The restore's seam is `placeOrdersHoldingDealLock`, not `placeOrders` —
+     * the caller already holds the deal's `IdMutex` key and the guarded
+     * wrapper would deadlock on it (spec `055`). Stubbing here leaves that
+     * wrapper on the prototype where every other caller still meets it;
+     * `refusedCloseDeadlock.harness.spec.ts` is what exercises it.
+     */
+    async placeOrdersHoldingDealLock(
+      _b: string,
+      _s: string,
+      _d: string,
+      orders: any,
+    ) {
       this.placed.push(orders)
       if (o.restorePlaces ?? true) {
         this.liveOrders = (orders.new ?? []).map((x: any, i: number) => ({

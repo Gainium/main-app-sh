@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.59.34] - 2026-09-18
+
+### Fixed
+
+- A deal whose close the venue refuses no longer locks up. When a close is
+  refused, the engine puts a take-profit back on the book — but it did so
+  through the order-placement method, which is serialised on the same per-deal
+  key the close itself already holds. That lock is not reentrant and has no
+  timeout, so the close ended up waiting on itself: the take-profit was never
+  actually restored, and the deal's key was never released. Everything that
+  needed the deal afterwards then blocked on it, including stopping the bot —
+  a stop reported success, wrote no status event and left the bot running,
+  and every later stop attempt queued silently behind the first. The restore
+  now runs under the lock the close already holds, so it completes; every
+  other caller keeps taking the lock exactly as before. A bot whose deal
+  cannot be closed for lack of funds can be stopped again, and the refused
+  close is reported instead of hanging.
+
 ## [1.59.33] - 2026-09-18
 
 ### Fixed

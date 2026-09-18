@@ -1084,7 +1084,15 @@ function createDCABotHelper<
         )
         // `cancel: []` — there is nothing to replace, which is the whole
         // problem. Same call shape as the coverage correction.
-        await this.placeOrders(this.botId, symbol, dealId, {
+        //
+        // The lock-free variant, because the only caller of this method is
+        // `closeDealById`, which already holds `${botId}${dealId}` — the very
+        // key `placeOrders` guards itself with. Going through `placeOrders`
+        // here deadlocks the deal outright (spec `055`); the coverage
+        // correction this was modelled on runs under
+        // `checkOrdersAfterReconnect`, which holds no deal lock, so it can and
+        // must keep calling the guarded one.
+        await this.placeOrdersHoldingDealLock(this.botId, symbol, dealId, {
           new: tpOrders,
           cancel: [],
         })
@@ -14613,6 +14621,38 @@ function createDCABotHelper<
       (botId: string, _symbol: string, dealId: string) => `${botId}${dealId}`,
     )
     async placeOrders(
+      _botId: string,
+      symbol: string,
+      dealId: string,
+      orders: { new: Grid[]; cancel: Grid[] },
+    ): Promise<void | Order> {
+      return await this.placeOrdersHoldingDealLock(
+        _botId,
+        symbol,
+        dealId,
+        orders,
+      )
+    }
+
+    /**
+     * `placeOrders`, for a caller that ALREADY holds this deal's lock.
+     *
+     * `closeDealById` is guarded by `` `${botId}${dealId}` `` and so is
+     * `placeOrders` — the same key, on the same module-level `IdMutex`, which
+     * is not reentrant and is built with no lock timeout. So a call chain that
+     * reaches `placeOrders` from INSIDE `closeDealById` waits on a lock it is
+     * itself holding, and waits forever: the key is never released, so every
+     * later close for that deal blocks, the bot's own `stop()` blocks with it
+     * (leaving the bot `open` with no status event and no document write while
+     * the dashboard is answered `OK`), and only a reload frees the namespace
+     * again via `clearClassProperties` → `mutex.clear(botId)`. Spec `055`.
+     *
+     * Calling this instead weakens nothing: the caller holds exactly the lock
+     * `placeOrders` would have taken, so the deal's order path stays
+     * serialised. Do NOT call it from anywhere that does not already hold
+     * `` `${botId}${dealId}` `` — those callers must keep using `placeOrders`.
+     */
+    protected async placeOrdersHoldingDealLock(
       _botId: string,
       symbol: string,
       dealId: string,
