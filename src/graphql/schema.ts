@@ -3998,6 +3998,7 @@ export const BotSchema = /* GraphQL */ `
     closeByTimerValue: Float
     closeByTimerUnits: CooldownUnits
     dcaCustom: [dcaCustomType]
+    dcaIndicatorLevels: [dcaIndicatorLevelType]
     baseOrderSize: String
     baseOrderPrice: String
     useLimitPrice: Boolean
@@ -4071,6 +4072,7 @@ export const BotSchema = /* GraphQL */ `
     closeByTimerValue: Float
     closeByTimerUnits: CooldownUnits
     dcaCustom: [dcaCustomType]
+    dcaIndicatorLevels: [dcaIndicatorLevelType]
     baseOrderSize: String
     baseOrderPrice: String
     useLimitPrice: Boolean
@@ -4772,6 +4774,10 @@ export const BotSchema = /* GraphQL */ `
     uuid: String
     size: String
     step: String
+  }
+  type dcaIndicatorLevelType {
+    orderSize: String
+    minPercFromLast: String
   }
   input createDCABotInput {
     vars: botVarsInput

@@ -77,6 +77,7 @@ import {
   DCValueEnum,
   ActionsEnum,
   DCACustom,
+  DCAIndicatorLevel,
   MultiTP,
   DCADealsSchema,
   OBFVGRefEnum,
@@ -5957,7 +5958,10 @@ function createDCABotHelper<
         )[index]
         const price = await this.getLatestPrice(symbol)
         if (ind) {
-          const { minPercFromLast } = ind
+          const minPercFromLast = this.dcaIndicatorLevel(
+            settings,
+            index,
+          )?.minPercFromLast
           if (minPercFromLast && !isNaN(+minPercFromLast)) {
             const diff = this.isLong
               ? d.deal.lastPrice - price
@@ -16577,9 +16581,8 @@ function createDCABotHelper<
             if (settings.dcaCondition === DCAConditionEnum.indicators) {
               const indicatorValue =
                 +(
-                  (settings.indicators ?? []).filter(
-                    (ind) => ind.indicatorAction === IndicatorAction.startDca,
-                  )[i - 1]?.minPercFromLast ?? '100'
+                  this.dcaIndicatorLevel(settings, i - 1)?.minPercFromLast ??
+                  '100'
                 ) / 100
               price = this.math.round(
                 (i === 1
@@ -16685,11 +16688,8 @@ function createDCABotHelper<
               !useVolumeChange
             ) {
               orderSize =
-                +(
-                  (settings.indicators ?? []).filter(
-                    (ind) => ind.indicatorAction === IndicatorAction.startDca,
-                  )[i - 1]?.orderSize ?? '0'
-                ) || _orderSize
+                +(this.dcaIndicatorLevel(settings, i - 1)?.orderSize ?? '0') ||
+                _orderSize
             }
             if (
               settings.dcaCondition === DCAConditionEnum.custom &&
@@ -22844,6 +22844,30 @@ function createDCABotHelper<
           fromWebhook,
         )
       }
+    }
+
+    /**
+     * Size and distance of indicator-DCA level `index` (0-based) for a deal.
+     *
+     * The deal's own `dcaIndicatorLevels`, frozen when it opened, win — a
+     * bot-settings save applies to new deals only. The bot's live `startDca`
+     * indicator is the answer only for deals opened before the snapshot
+     * existed, or for a level the bot gained after the deal opened. Which
+     * indicators TRIGGER a level stays live on purpose.
+     */
+    dcaIndicatorLevel(
+      settings: {
+        indicators?: SettingsIndicators[]
+        dcaIndicatorLevels?: DCAIndicatorLevel[]
+      },
+      index: number,
+    ): DCAIndicatorLevel | undefined {
+      return (
+        settings.dcaIndicatorLevels?.[index] ??
+        (settings.indicators ?? []).filter(
+          (i) => i.indicatorAction === IndicatorAction.startDca,
+        )[index]
+      )
     }
 
     /**

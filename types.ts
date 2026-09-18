@@ -717,6 +717,16 @@ export type DCACustom = {
   uuid: string
 }
 
+/**
+ * One indicator-DCA ladder level as it stood when the deal opened. Level N is
+ * the N-th `startDca` indicator. Frozen per deal so a bot-settings save cannot
+ * resize or move the safety orders of a deal that is already running.
+ */
+export type DCAIndicatorLevel = {
+  orderSize?: string
+  minPercFromLast?: string
+}
+
 export enum CooldownOptionsEnum {
   symbol = 'symbol',
   bot = 'bot',
@@ -1192,6 +1202,7 @@ export type DCADealsSettings = Pick<
 > & {
   avgPrice: number
   changed: boolean
+  dcaIndicatorLevels?: DCAIndicatorLevel[]
   orderSizePercQty?: number
   slChangedByUser?: boolean
   updatedComboAdjustments?: boolean

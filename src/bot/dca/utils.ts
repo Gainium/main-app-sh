@@ -1,4 +1,9 @@
-import { BotType, CleanComboDealsSchema, CooldownUnits } from '../../../types'
+import {
+  BotType,
+  CleanComboDealsSchema,
+  CooldownUnits,
+  IndicatorAction,
+} from '../../../types'
 
 import type {
   ComboBotSettings,
@@ -137,6 +142,12 @@ class DCAUtils {
       gridLevel: settings.gridLevel,
       dcaCondition: settings.dcaCondition,
       dcaCustom: settings.dcaCustom,
+      dcaIndicatorLevels: (settings.indicators ?? [])
+        .filter((i) => i.indicatorAction === IndicatorAction.startDca)
+        .map((i) => ({
+          orderSize: i.orderSize,
+          minPercFromLast: i.minPercFromLast,
+        })),
       closeByTimer: settings.closeByTimer,
       closeByTimerUnits: settings.closeByTimerUnits,
       closeByTimerValue: settings.closeByTimerValue,

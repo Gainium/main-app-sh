@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.59.36] - 2026-09-18
+
+### Fixed
+
+- Changing a DCA bot's indicator safety-order sizes no longer resizes the deals
+  that are already running. On an indicator ladder each "start DCA" indicator
+  carries its own order size and minimum distance from the last fill, and those
+  were read from the bot's current settings rather than from the deal — so a
+  deal opened with small safety orders would fill its next one at the size
+  configured for new deals. Each deal now keeps the indicator sizes and
+  distances it opened with (spec `056`). Which indicators trigger a safety
+  order still follows the bot. Deals opened before this release keep the
+  previous behaviour until they close.
+
 ## [1.59.35] - 2026-09-18
 
 ### Fixed
