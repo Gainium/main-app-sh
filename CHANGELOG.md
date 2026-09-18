@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.59.35] - 2026-09-18
+
+### Fixed
+
+- Closing a DCA or combo deal that has already finished now answers "Deal
+  already closed" or "Deal already canceled" instead of "Deal not found". A
+  screen still showing the deal as open can now tell that it is finished rather
+  than missing, instead of offering a close that can never succeed.
+
 ## [1.59.34] - 2026-09-18
 
 ### Fixed

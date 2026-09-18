@@ -1283,6 +1283,27 @@ class Bot<T extends UserSchema = UserSchema> {
       data: null,
     }
   }
+  /**
+   * Answer to a close request whose deal is not open.
+   *
+   * The close lookups skip finished deals, so a deal that had already closed
+   * came back as "Deal not found" — which a user still looking at it in an
+   * out-of-date list reads as a platform fault, and retries. Name the state the
+   * deal actually ended in so the client can tell "gone" from "already done".
+   */
+  protected dealNotOpen(status?: DCADealStatusEnum) {
+    if (
+      status === DCADealStatusEnum.closed ||
+      status === DCADealStatusEnum.canceled
+    ) {
+      return {
+        status: StatusEnum.notok as const,
+        reason: `Deal already ${status}`,
+        data: null,
+      }
+    }
+    return this.entityNotFound('Deal')
+  }
 
   public static getInstance(useBots?: boolean): Bot {
     if (!Bot.instance) {
@@ -8097,7 +8118,13 @@ class Bot<T extends UserSchema = UserSchema> {
       return findDeal
     }
     if (!findDeal.data.result) {
-      return this.entityNotFound('Deal')
+      const ended = await this.dcaDealsDb.readData(
+        { _id: dealId, userId },
+        { status: 1 },
+      )
+      return this.dealNotOpen(
+        ended.status === StatusEnum.ok ? ended.data.result?.status : undefined,
+      )
     }
     const botId = findDeal.data.result.botId
 
@@ -8410,7 +8437,13 @@ class Bot<T extends UserSchema = UserSchema> {
       return findDeal
     }
     if (!findDeal.data.result) {
-      return this.entityNotFound('Deal')
+      const ended = await this.comboDealsDb.readData(
+        { _id: dealId, userId },
+        { status: 1 },
+      )
+      return this.dealNotOpen(
+        ended.status === StatusEnum.ok ? ended.data.result?.status : undefined,
+      )
     }
     const botId = findDeal.data.result.botId
 
