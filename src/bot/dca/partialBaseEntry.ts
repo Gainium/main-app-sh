@@ -79,7 +79,7 @@ const terminalStatuses = new Set(['CANCELED', 'EXPIRED'])
  * refusing a fully-executed-but-only-reported-as-cancelled entry would leave
  * exactly the stranding this exists to remove. Spec 048 §4.1.
  */
-function terminalEntryHoldsAFill(
+export function terminalEntryHoldsAFill(
   orderStatus: OrderStatusType | string | null | undefined,
   executedQty: string | number | null | undefined,
   updateTime: number | null | undefined,
@@ -198,6 +198,77 @@ export function shouldTopUpSettledBaseEntry(
     return false
   }
   return now - updateTime <= entryWindowMs + topUpSlackMs
+}
+
+/** A base-entry row as one report of it describes it. */
+export type SettledBaseEntryRow = {
+  status: OrderStatusType | string | null | undefined
+  executedQty?: string | null
+  price?: string | null
+  updateTime?: number | null
+}
+
+/** What the deal should be opened on. */
+export type SettledBaseEntryFill = {
+  executedQty: string
+  price: string
+  updateTime: number
+}
+
+/**
+ * Which report of a settled base entry states what it traded: the row the
+ * cancel came back with, or the row the engine held when it asked.
+ *
+ * `cancelOrderOnExchange` copies every field of the venue's cancel RESPONSE
+ * onto the order — `executedQty` and `price` included, only `clientOrderId`,
+ * `origQty` and `origPrice` are spared — and a cancel response is not obliged
+ * to be a fill report. Kraken spot's is synthesised wholesale with
+ * `executedQty: '0'` and `price: '0'`, so by the time the settle reads its
+ * answer the fill the user stream had already delivered is a zero, the
+ * promotion guard inside `cancelOrderOnExchange` declines on that zero, and
+ * the deal strands with a position nothing is tracking. An order's executed
+ * quantity never decreases, so a response that reports less than we already
+ * read is an ABSENCE of information, not a correction. Spec 059 §4.1.
+ *
+ * `null` means book nothing, and the two ways of getting there are different:
+ * a cancel that ENDED the order without stating a fill is a settled entry that
+ * genuinely traded nothing, while no answer at all leaves a remainder that may
+ * still be resting — opening a deal on a fraction of that would double-book
+ * it. Both keep the caller's warn.
+ */
+export function settledBaseEntryFill(
+  settled: SettledBaseEntryRow | null | undefined,
+  observed: SettledBaseEntryRow,
+): SettledBaseEntryFill | null {
+  if (!settled?.status || !terminalStatuses.has(`${settled.status}`)) {
+    return null
+  }
+  const stated = terminalEntryHoldsAFill(
+    settled.status,
+    settled.executedQty,
+    settled.updateTime,
+  )
+    ? settled
+    : // The response ended the order but said nothing about what it traded,
+      // so its `price` is not a fill price either — both come from the report
+      // that does state one. `CANCELED` is asserted rather than read off
+      // `observed`, whose status is the pre-cancel one (`PARTIALLY_FILLED`):
+      // what is being dated and sized here is the ended order.
+      terminalEntryHoldsAFill(
+          'CANCELED',
+          observed.executedQty,
+          observed.updateTime,
+        )
+      ? observed
+      : null
+  if (!stated) {
+    return null
+  }
+  return {
+    executedQty: `${stated.executedQty}`,
+    price: `${stated.price ?? settled.price}`,
+    updateTime: stated.updateTime as number,
+  }
 }
 
 /** The `dealStart` rows a deal has, as the restore path reads them. */

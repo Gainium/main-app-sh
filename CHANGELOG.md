@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.59.43] - 2026-09-19
+
+### Fixed
+
+- A DCA base order that stopped part filled is now opened into its deal even on
+  venues whose cancel reply does not report fills. Cancelling the remainder is
+  what settles such an entry, and the reply to that cancel was taken as the
+  final word on how much had traded — on a venue that answers only "the order is
+  gone", that overwrote the fill the bot had already seen with a zero, and the
+  deal was left in `start` with no average price, cost, take profit or stop
+  loss, holding a position nothing was tracking and occupying one of the bot's
+  open-deal slots until the bot was restarted. The quantity and price are now
+  taken from whichever report states them, an order's executed quantity never
+  being able to decrease. A cancel that gets no answer at all is unchanged and
+  still waits, because the remainder may still be live.
+- A base order promoted after the venue ended it is now written to the order
+  record. The write could not pass the filter that protects rows already in a
+  final state, which such a row always is, so the promotion stayed in memory and
+  the deal lost its base-order record the next time the bot reloaded.
+
 ## [1.59.42] - 2026-09-19
 
 ### Fixed

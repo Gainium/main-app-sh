@@ -153,6 +153,7 @@ import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { executedFillQty } from './dca/executedFill'
 import {
   pickRestoreBaseEntry,
+  settledBaseEntryFill,
   shouldSettlePartialBaseEntry,
   shouldTopUpSettledBaseEntry,
 } from './dca/partialBaseEntry'
@@ -8847,26 +8848,59 @@ function createDCABotHelper<
       this.handleLog(
         `Deal ${dealId} base order ${order.clientOrderId} stopped at ${order.executedQty} of ${order.origQty} and nothing else will check it. Cancelling the remainder and opening the deal on what filled`,
       )
+      // Read BEFORE the cancel: `cancelOrderOnExchange` copies the venue's
+      // cancel RESPONSE onto this same object, and on a venue whose response is
+      // not a fill report that overwrites the fill we are here to book with a
+      // zero. Spec 059 §1.2.
+      const observed = {
+        status: order.status,
+        executedQty: order.executedQty,
+        price: order.price,
+        updateTime: order.updateTime,
+      }
       const settled =
         order.status === 'CANCELED' || order.status === 'EXPIRED'
           ? this.promoteEndedBaseEntry(order)
           : await this.cancelOrderOnExchange(order)
       if (settled?.status === 'FILLED') {
-        const booked = await this.topUpSettledBaseEntry(settled)
-        // Spec `057` §4.6: the entry is no longer cut short once the top-up has
-        // completed it. Anything that cannot be shown to be whole still
-        // reports, so a row with an unreadable size stays as loud as it was.
-        const requested = +booked.origQty
-        if (!isFinite(requested) || +booked.executedQty < requested) {
-          this.reportBaseEntryCutShort(booked, dealId)
-        }
-        return await this.handleUnknownOrder(booked)
+        return await this.bookSettledBaseEntry(settled, dealId)
+      }
+      // The cancel ENDED the order. That is the settle done, not a failure —
+      // the row is terminal, so there is nothing left to ask the venue about,
+      // and it takes the same chain from one step later for the same reason a
+      // row the venue had already ended does. Spec 059 §4.1/§4.2.
+      const fill = settledBaseEntryFill(settled, observed)
+      if (settled && fill) {
+        return await this.bookSettledBaseEntry(
+          this.promoteEndedBaseEntry({ ...settled, ...fill }),
+          dealId,
+        )
       }
       this.handleWarn(
         `Deal ${dealId} base order ${order.clientOrderId} could not be settled (${
           settled?.status ?? 'no answer from exchange'
         }). Deal stays in start until the bot restarts`,
       )
+    }
+
+    /**
+     * Open the deal on a settled base entry: top it back up to the size its
+     * owner asked for, say so if it is still short, then book it.
+     *
+     * Shared by both ways a settle ends — the cancel promoted the row to
+     * `FILLED`, or the cancel ended it and `settledBaseEntryFill` reconciled
+     * what it traded — so the two cannot drift apart. Spec 059 §4.2.
+     */
+    async bookSettledBaseEntry(settled: Order, dealId: string) {
+      const booked = await this.topUpSettledBaseEntry(settled)
+      // Spec `057` §4.6: the entry is no longer cut short once the top-up has
+      // completed it. Anything that cannot be shown to be whole still
+      // reports, so a row with an unreadable size stays as loud as it was.
+      const requested = +booked.origQty
+      if (!isFinite(requested) || +booked.executedQty < requested) {
+        this.reportBaseEntryCutShort(booked, dealId)
+      }
+      return await this.handleUnknownOrder(booked)
     }
 
     /**
@@ -8945,12 +8979,20 @@ function createDCABotHelper<
      * persisted — so converting again would double-count the position. This is
      * the one difference from `cancelOrderOnExchange`, which converts because
      * the quantity it promotes came raw from the venue's cancel response.
+     *
+     * Forced, for the reason spec `058` §4.3 gives for `topUpSettledBaseEntry`:
+     * the row being promoted is by definition terminal — the venue's own cancel
+     * event reached the `orders` collection through `processOrderQueue` before
+     * this callback ever ran — and `updateOrderOnDb`'s default filter refuses to
+     * write over a `FILLED`/`CANCELED` row. Unforced, the promotion this method
+     * exists to record never left memory, and the deal lost its base-order row
+     * at the next reload. Spec 059 §4.3.
      */
     promoteEndedBaseEntry(order: Order): Order {
       const promoted: Order = { ...order, status: 'FILLED' }
       this.emit('bot update', promoted)
       this.setOrder(promoted)
-      this.updateOrderOnDb(promoted)
+      this.updateOrderOnDb(promoted, true)
       return promoted
     }
 
