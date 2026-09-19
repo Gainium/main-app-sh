@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.59.41] - 2026-09-19
+
+### Fixed
+
+- The backtest engine this backend installs is now the same build the
+  dashboard runs. It had been pinned one release behind, so a backtest run on
+  the server used an engine in which a futures grid closed by "stop and sell"
+  recorded no transaction for the closing trade: the Transactions list ended
+  on the last grid fill and did not add up to the reported total profit, and
+  the closing trade — usually a loss — was missing from the transaction count,
+  the average transaction profit and the Sharpe/Sortino ratios. Running the
+  same strategy in the browser and on the server now returns the same ledger.
+
 ## [1.59.40] - 2026-09-19
 
 ### Added
