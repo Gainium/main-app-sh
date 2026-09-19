@@ -310,3 +310,89 @@ describe('writes that must survive a saveDeal copy', () => {
     expect(bot.full.deal.funding.total).to.equal(-0.5)
   })
 })
+
+describe('more writes that must survive a saveDeal copy', () => {
+  before(function () {
+    this.timeout(180000)
+    Helper = Helper ?? loadModule('../dcaHelper').default(FakeBase as any)
+  })
+
+  it('adding funds does not write an addition that filled meanwhile back as pending', async () => {
+    const bot = makeLedgerBot({
+      ...ledgerDeal(),
+      pendingAddFunds: [{ id: 'earlier', qty: '5', limitPrice: 1.0 }],
+    })
+    const balancesFrom: any[] = []
+    bot.getLatestPrice = async () => 1.1
+    bot.baseAssetPrecision = async () => 2
+    bot.getExchangeInfo = async () => ({
+      priceAssetPrecision: 4,
+      baseAsset: { minAmount: 0 },
+      quoteAsset: { minAmount: 0 },
+    })
+    bot.getOrderId = (p: string) => `${p}-test`
+    bot.updateDealBalances = (d: any) => balancesFrom.push(d)
+    bot.sendOrderToExchange = async () => {
+      // The earlier pending addition fills while this order is in flight.
+      await bot.saveDeal(bot.full, {
+        pendingAddFunds: [],
+        funds: [{ price: 1.0, qty: 5 }],
+      })
+      return { status: 'NEW' }
+    }
+    await bot.addDealFunds(BOT_ID, DEAL_ID, {
+      qty: '10',
+      asset: 'base',
+      useLimitPrice: true,
+      limitPrice: '1.1',
+      type: 'fixed',
+    })
+    await new Promise((r) => setImmediate(r))
+    const pending = bot.full.deal.pendingAddFunds.map((p: any) => p.id)
+    expect(pending).to.have.length(1)
+    expect(pending).to.not.include('earlier')
+    expect(bot.full.deal.funds).to.have.length(1)
+    expect(balancesFrom[0]?.deal.funds).to.have.length(1)
+  })
+
+  it('a safety-order fill does not un-arm a stop loss armed meanwhile', async () => {
+    const bot = makeLedgerBot(ledgerDeal())
+    bot.getAvgPrice = async () => {
+      // triggerStopLoss arms a close on the live entry during the fill.
+      bot.full.closeBySl = true
+      bot.full.notCheckSl = true
+      return { avg: 1.1, display: 1.1 }
+    }
+    await bot.updateDeal(BOT_ID, {
+      dealId: DEAL_ID,
+      clientOrderId: 'D-RO-test2',
+      botId: BOT_ID,
+      symbol: SYMBOL,
+      side: 'BUY',
+      price: '1.1',
+      origPrice: '1.1',
+      executedQty: '100',
+      typeOrder: 'dealRegular',
+      status: 'FILLED',
+      updateTime: 3,
+    })
+    expect(bot.full.closeBySl).to.equal(true)
+    expect(bot.full.notCheckSl).to.equal(true)
+  })
+
+  it('a trailing tick lands on the live deal when it was replaced mid-check', async () => {
+    const bot = makeBot(makeDeal(0))
+    bot.getAggregatedSettings = async () => {
+      // Something saves the deal while the settings are read.
+      await bot.saveDeal(bot.full, { lastPrice: 1.16 })
+      return SETTINGS
+    }
+    const armed = await bot.tick(ARM_TICK)
+    expect(armed.trailingMode).to.equal(TrailingModeEnum.ttp)
+    expect(armed.trailingLevel).to.be.closeTo(
+      ARM_TICK * (1 - TRAIL / 100),
+      1e-9,
+    )
+    expect(armed.lastPrice).to.equal(1.16)
+  })
+})

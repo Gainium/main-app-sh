@@ -2405,6 +2405,30 @@ function createDCABotHelper<
       this.emit('bot settings update', { funding: this.data?.funding })
     }
 
+    /**
+     * Copy the stop-loss latches from the live map entry onto `stale` before
+     * `saveDeal(stale, …)`.
+     *
+     * `saveDeal` spreads the wrapper it is handed over the new entry. A caller
+     * that fetched the deal before an await hands over its old wrapper, so a
+     * close armed meanwhile by `triggerStopLoss` (`closeBySl` / `notCheckSl`
+     * on the live entry) would be silently un-armed and fire again on the next
+     * tick. `keepNotCheckSl` is for a caller that deliberately set its own.
+     */
+    private carryStopLossLatches(
+      stale: FullDeal<ExcludeDoc<Deal>>,
+      keepNotCheckSl = false,
+    ) {
+      const live = this.getDeal(`${stale.deal._id}`)
+      if (!live || live === stale) {
+        return
+      }
+      stale.closeBySl = live.closeBySl
+      if (!keepNotCheckSl) {
+        stale.notCheckSl = live.notCheckSl
+      }
+    }
+
     /** Settle funding one last time, then drop the symbol sub if unused. */
     private async finishDealFunding(dealId: string, pair: string) {
       if (!this.futures || !pair) {
@@ -8112,6 +8136,7 @@ function createDCABotHelper<
           findDeal.closeByTp = false
           await this.checkDealSlMethods(findDeal)
           this.checkDealsPriceExtremum()
+          this.carryStopLossLatches(findDeal)
           this.saveDeal(findDeal, {
             funds: findDeal.deal.funds,
             pendingAddFunds: findDeal.deal.pendingAddFunds,
@@ -8241,6 +8266,8 @@ function createDCABotHelper<
           }
           findDeal.deal.commission += commDeal
           findDeal.closeByTp = false
+          // This branch resets `notCheckSl` on purpose (above); keep it.
+          this.carryStopLossLatches(findDeal, true)
           this.saveDeal(findDeal, {
             commission: findDeal.deal.commission,
             profit: findDeal.deal.profit,
@@ -8408,6 +8435,7 @@ function createDCABotHelper<
           )
           await this.checkDealSlMethods(findDeal)
           this.checkDealsPriceExtremum()
+          this.carryStopLossLatches(findDeal)
           this.saveDeal(findDeal, {
             bestPrice: 0,
             avgPrice: findDeal.deal.avgPrice,
@@ -20613,7 +20641,7 @@ function createDCABotHelper<
       }
       for (const [deal, data] of this.dealsForTrailing) {
         const { trailingTp, skipTp, trailingSl, skipSl, trailingTpPrice } = data
-        const d = this.getDeal(deal)
+        let d = this.getDeal(deal)
         if (
           !d ||
           d.closeBySl ||
@@ -20632,6 +20660,9 @@ function createDCABotHelper<
           continue
         }
         const settings = await this.getAggregatedSettings(d.deal)
+        // `saveDeal` may have replaced the map entry during that await; work
+        // on the current one, or this tick's extreme and level land on a copy.
+        d = this.getDeal(deal) ?? d
         const { trailingTpPerc, slPerc } = settings
 
         const old = {
@@ -23364,18 +23395,26 @@ function createDCABotHelper<
         this.processFilledOrder(result)
       }
       if (result && result.status !== 'FILLED') {
-        deal.deal.pendingAddFunds = [
-          ...(deal.deal.pendingAddFunds ?? []),
+        // `deal` was read before the exchange round trip, and `saveDeal`
+        // replaces the map entry with a copy — a fill processed meanwhile (an
+        // earlier pending addition, a safety order) lives only on the current
+        // entry. Build on that one, or the fill is written back as pending.
+        const live = this.getDeal(dealId) ?? deal
+        live.deal.pendingAddFunds = [
+          ...(live.deal.pendingAddFunds ?? []),
           { ...settings, id: addFundsId, limitPrice: price },
         ] as Deal['pendingAddFunds']
-        deal.deal.levels.all += 1
-        this.saveDeal(deal, {
-          pendingAddFunds: deal.deal.pendingAddFunds,
-          levels: deal.deal.levels,
+        live.deal.levels.all += 1
+        this.saveDeal(live, {
+          pendingAddFunds: live.deal.pendingAddFunds,
+          levels: live.deal.levels,
         }).then(() => {
           this.updateUsage(dealId)
-          this.updateAssets(dealId, deal)
-          this.updateDealBalances(deal)
+          this.updateAssets(dealId)
+          const current = this.getDeal(dealId)
+          if (current) {
+            this.updateDealBalances(current)
+          }
         })
       }
       this.endMethod(_id)
@@ -23610,17 +23649,23 @@ function createDCABotHelper<
         this.processFilledOrder(result)
       }
       if (result && result.status !== 'FILLED') {
-        deal.deal.pendingReduceFunds = [
-          ...(deal.deal.pendingReduceFunds ?? []),
+        // Same as addDealFunds: build on the current map entry, not the copy
+        // read before the exchange round trip.
+        const live = this.getDeal(dealId) ?? deal
+        live.deal.pendingReduceFunds = [
+          ...(live.deal.pendingReduceFunds ?? []),
           { ...settings, id: reduceFundsId, limitPrice: price },
         ] as Deal['pendingReduceFunds']
-        this.saveDeal(deal, {
-          pendingReduceFunds: deal.deal.pendingReduceFunds,
-          levels: deal.deal.levels,
+        this.saveDeal(live, {
+          pendingReduceFunds: live.deal.pendingReduceFunds,
+          levels: live.deal.levels,
         }).then(() => {
           this.updateUsage(dealId)
-          this.updateAssets(dealId, deal)
-          this.updateDealBalances(deal)
+          this.updateAssets(dealId)
+          const current = this.getDeal(dealId)
+          if (current) {
+            this.updateDealBalances(current)
+          }
         })
       }
       this.endMethod(_id)

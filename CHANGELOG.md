@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.59.39] - 2026-09-19
+
+### Fixed
+
+- Adding or reducing funds on a deal could write an earlier pending addition
+  or reduction that filled while the new order was being placed back as still
+  pending, and recompute the deal's balances from the state before that fill.
+  Both now use the deal as it is after the order is placed.
+- A safety-order or take-profit fill processed while a stop-loss close was
+  being triggered could clear the close's in-flight markers, so the next price
+  tick could trigger the same stop loss again. The markers set meanwhile are
+  now kept.
+- A trailing take-profit or trailing stop check could record a new price
+  extreme on an outdated copy of the deal when the deal was updated during the
+  check, losing that tick's move. It now works on the current deal.
+
 ## [1.59.38] - 2026-09-19
 
 ### Fixed
