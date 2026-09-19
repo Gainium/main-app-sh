@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.59.38] - 2026-09-19
+
+### Fixed
+
+- A trailing take profit on a DCA deal that had averaged down could stop
+  following the price. Each safety-order fill is meant to restart the trail
+  from the new average, but since 1.58.13 that restart was dropped: the fill
+  now saves its fee ledger first, which replaces the deal in memory with a copy,
+  and the restart was written to the old copy. The trail then kept measuring
+  from the deal's opening price, so once armed its level did not move until
+  price climbed back above that opening price, and the deal closed at (or sat
+  below) the level where it first armed instead of trailing the rally. The
+  restart now reaches the live deal, and a trailing take profit also starts
+  following from the price at which it arms.
+- A funding settlement on a futures deal wrote its earlier copy of the deal
+  back into memory, undoing any update made to that deal while the funding was
+  being computed — for example a safety-order fill's new average and balances.
+  The funding is now applied to the deal as it currently is.
+
 ## [1.59.37] - 2026-09-18
 
 ### Fixed

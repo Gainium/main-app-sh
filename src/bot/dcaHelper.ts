@@ -2362,22 +2362,28 @@ function createDCABotHelper<
           $max: { 'funding.lastTime': result.lastTime },
         } as any,
       )
-      // In-memory mirrors.
-      const f = deal.funding ?? {
-        total: 0,
-        totalUsd: 0,
-        offset,
-        lastTime: 0,
-        history: [],
+      // In-memory mirrors — onto the deal as it is NOW. `saveDeal` replaces
+      // the map entry with a copy, so `fd` may be stale after the awaits
+      // above; writing it back would undo every save made meanwhile (a fill's
+      // average and balances, a new trailing extreme).
+      const live = this.getDeal(dealId)
+      if (live) {
+        const f = live.deal.funding ?? {
+          total: 0,
+          totalUsd: 0,
+          offset,
+          lastTime: 0,
+          history: [],
+        }
+        live.deal.funding = {
+          total: (f.total ?? 0) + result.deltaQuote,
+          totalUsd: (f.totalUsd ?? 0) + result.deltaUsd,
+          offset: result.maxTime,
+          lastTime: result.lastTime,
+          history: [...(f.history ?? []), ...result.entries].slice(-25),
+        }
+        this.setDeal(live, false)
       }
-      deal.funding = {
-        total: (f.total ?? 0) + result.deltaQuote,
-        totalUsd: (f.totalUsd ?? 0) + result.deltaUsd,
-        offset: result.maxTime,
-        lastTime: result.lastTime,
-        history: [...(f.history ?? []), ...result.entries].slice(-25),
-      }
-      this.setDeal(fd, false)
       if (this.data) {
         const bf = this.data.funding ?? {
           total: 0,
@@ -2393,7 +2399,9 @@ function createDCABotHelper<
         }
       }
       // Push the change to the UI (deal + bot aggregate).
-      this.emit('bot deal update', deal)
+      if (live) {
+        this.emit('bot deal update', live.deal)
+      }
       this.emit('bot settings update', { funding: this.data?.funding })
     }
 
@@ -8391,15 +8399,17 @@ function createDCABotHelper<
             false,
           )
           findDeal.closeByTp = false
-          if (findDeal.deal.bestPrice) {
-            findDeal.deal.bestPrice = 0
-          }
+          // The trail re-bases on the new average. `findDeal` may already be a
+          // stale copy here — the fee-ledger save above swapped the map entry —
+          // so the reset only reaches the live deal through the patch below.
+          findDeal.deal.bestPrice = 0
           this.handleDebug(
             `Avg price ${findDeal.deal.avgPrice} @ ${findDeal.deal.symbol.baseAsset} / ${findDeal.deal.symbol.quoteAsset}`,
           )
           await this.checkDealSlMethods(findDeal)
           this.checkDealsPriceExtremum()
           this.saveDeal(findDeal, {
+            bestPrice: 0,
             avgPrice: findDeal.deal.avgPrice,
             displayAvg: findDeal.deal.displayAvg,
             'settings.avgPrice': findDeal.deal.settings.avgPrice,
@@ -20690,6 +20700,12 @@ function createDCABotHelper<
             (!this.isLong && last <= trailingTpPrice)
           ) {
             d.deal.trailingMode = TrailingModeEnum.ttp
+            // The trail follows the extreme reached SINCE ARMING. `bestPrice`
+            // may still hold an older extreme — the deal's opening price on a
+            // deal that has since averaged down — and the level below only
+            // moves once `last` beats `bestPrice`, so an older, better extreme
+            // would pin the level where it arms until price revisits it.
+            d.deal.bestPrice = last
             this.handleDebug(
               `Trailing: Set TTP trailing mode, deal: ${d.deal._id}, price : ${last}, deal trailing tp price %: ${trailingTpPrice}, price ${last} `,
             )
