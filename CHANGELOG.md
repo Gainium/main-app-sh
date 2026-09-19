@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.40] - 2026-09-19
+
+### Added
+
+- A guard for armed trailing take profits and trailing stops: once armed, a
+  trail's level may never sit further from the current price than one trail
+  width. The guard compares the level with the one the engine itself would set
+  at the current price. It ships in a report-only (shadow) mode: it logs any
+  trail that has fallen behind and changes nothing. A runtime switch moves it
+  to enforcing, where it moves such a level up to the current price, or turns
+  it off. A deal whose close is being retried keeps its level.
+
 ## [1.59.39] - 2026-09-19
 
 ### Fixed

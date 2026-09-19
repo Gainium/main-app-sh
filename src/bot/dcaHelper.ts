@@ -196,6 +196,16 @@ import {
   trailingTpArmingPermitted,
 } from './dca/trailingCloseRetry'
 import {
+  levelAt,
+  parseTrailingGuardMode,
+  trailingLag,
+  TRAILING_GUARD_MODE_KEY,
+  TRAILING_GUARD_MODE_TTL_MS,
+  TRAILING_GUARD_REPORT_INTERVAL_MS,
+  TRAILING_LAG_TOLERANCE,
+  type TrailingGuardMode,
+} from './dca/trailingGuard'
+import {
   classifyTpCloseAttempt,
   tpCloseBlockedMessage,
 } from './dca/tpCloseOutcome'
@@ -614,6 +624,10 @@ function createDCABotHelper<
      * `clearClassProperties`, so a stopped bot leaves nothing holding it.
      */
     trailingRetryTimers: Map<string, NodeJS.Timeout> = new Map()
+    /** Trailing guard mode as last read from Redis, and when. */
+    trailingGuardModeRead: { mode: TrailingGuardMode; at: number } | null = null
+    /** When each deal's trailing lag was last reported, to rate-limit it. */
+    trailingGuardReported: Map<string, number> = new Map()
     dealsForMoveSl: Map<string, number> = new Map()
     dealsForTrailing: Map<string, TrailingDeal> = new Map()
     dealsForStopLoss: Map<string, number> = new Map()
@@ -2426,6 +2440,85 @@ function createDCABotHelper<
       stale.closeBySl = live.closeBySl
       if (!keepNotCheckSl) {
         stale.notCheckSl = live.notCheckSl
+      }
+    }
+
+    /** Trailing guard mode, re-read from Redis at most once a minute. */
+    async trailingGuardMode(): Promise<TrailingGuardMode> {
+      const now = Date.now()
+      const cached = this.trailingGuardModeRead
+      if (cached && now - cached.at < TRAILING_GUARD_MODE_TTL_MS) {
+        return cached.mode
+      }
+      let raw: string | null = null
+      try {
+        raw = (await this.redisDb?.get(TRAILING_GUARD_MODE_KEY)) ?? null
+      } catch {
+        // Unreadable: keep what we had, else the default (shadow).
+        raw = null
+      }
+      const mode =
+        raw === null && cached ? cached.mode : parseTrailingGuardMode(raw)
+      this.trailingGuardModeRead = { mode, at: now }
+      return mode
+    }
+
+    /**
+     * Enforce (or, in shadow, only report) that an armed trail is no further
+     * from `last` than one trail width. See `./dca/trailingGuard`.
+     *
+     * Called once the tick's own level update is done, so it only acts on a
+     * level the normal path left behind. A deal whose close is being retried
+     * or is paused (`trailingClose`) holds its level on purpose (spec 050):
+     * it is reported, never moved.
+     */
+    async guardTrailingLevel(
+      d: FullDeal<ExcludeDoc<Deal>>,
+      last: number,
+      settings: { trailingTpPerc?: string; slPerc?: string },
+    ): Promise<void> {
+      const level = d.deal.trailingLevel ?? 0
+      if (!d.deal.trailingMode || !(level > 0)) {
+        return
+      }
+      const expected = levelAt({
+        mode: d.deal.trailingMode,
+        long: this.isLong,
+        last,
+        trailingTpPerc: settings.trailingTpPerc,
+        slPerc: settings.slPerc,
+      })
+      if (expected === null) {
+        return
+      }
+      const lag = trailingLag(level, expected, this.isLong)
+      if (lag <= TRAILING_LAG_TOLERANCE) {
+        return
+      }
+      const mode = await this.trailingGuardMode()
+      if (mode === 'off') {
+        return
+      }
+      const held = !!d.deal.trailingClose
+      const act = mode === 'enforce' && !held
+      const dealId = `${d.deal._id}`
+      const now = Date.now()
+      const lastReport = this.trailingGuardReported.get(dealId) ?? 0
+      if (act || now - lastReport >= TRAILING_GUARD_REPORT_INTERVAL_MS) {
+        this.trailingGuardReported.set(dealId, now)
+        this.handleWarn(
+          `trailing-guard ${mode}: deal ${dealId} ${d.deal.trailingMode} ${
+            this.isLong ? 'LONG' : 'SHORT'
+          } level ${level} lags ${(lag * 100).toFixed(4)}% behind ${expected} at last ${last}; bestPrice ${
+            d.deal.bestPrice
+          }, trailingTpPerc ${settings.trailingTpPerc ?? '-'}, slPerc ${
+            settings.slPerc ?? '-'
+          }, held ${held} → ${act ? 'RAISED' : 'would raise'}`,
+        )
+      }
+      if (act) {
+        d.deal.trailingLevel = expected
+        d.deal.bestPrice = last
       }
     }
 
@@ -20765,6 +20858,7 @@ function createDCABotHelper<
                 ? last * (1 - (+trailingTpPerc / 100) * longMult)
                 : 0
         }
+        await this.guardTrailingLevel(d, last, settings)
         if (
           d.deal.trailingLevel !== old.level ||
           old.price !== d.deal.bestPrice
