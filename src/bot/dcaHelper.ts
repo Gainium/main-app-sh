@@ -8008,6 +8008,22 @@ function createDCABotHelper<
       this.endMethod(_id)
     }
 
+    /**
+     * Spec `060`: both folds below skip `typeOrder: br`. `buyRemainder`
+     * (`main.ts`) merges a successful remainder back INTO the row it is
+     * completing, at the blended quantity/quote/price, so the remainder's own
+     * row is a receipt for quantity that already lives in its parent — folding
+     * it again counts those units twice and pulls the average toward the
+     * remainder's MARKET price. `loadOrders` drops `br` from the restore, so
+     * the double count lasts only until the bot next rebuilds its order map,
+     * which is why the same deal can store either value.
+     *
+     * `rebalance` is deliberately NOT excluded here (spec `060` §4.3): it is a
+     * real un-merged trade, `buyRemainder` returns early on it, and
+     * `comboHelper.avgPrice` — the cost-basis fold that does see those rows —
+     * counts it. The `[br, rebalance]` pairs elsewhere in this file are fee
+     * ledgers, not cost-basis folds.
+     */
     private async getAvgPrice(
       dealId: string,
     ): Promise<{ avg: number; display: number }> {
@@ -8015,7 +8031,7 @@ function createDCABotHelper<
         let filledDealOrder = this.getOrdersByStatusAndDealId({
           status: 'FILLED',
           dealId,
-        })
+        }).filter((o) => o.typeOrder !== TypeOrderEnum.br)
         filledDealOrder = [...filledDealOrder].sort(
           (a, b) => a.updateTime - b.updateTime,
         )
@@ -8040,7 +8056,11 @@ function createDCABotHelper<
       const filledDealOrder = this.getOrdersByStatusAndDealId({
         status: 'FILLED',
         dealId,
-      }).filter((o) => o.side === (this.isLong ? 'BUY' : 'SELL'))
+      }).filter(
+        (o) =>
+          o.side === (this.isLong ? 'BUY' : 'SELL') &&
+          o.typeOrder !== TypeOrderEnum.br,
+      )
       const base = filledDealOrder.reduce(
         (acc, v) => acc + parseFloat(v.executedQty),
         0,

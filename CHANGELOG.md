@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.59.44] - 2026-09-19
+
+### Fixed
+
+- A DCA deal's average entry price no longer counts a market-bought remainder
+  twice. When part of an entry order does not fill, the bot buys the rest at
+  market and merges that fill back into the original order's quantity, quote
+  and price — so the remainder's own record is a receipt for units the parent
+  order already reports. The average-price calculation was the one ledger that
+  did not skip it, folding those units a second time and pulling the average
+  toward the price the remainder happened to get. Because the remainder record
+  is dropped when a bot reloads its orders, the same deal could show either
+  value depending on when the average was last computed. The average sets the
+  safety-order ladder and the take-profit, so on a long an overstated average
+  held the deal open past the configured target. Both the spot and the futures
+  calculation now skip it; balance-correction orders, which have no parent to
+  duplicate, are still counted.
+
 ## [1.59.43] - 2026-09-19
 
 ### Fixed
