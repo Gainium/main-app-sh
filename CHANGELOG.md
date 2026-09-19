@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.59.42] - 2026-09-19
+
+### Fixed
+
+- A base order that only partly filled before the bot bought the rest at market
+  now records the whole entry. The market top-up was merged into the base order
+  in memory but never written back, so the deal opened correctly and then, the
+  next time the bot reloaded its orders, reverted to only the part that had
+  filled on the order book. The cost, size, average price, capital usage and
+  realised profit of such a deal were all understated by the amount bought at
+  market, and its base balance could read as a short position the account never
+  held.
+
 ## [1.59.41] - 2026-09-19
 
 ### Fixed

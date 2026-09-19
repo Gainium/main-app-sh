@@ -8891,6 +8891,27 @@ function createDCABotHelper<
      * `shouldTopUpSettledBaseEntry`. The restore path settles rows measured in
      * hours; buying into one of those at today's price is not the market entry
      * the user asked for. Spec `057` §4.1/§4.2/§4.3.
+     *
+     * The merged row is then WRITTEN. `buyRemainder` merges in memory only, and
+     * this is the one caller of `fillPartiallyFilledOrder` that did not persist
+     * what it got back — the user-stream consumer and the placement-response
+     * path both follow theirs with the same `updateOrderOnDb(row, grew)`. The
+     * deal opened on the merged copy and then lost it at the next reload, and
+     * every ledger that recomputes from the order rows —
+     * `updateDealBalances` -> `currentBalances`, `updateUsage` -> `cost`, the
+     * fee ledger, realised profit — deliberately excludes the remainder's own
+     * `br` row because it is supposed to live in its parent. So the quantity
+     * was booked nowhere: a 816.74-unit entry that filled 34.66 on the book and
+     * bought the other 780.85 at market reported a cost of 37.25 against 133.09
+     * really spent, and a base balance of -779.76 on a long the account held.
+     *
+     * Forced, because by now the row is terminal and the default filter refuses
+     * it: `cancelOrderOnExchange` has promoted it to `FILLED`, and the venue's
+     * own cancel event races that with `CANCELED`. Awaited, because
+     * `settlePartialBaseEntry` opens the deal from this row on the next line.
+     * Only when the top-up actually recovered quantity — a refused or
+     * below-minimum remainder leaves the row exactly as its settler wrote it.
+     * Spec `058` §4.1/§4.2/§4.3.
      */
     async topUpSettledBaseEntry(settled: Order): Promise<Order> {
       if (
@@ -8905,7 +8926,13 @@ function createDCABotHelper<
       ) {
         return settled
       }
-      return (await this.fillPartiallyFilledOrder(settled, true)) ?? settled
+      const before = +settled.executedQty
+      const booked =
+        (await this.fillPartiallyFilledOrder(settled, true)) ?? settled
+      if (+booked.executedQty > before) {
+        await this.updateOrderOnDb(booked, true)
+      }
+      return booked
     }
 
     /**

@@ -419,8 +419,11 @@ describe('a base entry cut short is never topped back up (spec 057)', () => {
           return toppedUpTo ? { ...o, executedQty: toppedUpTo } : o
         }
         async placeBaseOrder() {}
-        updateOrderOnDb(o: any) {
-          raised.persisted.push({ ...o })
+        // `force` is recorded: spec 058 §4.2 turns it on, and without it the
+        // write is silently refused by `updateOrderOnDb`'s terminal-status
+        // filter — the row is already FILLED or CANCELED by this point.
+        async updateOrderOnDb(o: any, force?: boolean) {
+          raised.persisted.push({ ...o, force })
         }
         setOrder(o: any) {
           this.orders.set(o.clientOrderId, o)
@@ -484,6 +487,51 @@ describe('a base entry cut short is never topped back up (spec 057)', () => {
       expect(raised.events, 'told once').to.have.length(1)
       expect(raised.events[0].description).to.contain('300')
       expect(raised.started[0].executedQty).to.equal('300')
+    })
+
+    // -----------------------------------------------------------------------
+    // spec 058 — the merged row has to reach the order record, or every ledger
+    // the deal keeps reverts to the fraction that filled on the book the first
+    // time orders are reloaded from Mongo.
+    // -----------------------------------------------------------------------
+
+    it('058 §4.1 the topped-up row is written back to the order record', async () => {
+      const bot: any = buildBot({ toppedUpTo: '539.65' })
+      await bot.checkBaseOrder(BOT_ID, SYMBOL, undefined, DEAL_ID)
+      const merged = bot.raised.persisted.filter(
+        (p: any) => p.clientOrderId === CLIENT_ORDER_ID && +p.executedQty === 539.65,
+      )
+      expect(merged, 'merged row persisted').to.have.length(1)
+      expect(
+        merged[0].force,
+        '§4.2 forced past the terminal-status filter',
+      ).to.equal(true)
+    })
+
+    it('058 §4.2 the row is persisted before the deal is opened from it', async () => {
+      const seen: string[] = []
+      const bot: any = buildBot({ toppedUpTo: '539.65' })
+      const persist = bot.updateOrderOnDb.bind(bot)
+      bot.updateOrderOnDb = async (o: any, force?: boolean) => {
+        seen.push('persist')
+        return persist(o, force)
+      }
+      const start = bot.startDeal.bind(bot)
+      bot.startDeal = async (o: any) => {
+        seen.push('open')
+        return start(o)
+      }
+      await bot.checkBaseOrder(BOT_ID, SYMBOL, undefined, DEAL_ID)
+      expect(seen).to.deep.equal(['persist', 'open'])
+    })
+
+    it('058 §4.3 a top-up that recovered nothing writes nothing', async () => {
+      const bot: any = buildBot({})
+      await bot.checkBaseOrder(BOT_ID, SYMBOL, undefined, DEAL_ID)
+      expect(bot.raised.persisted, 'no forced rewrite').to.have.length(0)
+      expect(bot.raised.started[0].executedQty, 'still opened').to.equal(
+        '14.62',
+      )
     })
 
     it('§4.2 a stale entry is settled but never bought into', async () => {
