@@ -2277,11 +2277,13 @@ components:
                 baseOrderSize:
                   type: string
                   example: "100"
-                safetyOrderSize:
+                orderSize:
                   type: string
+                  description: Safety order size
                   example: "100"
-                maxSafetyTradesCount:
+                ordersCount:
                   type: integer
+                  description: Maximum number of safety trades
                   example: 5
             initialBalances:
               type: object
@@ -5244,8 +5246,8 @@ paths:
 
         **Field Presets:**
         - `minimal`: _id, uuid, settings.name, status, exchange, exchangeUUID, paperContext
-        - `standard`: minimal + settings.pair, profit.*, deals.*, createdAt, updatedAt
-        - `extended`: standard + settings configuration, cost, workingTimeNumber, profitToday, dealsStatsForBot
+        - `standard`: minimal + settings.pair, profit.*, deals.*, created, updated
+        - `extended`: standard + settings.baseOrderSize, stop loss (settings.useSl, settings.slPerc), trailing exits (settings.trailingTp, settings.trailingTpPerc, settings.trailingSl), safety orders (settings.ordersCount, settings.activeOrdersCount), cost, workingTimeNumber, profitToday, statusReason, dealsStatsForBot
         - `full`: All available fields
       tags:
         - Bots - Combo
@@ -5522,8 +5524,8 @@ paths:
 
         **Field Presets:**
         - `minimal`: _id, uuid, settings.name, status, exchange, exchangeUUID, paperContext
-        - `standard`: minimal + settings.pair, profit.*, deals.*, createdAt, updatedAt
-        - `extended`: standard + settings.baseOrderSize, cost, workingTimeNumber, profitToday, statusReason
+        - `standard`: minimal + settings.pair, profit.*, deals.*, created, updated
+        - `extended`: standard + settings.baseOrderSize, stop loss (settings.useSl, settings.slPerc), trailing exits (settings.trailingTp, settings.trailingTpPerc, settings.trailingSl), safety orders (settings.ordersCount, settings.activeOrdersCount), cost, workingTimeNumber, profitToday, statusReason
         - `full`: All available fields
 
         **Performance:** Using `minimal` reduces response size by ~85%, `standard` by ~70%

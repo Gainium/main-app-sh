@@ -28,19 +28,31 @@ export const DCA_BOT_STANDARD_FIELDS = [
   'profit.totalUsd',
   'deals.all',
   'deals.active',
-  'createdAt',
-  'updatedAt',
+  // A bot's timestamps are `created`/`updated` — not `createdAt`/`updatedAt`.
+  'created',
+  'updated',
 ] as const
 
 /**
  * Extended fields for DCA bots - additional useful data
+ *
+ * Carries the stop loss, the trailing exits and the safety-order ladder, so
+ * that reading a bot, adjusting a few values and creating the adjusted copy is
+ * lossless. Each value travels with the boolean that arms it: anything omitted
+ * here is silently replaced by `DCA_FORM_DEFAULTS` on the way back in (see
+ * `botDefaults.ts`, and spec 062), which disarms the stop loss and the
+ * trailing take profit rather than merely dropping a number.
  */
 export const DCA_BOT_EXTENDED_FIELDS = [
   ...DCA_BOT_STANDARD_FIELDS,
   'settings.baseOrderSize',
-  'settings.stopLoss',
-  'settings.trailingDeviation',
-  'settings.maxSafetyTradesCount',
+  'settings.useSl',
+  'settings.slPerc',
+  'settings.trailingTp',
+  'settings.trailingTpPerc',
+  'settings.trailingSl',
+  'settings.ordersCount',
+  'settings.activeOrdersCount',
   'cost',
   'workingTimeNumber',
   'profitToday',
@@ -62,19 +74,26 @@ export const COMBO_BOT_STANDARD_FIELDS = [
   'profit.totalUsd',
   'deals.all',
   'deals.active',
-  'createdAt',
-  'updatedAt',
+  'created',
+  'updated',
 ] as const
 
 /**
  * Extended fields for Combo bots
+ *
+ * A combo bot stores `DCABotSettings`, so the same value+toggle pairs as
+ * `DCA_BOT_EXTENDED_FIELDS` — see the note there.
  */
 export const COMBO_BOT_EXTENDED_FIELDS = [
   ...COMBO_BOT_STANDARD_FIELDS,
   'settings.baseOrderSize',
-  'settings.stopLoss',
-  'settings.trailingDeviation',
-  'settings.maxSafetyTradesCount',
+  'settings.useSl',
+  'settings.slPerc',
+  'settings.trailingTp',
+  'settings.trailingTpPerc',
+  'settings.trailingSl',
+  'settings.ordersCount',
+  'settings.activeOrdersCount',
   'cost',
   'workingTimeNumber',
   'profitToday',
@@ -238,12 +257,16 @@ export const DCA_DEAL_STANDARD_FIELDS = [
 
 /**
  * Extended fields for DCA deals
+ *
+ * A deal's `settings` is the snapshot of the bot settings taken when it
+ * opened, so it uses the bot's own names — the safety order size is
+ * `orderSize` and the safety trade count is `ordersCount` (spec 062).
  */
 export const DCA_DEAL_EXTENDED_FIELDS = [
   ...DCA_DEAL_STANDARD_FIELDS,
   'settings.baseOrderSize',
-  'settings.safetyOrderSize',
-  'settings.maxSafetyTradesCount',
+  'settings.orderSize',
+  'settings.ordersCount',
   'initialBalances',
   'currentBalances',
   'feePaid',

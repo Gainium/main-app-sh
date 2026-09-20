@@ -1,19 +1,24 @@
 /**
- * Spec 061 — the `bots.grid` field presets must name paths that exist on a
- * stored grid bot document.
+ * Spec 061 (`bots.grid`) and spec 062 (`bots.dca`, `bots.combo`, `deals.dca`)
+ * — a field preset must name paths that exist on the stored document.
  *
  * Run: npm test  (mocha, src/**\/*.spec.ts)
  *
- * The GET handler (`api.ts:1013`) turns a preset into a MongoDB projection
- * verbatim: `parseFieldsParam` -> `buildProjection` -> `botDb.readData`. A
- * projected path that does not exist on the document is simply absent from the
- * response. `filterFields` applies the same dot-path semantics to a plain
- * object, so driving the real preset through it over a production-shaped
- * document is an exact stand-in for the projection, with no DB.
+ * The GET handlers (`api.ts:1013`, `:251`, `:355`, `:459`) turn a preset into a
+ * MongoDB projection verbatim: `parseFieldsParam` -> `buildProjection` ->
+ * `<db>.readData`. A projected path that does not exist on the document is
+ * simply absent from the response. `filterFields` applies the same dot-path
+ * semantics to a plain object, so driving the real preset through it over a
+ * production-shaped document is an exact stand-in for the projection, with no
+ * DB.
  */
 import { expect } from 'chai'
 import { parseFieldsParam, filterFields } from './fieldUtils'
-import { GRID_FORM_DEFAULTS } from './botDefaults'
+import {
+  GRID_FORM_DEFAULTS,
+  DCA_FORM_DEFAULTS,
+  COMBO_FORM_DEFAULTS,
+} from './botDefaults'
 
 /**
  * Verbatim field shape of a live production grid bot (paperBinanceUsdm,
@@ -87,11 +92,123 @@ const PROD_GRID_BOT = {
   updated: new Date('2026-09-20T12:31:23.518Z'),
 } as const
 
-/** Paths named by a preset that resolve to nothing on the document. */
-function unresolvedPaths(preset: 'minimal' | 'standard' | 'extended') {
-  const fields = parseFieldsParam(preset, 'bots.grid') ?? []
-  const projected = filterFields(PROD_GRID_BOT as any, fields)
+/**
+ * Field shape of a live production DCA bot. The settings are
+ * `DCA_FORM_DEFAULTS` — every bot created through the platform carries them —
+ * with the stop loss, trailing exits and safety-order ladder set away from the
+ * defaults, because the point of `extended` is that those survive a
+ * read-modify-create round trip.
+ */
+const PROD_DCA_BOT = {
+  _id: '6aa36d6c2d3a9f803ca83c55',
+  uuid: '4c1ab0e3-9d64-4e61-bd52-0e0a1a0b9a11',
+  status: 'open',
+  statusReason: '',
+  exchange: 'binance',
+  exchangeUUID: '4c1ab0e3-9d64-4e61-bd52-0e0a1a0b9a11',
+  paperContext: false,
+  settings: {
+    ...DCA_FORM_DEFAULTS,
+    name: 'ETH ladder',
+    pair: ['ETH_USDT'],
+    baseOrderSize: '50',
+    useSl: true,
+    slPerc: '-7',
+    trailingTp: true,
+    trailingTpPerc: '0.9',
+    trailingSl: true,
+    ordersCount: 8,
+    activeOrdersCount: 3,
+  },
+  profit: { total: 12.4, totalUsd: 12.4, freeTotal: 12.4, freeTotalUsd: 12.4 },
+  deals: { all: 31, active: 2 },
+  cost: 400,
+  workingTimeNumber: 9_912_304,
+  profitToday: { start: 0, end: 0, totalToday: 0, totalTodayUsd: 0 },
+  created: new Date('2026-04-02T09:12:41.001Z'),
+  updated: new Date('2026-09-20T11:02:08.244Z'),
+} as const
+
+/** Same, for a combo bot — its own preset repeats the DCA settings paths. */
+const PROD_COMBO_BOT = {
+  ...PROD_DCA_BOT,
+  uuid: '77c0d6a2-1f44-4d0a-8f8e-2a1c9b7d3e55',
+  settings: {
+    ...COMBO_FORM_DEFAULTS,
+    name: 'SOL combo',
+    pair: ['SOL_USDT'],
+    baseOrderSize: '500',
+    useSl: true,
+    slPerc: '-25',
+    trailingTp: true,
+    trailingTpPerc: '1.2',
+    trailingSl: false,
+    ordersCount: 6,
+    activeOrdersCount: 2,
+  },
+  dealsStatsForBot: { closed: 12, won: 9 },
+} as const
+
+/**
+ * Field shape of a live production DCA deal. A deal's `settings` is the
+ * snapshot of the bot settings taken when it opened, so it uses the same
+ * names. `startBlocked` and `trailingClose` are deliberately absent: they are
+ * event markers written only when the venue refuses an order (specs 048 /
+ * 050) and cleared again once it is resolved, so they are missing from most
+ * stored deals. An optional path that is absent because nothing went wrong is
+ * a correctly spelled name, not the defect this spec is about — which is why
+ * they are skipped rather than added to the fixture.
+ */
+const PROD_DCA_DEAL = {
+  _id: '6aa36d6c2d3a9f803ca83c56',
+  botId: '6aa36d6c2d3a9f803ca83c55',
+  status: 'closed',
+  symbol: { symbol: 'ETHUSDT', baseAsset: 'ETH', quoteAsset: 'USDT' },
+  profit: { total: 1.22, totalUsd: 1.22 },
+  createTime: 1_757_000_000_000,
+  updateTime: 1_757_100_000_000,
+  closeTime: 1_757_100_000_000,
+  exchange: 'binance',
+  exchangeUUID: '4c1ab0e3-9d64-4e61-bd52-0e0a1a0b9a11',
+  paperContext: false,
+  avgPrice: 2431.11,
+  lastPrice: 2455.02,
+  levels: { all: 8, complete: 2 },
+  cost: 150,
+  value: 151.22,
+  startBlocked: undefined,
+  trailingClose: undefined,
+  settings: {
+    ...DCA_FORM_DEFAULTS,
+    baseOrderSize: '50',
+    orderSize: '25',
+    ordersCount: 8,
+    activeOrdersCount: 3,
+  },
+  initialBalances: { ETH: 0, USDT: 1000 },
+  currentBalances: { ETH: 0.06, USDT: 850 },
+  feePaid: { base: 0, quote: 0.15 },
+  feeByAsset: [],
+  usage: { credits: 0 },
+  stats: { drawdownPercent: 0, runUpPercent: 0.8 },
+  strategy: 'LONG',
+} as const
+
+/**
+ * Paths named by a preset that resolve to nothing on the document.
+ * Preset-agnostic: `skip` lets a fixture exclude paths that are legitimately
+ * optional on a stored document (see `PROD_DCA_DEAL`).
+ */
+function unresolvedPathsFor(
+  doc: Record<string, any>,
+  endpoint: Parameters<typeof parseFieldsParam>[1],
+  preset: 'minimal' | 'standard' | 'extended',
+  skip: string[] = [],
+) {
+  const fields = parseFieldsParam(preset, endpoint) ?? []
+  const projected = filterFields(doc, fields)
   return fields.filter((path) => {
+    if (skip.includes(path)) return false
     let cursor: any = projected
     for (const part of path.split('.')) {
       if (cursor === null || cursor === undefined) return true
@@ -99,6 +216,19 @@ function unresolvedPaths(preset: 'minimal' | 'standard' | 'extended') {
     }
     return cursor === undefined
   })
+}
+
+function unresolvedPaths(preset: 'minimal' | 'standard' | 'extended') {
+  return unresolvedPathsFor(PROD_GRID_BOT as any, 'bots.grid', preset)
+}
+
+/** What a preset actually hands the caller back. */
+function read(
+  doc: Record<string, any>,
+  endpoint: Parameters<typeof parseFieldsParam>[1],
+  preset: 'minimal' | 'standard' | 'extended',
+): any {
+  return filterFields(doc, parseFieldsParam(preset, endpoint) ?? [])
 }
 
 describe('spec 061 — bots.grid field presets', () => {
@@ -171,6 +301,130 @@ describe('spec 061 — bots.grid field presets', () => {
       // the caller's own edits survive too
       expect(stored.pair).to.equal('DRIFTUSDT')
       expect(stored.levels).to.equal(19)
+    })
+  })
+})
+
+describe('spec 062 — bots.dca / bots.combo / deals.dca field presets', () => {
+  // A deal's optional event markers: absent because nothing went wrong, not
+  // because the preset misnamed them. See PROD_DCA_DEAL.
+  const DEAL_OPTIONAL = ['startBlocked', 'trailingClose']
+
+  describe('§1.1 every projected path resolves on a stored document', () => {
+    const cases = [
+      { label: 'bots.dca', doc: PROD_DCA_BOT, endpoint: 'bots.dca' },
+      { label: 'bots.combo', doc: PROD_COMBO_BOT, endpoint: 'bots.combo' },
+    ] as const
+    for (const { label, doc, endpoint } of cases) {
+      for (const preset of ['minimal', 'standard', 'extended'] as const) {
+        it(`${label} fields=${preset} names no path that is absent from the document`, () => {
+          expect(
+            unresolvedPathsFor(doc as any, endpoint, preset),
+          ).to.deep.equal([])
+        })
+      }
+    }
+    for (const preset of ['minimal', 'standard', 'extended'] as const) {
+      it(`deals.dca fields=${preset} names no path that is absent from the document`, () => {
+        expect(
+          unresolvedPathsFor(
+            PROD_DCA_DEAL as any,
+            'deals.dca',
+            preset,
+            DEAL_OPTIONAL,
+          ),
+        ).to.deep.equal([])
+      })
+    }
+  })
+
+  describe('§1.1 standard returns the timestamps', () => {
+    it('dca returns the creation and update timestamps', () => {
+      const res = read(PROD_DCA_BOT as any, 'bots.dca', 'standard')
+      expect(res.created).to.not.equal(undefined)
+      expect(res.updated).to.not.equal(undefined)
+    })
+
+    it('combo returns the creation and update timestamps', () => {
+      const res = read(PROD_COMBO_BOT as any, 'bots.combo', 'standard')
+      expect(res.created).to.not.equal(undefined)
+      expect(res.updated).to.not.equal(undefined)
+    })
+  })
+
+  describe('§1.1 extended returns the DCA settings it names', () => {
+    it('returns the stop loss, the trailing exits and the safety-order ladder', () => {
+      const res = read(PROD_DCA_BOT as any, 'bots.dca', 'extended')
+      expect(res.settings?.useSl).to.equal(true)
+      expect(res.settings?.slPerc).to.equal('-7')
+      expect(res.settings?.trailingTp).to.equal(true)
+      expect(res.settings?.trailingTpPerc).to.equal('0.9')
+      expect(res.settings?.trailingSl).to.equal(true)
+      expect(res.settings?.ordersCount).to.equal(8)
+      expect(res.settings?.activeOrdersCount).to.equal(3)
+    })
+
+    it('combo returns them too', () => {
+      const res = read(PROD_COMBO_BOT as any, 'bots.combo', 'extended')
+      expect(res.settings?.useSl).to.equal(true)
+      expect(res.settings?.slPerc).to.equal('-25')
+      expect(res.settings?.trailingTpPerc).to.equal('1.2')
+      expect(res.settings?.ordersCount).to.equal(6)
+      expect(res.settings?.activeOrdersCount).to.equal(2)
+    })
+  })
+
+  describe("§1.1 extended returns the deal's order ladder", () => {
+    it('returns the safety order size and count', () => {
+      const res = read(PROD_DCA_DEAL as any, 'deals.dca', 'extended')
+      expect(res.settings?.baseOrderSize).to.equal('50')
+      expect(res.settings?.orderSize).to.equal('25')
+      expect(res.settings?.ordersCount).to.equal(8)
+    })
+  })
+
+  describe('§1.2 a read-modify-create round trip keeps the settings', () => {
+    it('does not fall back to the DCA_FORM_DEFAULTS stop loss, trailing and ladder', () => {
+      // What the caller reads back...
+      const read_ = read(PROD_DCA_BOT as any, 'bots.dca', 'extended')
+
+      // ...adjusted (new pair, bigger base order)...
+      const body = {
+        ...read_.settings,
+        pair: ['ARB_USDT'],
+        baseOrderSize: '75',
+      }
+
+      // ...and merged by POST /api/v2/bots/dca (api.ts:2229).
+      const stored = { ...DCA_FORM_DEFAULTS, ...body }
+
+      // the defaults that would silently win if the field were unreadable
+      expect(DCA_FORM_DEFAULTS.useSl).to.equal(false)
+      expect(DCA_FORM_DEFAULTS.trailingTp).to.equal(false)
+      expect(DCA_FORM_DEFAULTS.ordersCount).to.equal(5)
+      expect(DCA_FORM_DEFAULTS.activeOrdersCount).to.equal(1)
+
+      expect(stored.useSl).to.equal(true)
+      expect(stored.slPerc).to.equal('-7')
+      expect(stored.trailingTp).to.equal(true)
+      expect(stored.trailingTpPerc).to.equal('0.9')
+      expect(stored.trailingSl).to.equal(true)
+      expect(stored.ordersCount).to.equal(8)
+      expect(stored.activeOrdersCount).to.equal(3)
+      // the caller's own edits survive too
+      expect(stored.pair).to.deep.equal(['ARB_USDT'])
+      expect(stored.baseOrderSize).to.equal('75')
+    })
+  })
+
+  describe('§2.3 the preset names exist on DCABotSettings', () => {
+    it('names only settings paths that DCA_FORM_DEFAULTS declares', () => {
+      const declared = new Set(Object.keys(DCA_FORM_DEFAULTS))
+      const unknown = (parseFieldsParam('extended', 'bots.dca') ?? [])
+        .filter((f) => f.startsWith('settings.'))
+        .map((f) => f.slice('settings.'.length))
+        .filter((k) => !declared.has(k))
+      expect(unknown).to.deep.equal([])
     })
   })
 })

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.59.46] - 2026-09-20
+
+### Fixed
+
+- The DCA and combo bot list endpoints now return the fields their `standard`
+  and `extended` presets promise, and a DCA or combo deal returns its safety
+  order size and count. Several of the paths those presets projected — the
+  created/updated timestamps, the stop loss, the trailing deviation and the
+  safety trade count on a bot, and the safety order size and count on a deal —
+  were spelled differently from the way the documents store them, so they
+  resolved to nothing and were simply left out of the response, with no error:
+  `standard` returned no timestamps at all, and `extended` returned only the
+  base order size of the four settings it names. Because the create endpoint
+  fills any setting a request omits from the platform defaults, reading a bot
+  through a preset, changing a value and creating the adjusted copy quietly
+  disarmed the stop loss and the trailing take profit and reset the
+  safety-order ladder. The presets now name the stored paths, and each value
+  travels with the boolean that arms it so that round trip keeps it. Field
+  names that never resolved are the only ones removed; `full` and explicit
+  field lists are unaffected.
+
 ## [1.59.45] - 2026-09-20
 
 ### Fixed
