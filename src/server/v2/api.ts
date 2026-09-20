@@ -47,7 +47,7 @@ import {
   checkDCADealSettings,
   checkDCABotSettings,
   checkPairs,
-  isXperpPair,
+  findPairBySymbol,
 } from '../../bot/utils'
 import {
   dcaBotDb,
@@ -96,6 +96,7 @@ import {
   addAditionalFields,
   addIndicatorsDefaults,
   applyGridFuturesConstraints,
+  clonedBotPair,
   sortFields,
 } from './helpers'
 import RedisClient from '../../db/redis'
@@ -3664,15 +3665,10 @@ const v2API = <R extends UserSchema = UserSchema>(
         }
 
         // Combine settings: source bot + overrides
-        const symbol = sourceBot.symbol as any
         const combinedSettings = {
           ...sourceBot.settings,
           ...(settingsOverrides ?? {}),
-          pair: pair?.length
-            ? pair
-            : botType === 'grid'
-              ? `${symbol.baseAsset}_${symbol.quoteAsset}`
-              : sourceBot.settings.pair,
+          pair: clonedBotPair(sourceBot.settings.pair, pair),
         }
 
         // Auto-append (clone) to name if not overridden
@@ -4332,19 +4328,7 @@ const v2API = <R extends UserSchema = UserSchema>(
       }
       const foundPairs = [payload.data.settings.pair]
         .flat()
-        .map((pp) => {
-          // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the
-          // canonical exchange-native pair string; splitting on `_` would
-          // tear the `_UM_XPERP` contract-type suffix apart instead of
-          // base/quote.
-          if (isXperpPair(pp)) {
-            return pairs.data.result?.find((p) => p.pair === pp)
-          }
-          const [base, quote] = pp.split('_')
-          return pairs.data.result?.find(
-            (p) => p.baseAsset.name === base && p.quoteAsset.name === quote,
-          )
-        })
+        .map((pp) => findPairBySymbol(pairs.data.result ?? [], pp))
         .filter((p): p is (typeof pairs.data.result)[0] => !!p)
       if (foundPairs.length !== payload.data.settings.pair.length) {
         return {

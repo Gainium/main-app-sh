@@ -20,7 +20,7 @@ import { ValidationResult } from './bots/config'
 import { CreateDCABotInputRaw } from '../api'
 import { DCA_FORM_DEFAULTS } from '../botDefaults'
 import { Types } from 'mongoose'
-import { isXperpPair } from '../../../bot/utils'
+import { findPairBySymbol } from '../../../bot/utils'
 
 const indicatorsCheck: {
   condition: (input: CreateDCABotInput) => boolean
@@ -167,19 +167,7 @@ export const validateCreateDCABotInputLogic = async <
   }
 
   const foundPairs = input.pair
-    .map((p) => {
-      // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the canonical
-      // exchange-native pair string; splitting on `_` would tear the
-      // `_UM_XPERP` contract-type suffix apart instead of base/quote.
-      if (isXperpPair(p)) {
-        return readPairsForExchange.data.result.find((pair) => pair.pair === p)
-      }
-      const [base, quote] = p.split('_')
-      return readPairsForExchange.data.result.find(
-        (pair) =>
-          pair.baseAsset.name === base && pair.quoteAsset.name === quote,
-      )
-    })
+    .map((p) => findPairBySymbol(readPairsForExchange.data.result, p))
     .filter((p) => p !== undefined)
   if (foundPairs.length > 1 && !input.useMulti) {
     response.errors.push([
@@ -610,23 +598,30 @@ export const validateCreateGridBotInputLogic = async (
       `Orders in advance must be less than or equal to levels`,
     ])
   }
-  // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the canonical
-  // exchange-native pair string; splitting on `_` would tear the
-  // `_UM_XPERP` contract-type suffix apart instead of base/quote.
-  const pairFilter = isXperpPair(input.pair)
-    ? { exchange: input.exchange, pair: input.pair }
-    : (() => {
-        const [base, quote] = input.pair.split('_')
-        return {
-          exchange: input.exchange,
-          'baseAsset.name': base.trim(),
-          'quoteAsset.name': quote.trim(),
-        }
-      })()
-  const readPairForExchange = await pairDb.readData<{ pair: string }>(
-    pairFilter,
+  // Same precedence as `findPairBySymbol`, expressed against the indexes
+  // rather than over a loaded list: the exchange-native symbol identifies
+  // exactly one instrument, `BASE_QUOTE` does not. Spec 067.
+  const symbol = input.pair.trim()
+  const [base, quote] = symbol.split('_')
+  let readPairForExchange = await pairDb.readData<{ pair: string }>(
+    { exchange: input.exchange, pair: symbol },
     { pair: 1 },
   )
+  if (
+    readPairForExchange.status === StatusEnum.ok &&
+    !readPairForExchange.data.result &&
+    base &&
+    quote
+  ) {
+    readPairForExchange = await pairDb.readData<{ pair: string }>(
+      {
+        exchange: input.exchange,
+        'baseAsset.name': base.trim(),
+        'quoteAsset.name': quote.trim(),
+      },
+      { pair: 1 },
+    )
+  }
 
   if (readPairForExchange.status === StatusEnum.notok) {
     response.valid = false

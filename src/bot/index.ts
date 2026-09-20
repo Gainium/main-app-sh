@@ -86,7 +86,7 @@ import {
   getObjectsDiff,
   combineMaps,
   convertHedgeComboBotToArray,
-  isXperpPair,
+  findPairBySymbol,
   updateRelatedBotsInVar,
 } from './utils'
 import { statsAfterReset } from './dca/botStatsReset'
@@ -2996,25 +2996,9 @@ class Bot<T extends UserSchema = UserSchema> {
       status: StatusEnum.ok as const,
       reason: null,
       data: pairs
-        .map((p) => {
-          // X-Perp pairs (e.g. `AAVE-USD_UM_XPERP`) are already the
-          // canonical exchange-native pair string - splitting them on `_`
-          // would tear the `_UM_XPERP` contract-type suffix apart instead
-          // of separating base/quote, so match those directly first.
-          if (isXperpPair(p)) {
-            const direct = pairsFromDb?.data?.result.find((f) => f.pair === p)
-            return direct ?? null
-          }
-          const split = p.split('_')
-          const find = pairsFromDb?.data?.result.find(
-            (f) =>
-              f.baseAsset.name === split[0] && f.quoteAsset.name === split[1],
-          )
-          if (find) {
-            return find
-          }
-          return null
-        })
+        .map(
+          (p) => findPairBySymbol(pairsFromDb?.data?.result ?? [], p) ?? null,
+        )
         .filter((f) => f !== null) as ClearPairsSchema[],
     }
   }

@@ -201,9 +201,16 @@ const validateCommonSchema = <
     }
   })
 
+  // Only shape is checked here. Whether the pair exists is settled against the
+  // `pairs` collection in the logic validator, which accepts both the
+  // documented `BASE_QUOTE` input and the exchange-native symbol every API
+  // read returns (`findPairBySymbol`). Requiring a `_` here rejected the
+  // native form before that lookup could run - schema validation
+  // short-circuits - which made a read-modify-create round trip impossible.
+  // Spec 067.
   const filterInvalidPairs = [input.pair]
     .flat()
-    .filter((p) => typeof p !== 'string' || p.trim() === '' || !p.includes('_'))
+    .filter((p) => typeof p !== 'string' || p.trim() === '')
   if (filterInvalidPairs.length > 0) {
     response.errors.push([
       'pair',

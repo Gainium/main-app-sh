@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.59.50] - 2026-09-20
+
+### Fixed
+
+- The API rejected the pair format its own reads return, so a bot read from
+  the API could not be created back through it. A bot stores and returns its
+  pair as the exchange-native symbol (`ARBUSDT`), while the create endpoints
+  accepted only the `BASE_QUOTE` input format (`ARB_USDT`) and answered
+  anything else with `Field pair contains invalid entries`. Pair resolution is
+  now keyed on the exchange-native symbol first and falls back to splitting on
+  the separator, so both formats are accepted and both resolve to the same
+  instrument. This also reaches pairs the separator split could never handle -
+  dated delivery contracts (`BTCUSDT_250627`) and `*_PERP` symbols, where
+  splitting produced a nonsense base and quote; the X-Perp special case that
+  existed for one suffix is now the general rule. Affects grid, DCA and combo
+  creation and terminal deals.
+- Cloning a grid bot without naming a pair rebuilt the pair from the bot's
+  base and quote assets. That value matches no listed market, so the clone was
+  stored with an empty base and quote and a pair string the venue does not
+  know - and on a venue listing several contracts against one base/quote it
+  named a different instrument than the bot being cloned. A clone now reuses
+  the source bot's pair exactly as stored, for every bot type.
+
 ## [1.59.49] - 2026-09-20
 
 ### Fixed

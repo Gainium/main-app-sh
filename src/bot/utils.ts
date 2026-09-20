@@ -1491,6 +1491,51 @@ export const checkDCABotSettings = (
 // legacy `base_quote` delimiter and must not be split on below.
 export const isXperpPair = (pair: string) => /_UM_XPERP$/i.test(pair)
 
+export type PairLike = {
+  pair: string
+  baseAsset: { name: string }
+  quoteAsset: { name: string }
+}
+
+/**
+ * Resolve one pair string against an exchange's `pairs` rows.
+ *
+ * Two formats reach us, and only one of them is a key:
+ *
+ * - the **exchange-native symbol** (`ARBUSDT`, `BTCUSD_PERP`,
+ *   `BTCUSDT_260925`, `AAVE-USD_UM_XPERP`) - what every bot stores in
+ *   `settings.pair`, what `Bot.createBot`/`prepareDCABot` look up, and what
+ *   every API read hands back;
+ * - the documented API input format **`BASE_QUOTE`** (`ARB_USDT`) - which is
+ *   *not* unique: a venue lists a perpetual and several dated delivery
+ *   contracts on the same base and quote, so a split-only lookup can answer
+ *   with a different instrument than the caller meant.
+ *
+ * Native first is therefore both correct and safe: no pair row is named
+ * `${baseAsset}_${quoteAsset}`, so an exact match can never capture a
+ * `BASE_QUOTE` input, and a native symbol can never be torn into the wrong
+ * instrument. This generalises the X-Perp special case above, which was this
+ * same rule hand-applied to one suffix. See spec 067.
+ */
+export const findPairBySymbol = <T extends PairLike>(
+  pairs: T[],
+  input: string,
+): T | undefined => {
+  const symbol = input.trim()
+  const native = pairs.find((p) => p.pair === symbol)
+  if (native) {
+    return native
+  }
+  const [base, quote] = symbol.split('_')
+  if (!base || !quote) {
+    return undefined
+  }
+  return pairs.find(
+    (p) =>
+      p.baseAsset.name === base.trim() && p.quoteAsset.name === quote.trim(),
+  )
+}
+
 export const convertPairs = async (pairs: string[], exchange: ExchangeEnum) => {
   if (!pairs.length) {
     return []

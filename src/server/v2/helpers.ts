@@ -358,6 +358,24 @@ export const addAditionalFields = (
   }
 }
 
+/**
+ * The `pair` a cloned bot is created with.
+ *
+ * An explicit override wins; otherwise the source bot's stored `settings.pair`
+ * is reused verbatim. That value is the exchange-native symbol, which is what
+ * `Bot.createBot` and `prepareDCABot` resolve against the `pairs` collection.
+ * Rebuilding a grid clone's pair as `${symbol.baseAsset}_${symbol.quoteAsset}`
+ * matched no row, so the clone was stored with an empty base/quote and a pair
+ * string the venue does not list - and on a venue that lists several contracts
+ * on one base/quote it names a different instrument than the bot being cloned.
+ * Spec 067 §1.3.
+ */
+export const clonedBotPair = <T, O>(
+  sourcePair: T,
+  overridePair: O | undefined,
+): T | O =>
+  Array.isArray(overridePair) && overridePair.length ? overridePair : sourcePair
+
 export const applyGridFuturesConstraints = <T extends Partial<BotSettings>>(
   settings: T,
 ): T => {
