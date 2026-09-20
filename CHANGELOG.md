@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.59.48] - 2026-09-20
+
+### Fixed
+
+- Paginated API listings could omit rows. Every paged endpoint ordered its
+  results by a single field that is not unique — the asset for balances, the
+  creation time for bots, deals, global variables, hedge bots and backtest
+  requests — and rows sharing that value have no defined order between them.
+  Each page is a separate query, so a group of tied rows sitting on a page
+  boundary could come back twice on one page and not at all on the next. The
+  page still looked full and the reported total still matched, so a caller
+  reading every page had no way to notice: a de-duplicating client dropped the
+  repeat and kept the gap. Account-wide balance reads were the worst affected,
+  because one row exists per connection and asset, so an asset held on several
+  connections ties once per connection. Listings are now ordered with a unique
+  tiebreaker, which makes paging deterministic and complete. The response shape
+  and page size are unchanged; only the order of rows that share a value — and
+  was previously arbitrary — can differ. Account-wide balance listings are also
+  now served by an index instead of an in-memory sort.
+
+## [1.59.47] - 2026-09-20
+
+### Fixed
+
+- `GET /api/v2/bots/{botType}/details` read every bot type with the DCA field
+  preset. The bot type is a path parameter, but the route bound its field
+  preset once, when it was registered, so `fields=minimal|standard|extended`
+  always resolved against the DCA configuration. A grid bot fetched there came
+  back without any of its grid definition — no price range, no level count, no
+  grid type, no take-profit / stop-loss configuration, no stored symbol, level
+  counts, initial or average price — and a combo bot without its deal
+  statistics, while the response metadata named the DCA fields it had used.
+  Because the create endpoint fills any setting a request omits from the
+  platform defaults, reading a grid bot from this endpoint, adjusting a value
+  and creating the adjusted copy produced a bot with an empty price range, the
+  default level count and its take profit and stop loss disarmed. The endpoint
+  now resolves the preset from the bot type on every request and reports the
+  one it used. Additive on the wire: no field that was returned before is
+  missing now, DCA responses are unchanged, and `fields=full` and explicit
+  field lists are unaffected. Not every grid setting is readable from this
+  endpoint yet, so the copy round trip is much improved but not yet lossless.
+
 ## [1.59.46] - 2026-09-20
 
 ### Fixed

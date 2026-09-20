@@ -3090,6 +3090,11 @@ export const registerIndexes = () => {
   // {userId, exchangeUUID, asset}; with only the userId index each such op
   // scans every doc the user owns (1.5k+ for dust-heavy accounts).
   balancesSchema.index({ userId: 1, exchangeUUID: 1, asset: 1 })
+  // Backs the account-wide balances listing (no connection filter), which sorts
+  // on {asset, _id}. Neither index above can serve that order — {userId} has no
+  // asset component and the compound one is ordered by exchangeUUID first — so
+  // the sort ran in memory over every row the user owns, once per page.
+  balancesSchema.index({ userId: 1, asset: 1, _id: 1 })
 
   dcaBacktestingResult.index({ userId: 1 })
   dcaBacktestingResult.index({ shareId: 1 })

@@ -313,7 +313,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const result = await dcaBotDb.readData(
           filter,
           projection,
-          { sort: { created: -1 }, skip, limit },
+          { sort: { created: -1, _id: -1 }, skip, limit },
           true, // returnArray
           true, // count
         )
@@ -410,7 +410,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const result = await comboBotDb.readData(
           filter,
           projection,
-          { sort: { created: -1 }, skip, limit },
+          { sort: { created: -1, _id: -1 }, skip, limit },
           true,
           true,
         )
@@ -559,14 +559,14 @@ const v2API = <R extends UserSchema = UserSchema>(
           ? await comboDealsDb.readData(
               filter,
               projection,
-              { sort: { createTime: -1 }, skip, limit },
+              { sort: { createTime: -1, _id: -1 }, skip, limit },
               true,
               false,
             )
           : await dcaDealsDb.readData(
               filter,
               projection,
-              { sort: { createTime: -1 }, skip, limit },
+              { sort: { createTime: -1, _id: -1 }, skip, limit },
               true,
               false,
             )
@@ -877,7 +877,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const balances = await balanceDb.readData(
           filter,
           projection,
-          { sort: { asset: 1 }, skip: (page - 1) * limit, limit },
+          { sort: { asset: 1, _id: 1 }, skip: (page - 1) * limit, limit },
           true,
           true,
         )
@@ -967,7 +967,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const result = await globalVarsDb.readData(
           filter,
           {},
-          { sort: { created: -1 }, skip, limit },
+          { sort: { created: -1, _id: -1 }, skip, limit },
           true,
           true,
         )
@@ -1068,7 +1068,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const result = await botDb.readData(
           filter,
           projection,
-          { sort: { created: -1 }, skip, limit },
+          { sort: { created: -1, _id: -1 }, skip, limit },
           true,
           true,
         )
@@ -1180,7 +1180,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           const result = await hedgeDbFor(hedgeType).readData(
             filter,
             undefined,
-            { sort: { created: -1 }, skip, limit, populate: 'bots' },
+            { sort: { created: -1, _id: -1 }, skip, limit, populate: 'bots' },
             true,
             true,
           )
@@ -1464,7 +1464,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         const result = await requestDb.readData(
           { userId: user.id },
           requestProjection,
-          { sort: { created: -1 }, skip, limit },
+          { sort: { created: -1, _id: -1 }, skip, limit },
           true,
           true,
         )
