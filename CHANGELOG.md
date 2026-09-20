@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.59.49] - 2026-09-20
+
+### Fixed
+
+- Reading a grid bot from the API returned only part of its configuration, so
+  a copy created from what was read was not the bot that was read. The
+  `extended` field preset for grid bots named 13 of the 38 settings the create
+  endpoint merges a request against, and the create endpoint replaces anything
+  the body omits with the platform default. The take profit and stop loss
+  **flags, conditions and actions** were readable while their **thresholds**
+  were not, so a copy was created with its stop loss armed and its trigger
+  reset to the default — a flag without its threshold is not a configuration.
+  The budget, grid step, orders in advance, sell displacement and the profit /
+  order currencies were also unreadable, so the copy traded a different size on
+  a different grid; and the margin type, leverage and strategy settings were
+  unreadable, so a cross-margin 5x futures grid was copied as an isolated 1x
+  one with a different direction. Nothing errored and nothing warned — the response
+  looked complete and its metadata honestly named the preset it had used. The
+  preset now covers every setting the create endpoint accepts, so a
+  read-modify-create round trip keeps the bot's configuration. The change is
+  additive: no field was removed or renamed, and the two settings the create
+  endpoint explicitly refuses are still not returned, so echoing the response
+  back does not fail validation. Grid bot listings and the bot details endpoint
+  share the preset and are both fixed. `fields=full` and explicit field lists
+  are unaffected.
+
 ## [1.59.48] - 2026-09-20
 
 ### Fixed

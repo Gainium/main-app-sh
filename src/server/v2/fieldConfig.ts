@@ -184,11 +184,19 @@ export const GRID_BOT_STANDARD_FIELDS = [
 /**
  * Extended fields for Grid bots
  *
- * Carries the whole grid definition — range, level count and the take
- * profit / stop loss configuration — so that reading a bot, adjusting a few
- * values and creating the adjusted copy is lossless. Anything omitted here is
- * silently replaced by `GRID_FORM_DEFAULTS` on the way back in (see
- * `botDefaults.ts`, and spec 061).
+ * Carries the whole grid definition — range, level count, budget, grid
+ * geometry, the take profit / stop loss configuration and the futures
+ * configuration — so that reading a bot, adjusting a few values and creating
+ * the adjusted copy is lossless. Anything omitted here is silently replaced by
+ * `GRID_FORM_DEFAULTS` on the way back in (see `botDefaults.ts`, and specs 061
+ * and 066).
+ *
+ * The settings below are exactly `GRID_FORM_DEFAULTS` — the list
+ * `POST /api/v2/bots/grid` merges the request body over — minus
+ * `GRID_EXCLUDED_FIELDS`, which that endpoint refuses with
+ * `Field <name> is not supported` and which must therefore not be handed back
+ * to a caller who would echo them. `gridFieldProjection.spec.ts` fails if the
+ * two lists drift apart again.
  */
 export const GRID_BOT_EXTENDED_FIELDS = [
   ...GRID_BOT_STANDARD_FIELDS,
@@ -196,16 +204,43 @@ export const GRID_BOT_EXTENDED_FIELDS = [
   'settings.lowPrice',
   'settings.topPrice',
   'settings.gridType',
+  'settings.gridStep',
+  'settings.budget',
+  'settings.ordersInAdvance',
+  'settings.useOrderInAdvance',
+  'settings.prioritize',
+  'settings.sellDisplacement',
+  'settings.profitCurrency',
+  'settings.orderFixedIn',
+  'settings.feeOrder',
+  'settings.useStartPrice',
+  'settings.startPrice',
+  'settings.skipBalanceCheck',
   'settings.tpSl',
   'settings.tpSlCondition',
   'settings.tpSlAction',
   'settings.sl',
   'settings.slCondition',
   'settings.slAction',
+  // The thresholds the flags above arm. Returning the flags without them is
+  // what let a copy be created with its stop loss armed at the default 0.
+  'settings.tpPerc',
   // The one path the `bots.dca` preset resolved on a grid bot, and so the one
   // a grid caller receives today: reading grid bots with their own preset
   // (spec 063) must not take it away.
   'settings.slPerc',
+  'settings.tpTopPrice',
+  'settings.slLowPrice',
+  'settings.tpSlLimit',
+  'settings.slLimit',
+  // Without these a cross-margin 5x futures grid is copied as an isolated 1x
+  // spot one.
+  'settings.futures',
+  'settings.coinm',
+  'settings.marginType',
+  'settings.leverage',
+  'settings.strategy',
+  'settings.futuresStrategy',
   'cost',
   'initialPrice',
   'avgPrice',

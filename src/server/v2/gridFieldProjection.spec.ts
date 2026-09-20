@@ -1,6 +1,9 @@
 /**
- * Spec 061 (`bots.grid`) and spec 062 (`bots.dca`, `bots.combo`, `deals.dca`)
- * — a field preset must name paths that exist on the stored document.
+ * Spec 061 (`bots.grid`), spec 062 (`bots.dca`, `bots.combo`, `deals.dca`) and
+ * spec 066 (`bots.grid` extended covers the settings the create endpoint
+ * merges against) — a field preset must name paths that exist on the stored
+ * document, and `extended` must name enough of them that a read-modify-create
+ * round trip does not fall back to the form defaults.
  *
  * Run: npm test  (mocha, src/**\/*.spec.ts)
  *
@@ -14,11 +17,13 @@
  */
 import { expect } from 'chai'
 import { parseFieldsParam, filterFields } from './fieldUtils'
+import { endpointForBotType } from './fieldConfig'
 import {
   GRID_FORM_DEFAULTS,
   DCA_FORM_DEFAULTS,
   COMBO_FORM_DEFAULTS,
 } from './botDefaults'
+import { GRID_EXCLUDED_FIELDS } from './validators/bots/config'
 
 /**
  * Verbatim field shape of a live production grid bot (paperBinanceUsdm,
@@ -301,6 +306,109 @@ describe('spec 061 — bots.grid field presets', () => {
       // the caller's own edits survive too
       expect(stored.pair).to.equal('DRIFTUSDT')
       expect(stored.levels).to.equal(19)
+    })
+  })
+})
+
+describe('spec 066 — bots.grid extended covers the settings POST merges against', () => {
+  /** The settings `extended` names, without the `settings.` prefix. */
+  const named = new Set(
+    (parseFieldsParam('extended', 'bots.grid') ?? [])
+      .filter((f) => f.startsWith('settings.'))
+      .map((f) => f.slice('settings.'.length)),
+  )
+  const declared = Object.keys(GRID_FORM_DEFAULTS)
+  const excluded = GRID_EXCLUDED_FIELDS as string[]
+
+  describe('§1.1 the preset covers GRID_FORM_DEFAULTS', () => {
+    it('names every setting the create endpoint merges against', () => {
+      const unreadable = declared.filter(
+        (k) => !excluded.includes(k) && !named.has(k),
+      )
+      expect(unreadable).to.deep.equal([])
+    })
+
+    it('names no setting GRID_FORM_DEFAULTS does not declare', () => {
+      expect([...named].filter((k) => !declared.includes(k))).to.deep.equal([])
+    })
+  })
+
+  describe('§2.4 the preset never returns a field create refuses', () => {
+    // `validateCommonSchema` answers an excluded field with
+    // `Field <name> is not supported`, so returning one at `fields=extended`
+    // would turn the naive read-modify-create body into a 400.
+    it('omits GRID_EXCLUDED_FIELDS', () => {
+      expect(excluded.filter((k) => named.has(k))).to.deep.equal([])
+    })
+  })
+
+  describe('§1.2 a read-modify-create round trip keeps every stored setting', () => {
+    const read: any = filterFields(
+      PROD_GRID_BOT as any,
+      parseFieldsParam('extended', 'bots.grid') ?? [],
+    )
+    const stored: any = { ...GRID_FORM_DEFAULTS, ...read.settings }
+    const source = PROD_GRID_BOT.settings as Record<string, any>
+
+    it('resets none of the settings the bot actually carries', () => {
+      const lost = declared.filter(
+        (k) =>
+          !excluded.includes(k) &&
+          source[k] !== undefined &&
+          JSON.stringify(source[k]) !== JSON.stringify(stored[k]),
+      )
+      expect(lost).to.deep.equal([])
+    })
+
+    it('keeps the take profit and stop loss thresholds, not just their flags', () => {
+      // What the caller would silently get instead.
+      expect(GRID_FORM_DEFAULTS.tpPerc).to.equal(20)
+      expect(GRID_FORM_DEFAULTS.tpTopPrice).to.equal(0)
+      expect(GRID_FORM_DEFAULTS.slLowPrice).to.equal(0)
+
+      expect(stored.tpPerc).to.equal(0.03)
+      expect(stored.slPerc).to.equal(-0.04)
+      expect(stored.tpTopPrice).to.equal(0.4662)
+      expect(stored.slLowPrice).to.equal(0.286)
+    })
+
+    it('keeps the futures configuration', () => {
+      expect(GRID_FORM_DEFAULTS.futures).to.equal(false)
+      expect(GRID_FORM_DEFAULTS.leverage).to.equal(1)
+
+      expect(stored.futures).to.equal(true)
+      expect(stored.coinm).to.equal(false)
+      expect(stored.marginType).to.equal('isolated')
+      expect(stored.leverage).to.equal(1)
+      expect(stored.strategy).to.equal('LONG')
+      expect(stored.futuresStrategy).to.equal('NEUTRAL')
+    })
+
+    it('keeps the budget and the grid geometry', () => {
+      expect(GRID_FORM_DEFAULTS.budget).to.equal(0)
+      expect(GRID_FORM_DEFAULTS.gridStep).to.equal(1)
+
+      expect(stored.budget).to.equal(300)
+      expect(stored.gridStep).to.equal(0.0412)
+      expect(stored.ordersInAdvance).to.equal(4)
+      expect(stored.sellDisplacement).to.equal(0.0004)
+      expect(stored.orderFixedIn).to.equal('base')
+      expect(stored.profitCurrency).to.equal('quote')
+    })
+  })
+
+  describe('§4.1 both grid surfaces resolve the same preset', () => {
+    // `GET /api/v2/bots/grid` binds `bots.grid` at registration;
+    // `GET /api/v2/bots/:botType/details` re-resolves it per request through
+    // `endpointForBotType`. Same preset table, so the widening reaches both.
+    it('the details endpoint resolves bots.grid for botType=grid', () => {
+      expect(endpointForBotType('grid')).to.equal('bots.grid')
+    })
+
+    it('returns the same field list on both surfaces', () => {
+      expect(parseFieldsParam('extended', endpointForBotType('grid'))).to.deep.equal(
+        parseFieldsParam('extended', 'bots.grid'),
+      )
     })
   })
 })
