@@ -6311,8 +6311,8 @@ paths:
 
         **Field Presets:**
         - `minimal`: _id, uuid, settings.name, status, exchange, exchangeUUID, paperContext
-        - `standard`: minimal + settings.symbol, profit.*, levels.*, createdAt, updatedAt
-        - `extended`: standard + grid configuration (gridLevels, lowerPrice, upperPrice), cost, prices
+        - `standard`: minimal + settings.pair, symbol, profit.*, levels.*, created, updated
+        - `extended`: standard + grid configuration (settings.levels, settings.lowPrice, settings.topPrice, settings.gridType), take profit / stop loss configuration (settings.tpSl, settings.tpSlCondition, settings.tpSlAction, settings.sl, settings.slCondition, settings.slAction), cost, prices
         - `full`: All available fields
       tags:
         - Bots - Grid
@@ -6353,7 +6353,11 @@ paths:
                         uuid: 550e8400-e29b-41d4-a716-446655440000
                         settings:
                           name: BTC Grid 30k-35k
+                          pair: BTCUSDT
+                        symbol:
                           symbol: BTCUSDT
+                          baseAsset: BTC
+                          quoteAsset: USDT
                         status: open
                         exchange: binance
                         exchangeUUID: 650e8400-e29b-41d4-a716-446655440001
@@ -6375,11 +6379,12 @@ paths:
                         - _id
                         - uuid
                         - settings.name
-                        - settings.symbol
                         - status
                         - exchange
                         - exchangeUUID
                         - paperContext
+                        - settings.pair
+                        - symbol
                         - profit.total
                         - profit.totalUsd
                         - levels.active

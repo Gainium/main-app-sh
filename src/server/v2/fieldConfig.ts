@@ -149,24 +149,40 @@ export const GRID_BOT_ESSENTIAL_FIELDS = [
  */
 export const GRID_BOT_STANDARD_FIELDS = [
   ...GRID_BOT_ESSENTIAL_FIELDS,
-  'settings.symbol',
+  // The pair as `POST /api/v2/bots/grid` takes it back, plus the stored
+  // base/quote breakdown. A grid bot has no `settings.symbol`, and its
+  // timestamps are `created`/`updated` — not `createdAt`/`updatedAt`.
+  'settings.pair',
+  'symbol',
   'profit.total',
   'profit.totalUsd',
   'levels.active',
   'levels.all',
-  'createdAt',
-  'updatedAt',
+  'created',
+  'updated',
 ] as const
 
 /**
  * Extended fields for Grid bots
+ *
+ * Carries the whole grid definition — range, level count and the take
+ * profit / stop loss configuration — so that reading a bot, adjusting a few
+ * values and creating the adjusted copy is lossless. Anything omitted here is
+ * silently replaced by `GRID_FORM_DEFAULTS` on the way back in (see
+ * `botDefaults.ts`, and spec 061).
  */
 export const GRID_BOT_EXTENDED_FIELDS = [
   ...GRID_BOT_STANDARD_FIELDS,
-  'settings.gridLevels',
-  'settings.lowerPrice',
-  'settings.upperPrice',
+  'settings.levels',
+  'settings.lowPrice',
+  'settings.topPrice',
   'settings.gridType',
+  'settings.tpSl',
+  'settings.tpSlCondition',
+  'settings.tpSlAction',
+  'settings.sl',
+  'settings.slCondition',
+  'settings.slAction',
   'cost',
   'initialPrice',
   'avgPrice',

@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.59.45] - 2026-09-20
+
+### Fixed
+
+- The grid bot list endpoint now returns the fields its `standard` and
+  `extended` presets promise. Five of the paths those presets projected — the
+  pair, the level count, the two range prices and the created/updated
+  timestamps — were spelled differently from the way a grid bot stores them, so
+  they resolved to nothing and were simply left out of the response, with no
+  error: `standard` identified a bot by name only, and `extended` added the
+  grid type and nothing else of the configuration. Because the create endpoint
+  fills any setting a request omits from the platform defaults, reading a bot
+  through a preset, changing a value and creating the adjusted copy quietly
+  reset every setting that could not be read back — the take profit and stop
+  loss actions among them, which fell back to "stop and cancel orders" instead
+  of the configured action. The presets now name the stored paths, and
+  `extended` carries the full take profit / stop loss configuration so that
+  round trip keeps it. Field names that never resolved are the only ones
+  removed; `full` and explicit field lists are unaffected.
+
 ## [1.59.44] - 2026-09-19
 
 ### Fixed
