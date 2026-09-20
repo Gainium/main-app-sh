@@ -69,6 +69,7 @@ import {
   parseFieldsParam,
   type FieldSelection,
 } from './fieldUtils'
+import { endpointForBotType } from './fieldConfig'
 import { fieldSelectionMiddlewares, paperContextMiddleware } from './middleware'
 import { isFutures, isCoinm, isPaper, isServiceUnreachable } from '../../utils'
 import { priceBalancesUsd } from '../../utils/user'
@@ -1124,11 +1125,7 @@ const v2API = <R extends UserSchema = UserSchema>(
     get.set(`/api/v2/bots/${hedgeType}`, {
       middlewares: [
         paperContextMiddleware,
-        ...fieldSelectionMiddlewares(
-          hedgeType === BotType.hedgeCombo
-            ? 'bots.hedgeCombo'
-            : 'bots.hedgeDca',
-        ),
+        ...fieldSelectionMiddlewares(endpointForBotType(hedgeType)),
       ],
       handler: async (req, res) => {
         const {
@@ -1237,7 +1234,10 @@ const v2API = <R extends UserSchema = UserSchema>(
   get.set('/api/v2/bots/:botType/details', {
     middlewares: [
       paperContextMiddleware,
-      ...fieldSelectionMiddlewares('bots.dca'), // field presets are the same across all bot types
+      // `:botType` is only known per request, so the preset bound here is a
+      // placeholder: the handler re-resolves it with `endpointForBotType` and
+      // overwrites `req.fieldSelection` before anything reads it.
+      ...fieldSelectionMiddlewares('bots.dca'),
     ],
     handler: async (req, res) => {
       const { botType } = req.params
@@ -1259,17 +1259,17 @@ const v2API = <R extends UserSchema = UserSchema>(
 
       const user = req.userData
       const paperContext = req.paperContext || false
-      // A hedge bot's field set is nothing like dca/combo/grid's, so the
-      // presets baked into the middleware above don't apply — re-resolve the
-      // caller's `fields` against the hedge config instead.
-      const fields = isHedgeBotType(botType)
-        ? parseFieldsParam(
-            req.query.fields as string | undefined,
-            botType === BotType.hedgeCombo
-              ? 'bots.hedgeCombo'
-              : 'bots.hedgeDca',
-          )
-        : req.fieldSelection
+      // The bot type is a path parameter, so the preset the middleware above
+      // bound at registration time cannot be the right one for every type —
+      // re-resolve the caller's `fields` against this bot type's own config.
+      // Written back onto the request so the response metadata names the
+      // preset that was actually used.
+      const endpointType = endpointForBotType(botType)
+      const fields = parseFieldsParam(
+        req.query.fields as string | undefined,
+        endpointType,
+      )
+      req.fieldSelection = fields
 
       const filter: Record<string, any> = {
         userId: user.id,

@@ -202,6 +202,10 @@ export const GRID_BOT_EXTENDED_FIELDS = [
   'settings.sl',
   'settings.slCondition',
   'settings.slAction',
+  // The one path the `bots.dca` preset resolved on a grid bot, and so the one
+  // a grid caller receives today: reading grid bots with their own preset
+  // (spec 063) must not take it away.
+  'settings.slPerc',
   'cost',
   'initialPrice',
   'avgPrice',
@@ -477,6 +481,38 @@ export const ENDPOINT_FIELD_CONFIG = {
 } as const
 
 export type EndpointType = keyof typeof ENDPOINT_FIELD_CONFIG
+
+/**
+ * The bot field config a `:botType` path segment selects.
+ *
+ * The bot routes that take the type as a path parameter cannot bind a preset
+ * when they register — the type is only known per request — so they resolve it
+ * here instead. Each type has its own config and they are not
+ * interchangeable: `bots.grid` and `bots.dca` differ by 28 paths at
+ * `extended`, and a bot read with another type's preset simply loses every
+ * path that preset does not name (spec 063).
+ */
+export const BOT_TYPE_ENDPOINT = {
+  dca: 'bots.dca',
+  combo: 'bots.combo',
+  grid: 'bots.grid',
+  hedgeCombo: 'bots.hedgeCombo',
+  hedgeDca: 'bots.hedgeDca',
+} as const satisfies Record<string, EndpointType>
+
+/**
+ * Field config for a bot type, by its `:botType` path segment.
+ *
+ * Total: an unrecognised segment resolves to `bots.dca`, which is what every
+ * bot type resolved to before spec 063. The bot routes reject anything outside
+ * `ALL_BOT_TYPES` with a 400 before asking, so the fallback never widens a
+ * response — it only keeps the helper safe to call.
+ */
+export function endpointForBotType(botType: string): EndpointType {
+  return (
+    BOT_TYPE_ENDPOINT[botType as keyof typeof BOT_TYPE_ENDPOINT] ?? 'bots.dca'
+  )
+}
 
 /**
  * Get field configuration for an endpoint

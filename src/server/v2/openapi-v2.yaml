@@ -6314,7 +6314,7 @@ paths:
         **Field Presets:**
         - `minimal`: _id, uuid, settings.name, status, exchange, exchangeUUID, paperContext
         - `standard`: minimal + settings.pair, symbol, profit.*, levels.*, created, updated
-        - `extended`: standard + grid configuration (settings.levels, settings.lowPrice, settings.topPrice, settings.gridType), take profit / stop loss configuration (settings.tpSl, settings.tpSlCondition, settings.tpSlAction, settings.sl, settings.slCondition, settings.slAction), cost, prices
+        - `extended`: standard + grid configuration (settings.levels, settings.lowPrice, settings.topPrice, settings.gridType), take profit / stop loss configuration (settings.tpSl, settings.tpSlCondition, settings.tpSlAction, settings.sl, settings.slCondition, settings.slAction, settings.slPerc), cost, prices
         - `full`: All available fields
       tags:
         - Bots - Grid
