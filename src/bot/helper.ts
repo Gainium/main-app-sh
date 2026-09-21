@@ -22,6 +22,7 @@ import MainBot, {
 } from './main'
 import { observedFeeOnSide, observedFeeSplit } from './orderFee'
 import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
+import { gridBudgetVerdict, gridBudgetRefusalMessage } from './gridBudgetGuard'
 
 import type {
   BotData,
@@ -482,6 +483,66 @@ function createBotHelper<
 
     get futuresStrategy() {
       return this.data?.settings.futuresStrategy ?? FuturesStrategyEnum.neutral
+    }
+    /**
+     * Refuse a start whose budget cannot fund every level at the exchange's
+     * per-order minimum.<br />
+     *
+     * The sizing routine raises a below-minimum level to the exchange minimum,
+     * so without this the grid — and the start order sized from it — commits a
+     * multiple of the budget. Sizes the full grid without touching
+     * {@link BotHelper#grids}, reads what the routine wanted against the
+     * minimum, and lets `./gridBudgetGuard` decide.<br />
+     *
+     * Fail-open when the grid cannot be sized (no data, no price, no exchange
+     * info): that is the behaviour before this check existed.
+     *
+     * @returns {boolean} true when the start was refused and the bot stopped
+     */
+    async refuseStartBelowMinimumBudget(): Promise<boolean> {
+      if (!this.data || !this.initialGrid) {
+        return false
+      }
+      const { pair, budget, levels } = this.data.settings
+      const lastPrice = await this.getLatestPrice(pair)
+      if (lastPrice === 0) {
+        return false
+      }
+      await this.generateCurrentGrids(
+        lastPrice,
+        !this.isShort ? OrderSideEnum.buy : OrderSideEnum.sell,
+        true,
+        false,
+        true,
+      )
+      const sizing = this.lastGridSizing
+      if (!sizing) {
+        return false
+      }
+      const verdict = gridBudgetVerdict({
+        budget: +budget,
+        wanted: sizing.wanted,
+        minimum: sizing.minimum,
+      })
+      if (!verdict.refuse) {
+        return false
+      }
+      const ed = await this.getExchangeInfo(pair)
+      this.handleErrors(
+        gridBudgetRefusalMessage({
+          budget: +budget,
+          minimumBudget: verdict.minimumBudget,
+          asset:
+            (this.coinm ? ed?.baseAsset.name : ed?.quoteAsset.name) ?? '',
+          levels: +levels,
+          pair,
+        }),
+        'start',
+      )
+      this.serviceRestart = false
+      this.finishLoad = true
+      await this.stop()
+      return true
     }
     /**
      * Get qty to initial swap<br />
@@ -2401,6 +2462,9 @@ function createBotHelper<
       this.finishLoad = false
       this.clearClassProperties(undefined, true)
       const data = await this.loadData()
+      // Read before the "Last balance change not set" downgrade below clears
+      // it: a bot brought back by a service restart is never refused.
+      const serviceRestartAtEntry = !!this.serviceRestart
       if (data) {
         this.serviceRestart = false
         this.finishLoad = true
@@ -2557,6 +2621,18 @@ function createBotHelper<
           }
         }
 
+        // Only a user-initiated start is guarded. `restartProcess` marks a
+        // settings-edit reload; `restart` alone does not, because `reloadBot`
+        // clears it when the edit asks for a new start order.
+        if (
+          !this.restart &&
+          !this.restartProcess &&
+          !serviceRestartAtEntry &&
+          (await this.refuseStartBelowMinimumBudget())
+        ) {
+          this.endMethod(_id)
+          return
+        }
         if (checkStartCondition) {
           await this.swapAssets()
         }

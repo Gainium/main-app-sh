@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.59.52] - 2026-09-21
+
+### Fixed
+
+- A grid bot whose budget is too small to fund every level at the exchange's minimum order size now refuses to start and says what budget the range and level count need. Before, the sizing routine raised every level to the exchange minimum without a word, so the grid — and the start order sized from it — committed a multiple of the configured budget; on futures the start order's balance check divides by leverage, so the inflated order could pass and fill. Refused only when the needed budget exceeds the configured one by more than 10 %. Applies to a user-initiated start only: a service restart and a settings-edit reload are never refused, and no quantity of a bot that passes is sized differently (spec 068).
+
 ## [1.59.51] - 2026-09-21
 
 ### Fixed

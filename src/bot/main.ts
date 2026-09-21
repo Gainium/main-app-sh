@@ -147,6 +147,7 @@ import {
 } from './opposingPositionSettle'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
+import { gridLevelMinimum, type GridSizingReport } from './gridBudgetGuard'
 import { updateUserSteps } from '../utils/user'
 import { QueryFilter, Types } from 'mongoose'
 import { removePaperFormExchangeName } from '../exchange/helpers'
@@ -764,6 +765,12 @@ class MainBot<T extends IMainBot> {
   math: MathHelper
   /** Service restart flag */
   serviceRestart = false
+  /**
+   * What the last {@link MainBot.generateGridsOnPrice} call wanted for one
+   * level and the least that level may be. Recorded, never acted on, by the
+   * sizing routine — see `./gridBudgetGuard`. `null` when nothing was derived.
+   */
+  lastGridSizing: GridSizingReport | null = null
   /** When the current restart-time order check started probing the exchange.
    *  `0` = no budget running, so every non-restart path is unaffected. */
   private restartProbeStartedAt = 0
@@ -9217,6 +9224,7 @@ class MainBot<T extends IMainBot> {
     overrideRound?: boolean,
     newSell = false,
   ) {
+    this.lastGridSizing = null
     if (!this.data) {
       return
     }
@@ -9255,12 +9263,19 @@ class MainBot<T extends IMainBot> {
         )
         let quoteAmount = 0
         let baseAmount = 0
+        // Budget-derived size of one level BEFORE any exchange-minimum floor
+        // below overwrites it. Observed only — no quantity depends on it.
+        let sizingWanted: { unit: 'base' | 'quote'; wanted: number } | null =
+          null
         if (profitCurrency === 'base') {
           if (orderFixedIn === 'base') {
-            let tempSellQty = this.math.round(
+            const rawSellQty =
               budget /
-                (initialPriceStart * sellCount +
-                  buys.reduce((acc, v) => (acc += v.buy), 0) * (1 + gs)),
+              (initialPriceStart * sellCount +
+                buys.reduce((acc, v) => (acc += v.buy), 0) * (1 + gs))
+            sizingWanted = { unit: 'base', wanted: rawSellQty }
+            let tempSellQty = this.math.round(
+              rawSellQty,
               quotedAssetPrecision,
               true,
             )
@@ -9314,6 +9329,7 @@ class MainBot<T extends IMainBot> {
                 initialPriceStart +
                 buyCount * f)
           }
+          sizingWanted = { unit: 'quote', wanted: quoteAmount }
           if (quoteAmount < symbol.quoteAsset.minAmount) {
             quoteAmount = symbol.quoteAsset.minAmount * f
           }
@@ -9330,6 +9346,7 @@ class MainBot<T extends IMainBot> {
               : budget /
                 (sellCount * initialPriceStart +
                   buys.reduce((acc, v) => acc + v.buy, 0))
+            sizingWanted = { unit: 'base', wanted: baseAmount }
             const round = this.math.round(
               baseAmount,
               quotedAssetPrecision,
@@ -9347,6 +9364,20 @@ class MainBot<T extends IMainBot> {
         }
         if (this.coinm && !this.isBitget) {
           baseAmount = budget / +levels
+          sizingWanted = { unit: 'base', wanted: baseAmount }
+        }
+        if (sizingWanted) {
+          this.lastGridSizing = {
+            ...sizingWanted,
+            minimum: gridLevelMinimum({
+              unit: sizingWanted.unit,
+              minNotional: symbol.quoteAsset.minAmount,
+              minQty: symbol.baseAsset.minAmount,
+              step: symbol.baseAsset.step,
+              lowestPrice: Math.min(...initialGrids.map((g) => g.price.buy)),
+              highestPrice: Math.max(...initialGrids.map((g) => g.price.sell)),
+            }),
+          }
         }
         const basicInitialGrid = initialGrids.find((g) =>
           _side === OrderSideEnum.buy
