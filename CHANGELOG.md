@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.59.60] - 2026-09-21
+
+### Fixed
+
+- Saving your settings now refuses a time zone the app cannot resolve instead
+  of storing it and reporting it saved. The time zone on your account is the
+  day boundary your profit history is grouped by, and a value that is not a
+  real zone — a country name, an offset label, a misspelled city — was stored
+  as given and then quietly treated as UTC, so the figures were grouped on
+  days that did not match the setting, with nothing to say so. A zone that
+  cannot be resolved is now rejected with a message, and leaving the field
+  unset is still fine. Zones already saved are unchanged (spec 076).
+
 ## [1.59.59] - 2026-09-21
 
 ### Changed

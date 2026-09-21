@@ -157,7 +157,7 @@ import {
   getAllOpenPositions,
   placeOrderOnExchange,
 } from './handlers/orders.handler'
-import { isCoinm, isServiceUnreachable } from '../utils'
+import { isCoinm, isServiceUnreachable, isValidTimezone } from '../utils'
 import { dealReturnPercentage, type DealReturnDeal } from '../utils/dealReturn'
 import {
   BACKTEST_SERVICE_TARGET,
@@ -5598,6 +5598,15 @@ const resolvers = <
         lastName,
         nickname,
       } = input
+      // Same guard as `setTimezone` — this mutation writes the same field, so
+      // it is the second way an unresolvable zone reaches the account. The
+      // whole call is refused so a settings save never lands half-applied.
+      if (timezone && !isValidTimezone(timezone)) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Invalid timezone',
+        }
+      }
       const user = await findUser(token)
       if (user.status === StatusEnum.notok) {
         return user
@@ -6889,6 +6898,16 @@ const resolvers = <
         return errorAccess()
       }
       const { timezone, weekStart } = input
+      // The stored zone is the day boundary the profit resolvers bucket by,
+      // and an unresolvable one degrades to UTC without saying so — refuse it
+      // here rather than storing it and reporting it saved. Empty stays
+      // accepted: "never chosen" is a valid state.
+      if (timezone && !isValidTimezone(timezone)) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Invalid timezone',
+        }
+      }
       const user = await findUser(token)
       if (user.status === StatusEnum.notok) {
         return user

@@ -17,6 +17,26 @@ const getTimezoneOffset = (timeZone: string, date = new Date()) => {
 }
 
 /**
+ * Whether the runtime can resolve `timeZone` as a time zone. Anything it
+ * rejects is resolved by `getTimezoneOffset` above as offset 0, i.e. the
+ * account is silently bucketed on UTC days while its settings say otherwise
+ * — so this is the test to apply before storing the field.
+ *
+ * Deliberately a resolve test and not a list membership test:
+ * `Intl.supportedValuesOf('timeZone')` returns canonical ids only and omits
+ * aliases that are in live use on this field (`Asia/Calcutta`, `UTC`,
+ * `Europe/Kiev`, every `Etc/GMT±N`).
+ */
+export const isValidTimezone = (timeZone: string): boolean => {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Function to generate random string, that used as order id
  *
  * @param {number} length Length of the returned string
