@@ -19933,14 +19933,34 @@ function createDCABotHelper<
         i++
       }
       if (notFound.length) {
-        this.handleLog(`Removing pairs not found: ${notFound.join(', ')}`)
-        this.data.settings.pair = this.data.settings.pair.filter(
+        // Register the misses first, and whether or not anything is pruned
+        // below: the callers (this file's `start()` and main-app's override)
+        // decide "all pairs gone ⇒ stop the bot" off `pairsNotFound`, so a
+        // skipped prune must still reach that branch.
+        notFound.forEach((p) => this.pairsNotFound.add(p))
+        const remaining = this.data.settings.pair.filter(
           (p) => !notFound.includes(p),
         )
-        this.updateData({ settings: this.data.settings })
-        notFound.forEach((p) => this.pairsNotFound.add(p))
-        if (first) {
-          this.calculateUsage()
+        if (!remaining.length) {
+          // Pruning every pair leaves the bot configured to trade nothing: it
+          // can never open a deal, and a single-pair bot cannot be given a pair
+          // back through the editor, so the user's only remedy is to rebuild
+          // the bot and lose its history. A symbol can also come back (a venue
+          // relisting a contract, or a symbol-list blip that outlives
+          // `confirmPairMissing`). Keep the settings and let the caller stop
+          // the bot, so a restart is all the recovery it needs.
+          this.handleWarn(
+            `Pairs not found: ${notFound.join(
+              ', ',
+            )}. Keeping them in settings — removing them would leave the bot with no pair`,
+          )
+        } else {
+          this.handleLog(`Removing pairs not found: ${notFound.join(', ')}`)
+          this.data.settings.pair = remaining
+          this.updateData({ settings: this.data.settings })
+          if (first) {
+            this.calculateUsage()
+          }
         }
       }
     }

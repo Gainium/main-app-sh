@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.55] - 2026-09-21
+
+### Fixed
+
+- A bot no longer loses its pair when that pair stops being listed on the exchange. The engine prunes a delisted pair from a bot's pair list, which is right for a bot trading several pairs but emptied a single-pair bot completely: it was stopped with nothing configured to trade, and because a single-pair bot refuses pair changes, the only way back was to rebuild the bot and lose its history. A bot that would lose every pair now keeps its pairs and is simply stopped, so it resumes on a restart if the contract is listed again. A bot trading several pairs still loses the delisted ones and keeps running on the rest (spec 072).
+- A DCA or combo bot whose single pair was already emptied this way can now be given one pair back. The refusal that protects a configured single-pair bot from a pair swap is unchanged; it no longer applies to a bot that has no pair at all. The new pair must be exactly one, and the bot's base/quote assets are re-derived from it.
+
 ## [1.59.54] - 2026-09-21
 
 ### Fixed

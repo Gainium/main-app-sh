@@ -4697,25 +4697,33 @@ class Bot<T extends UserSchema = UserSchema> {
         ...settings,
       })
     }
-    if (settings.pair && !oldSettings.settings.useMulti) {
+    // A single-pair bot whose stored pair is EMPTY is not the configured bot
+    // the refusal below protects — it is a bot the engine emptied when its
+    // pair stopped being listed. It can never open a deal in that state, and
+    // refusing every pair change is what makes the damage permanent. Let such
+    // a bot be given its one pair back; a single-pair bot that still HAS its
+    // pair keeps refusing, and still takes exactly one pair either way.
+    const repairEmptyPair =
+      !oldSettings.settings.useMulti && !oldSettings.settings.pair?.length
+    const acceptsPair = oldSettings.settings.useMulti || repairEmptyPair
+    if (
+      settings.pair &&
+      (!acceptsPair || (repairEmptyPair && settings.pair.length > 1))
+    ) {
       return {
         status: StatusEnum.notok,
         reason: 'Cannot change pair for non-multi pairs bot',
         data: null,
       }
     }
-    if (
-      settings.pair &&
-      oldSettings.settings.useMulti &&
-      settings.pair.length === 0
-    ) {
+    if (settings.pair && acceptsPair && settings.pair.length === 0) {
       return {
         status: StatusEnum.notok,
         reason: 'Need to specify at least one pair',
         data: null,
       }
     }
-    if (settings.pair && oldSettings.settings.useMulti) {
+    if (settings.pair && acceptsPair) {
       const pairs = await this.pairsDb.readData(
         { pair: { $in: settings.pair } },
         {},
@@ -4919,25 +4927,33 @@ class Bot<T extends UserSchema = UserSchema> {
         ...settings,
       })
     }
-    if (settings.pair && !oldSettings.settings.useMulti) {
+    // A single-pair bot whose stored pair is EMPTY is not the configured bot
+    // the refusal below protects — it is a bot the engine emptied when its
+    // pair stopped being listed. It can never open a deal in that state, and
+    // refusing every pair change is what makes the damage permanent. Let such
+    // a bot be given its one pair back; a single-pair bot that still HAS its
+    // pair keeps refusing, and still takes exactly one pair either way.
+    const repairEmptyPair =
+      !oldSettings.settings.useMulti && !oldSettings.settings.pair?.length
+    const acceptsPair = oldSettings.settings.useMulti || repairEmptyPair
+    if (
+      settings.pair &&
+      (!acceptsPair || (repairEmptyPair && settings.pair.length > 1))
+    ) {
       return {
         status: StatusEnum.notok,
         reason: 'Cannot change pair for non-multi pairs bot',
         data: null,
       }
     }
-    if (
-      settings.pair &&
-      oldSettings.settings.useMulti &&
-      settings.pair.length === 0
-    ) {
+    if (settings.pair && acceptsPair && settings.pair.length === 0) {
       return {
         status: StatusEnum.notok,
         reason: 'Need to specify at least one pair',
         data: null,
       }
     }
-    if (settings.pair && oldSettings.settings.useMulti) {
+    if (settings.pair && acceptsPair) {
       const pairs = await this.pairsDb.readData(
         { pair: { $in: settings.pair } },
         {},
