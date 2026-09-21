@@ -129,6 +129,39 @@ export const isAmbiguousOrderFailure = (reason?: string | null): boolean => {
 }
 
 /**
+ * Does this whole-call failure mean "this connector has no such batch route"?
+ *
+ * Two shapes qualify, and only two:
+ *
+ *   - the DECLINE a transport answers deliberately (`... not supported ...`),
+ *     which is what the abstract exchange and every non-Kraken venue reply, and
+ *   - the 404 a connector that predates the route answers, which
+ *     `Exchange.apiCall` surfaces as `Exchange connector | Not Found`.
+ *
+ * It exists so a caller can latch "do not ask this again" on an answer that is
+ * a property of the DEPLOYED CODE — it cannot change until something restarts —
+ * without ever latching on an answer that is a property of this MOMENT. A
+ * timeout, a 5xx or an empty result must leave the batch path armed: latching
+ * on those turns one bad minute into a process-lifetime regression.
+ *
+ * Deliberately narrow on the 404: a bare `not found` is what a venue says about
+ * an ORDER, and the batch endpoints answer about orders. Only the transport
+ * prefix distinguishes "no such route" from "no such order", so only the
+ * prefixed form is matched.
+ */
+export const isBatchRouteUnavailable = (reason?: string | null): boolean => {
+  if (!reason) {
+    return false
+  }
+  const lower = `${reason}`.toLowerCase()
+  return (
+    lower.indexOf('not supported') !== -1 ||
+    lower.indexOf('unsupported') !== -1 ||
+    lower.indexOf(`${TRANSPORT_RETRY_EXHAUSTED_MARKER} not found`) !== -1
+  )
+}
+
+/**
  * Has this failure ALREADY been retried by `Exchange.apiCall`'s transport
  * ladder?
  *

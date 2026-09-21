@@ -11911,15 +11911,22 @@ function createDCABotHelper<
                 deal.deal.status,
               )
             ) {
-              for (const o of orders) {
-                this.handleDebug(
-                  `Deal not found or already closed. Cancel order ${
-                    o.clientOrderId
-                  }, ${o.side}, base: ${o.origQty}, quote: ${
-                    +o.price * +o.origQty
-                  }, price: ${o.price}`,
-                )
-                await this.cancelOrderOnExchange(o)
+              // Spec `076` §3 — the deal is closed or gone, so nothing expects
+              // these to be resting, and the loop has no early return.
+              await this.primeCancelBatch(orders)
+              try {
+                for (const o of orders) {
+                  this.handleDebug(
+                    `Deal not found or already closed. Cancel order ${
+                      o.clientOrderId
+                    }, ${o.side}, base: ${o.origQty}, quote: ${
+                      +o.price * +o.origQty
+                    }, price: ${o.price}`,
+                  )
+                  await this.cancelOrderOnExchange(o)
+                }
+              } finally {
+                this.clearCancelBatch()
               }
             }
           }
@@ -15070,6 +15077,20 @@ function createDCABotHelper<
         /**
          * Cancel all unnecessery orders, remove them from orders property
          */
+        // Spec `076` §3.4 — deliberately NOT primed with a bulk cancel, unlike
+        // the other teardown loops. This one can `return` from the middle of
+        // itself: an order that comes back FILLED (or a partially filled TP)
+        // hands control to `handleUnknownOrder` and leaves immediately, before
+        // the remaining levels have been walked AND before the place phase
+        // below has run. Under a bulk cancel those unwalked levels would
+        // already be gone from the venue with no replacement sent, where today
+        // they stay resting until the next pass rebuilds the ladder. The
+        // local rows do reconcile on their own — the venue's CANCELED events
+        // reach `processCanceledOrder` exactly as they would for a cancel
+        // someone else made — but "the deal briefly has fewer safety orders
+        // than it believes" is a real difference on a live position, and this
+        // loop is a re-size rather than a teardown, so it is not one worth
+        // trading for a round trip.
         for (const order of orders.cancel.sort((a) =>
           a.type === TypeOrderEnum.dealTP ? -1 : 1,
         )) {
@@ -15103,7 +15124,7 @@ function createDCABotHelper<
         /**
          * Add new orders, add them to orders property
          */
-        for (const order of [...orders.new]
+        const toPlace = [...orders.new]
           .sort(
             (a, b) =>
               Math.abs(a.price - (deal?.deal?.lastPrice ?? 0)) -
@@ -15115,7 +15136,115 @@ function createDCABotHelper<
               : b.type === TypeOrderEnum.dealTP
                 ? -1
                 : 0,
-          )) {
+          )
+        // Spec `076` §7. The plain ladder orders of this burst — and only
+        // those — can share one venue call, so they are sent first, in the
+        // order they are about to be walked in, and the loop below then runs
+        // untouched over everything else. Deliberately a phase ADDED in front
+        // of the loop rather than a rewrite of it: the loop's TP arm carries
+        // the re-size cancel, the fee-sizing fallback and a return out of the
+        // whole method, and none of that is worth restating to save a round
+        // trip on orders that do not go through it.
+        //
+        // What is eligible is decided serially, here, against the state as it
+        // is now, using this loop's own pre-send checks in this loop's own
+        // order — see `batchablePlacements` for the three refusals batching
+        // adds on top (market orders, minigrid orders, identically shaped
+        // orders). Orders sent here are skipped by the loop by id, never by
+        // their freshly written row: a REFUSED order's row is deleted by the
+        // error path, and a loop that recognised its participants by presence
+        // would re-send exactly those.
+        const batched = this.batchablePlacements(
+          toPlace,
+          (order) => order.type === TypeOrderEnum.dealRegular,
+          (order) => !this.stopList.has(order.newClientOrderId),
+          () =>
+            !(
+              deal?.deal.action === ActionsEnum.useOppositeBalance ||
+              settings.dcaByMarket
+            ),
+          (order) => {
+            const get = this.getOrderFromMap(order.newClientOrderId)
+            return !get || get.status === 'CANCELED'
+          },
+          (order) => !this.isOrderExistInDeal(order, order.type, dealId),
+        )
+        if (batched.length) {
+          // Exactly what the loop below does for a `dealRegular`, which is a
+          // short path: no TP branch (that is `dealTP` only), no fee-sizing
+          // branch (likewise), no minigrid list and no market orders — those
+          // are precisely the cases `batchablePlacements` refuses. The FILLED
+          // handling stays here, inside the per-order body, so it runs during
+          // the batcher's one-at-a-time delivery rather than in a second pass.
+          //
+          // The skip checks are NOT restated here, and must not be: they were
+          // evaluated for these orders a few lines above, by a pass that is
+          // wholly synchronous and immediately precedes this one, so no state
+          // they read can have moved in between. Re-running them here would be
+          // the one thing concurrency makes unsafe — each participant writes
+          // its own row before it sends, and a peer re-reading those checks
+          // could then skip itself over an order that is not a duplicate of
+          // anything (which is also why identically shaped orders are never
+          // batched together in the first place).
+          const placeBatched = async (order: Grid) => {
+            const sendOptions: OrderAdditionalParams = {
+              dealId,
+              type: order.market ? 'MARKET' : 'LIMIT',
+              reduceOnly: this.futures
+                ? (this.isLong && order.side === OrderSideEnum.sell) ||
+                  (!this.isLong && order.side === OrderSideEnum.buy)
+                : undefined,
+              positionSide: this.hedge
+                ? this.isLong
+                  ? PositionSide.LONG
+                  : PositionSide.SHORT
+                : PositionSide.BOTH,
+            }
+            const result = await this.sendGridToExchange(order, sendOptions, ed)
+            if (
+              result &&
+              typeof result !== 'string' &&
+              result.status === 'FILLED'
+            ) {
+              this.processFilledOrder(result)
+            }
+          }
+          const batcher = this.installOpenBatcher(
+            batched.map((o) => o.newClientOrderId),
+          )
+          // Collected rather than propagated: `Promise.all` rejects on the
+          // first rejection while its peers are still parked waiting for their
+          // answers, and those continuations would then run detached, after
+          // this method had already left. Re-thrown once everybody has settled.
+          const failures: unknown[] = []
+          try {
+            await Promise.all(
+              batched.map(async (order) => {
+                try {
+                  await placeBatched(order)
+                } catch (e) {
+                  failures.push(e)
+                } finally {
+                  // Whether it placed, was refused or threw. A participant
+                  // that never reached the send site is read as a bail, so
+                  // the rest of the burst is never left waiting for it.
+                  batcher.settled(order.newClientOrderId)
+                }
+              }),
+            )
+          } finally {
+            this.removeOpenBatcher(batcher)
+          }
+          if (failures.length) {
+            throw failures[0]
+          }
+        }
+        const batchedIds = new Set(batched.map((o) => o.newClientOrderId))
+        for (const order of toPlace) {
+          if (batchedIds.has(order.newClientOrderId)) {
+            // Already sent, above, by this same method.
+            continue
+          }
           if (
             deal &&
             (await this.isDealForTPLevelCheck(deal)) &&
@@ -15408,8 +15537,15 @@ function createDCABotHelper<
           this.handleLog(
             `Deal ${dealId} was closed during place orders. Cancel orders: ${toCancel.length}`,
           )
-          for (const order of toCancel) {
-            await this.cancelOrderOnExchange(order, false)
+          // Spec `076` §3. The deal is closed; nothing expects any of these to
+          // be resting, and the loop has no early return.
+          await this.primeCancelBatch(toCancel)
+          try {
+            for (const order of toCancel) {
+              await this.cancelOrderOnExchange(order, false)
+            }
+          } finally {
+            this.clearCancelBatch()
           }
         }
       }
@@ -18171,13 +18307,25 @@ function createDCABotHelper<
         if (dealId) {
           newOrders = newOrders.filter((o) => o.dealId === dealId)
         }
-        for (const order of newOrders.sort((a) =>
+        const toCancel = newOrders.sort((a) =>
           a.typeOrder === TypeOrderEnum.dealTP ? -1 : 1,
-        )) {
-          const result = await this.cancelOrderOnExchange(order)
-          if (result?.status === 'FILLED') {
-            this.handleUnknownOrder(result)
+        )
+        // Spec `076` §3 — one venue call for the whole teardown, which is the
+        // loop this is worth the most in: a deal close walks every resting
+        // order of the deal, serially, and on Kraken spot each of those costs
+        // two private-REST tokens out of a 20-token bucket refilling at 0.5/s.
+        // Nothing in this loop returns early, so every order the batch cancels
+        // is also reached here and written down locally.
+        await this.primeCancelBatch(toCancel)
+        try {
+          for (const order of toCancel) {
+            const result = await this.cancelOrderOnExchange(order)
+            if (result?.status === 'FILLED') {
+              this.handleUnknownOrder(result)
+            }
           }
+        } finally {
+          this.clearCancelBatch()
         }
       }
     }
@@ -23896,9 +24044,17 @@ function createDCABotHelper<
         status: 'NEW',
         dealId,
       }).filter((o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId)
-      for (const o of orders) {
-        this.handleDebug(`Reduce funds | Cancel order ${o.clientOrderId}`)
-        await this.cancelOrderOnExchange(o)
+      // Spec `076` §3 — the deal's take profits are being pulled so a resized
+      // one can be placed below; all of them go, and the loop has no early
+      // return.
+      await this.primeCancelBatch(orders)
+      try {
+        for (const o of orders) {
+          this.handleDebug(`Reduce funds | Cancel order ${o.clientOrderId}`)
+          await this.cancelOrderOnExchange(o)
+        }
+      } finally {
+        this.clearCancelBatch()
       }
       const reduceFundsId = v4()
       const order: Order = {

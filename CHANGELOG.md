@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.0] - 2026-09-21
+
+### Added
+
+- Kraken spot bots can cancel a whole set of resting orders in one exchange call instead of one call per order. Kraken meters private requests against a bucket of 20 refilling at 0.5/s and a single cancel spends two of them, so a teardown of many orders spent its budget on the first few and then waited seconds for each of the rest; the venue's own bulk cancel does the same work for one request. Every order still ends in the same state by the same code path, an order the bulk call does not vouch for is still cancelled on its own, and every other exchange is untouched. Off by default, armed per bot with `BOT_BATCH_CANCEL` (spec 076).
+- Kraken spot bots can also place a burst of limit orders in one exchange call, in groups of up to 15, which is the venue's published maximum. Each order still gets its own answer and still runs its own bookkeeping one order at a time, in the same sequence as before — only the request itself is shared. A batch whose outcome the transport cannot describe is resolved against the exchange order by order before anything is sent again, so a lost response can neither duplicate a live order nor write one off. Off by default, armed per bot with `BOT_BATCH_PLACE` (spec 076).
 ## [1.59.58] - 2026-09-21
 
 ### Fixed

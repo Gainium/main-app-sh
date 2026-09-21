@@ -2936,8 +2936,15 @@ function createComboBotHelper<
           }).filter(
             (o) => o.minigridId === minigrid.schema._id && o.status === 'NEW',
           )
-          for (const o of minigridOrders) {
-            await this.cancelOrderOnExchange(o)
+          // Spec `076` §3 — the minigrid is closing and every one of its
+          // resting orders goes; the loop has no early return.
+          await this.primeCancelBatch(minigridOrders)
+          try {
+            for (const o of minigridOrders) {
+              await this.cancelOrderOnExchange(o)
+            }
+          } finally {
+            this.clearCancelBatch()
           }
           for (const o of this.pendingOrdersList.get(minigrid.schema._id) ??
             []) {

@@ -14,6 +14,7 @@ import type {
   FundingRateResponse,
   AllPricesResponse,
   PositionSide,
+  PositionSide_LT,
   LeverageBracket,
   PositionInfo,
   TradeResponse,
@@ -108,6 +109,29 @@ export interface Exchange {
   getUid(): Promise<BaseReturn<string | number>>
 
   getAffiliate(uid: string | number): Promise<BaseReturn<boolean>>
+}
+
+/**
+ * Exactly what `openOrder` is called with — the batch methods carry these
+ * through UNCHANGED so that every fallback path can hand one straight to
+ * `openOrder` and reproduce, byte for byte, the call that would have been made
+ * had no batch route existed. A batch item that had to be rebuilt from a
+ * narrower shape would be a different order.
+ */
+export type OpenOrderRequest = {
+  symbol: string
+  side: OrderTypes
+  quantity: number
+  price: number
+  newClientOrderId?: string
+  type?: OrderTypeT
+  reduceOnly?: boolean
+  // Both spellings, because both reach `openOrder` today: the bot engine builds
+  // the string union onto its request object while the exchange clients type
+  // the parameter as the enum. They are the same three values.
+  positionSide?: PositionSide | PositionSide_LT
+  marginType?: MarginType
+  leverage?: number
 }
 
 /** Abstract class for exchanges. Every supported exchange must extends this class */
@@ -232,6 +256,53 @@ abstract class AbsctractExchange implements Exchange {
     newClientOrderIds: string[]
   }): Promise<BaseReturn<CommonOrder[]>> {
     return this.returnBad()(new Error('Batch order lookup not supported'))
+  }
+  /**
+   * Cancel several orders in one venue call. Declines by default, exactly like
+   * {@link AbsctractExchange#getOrdersBatch} and for the same reason: the
+   * paper simulator mirrors the connector's endpoint surface and does not carry
+   * this route, and every caller must already own the per-order loop this only
+   * ever short-circuits.
+   *
+   * The answer names ONLY the orders the call observed as cancelled. An order
+   * missing from it is not a statement that it is still resting — it means "I
+   * cannot vouch for this one", and the caller cancels it the way it always
+   * has.
+   */
+  async cancelOrdersBatch(_data: {
+    symbol: string
+    newClientOrderIds: string[]
+  }): Promise<BaseReturn<CommonOrder[]>> {
+    return this.returnBad()(
+      new Error('Batch order cancel not supported for this exchange'),
+    )
+  }
+  /**
+   * Place several orders, answering one result PER INPUT ORDER, positionally
+   * aligned, each indistinguishable from what `openOrder` would have returned
+   * for that order.
+   *
+   * The default is the sequential loop itself — not a decline. That is what
+   * lets a caller hold a batch and a non-batch transport to the same contract:
+   * a venue with no batch route (paper trading, every non-Kraken exchange)
+   * places the same orders in the same sequence with the same per-order
+   * answers, so nothing downstream can tell which transport served it.
+   *
+   * Sequential and in input order on purpose. A burst placed against a venue
+   * that runs out of funds part-way through must fail in the SAME place it
+   * fails today — "as many as the balance allows, nearest level first" is
+   * behaviour the ladder's callers depend on, and `Promise.all` here would
+   * turn it into "whichever N happened to win the race".
+   */
+  async openOrdersBatch(data: {
+    symbol: string
+    orders: OpenOrderRequest[]
+  }): Promise<BaseReturn<CommonOrder>[]> {
+    const results: BaseReturn<CommonOrder>[] = []
+    for (const order of data.orders) {
+      results.push(await this.openOrder(order))
+    }
+    return results
   }
   /** Function to handle and format error result */
   returnBad() {

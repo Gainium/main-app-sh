@@ -73,8 +73,11 @@ import utils, { isPaper } from '../utils'
 import { resolveConnection } from '../utils/credentials'
 import {
   isAmbiguousOrderFailure,
+  isBatchRouteUnavailable,
   isTransportRetryExhausted,
 } from '../utils/exchange'
+import { batchCancelEnabled, batchPlaceEnabled } from './batchFlags'
+import OpenOrderBatcher from './openOrderBatcher'
 import logger from '../utils/logger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import * as crypto from 'crypto'
@@ -630,6 +633,26 @@ const noExchangeOrderId = '-1'
  */
 const unsupportedOrderBatch = new Set<ExchangeEnum>()
 /**
+ * Exchanges whose connector has answered "no batch order cancel" once —
+ * process-wide, for the same reason as {@link unsupportedOrderBatch}.
+ *
+ * Unlike that set, this one is populated ONLY from an answer that cannot be a
+ * transient ({@link isBatchRouteUnavailable}: a decline, or the 404 of a
+ * connector deployed before the route existed). An empty result, a timeout or
+ * a 5xx leaves the batch path armed. The difference matters because this latch
+ * has no expiry: a batch cancel that failed for a minute is a minute's worth of
+ * slower cancels, while a latch set on that minute is a process-lifetime
+ * regression nothing will ever report.
+ */
+const unsupportedCancelBatch = new Set<ExchangeEnum>()
+/**
+ * Kraken's published ceiling for `CancelOrderBatch` — 50 unique ids per call.
+ * A bulk loop longer than that is split rather than sent whole, because the
+ * venue refuses an over-long batch outright instead of trimming it, and the
+ * loops that prime this can and do exceed it.
+ */
+const maxCancelBatchIds = 50
+/**
  * How many times `_handleUnknownOrder` re-asks the venue about an order it
  * cannot resolve before it gives up and marks the local order CANCELED.
  * Named so the early-exit below can hand control to that terminal branch by
@@ -838,6 +861,21 @@ class MainBot<T extends IMainBot> {
    * when the pass ends — see that method for why single-use matters.
    */
   protected reconcileBatch: Map<string, CommonOrder> | null = null
+  /**
+   * Venue-side CANCEL confirmations prefetched for the bulk cancel loop
+   * currently running, keyed by the exchange order id `cancelOrderOnExchange`
+   * addresses the venue with. Populated by {@link MainBot#primeCancelBatch},
+   * consumed once per entry, and cleared by the loop that primed it — see that
+   * method for why both of those matter.
+   */
+  protected cancelBatch: Map<string, CommonOrder> | null = null
+  /**
+   * The coalescer for the burst of placements currently running, or null.
+   * Installed by a burst loop around its own orders and removed in that loop's
+   * `finally`; {@link MainBot#sendOrderToExchange} consults it for the orders
+   * it names and for nothing else. See `openOrderBatcher.ts`.
+   */
+  protected openBatcher: OpenOrderBatcher | null = null
   /** Used pairs */
   pairs: Set<string> = new Set()
   /** Run after loading */
@@ -1200,6 +1238,134 @@ class MainBot<T extends IMainBot> {
       )
       this.reconcileBatch = null
     }
+  }
+
+  /**
+   * Cancel every order a bulk loop is about to walk in ONE venue call, and
+   * hold the answers for {@link MainBot#cancelOrderOnExchange} to consume.
+   *
+   * The arithmetic, on Kraken spot: private REST is metered against a 20-token
+   * bucket per key refilling at 0.5/s, and one cancel costs two tokens (the
+   * QueryOrders lookup plus CancelOrder). A bulk teardown is a strictly serial
+   * `for (…) await cancelOrderOnExchange(o)`, so it empties the bucket in its
+   * first few orders and then pays ~4s per order for the rest.
+   * `CancelOrderBatch` cancels up to 50 for one call.
+   *
+   * Strictly an optimisation, and its failure modes are all the same failure
+   * mode: an id this call does not come back with is simply not primed, and
+   * the loop cancels it exactly as it does today. Nothing here decides
+   * whether an order should be cancelled, only how many round trips that
+   * costs.
+   *
+   * Three properties are load-bearing:
+   *
+   *  - **Kraken spot only, and only when armed.** No other venue is asked a
+   *    single extra question, so no other venue's behaviour can change.
+   *  - **Keyed by the exchange order id**, which is what `cancelOrderOnExchange`
+   *    addresses Kraken with (the client order id does not resolve there at
+   *    all — see that method). An order still carrying the `'-1'` placeholder
+   *    has no venue-side id and is left out entirely, so its existing guard
+   *    still fires on the normal path.
+   *  - **Single use, and cleared by the loop that primed it.** A primed entry
+   *    is a statement about the venue AT PRIME TIME; letting one answer a
+   *    cancel issued later — for an order placed since, or by a different code
+   *    path — would report a cancel that never happened.
+   */
+  protected async primeCancelBatch(orders: Order[]) {
+    this.cancelBatch = null
+    if (!this.exchange || !this.data || !this.krakenSpot) {
+      return
+    }
+    if (!this.isBatchCancelArmed()) {
+      return
+    }
+    if (unsupportedCancelBatch.has(this.data.exchange)) {
+      return
+    }
+    // Grouped by symbol because the venue's batch cancel is per pair and the
+    // callers are not: a DCA bot's teardown walks one deal's orders, but
+    // `cancelAllOrder` on a multi-pair bot walks whatever is open. One call per
+    // symbol keeps the primed map correct for every one of them instead of
+    // silently priming only the first.
+    const idsBySymbol = new Map<string, string[]>()
+    for (const o of orders) {
+      const id = `${o?.orderId ?? ''}`
+      if (!o || !id || id === noExchangeOrderId) {
+        continue
+      }
+      const ids = idsBySymbol.get(o.symbol) ?? []
+      if (!ids.includes(id)) {
+        ids.push(id)
+      }
+      idsBySymbol.set(o.symbol, ids)
+    }
+    const map = new Map<string, CommonOrder>()
+    let asked = 0
+    try {
+      for (const [symbol, ids] of idsBySymbol) {
+        // One order is not a batch: the per-order path is one call either way,
+        // and it is the path whose behaviour is already proven.
+        if (ids.length < 2) {
+          continue
+        }
+        for (let at = 0; at < ids.length; at += maxCancelBatchIds) {
+          const chunk = ids.slice(at, at + maxCancelBatchIds)
+          asked += chunk.length
+          const res = await this.exchange.cancelOrdersBatch({
+            symbol,
+            newClientOrderIds: chunk,
+          })
+          if (res.status !== StatusEnum.ok || !res.data?.length) {
+            if (isBatchRouteUnavailable(res.reason)) {
+              // A property of the deployed connector: ask once per process.
+              unsupportedCancelBatch.add(this.data.exchange)
+              this.handleDebug(
+                `Bulk cancel not available (${res.reason}) — cancelling one at a time from now on`,
+              )
+              this.cancelBatch = null
+              return
+            }
+            // Anything else — an empty answer, a timeout, a venue error — is
+            // this moment's problem only. Nothing was promised about these
+            // ids, so the loop cancels them itself, and the next bulk loop
+            // asks again.
+            this.handleDebug(
+              `Bulk cancel returned nothing for ${symbol} (${res.reason ?? 'empty'}) — cancelling those one at a time`,
+            )
+            continue
+          }
+          for (const order of res.data) {
+            const key = `${order.orderId ?? ''}`
+            if (key && key !== noExchangeOrderId) {
+              map.set(key, order)
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Never fatal: the loop proceeds one order at a time.
+      this.handleDebug(`Bulk cancel failed, falling back per order: ${e}`)
+      this.cancelBatch = null
+      return
+    }
+    this.cancelBatch = map.size ? map : null
+    if (asked) {
+      this.handleDebug(
+        `Bulk cancel confirmed ${map.size}/${asked} order(s) in ${idsBySymbol.size} call group(s)`,
+      )
+    }
+  }
+
+  /**
+   * Drop whatever {@link MainBot#primeCancelBatch} left behind.
+   *
+   * Every priming caller does this in a `finally`, including the ones that
+   * `return` from the middle of their loop. An entry that outlived its loop
+   * would be consumed by an unrelated later cancel and report, as this venue's
+   * answer, something the venue said about a different moment.
+   */
+  protected clearCancelBatch() {
+    this.cancelBatch = null
   }
 
   /**
@@ -7133,6 +7299,125 @@ class MainBot<T extends IMainBot> {
     }
   }
   /**
+   * Has an operator armed bulk CANCEL for this bot? See `batchFlags.ts` and
+   * spec `076` §5.
+   *
+   * The FLAG only — the venue check lives at each call site, so that the two
+   * conditions can be seen, and tested, apart: an armed bot on the wrong venue
+   * must still ask nothing.
+   */
+  protected isBatchCancelArmed(): boolean {
+    return batchCancelEnabled(this.botId)
+  }
+
+  /** The same question for bulk PLACEMENT. */
+  protected isBatchPlaceArmed(): boolean {
+    return batchPlaceEnabled(this.botId)
+  }
+
+  /**
+   * Which orders of a burst may share one venue call — decided ONCE, serially,
+   * before any of them is sent. Spec `076` §7.2.
+   *
+   * `eligible` is the caller's own pre-send skip checks, passed in so this
+   * asks precisely what that loop asks and in the same order. Everything else
+   * here is a refusal that belongs to batching itself:
+   *
+   * - **`market`** — the venue's batch route places LIMIT orders only, and a
+   *   market order's whole point is that it does not wait for company.
+   * - **`minigridId`** — such an order's body removes itself from a list
+   *   SHARED by every order of that minigrid (`pendingOrdersList`), a
+   *   read-modify-write that two concurrent bodies would resolve by losing one
+   *   of the two removals. Serialising a shared list is a bigger change than
+   *   the round trip is worth, so these keep the sequential path.
+   * - **the shape guard** — the loops' duplicate checks (`isOrderExist`,
+   *   `isOrderExistInDeal`) match on (price, side, qty, type), not on the
+   *   client order id. Run sequentially, the second of two identically shaped
+   *   orders sees the first one's row and skips; run together, neither sees
+   *   the other and BOTH are placed. That is the one way concurrency here
+   *   could produce a duplicate live order, so identically shaped orders are
+   *   never batched together — the second takes the sequential path and meets
+   *   the same check it always did.
+   *
+   * Fewer than two survivors means there is nothing to coalesce, and the
+   * caller runs its loop exactly as it does today.
+   */
+  protected batchablePlacements(
+    orders: Grid[],
+    ...eligible: ((order: Grid) => boolean)[]
+  ): Grid[] {
+    if (!this.exchange || !this.krakenSpot || !this.isBatchPlaceArmed()) {
+      return []
+    }
+    const picked: Grid[] = []
+    const shapes = new Set<string>()
+    for (const order of orders) {
+      if (!order?.newClientOrderId || order.market || order.minigridId) {
+        continue
+      }
+      if (!eligible.every((check) => check(order))) {
+        continue
+      }
+      const shape = `${order.side}|${order.price}|${order.qty}|${order.type}`
+      if (shapes.has(shape)) {
+        continue
+      }
+      shapes.add(shape)
+      picked.push(order)
+    }
+    if (picked.length < 2) {
+      return []
+    }
+    this.handleDebug(
+      `Batch placement: ${picked.length} of ${orders.length} order(s) share one venue call`,
+    )
+    return picked
+  }
+
+  /**
+   * Install a coalescer for ONE burst of placements and return it.
+   *
+   * The caller owns the lifetime: it names the participants up front, runs
+   * their bodies, and removes the batcher in a `finally`. While installed, the
+   * send site in {@link MainBot#sendOrderToExchange} routes exactly these
+   * client order ids through it and every other placement in the process is
+   * untouched.
+   *
+   * All the orders of one burst share a symbol by construction — a grid bot
+   * has one pair, a deal has one symbol — so the batch is addressed with the
+   * first one's. The exchange client owns every fallback from here: the caller
+   * gets one answer per order whatever the venue, the connector or the
+   * transport does.
+   */
+  protected installOpenBatcher(clientOrderIds: string[]): OpenOrderBatcher {
+    const batcher = new OpenOrderBatcher(
+      clientOrderIds,
+      async (orders) =>
+        this.exchange
+          ? this.exchange.openOrdersBatch({
+              symbol: orders[0].symbol,
+              orders,
+            })
+          : orders.map(() => ({
+              status: StatusEnum.notok as StatusEnum.notok,
+              reason: 'No exchange instance',
+              data: null,
+            })),
+      { onDebug: (m) => this.handleDebug(m) },
+    )
+    this.openBatcher = batcher
+    return batcher
+  }
+
+  /** Take the batcher back out. Idempotent, and safe to call from a `finally`. */
+  protected removeOpenBatcher(batcher: OpenOrderBatcher) {
+    if (this.openBatcher === batcher) {
+      this.openBatcher = null
+    }
+    batcher.dispose()
+  }
+
+  /**
    * Send order to exchange
    */
 
@@ -7604,7 +7889,27 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
-        request = request ?? (await this.exchange.openOrder(requestData))
+        // The batch seam (spec `076` §6). A burst loop that has installed a
+        // coalescer for THIS order parks here instead of sending on its own,
+        // and gets back an answer for its own order that is indistinguishable
+        // from `openOrder`'s. Everything above — every pre-send gate, each of
+        // which short-circuits by setting `request` — is untouched, and an
+        // order held back by one of them never reaches this line at all (the
+        // loop's wrapper bails it, so the rest of the burst does not wait for
+        // it).
+        //
+        // LIMIT only, because the venue's batch endpoint is; `count === 0`
+        // only, because a re-entry with `count > 0` is a RETRY of an order
+        // whose first attempt has already been through the burst — the
+        // tick-size, quantity-decimals and MARKET_LOT_SIZE branches below all
+        // re-enter this method — and the burst it belonged to is long gone.
+        const batcher =
+          order.type === 'LIMIT' && count === 0 ? this.openBatcher : null
+        request =
+          request ??
+          (batcher?.has(requestData.newClientOrderId)
+            ? await batcher.send(requestData)
+            : await this.exchange.openOrder(requestData))
         // Open/widen the cooldown only for a REAL, venue-returned hard-auth
         // rejection — never a replayed one, or the window would slide forward
         // forever and never self-heal.
@@ -8386,12 +8691,18 @@ class MainBot<T extends IMainBot> {
    * Cancel grid on exchange
    */
 
-  async cancelGridOnExchange(
-    order: Grid,
-    cancelPartiallyFilled = false,
-    removeFromLocal = true,
-  ) {
-    const find = this.getOrdersByStatusAndDealId({
+  /**
+   * The resting order a grid level refers to, or undefined.
+   *
+   * Extracted from {@link MainBot#cancelGridOnExchange} so that a caller
+   * priming a bulk cancel asks for exactly the orders that method will later
+   * look up. Same reason {@link MainBot#venueOrderId} exists: a prefetch keyed
+   * on a second, independently written copy of the same resolution silently
+   * stops hitting the moment the two drift apart, and nothing fails — it just
+   * quietly costs what it was meant to save.
+   */
+  protected findOrderForGrid(order: Grid, cancelPartiallyFilled = false) {
+    return this.getOrdersByStatusAndDealId({
       status: cancelPartiallyFilled ? ['NEW', 'PARTIALLY_FILLED'] : 'NEW',
       dealId: order.dealId,
     })?.find(
@@ -8403,6 +8714,14 @@ class MainBot<T extends IMainBot> {
             orderT.tpSlTarget === order.tpSlTarget)) &&
         orderT.side === order.side,
     )
+  }
+
+  async cancelGridOnExchange(
+    order: Grid,
+    cancelPartiallyFilled = false,
+    removeFromLocal = true,
+  ) {
+    const find = this.findOrderForGrid(order, cancelPartiallyFilled)
     if (find) {
       const result = await this.cancelOrderOnExchange(
         find,
@@ -8473,15 +8792,34 @@ class MainBot<T extends IMainBot> {
       // that provably never existed, and leaves the phantom row NEW.
       // Substituted as a response rather than returned early so the routing
       // below stays the single place that decides what "not found" means.
+      //
+      // Served from the bulk cancel this loop already made, when it made one.
+      // Keyed by the exchange order id — the same id the call below would be
+      // addressed with — so the prime and the consume cannot disagree about
+      // what was asked for. Consumed ONCE: a venue confirmation describes the
+      // moment it was fetched, and an entry left in the map could otherwise
+      // answer a cancel issued later for a different order that happens to
+      // carry the same id. Everything below this line runs UNCHANGED for a
+      // primed result: the field copy, the re-size promotion guard, the
+      // CANCELED-with-fills promotion, the emit, `setOrder`/`deleteOrder` and
+      // the DB write are what make a cancelled order cancelled locally, and a
+      // batched order that skipped any of them would be a subtly different
+      // order. Spec `076` §4.
+      const primed = this.cancelBatch?.get(`${order.orderId}`)
+      if (primed) {
+        this.cancelBatch?.delete(`${order.orderId}`)
+      }
       const request =
         byExchangeId && order.orderId === noExchangeOrderId
           ? this.exchange.returnBad()(new Error(orderNeverReachedExchange))
-          : await this.exchange.cancelOrder({
-              symbol: order.symbol,
-              newClientOrderId: byExchangeId
-                ? `${order.orderId}`
-                : order.clientOrderId,
-            })
+          : primed
+            ? this.exchange.returnGood<CommonOrder>()(primed)
+            : await this.exchange.cancelOrder({
+                symbol: order.symbol,
+                newClientOrderId: byExchangeId
+                  ? `${order.orderId}`
+                  : order.clientOrderId,
+              })
       if (request.status === StatusEnum.notok) {
         for (const m of unknownOrderMessages) {
           if (request.reason.toLowerCase().indexOf(m.toLowerCase()) !== -1) {
