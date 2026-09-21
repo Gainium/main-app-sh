@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.59.58] - 2026-09-21
+
+### Fixed
+
+- A futures deal is no longer left open forever when the exchange refuses its closing order because there is no position left to reduce. The engine already settles a deal in that situation — a reduce-only close can never be accepted against a flat position, so there is nothing to retry — but it recognised only one of the two ways this exchange words the refusal. The second wording, the one that names the position's direction, fell through to the generic handler instead: the deal stayed open holding a position the exchange said was not there, and every later close attempt was refused identically. Both wordings are now recognised. The refusal is scoped by the exchange to the direction the deal itself asked to reduce, so on a hedged account the opposite leg is untouched (spec 075).
+
 ## [1.59.57] - 2026-09-21
 
 ### Fixed

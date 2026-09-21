@@ -521,10 +521,6 @@ describe('a refused deal close leaves nothing on the book (spec 053)', () => {
         'Invalid API-key, IP, or permissions for action.',
       ],
       ['an IP allow-list rejection', 'invalid ip,current request ip 1.2.3.4'],
-      [
-        'a position that is already flat',
-        "Order failed because you don't have any positions in this direction for this contract to reduce or close.",
-      ],
     ]
 
     for (const [what, refusal] of unanswerable) {
@@ -542,6 +538,37 @@ describe('a refused deal close leaves nothing on the book (spec 053)', () => {
         ).to.equal(1)
       })
     }
+
+    /**
+     * "A position that is already flat" was a third entry in the list above
+     * until spec `075`, which gives that venue wording a terminal branch
+     * EARLIER in `closeDealById` — the deal is booked closed and the method
+     * returns before the restore is reachable at all. `074`'s guarantee still
+     * holds, now vacuously, which is the stronger form of it; asserted here
+     * so the two specs cannot silently drift apart.
+     */
+    it('never reaches the restore at all once the deal is booked closed (spec 075)', async () => {
+      const bot = await closeRefused({
+        refusal:
+          "Order failed because you don't have any positions in this " +
+          'direction for this contract to reduce or close.',
+        restorePlaces: false,
+      })
+      expect(bot.placed.length, 'a doomed restore was sent').to.equal(0)
+      expect(
+        bot.reported.length,
+        'reported an unfunded close for a refusal that is not about funds',
+      ).to.equal(0)
+      // Spec 075 §4.3 — the deal is settled instead of being left open, so
+      // there is no terminal refusal left for `handleOrderErrors` to report.
+      expect(bot.orderErrors.length).to.equal(0)
+      expect(
+        bot.logs.some((l: string) =>
+          l.includes('rejected because the position is already closed'),
+        ),
+        `spec 075's branch was not taken; saw ${JSON.stringify(bot.logs)}`,
+      ).to.equal(true)
+    })
 
     it('still re-arms after every funding refusal the shared list knows', async () => {
       for (const refusal of [
