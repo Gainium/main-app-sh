@@ -355,6 +355,29 @@ const positionProbeBackoff = new RetryBackoff({
 })
 
 /**
+ * How often one deal may re-arm its own close after the venue refused it
+ * (spec `074` §4.2).
+ *
+ * `restoreCloseAfterRefusal` lives in the terminal-refusal branch of
+ * `closeDealById`, and that branch is re-entered on EVERY close attempt — the
+ * price tick keeps asking for as long as the deal is stuck. So a shortfall a
+ * re-armed take-profit cannot fix was re-attempted, and re-announced, without
+ * bound: one deal was observed re-entering it sixteen times in eight minutes.
+ * The restore sends the very quantity the close was just refused for, so where
+ * the shortfall is real the second answer is the first answer.
+ *
+ * Same 5 min → 1 h ladder as `dpp` and `nb`, and for the same reason: nothing
+ * is waiting on the restore. The CLOSE keeps its own cadence untouched, so a
+ * shortfall that clears is picked up by the close itself; this only bounds the
+ * fallback behind it. Any restore that does rest an order clears the window.
+ */
+const uncoveredCloseBackoff = new RetryBackoff({
+  namespace: 'ucr',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+})
+
+/**
  * Exchange rejections that mean "this order's notional is under the venue
  * minimum". They route the order into the slippage-retry ladder, which on a
  * combo bot terminates in the `count === slippageRetry` branch of
@@ -1164,6 +1187,58 @@ function createDCABotHelper<
           }`,
         )
       }
+    }
+
+    /**
+     * Re-arm a refused close, or say it could not be re-armed — at most once
+     * per deal per cooldown window.
+     *
+     * Spec `074`. The pair above is a RECOVERY, and the first version of it ran
+     * unconditionally. Two gates, both missing:
+     *
+     * The REASON gate (§4.1). A re-armed take-profit sells exactly the base the
+     * refused close was sizing, so the only refusal it can ever answer is one
+     * about funding that base. A revoked API key, an IP allow-list rejection or
+     * a position that is already flat each produced a second order the venue
+     * refuses for the same reason as the first, plus a message naming funding
+     * as the cause when funding is not the cause. The venue's own reason has
+     * already been reported by `handleOrderErrors` one branch above, and that
+     * one is accurate — so those refusals now keep it as their only report.
+     *
+     * The REPEAT gate (§4.2). See `uncoveredCloseBackoff`. The window is only
+     * ever opened by a restore that LEFT the deal uncovered, never before the
+     * attempt, and a restore that rests an order drops it outright — the same
+     * record-on-failure / clear-on-success shape `positionProbeBackoff` and
+     * `tpCloseBackoff` use.
+     */
+    protected async restoreOrReportRefusedClose(
+      dealId: string,
+      symbol: string,
+      reason: string,
+    ): Promise<void> {
+      if (!this.isErrorNotEnoughBalance(reason)) {
+        return
+      }
+      const cooldown = await uncoveredCloseBackoff.check([this.botId, dealId])
+      if (cooldown.suppressed) {
+        this.handleDebug(
+          `close refused | deal ${dealId} (${symbol}) still uncovered, next restore after ${new Date(
+            cooldown.until,
+          ).toISOString()} (attempt ${cooldown.attempt})`,
+        )
+        return
+      }
+      const covered = await this.restoreCloseAfterRefusal(
+        dealId,
+        symbol,
+        reason,
+      )
+      if (covered) {
+        await uncoveredCloseBackoff.clear([this.botId, dealId])
+        return
+      }
+      await uncoveredCloseBackoff.record([this.botId, dealId], reason)
+      await this.reportUncoveredAfterRefusal(dealId, symbol, reason)
     }
 
     getDealsByStatusAndSymbol({
@@ -7270,19 +7345,17 @@ function createDCABotHelper<
                       // through the normal path, and re-arming here as well
                       // would be the duplicate take-profit of #694 all over
                       // again.
+                      //
+                      // Spec 053's own restore/report pair, now behind spec
+                      // 074's two gates — this branch is re-entered on every
+                      // close attempt, so an unconditional recovery here is an
+                      // unbounded one.
                       if (!retrying) {
-                        const covered = await this.restoreCloseAfterRefusal(
+                        await this.restoreOrReportRefusedClose(
                           dealId,
                           symbol.pair,
                           `${result}`,
                         )
-                        if (!covered) {
-                          await this.reportUncoveredAfterRefusal(
-                            dealId,
-                            symbol.pair,
-                            `${result}`,
-                          )
-                        }
                       }
                     }
                   } else {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.57] - 2026-09-21
+
+### Fixed
+
+- A deal whose close the exchange refused no longer re-sends the same refused order on every subsequent close attempt. Putting a take-profit back on the book after a refused close is a recovery step, and it sat in a branch the engine re-enters each time it retries the close, so a deal the exchange keeps refusing re-sent the identical order and re-raised the identical warning at the retry cadence for as long as it stayed open. It is now attempted once per deal per cooldown window, on the same 5 minute to 1 hour ladder the other repeat-rejection guards use, and the window is dropped the moment a take-profit actually rests. The close itself keeps its own retry cadence, so a shortfall that clears is still picked up immediately (spec 074).
+- That recovery is also no longer attempted after refusals it cannot answer. A re-armed take-profit sells exactly the base the refused close was sizing, so it can only ever answer a refusal about funding that base; it was also firing after a revoked or unpermitted API key, an IP allow-list rejection and a contract with no position left to reduce, each producing a second doomed order and a message naming funding as the cause when funding was not the cause. Those refusals now keep the exchange's own reason as their only report (spec 074).
+
 ## [1.59.56] - 2026-09-21
 
 ### Fixed

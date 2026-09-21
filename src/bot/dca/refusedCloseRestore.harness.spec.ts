@@ -25,10 +25,12 @@ process.env.NODE_ENV = 'testing'
  *
  * Run: `npm test` (mocha).
  */
-import { describe, it, before } from 'mocha'
+import { describe, it, before, beforeEach, afterEach } from 'mocha'
 import { expect } from 'chai'
 import { createRequire } from 'module'
 import { MathHelper } from '../../utils/math'
+import RedisClient from '../../db/redis'
+import { matchesNotEnoughBalance } from '../main'
 import {
   CloseDCATypeEnum,
   DCADealStatusEnum,
@@ -36,6 +38,48 @@ import {
   OrderSideEnum,
   TypeOrderEnum,
 } from '../../../types'
+
+/**
+ * Spec `074` §4.2 bounds the restore with a `RetryBackoff`, which is
+ * Redis-backed. `RetryBackoff` fails OPEN, so with no store every attempt reads
+ * as the first one and the window under test could never be observed. Back it
+ * with a Map instead — the idiom `retryBackoff.memory.spec.ts` and
+ * `tpDustClose.harness.spec.ts` already use — and drive the clock by rewinding
+ * the stored windows (see `passRestoreWindow`).
+ */
+const backoffStore = new Map<string, string>()
+/**
+ * Borrowed for the duration of this file's cases and handed straight back —
+ * `RedisClient.getInstance` is one static, and sibling harnesses
+ * (`tpDustClose`) install their own store on it at module load. Overwriting it
+ * from here permanently is what silently breaks whichever file mocha happens to
+ * run next.
+ */
+let previousGetInstance: unknown
+const useBackoffStore = () => {
+  previousGetInstance = (RedisClient as any).getInstance
+  ;(RedisClient as any).getInstance = async () => ({
+    get: async (k: string) => backoffStore.get(k) ?? null,
+    set: async (k: string, v: string) => {
+      backoffStore.set(k, v)
+    },
+    del: async (k: string) => {
+      backoffStore.delete(k)
+    },
+  })
+}
+const releaseBackoffStore = () => {
+  if (previousGetInstance) {
+    ;(RedisClient as any).getInstance = previousGetInstance
+  }
+}
+
+/** The cooldown elapses: every open window falls into the past. */
+const passRestoreWindow = () => {
+  for (const [k, v] of backoffStore) {
+    backoffStore.set(k, JSON.stringify({ ...JSON.parse(v), until: 0 }))
+  }
+}
 
 /** Synthetic ids — this file is public. */
 const BOT_ID = '000000000000000000000b53'
@@ -86,6 +130,14 @@ class FakeBase {
   shouldProceed() {
     return true
   }
+  /**
+   * The real base's predicate (`main.ts`), delegating to the very same exported
+   * venue-string list. Stubbing it `false` here would make spec `074` §4.1
+   * untestable; stubbing it `true` would hide the gate entirely.
+   */
+  isErrorNotEnoughBalance(errorString: string) {
+    return matchesNotEnoughBalance(errorString)
+  }
   constructor(..._a: any[]) {}
 }
 
@@ -108,12 +160,19 @@ type Opts = {
   tpQty?: number
   /** Base this deal has already sold, so its own position is smaller. */
   tpHistory?: { id?: string; qty: number }[]
+  /** What the venue answered the close with. Defaults to the funding refusal. */
+  refusal?: string
+  /** Spec 074 §4.2 — the window is keyed per deal, so fixtures need ids. */
+  dealId?: string
+  botId?: string
 }
 
 const buildBot = (o: Opts = {}) => {
+  const DEAL = o.dealId ?? DEAL_ID
+  const BOT = o.botId ?? BOT_ID
   const deal: any = {
-    _id: DEAL_ID,
-    botId: BOT_ID,
+    _id: DEAL,
+    botId: BOT,
     status: DCADealStatusEnum.open,
     symbol: { symbol: PAIR, baseAsset: 'VTHO', quoteAsset: 'USDT' },
     size: SIZE,
@@ -148,8 +207,9 @@ const buildBot = (o: Opts = {}) => {
       },
     }
 
+    botId = BOT
     getDeal(id: string) {
-      if (id !== DEAL_ID) return undefined
+      if (id !== DEAL) return undefined
       const status = this.cancelled
         ? (o.statusAfterCancel ?? DCADealStatusEnum.open)
         : DCADealStatusEnum.open
@@ -193,7 +253,7 @@ const buildBot = (o: Opts = {}) => {
     }
     async sendGridToExchange(order: any, options: any) {
       this.sent.push({ ...order, acAfter: options?.acAfter })
-      return REFUSAL
+      return o.refusal ?? REFUSAL
     }
     async checkAssets() {
       return new Map([['VTHO', { free: o.walletFree ?? 1141.9, locked: 0 }]])
@@ -208,7 +268,9 @@ const buildBot = (o: Opts = {}) => {
       return { base: 0, quote: 0 }
     }
     async getTPOrder() {
-      return o.rearm === null ? [] : (o.rearm ?? [{ qty: TP_QTY, price: TP_PRICE }])
+      return o.rearm === null
+        ? []
+        : (o.rearm ?? [{ qty: TP_QTY, price: TP_PRICE }])
     }
     /**
      * The restore's seam is `placeOrdersHoldingDealLock`, not `placeOrders` —
@@ -272,8 +334,8 @@ const buildBot = (o: Opts = {}) => {
 const closeRefused = async (o: Opts = {}) => {
   const bot: any = buildBot(o)
   await bot.closeDealById(
-    BOT_ID,
-    DEAL_ID,
+    o.botId ?? BOT_ID,
+    o.dealId ?? DEAL_ID,
     CloseDCATypeEnum.closeByMarket,
     false,
     false,
@@ -307,15 +369,29 @@ describe('a refused deal close leaves nothing on the book (spec 053)', () => {
     Helper = loadModule('../dcaHelper').default(FakeBase as any)
   })
 
+  // Spec 074 §4.2's window is keyed on (botId, dealId) and deliberately
+  // outlives a bot instance, so every case starts from an empty store.
+  beforeEach(() => {
+    useBackoffStore()
+    backoffStore.clear()
+  })
+  afterEach(() => releaseBackoffStore())
+
   describe('§4.1 the close is restored', () => {
     it('an open deal is never left with no close on the book', async () => {
       const bot = await closeRefused()
       // The production state this reproduces: cancelled, refused, and bare.
-      expect(bot.cancels.length, 'the resting take-profit was pulled').to.be.greaterThan(0)
+      expect(
+        bot.cancels.length,
+        'the resting take-profit was pulled',
+      ).to.be.greaterThan(0)
       expect(bot.sent.length, 'a replacement close was attempted').to.equal(1)
       expect(bot.orderErrors.length, 'the refusal was reported').to.equal(1)
       // The invariant.
-      expect(restingCount(bot), 'deal left with no close on the book').to.be.greaterThan(0)
+      expect(
+        restingCount(bot),
+        'deal left with no close on the book',
+      ).to.be.greaterThan(0)
     })
 
     it('restores it from the deal own position, not a wallet total', async () => {
@@ -377,8 +453,10 @@ describe('a refused deal close leaves nothing on the book (spec 053)', () => {
     it('names the deal in a greppable line an operator can act on', async () => {
       const bot = await closeRefused({ restorePlaces: false })
       const line = bot.warns.find((w: string) => w.includes(DEAL_ID))
-      expect(line, `no warn names the deal; saw ${JSON.stringify(bot.warns)}`).to
-        .be.a('string')
+      expect(
+        line,
+        `no warn names the deal; saw ${JSON.stringify(bot.warns)}`,
+      ).to.be.a('string')
       expect(line).to.include(PAIR)
     })
 
@@ -428,6 +506,106 @@ describe('a refused deal close leaves nothing on the book (spec 053)', () => {
         tpQty: 5000,
       })
       expect(adaptiveSend(bot).qty).to.equal(900)
+    })
+  })
+
+  describe('spec 074 §4.1 the restore is qualified by the refusal reason', () => {
+    // A re-armed take-profit sells exactly the base the close was sizing, so
+    // the only refusal it can answer is one about funding that base. In
+    // production 6.1% of restores went out after one of these instead, each
+    // producing a second refused order and a message naming funding as the
+    // cause when funding is not the cause.
+    const unanswerable: [string, string][] = [
+      [
+        'a revoked or unpermitted API key',
+        'Invalid API-key, IP, or permissions for action.',
+      ],
+      ['an IP allow-list rejection', 'invalid ip,current request ip 1.2.3.4'],
+      [
+        'a position that is already flat',
+        "Order failed because you don't have any positions in this direction for this contract to reduce or close.",
+      ],
+    ]
+
+    for (const [what, refusal] of unanswerable) {
+      it(`does not re-arm after ${what}`, async () => {
+        const bot = await closeRefused({ refusal, restorePlaces: false })
+        expect(bot.placed.length, 'a doomed restore was sent').to.equal(0)
+        expect(
+          bot.reported.length,
+          'reported an unfunded close for a refusal that is not about funds',
+        ).to.equal(0)
+        // §3.3 — the venue's own reason still reaches the user, unchanged.
+        expect(
+          bot.orderErrors.length,
+          'the venue refusal went unreported',
+        ).to.equal(1)
+      })
+    }
+
+    it('still re-arms after every funding refusal the shared list knows', async () => {
+      for (const refusal of [
+        'Not enough balance',
+        'Account has insufficient balance for requested action.',
+        'EOrder:Insufficient funds',
+      ]) {
+        backoffStore.clear()
+        const bot = await closeRefused({ refusal })
+        expect(bot.placed.length, `did not re-arm after "${refusal}"`).to.equal(
+          1,
+        )
+      }
+    })
+  })
+
+  describe('spec 074 §4.2 a stuck deal is not re-armed on every attempt', () => {
+    /** Re-enter the refusal branch `n` times, as the close retry does. */
+    const attempts = async (n: number, o: Opts = {}) => {
+      const bots: any[] = []
+      for (let i = 0; i < n; i++) {
+        bots.push(await closeRefused({ restorePlaces: false, ...o }))
+      }
+      return {
+        restores: bots.reduce((a, b) => a + b.placed.length, 0),
+        reports: bots.reduce((a, b) => a + b.reported.length, 0),
+      }
+    }
+
+    it('re-arms once per window, not once per close attempt', async () => {
+      // Production: the same deal re-entered this branch 16 times in 8 minutes,
+      // sending the quantity the close had just been refused for each time.
+      const { restores, reports } = await attempts(16)
+      expect(restores, 'every attempt re-sent the refused quantity').to.equal(1)
+      expect(reports, 'every attempt re-raised the same warning').to.equal(1)
+    })
+
+    it('re-arms again once the window has elapsed', async () => {
+      await attempts(3)
+      passRestoreWindow()
+      const { restores } = await attempts(1)
+      expect(restores, 'the deal was never retried again').to.equal(1)
+    })
+
+    it('keeps the window per deal, so a sibling deal is unaffected', async () => {
+      await attempts(3)
+      const other = await closeRefused({
+        restorePlaces: false,
+        dealId: '000000000000000000000d74',
+      })
+      expect(
+        other.placed.length,
+        "one deal's window silenced another",
+      ).to.equal(1)
+    })
+
+    it('releases the window as soon as a restore rests an order', async () => {
+      // A shortfall that clears must not be held off for the rest of the
+      // ladder: the successful restore drops the key outright.
+      await attempts(2)
+      passRestoreWindow()
+      const ok = await closeRefused()
+      expect(ok.placed.length, 'the recovering deal was suppressed').to.equal(1)
+      expect(backoffStore.size, 'a covered deal kept its cooldown').to.equal(0)
     })
   })
 })

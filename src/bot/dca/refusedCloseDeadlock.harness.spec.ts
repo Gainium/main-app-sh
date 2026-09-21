@@ -27,10 +27,12 @@ process.env.NODE_ENV = 'testing'
  *
  * Run: `npm test` (mocha).
  */
-import { describe, it, before } from 'mocha'
+import { describe, it, before, beforeEach, afterEach } from 'mocha'
 import { expect } from 'chai'
 import { createRequire } from 'module'
 import { MathHelper } from '../../utils/math'
+import RedisClient from '../../db/redis'
+import { matchesNotEnoughBalance } from '../main'
 import {
   CloseDCATypeEnum,
   DCADealStatusEnum,
@@ -38,6 +40,35 @@ import {
   OrderSideEnum,
   TypeOrderEnum,
 } from '../../../types'
+
+/**
+ * Each case below is an independent production situation, and spec `074` §4.2
+ * now puts a per-(bot, deal) cooldown around the restore — so without a clean
+ * store per case the first case's window suppresses the second's restore and
+ * the deadlock under test is never reached. Borrow `RedisClient.getInstance`
+ * for the case and hand it straight back; sibling harnesses install their own
+ * store on the same static.
+ */
+const cooldownStore = new Map<string, string>()
+let previousGetInstance: unknown
+const useEmptyCooldownStore = () => {
+  cooldownStore.clear()
+  previousGetInstance = (RedisClient as any).getInstance
+  ;(RedisClient as any).getInstance = async () => ({
+    get: async (k: string) => cooldownStore.get(k) ?? null,
+    set: async (k: string, v: string) => {
+      cooldownStore.set(k, v)
+    },
+    del: async (k: string) => {
+      cooldownStore.delete(k)
+    },
+  })
+}
+const releaseCooldownStore = () => {
+  if (previousGetInstance) {
+    ;(RedisClient as any).getInstance = previousGetInstance
+  }
+}
 
 /** Synthetic ids — this file is public. */
 const BOT_ID = '000000000000000000000b55'
@@ -92,6 +123,15 @@ class FakeBase {
   }
   shouldProceed() {
     return true
+  }
+  /**
+   * The real base's predicate (`main.ts`), delegating to the same exported
+   * venue-string list. Spec `074` §4.1 gates the restore on it, and this
+   * fixture's `REFUSAL` is a funding refusal, so the restore under test still
+   * runs — stubbing it `false` here would make these cases pass vacuously.
+   */
+  isErrorNotEnoughBalance(errorString: string) {
+    return matchesNotEnoughBalance(errorString)
   }
   constructor(..._a: any[]) {}
 }
@@ -252,6 +292,9 @@ describe('a refused close deadlocks the deal lock (spec 055)', () => {
     this.timeout(180000)
     Helper = loadModule('../dcaHelper').default(FakeBase as any)
   })
+
+  beforeEach(() => useEmptyCooldownStore())
+  afterEach(() => releaseCooldownStore())
 
   describe('§4.1 the restore runs to completion inside the deal lock', () => {
     it('closeDealById returns after the restore', async () => {
