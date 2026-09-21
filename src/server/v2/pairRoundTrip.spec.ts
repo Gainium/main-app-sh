@@ -87,7 +87,7 @@ after(() => {
   ;(pairDb as any).readData = originalReadData
 })
 
-/* eslint-disable @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { parseFieldsParam, filterFields } = require('./fieldUtils')
 const { endpointForBotType } = require('./fieldConfig')
 const { GRID_FORM_DEFAULTS, DCA_FORM_DEFAULTS } = require('./botDefaults')
@@ -96,7 +96,7 @@ const {
   validateCreateDCABotInput,
 } = require('./validators/bots')
 const { applyGridFuturesConstraints, clonedBotPair } = require('./helpers')
-/* eslint-enable @typescript-eslint/no-var-requires */
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 const EXCHANGE_UUID = 'e0000000-0000-0000-0000-000000000000'
 
@@ -324,6 +324,7 @@ describe('spec 067 — v2 pair round trip', () => {
     // `findPairBySymbol` is the rule every v2 pair lookup now shares,
     // including `submitBacktestRequest`, whose own copy lives inside a route
     // closure and cannot be driven directly.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { findPairBySymbol } = require('../../bot/utils')
     const usdm = PROD_PAIRS.filter((p) => p.exchange === 'binanceUsdm')
 
