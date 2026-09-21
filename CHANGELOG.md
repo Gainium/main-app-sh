@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.59] - 2026-09-21
+
+### Changed
+
+- Setting a password now applies one rule everywhere. Changing your password,
+  resetting it and the command-line reset each used to apply a different
+  standard, so a password accepted by one could be refused by another and the
+  form could only ever match one of them. The rule is now 8 to 200 characters
+  with an uppercase letter, a lowercase letter and a number, and a rejection
+  says so instead of only reporting that the password was not valid. Existing
+  passwords are unaffected: signing in does not apply this rule.
+
 ## [1.59.58] - 2026-09-21
 
 ### Fixed
