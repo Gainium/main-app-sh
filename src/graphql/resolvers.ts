@@ -130,6 +130,7 @@ import {
   sealConnection,
 } from '../utils/credentials'
 import logger from '../utils/logger'
+import { keyFingerprint } from '../utils/keyFingerprint'
 import { verifyPassword } from './handlers/password'
 // ⚠️ Note the two similarly-named helpers now in scope. `verifyPassword`
 // directly above is the SYNCHRONOUS strength/format validator and takes ONE
@@ -5824,7 +5825,12 @@ const resolvers = <
             }
             if (!verifyResult.status) {
               logger.error(
-                `Add exchange verify response ${verifyResult.reason}, user ${user.data._id} (${user.data.username}), key: "${key}", exchange: "${provider}" `,
+                // The key is fingerprinted, never written down: this line
+                // fires on a FAILED verification, and a key the venue refused
+                // for an IP restriction or a missing permission is still a
+                // live credential. The fingerprint is enough to tell two
+                // attempts apart and matches the connector's for the same key.
+                `Add exchange verify response ${verifyResult.reason}, user ${user.data._id} (${user.data.username}), key#${keyFingerprint(key)}, exchange: "${provider}" `,
               )
               // The venue almost always says exactly what is wrong — wrong
               // OKX origin, unmatched IP, missing spot permission — and all of

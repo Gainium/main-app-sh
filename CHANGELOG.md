@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.59.54] - 2026-09-21
+
+### Fixed
+
+- The add-exchange failure log line now identifies the credential by a short, non-reversible fingerprint instead of writing the API key itself. The line fires whenever a venue refuses a verification, and a refusal is not a verdict on the key — an IP restriction, a missing trade permission or a wrong regional origin all refuse a perfectly live credential. The fingerprint is the same djb2 hash `exchange-connector-sh` uses, so one credential can still be matched across the two services' logs (spec 071).
+
 ## [1.59.53] - 2026-09-21
 
 ### Fixed
