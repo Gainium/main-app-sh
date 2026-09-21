@@ -91,6 +91,7 @@ import {
   normalizeLocked,
   streamedFree,
 } from './balanceWrite'
+import { createHoldRefresh } from './holdRefresh'
 
 /**
  * The venue's own spendable figure, as fields to merge into the balance write.
@@ -647,6 +648,34 @@ const setBitgetTimer = async (
   )
 }
 
+/**
+ * One REST balance refresh for a connection whose venue does not stream its
+ * hold (spec 070). Reads the user fresh: the event may arrive long after
+ * `connectUserBalance` loaded the document, and a refresh against stale
+ * credentials is a wasted connector call.
+ */
+const refreshBalanceForHold = async (
+  userId: string,
+  uuid: string,
+  ec = ExchangeChooser,
+) => {
+  const user = await userDb.readData(userListFilter({ _id: userId }))
+  if (user.status === StatusEnum.notok) {
+    logger.warn(`Hold refresh | read user ${userId} failed: ${user.reason}`)
+    return
+  }
+  if (!user.data.result) {
+    return
+  }
+  logger.debug(`Hold refresh | ${uuid}@${userId}`)
+  await updateUserBalance(user.data.result, uuid, undefined, ec)
+}
+
+const holdRefresh = createHoldRefresh({
+  onError: (uuid, error) =>
+    logger.warn(`Hold refresh | ${uuid} failed: ${error}`),
+})
+
 const connectUserBalance = async (
   id?: string,
   uuid?: string,
@@ -741,7 +770,14 @@ const connectUserBalance = async (
 
         if (redisClient) {
           redisClient.subscribe(e.uuid, async (msg) => {
-            balanceMsg.push({ ...JSON.parse(msg), userId, e })
+            const parsed = JSON.parse(msg)
+            // Order events share this channel with the balance events. On a
+            // venue whose stream carries no hold they are the only prompt
+            // signal that `locked` moved (spec 070).
+            holdRefresh.schedule(e.provider, e.uuid, parsed?.eventType, () =>
+              refreshBalanceForHold(userId, e.uuid, ec),
+            )
+            balanceMsg.push({ ...parsed, userId, e })
             await processBalanceUpdate()
           })
         }
@@ -751,6 +787,8 @@ const connectUserBalance = async (
 }
 
 const disconnectUserBalance = async (uuid: string) => {
+  holdRefresh.cancel(uuid)
+
   const getTimer = coinsbaseTimer.get(uuid)
   if (getTimer) {
     clearInterval(getTimer)

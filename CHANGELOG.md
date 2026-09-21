@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.59.53] - 2026-09-21
+
+### Fixed
+
+- On a venue whose balance stream reports a wallet total and no hold, the funds an order holds now appear within seconds of the order resting, filling or being cancelled, instead of waiting for the next periodic balance refresh. The order events already arrive on the same stream, so one refresh is scheduled per connection per short window — a ladder that rests many orders at once costs a single call. Venues that stream their own hold are untouched (spec 070; follows spec 069).
+
 ## [1.59.52] - 2026-09-21
 
 ### Fixed
