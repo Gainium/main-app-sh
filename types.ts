@@ -5082,8 +5082,29 @@ export type BotParentProcessStatsEventDtoDcaCombo = {
 
 export type BotParentRemoveStatsEventDtoDcaCombo = {
   event: 'removeStats'
+  botType: BotType.combo | BotType.dca
   dealId: string
 }
+
+/**
+ * A grid bot is tracked per BOT, not per deal, and its stats are sampled at
+ * most once a minute — so the window it stops in is never sampled and never
+ * written. The removal therefore carries the price the bot is stopping on, so
+ * the monitor can take one final measurement before it flushes and drops the
+ * entry (spec 064).
+ */
+export type BotParentRemoveStatsEventDtoGrid = {
+  event: 'removeStats'
+  botType: BotType.grid
+  payload: {
+    data: PriceMessage
+    bot: InputGrid
+  }
+}
+
+export type BotParentRemoveStatsEventDto =
+  | BotParentRemoveStatsEventDtoDcaCombo
+  | BotParentRemoveStatsEventDtoGrid
 
 export type BotParentProcessStatsEventDtoGrid = {
   event: 'processStats'

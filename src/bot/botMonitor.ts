@@ -623,8 +623,9 @@ class BotMonitor {
               ? +findPrice.price - current.price
               : current.price - +findPrice.price
 
-          const perc = current.price !== 0 ? diff / current.price : 0
-          const val = current.qty * perc * +findPrice.price
+          // Spec 064: see the note in `helper.ts` `tpSl()`. The live value of
+          // the position is `qty * (lastPrice − entry)`.
+          const val = current.qty * diff
           valueCurrent = bot.profit.totalUsd + initialBalance / leverage + val
           valueChange = bot.profit.totalUsd + val
         }

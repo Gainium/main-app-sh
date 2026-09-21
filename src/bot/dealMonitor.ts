@@ -45,7 +45,21 @@ export class DealMonitor {
     return DealMonitor.instance
   }
 
-  public removeDealStats(id: string) {
+  /**
+   * Flush a deal's tracked stats and stop tracking it.
+   *
+   * `completeStats` only runs on the sample that closes a window, so every
+   * measurement taken since the last one — up to a full sampling interval of
+   * drawdown, run-up and time-in-loss — used to be thrown away when the deal
+   * closed. Flushing here keeps it. Unlike the grid path this takes no final
+   * measurement: the deal-close path does not carry the deal snapshot, usd
+   * rate and fee `addDealStats` needs. Spec 064 §4.3.
+   */
+  public async removeDealStats(id: string, combo = false) {
+    const stats = this.stats.get(id)
+    if (stats?.wasChanged) {
+      await this.completeStats(combo, id, +new Date(), { ...stats })
+    }
     this.stats.delete(id)
   }
 

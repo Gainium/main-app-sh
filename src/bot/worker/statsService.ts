@@ -3,7 +3,7 @@ import { DealMonitor } from '../dealMonitor'
 import { GridMonitor } from '../gridMonitor'
 import {
   BotParentProcessStatsEventDto,
-  BotParentRemoveStatsEventDtoDcaCombo,
+  BotParentRemoveStatsEventDto,
   BotType,
 } from '../../../types'
 import logger from '../../utils/logger'
@@ -48,9 +48,19 @@ export class DealStats {
     }
   }
 
-  public removeStats(data: BotParentRemoveStatsEventDtoDcaCombo) {
+  public async removeStats(data: BotParentRemoveStatsEventDto) {
     try {
-      this.dealStats.removeDealStats(data.dealId)
+      if (data.botType === BotType.grid) {
+        await this.gridMonitor.removeBotStats(
+          data.payload.data,
+          data.payload.bot,
+        )
+      } else {
+        await this.dealStats.removeDealStats(
+          data.dealId,
+          data.botType === BotType.combo,
+        )
+      }
     } catch (e) {
       logger.error(
         `removeStats Rejection at Promise Stats Worker ${threadId}, ${

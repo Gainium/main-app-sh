@@ -91,8 +91,10 @@ export class GridMonitor {
         current.side === PositionSide.LONG
           ? price - current.price
           : current.price - price
-      const perc = current.price !== 0 ? diff / current.price : 0
-      const val = current.qty * perc * price
+      // Spec 064: see the note in `helper.ts` `tpSl()` — the drawdown/run-up
+      // is tracked against the same value the TP/SL triggers on, so it carries
+      // the same correction.
+      const val = current.qty * diff
       valueChange = val + bot.profit.total
       newPerc = Math.abs(valueChange / (initialValue / leverage))
     } else {
@@ -111,16 +113,21 @@ export class GridMonitor {
       stats.wasChanged = true
     }
 
-    if (valueChange > 0 && stats.currentCount === 'loss') {
-      stats.timeInLoss += time - stats.timeCountStart - 1
-      stats.timeCountStart = time
-      stats.currentCount = 'profit'
-      stats.wasChanged = true
-    } else if (valueChange < 0 && stats.currentCount === 'profit') {
-      stats.timeInProfit += time - stats.timeCountStart - 1
-      stats.timeCountStart = time
-      stats.currentCount = 'loss'
-      stats.wasChanged = true
+    // Guarded the way `DealMonitor.updateDealStats` guards it: a sample clocked
+    // before the window opened would accumulate a NEGATIVE interval (spec 064
+    // §4.4).
+    if (time > stats.timeCountStart) {
+      if (valueChange > 0 && stats.currentCount === 'loss') {
+        stats.timeInLoss += time - stats.timeCountStart - 1
+        stats.timeCountStart = time
+        stats.currentCount = 'profit'
+        stats.wasChanged = true
+      } else if (valueChange < 0 && stats.currentCount === 'profit') {
+        stats.timeInProfit += time - stats.timeCountStart - 1
+        stats.timeCountStart = time
+        stats.currentCount = 'loss'
+        stats.wasChanged = true
+      }
     }
     this.stats.set(bot._id.toString(), stats)
   }
@@ -140,8 +147,8 @@ export class GridMonitor {
         current.side === PositionSide.LONG
           ? price - current.price
           : current.price - price
-      const perc = current.price !== 0 ? diff / current.price : 0
-      const val = current.qty * perc * price
+      // Spec 064.
+      const val = current.qty * diff
       valueChange = val + bot.profit.total
     } else {
       const currentValue =
@@ -163,13 +170,44 @@ export class GridMonitor {
     })
   }
 
+  /**
+   * Flush a bot's tracked stats and stop tracking it.
+   *
+   * Nothing used to remove a grid bot from this map, so `completeStats` only
+   * ever ran on the NEXT sample after a window closed — and since a bot is
+   * sampled at most once a minute, the window it stops in is neither sampled
+   * nor written. The deepest drawdown of a stop-loss close was discarded that
+   * way. Taking the final measurement here (rather than only flushing what is
+   * already in memory) is what makes the flush worth anything: on a bot that
+   * stops less than a sampling interval after its last one there is otherwise
+   * nothing in memory but the values read back from the document. Spec 064.
+   */
+  @IdMute(
+    mutex,
+    (_data: unknown, bot: InputGrid) => `${bot._id.toString()}stats`,
+    10,
+  )
+  public async removeBotStats(data: PriceMessage, bot: InputGrid) {
+    const id = bot._id.toString()
+    const stats = this.stats.get(id)
+    if (stats) {
+      this.updateDealStats(bot, stats, data.price, data.time)
+      await this.completeStats(id, data.time, {
+        ...(this.stats.get(id) ?? stats),
+      })
+    }
+    this.stats.delete(id)
+  }
+
   private async completeStats(id: string, time: number, stats: GridStatsMap) {
+    // Clamped the way `DealMonitor.completeStats` clamps it: the flush above
+    // is clocked locally while `timeCountStart` comes from the price stream,
+    // so an interval can come out negative and must not be `$inc`ed.
+    const tracked = Math.max(0, time - stats.timeCountStart)
     const timeInLoss =
-      stats.timeInLoss +
-      (stats.currentCount === 'loss' ? time - stats.timeCountStart : 0)
+      stats.timeInLoss + (stats.currentCount === 'loss' ? tracked : 0)
     const timeInProfit =
-      stats.timeInProfit +
-      (stats.currentCount === 'profit' ? time - stats.timeCountStart : 0)
+      stats.timeInProfit + (stats.currentCount === 'profit' ? tracked : 0)
     await this.gridBotDb.updateData(
       { _id: id },
       {

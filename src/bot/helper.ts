@@ -78,6 +78,13 @@ export enum TpSlReturn {
 
 const mutex = new IdMutex()
 
+/**
+ * How long `stop()` waits for the final stats flush before going ahead with
+ * the close. Far above any healthy `completeStats` write and far below
+ * anything a user would notice in a close (spec 064 §4.2).
+ */
+const FLUSH_STATS_TIMEOUT_MS = 5000
+
 const { sleep } = utils
 
 function createBotHelper<
@@ -2931,15 +2938,22 @@ function createBotHelper<
             // booked by `closeBotByTp` or by an earlier delivery is refused
             // here and cannot be counted twice.
             this.saveProfitToDb(profitUsd, res.data.updateTime)
+            // Carried into memory the way `profitAfterPositionClosed` carries
+            // it, under the SAME gate as the ledger write above. `updateData`
+            // `$set`s an absolute profit, so a close leg left only in the
+            // document is discarded by the next `createTransaction` — which
+            // builds its own absolute value from `this.data`; and advancing it
+            // on a refused replay would book the close twice (spec 073).
+            this.data.profit = {
+              ...this.data.profit,
+              total: this.data.profit.total + profit,
+              totalUsd: this.data.profit.totalUsd + profitUsd,
+            }
           }
           const data = {
             currentBalances,
             feeBalance: 0,
-            profit: {
-              ...this.data.profit,
-              total: this.data.profit.total + profit,
-              totalUsd: this.data.profit.totalUsd + profitUsd,
-            },
+            profit: this.data.profit,
           }
 
           this.emit('bot settings update', data)
@@ -3276,10 +3290,13 @@ function createBotHelper<
      *
      * @param {Order} o Filled order to sount transaction for
      */
-    @IdMute(
-      mutex,
-      (order: Order) => `${order.botId}transaction${order.clientOrderId}`,
-    )
+    // Keyed on the BOT, not on the fill. `processFilledOrder` calls this
+    // without awaiting it, so a per-fill key let every fill delivered in one
+    // price message run concurrently — and they all read the same
+    // `this.data.profit.total` across the awaits below, so the running
+    // `cummulativeProfit*` the ledger is built from was written N times from
+    // one stale base and N-1 legs vanished from it (spec 073).
+    @IdMute(mutex, (order: Order) => `${order.botId}transaction`)
     async createTransaction(o: Order): Promise<void> {
       if (!this.data) {
         return
@@ -4193,8 +4210,14 @@ function createBotHelper<
               current.side === PositionSide.LONG
                 ? lastPrice - current.price
                 : current.price - lastPrice
-            const perc = current.price !== 0 ? diff / current.price : 0
-            const val = current.qty * perc * lastPrice
+            // Spec 064 §4.1: the live value of a position of `qty` base units
+            // entered at `current.price` and marked at `lastPrice` is
+            // `qty * (lastPrice - entry)` — the same quantity
+            // `profitAfterPositionClosed()` books when that position is closed
+            // at `lastPrice`. Scaling it by `lastPrice / entry` understated a
+            // long's open loss (the stop fired late) and overstated a short's
+            // (it fired early).
+            const val = current.qty * diff
             const valueChange = val + this.data.profit.total
             const totalPerc =
               valueChange / (initialValue / this.currentLeverage)
@@ -4359,10 +4382,96 @@ function createBotHelper<
         clearTimeout(this.priceTimer)
       }
     }
+    /**
+     * The snapshot `GridMonitor` is fed — the only shape it reads a bot
+     * through.
+     *
+     * Built here rather than inline so the sample taken on every price update,
+     * the one main-app's override of that callback takes, and the final one
+     * taken when the bot stops cannot drift apart (spec 064 §4.2).
+     */
+    protected gridStatsSnapshot():
+      | BotParentProcessStatsEventDtoGrid['payload']['bot']
+      | null {
+      if (!this.data) {
+        return null
+      }
+      return {
+        _id: this.botId,
+        exchange: this.data.exchange,
+        initialBalances: this.data.initialBalances,
+        initialPrice: this.data.initialPrice,
+        currentBalances: this.data.currentBalances,
+        realInitialBalances: this.data.realInitialBalances,
+        settings: {
+          marginType: this.data.settings.marginType,
+          leverage: this.data.settings.leverage,
+          profitCurrency: this.data.settings.profitCurrency,
+        },
+        position: this.data.position,
+        profit: {
+          total: this.data.profit.total,
+        },
+        stats: this.data.stats,
+      }
+    }
+    /**
+     * Take the final stats measurement and flush it before the bot goes away.
+     *
+     * A grid bot is sampled at most once a minute and nothing used to remove
+     * it from `GridMonitor`, so the window it stops in — the one holding the
+     * drawdown that fired the stop-loss, or the run-up that fired the
+     * take-profit — was neither sampled nor written. `afterBotStop()` runs at
+     * the TOP of `stop()`, before the closing order, so the position is still
+     * open here and the measurement is the unrealized result the bot is
+     * stopping on.
+     *
+     * The wait is bounded: `removeBotStats` runs under the same per-bot
+     * `IdMute` key as the sample, whose wait queue is a `getFixedArray` — an
+     * evicted waiter's promise never settles, and `stop()` awaits this before
+     * it places the closing order. Spec 064 §4.2.
+     */
+    private async flushBotStats(): Promise<void> {
+      const bot = this.gridStatsSnapshot()
+      if (!bot || !this.data) {
+        return
+      }
+      const symbol = this.data.symbol.symbol
+      const price = this.getLastStreamData(symbol)?.price
+      if (price === undefined) {
+        return
+      }
+      let timer: NodeJS.Timeout | undefined
+      try {
+        await Promise.race([
+          DealStats.getInstance().removeStats({
+            event: 'removeStats',
+            botType: BotType.grid,
+            payload: {
+              data: { symbol, price, time: +new Date(), volume: 0 },
+              bot,
+            },
+          }),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              this.handleWarn(
+                `Stats flush on stop did not answer in ${FLUSH_STATS_TIMEOUT_MS}ms, continuing`,
+              )
+              resolve()
+            }, FLUSH_STATS_TIMEOUT_MS)
+          }),
+        ])
+      } finally {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      }
+    }
     async afterBotStop() {
       this.stopPriceTimer()
       this.stopConsumerHeartbeat()
       this.stopQuantRulesRetries()
+      await this.flushBotStats()
       return
     }
     /** Check if price not update */
@@ -4710,14 +4819,17 @@ function createBotHelper<
                 // user stream's delivery — and the unique `index` is what
                 // decides which of them books it.
                 this.saveProfitToDb(profitUsd, res.data.updateTime)
-              }
-              const data = {
-                currentBalances,
-                profit: {
+                // Same reason, and under the same gate, as in
+                // `processFilledStop` (spec 073).
+                this.data.profit = {
                   ...this.data.profit,
                   total: this.data.profit.total + profit,
                   totalUsd: this.data.profit.totalUsd + profitUsd,
-                },
+                }
+              }
+              const data = {
+                currentBalances,
+                profit: this.data.profit,
               }
               this.emit('bot settings update', data)
               this.updateData({ ...data })
@@ -4777,32 +4889,13 @@ function createBotHelper<
           60 * 1000
         ) {
           this.lastCheckPerSymbol.set(msg.symbol, +new Date())
-          if (this.data) {
+          const bot = this.gridStatsSnapshot()
+          if (bot) {
             const data: BotParentProcessStatsEventDtoGrid = {
               event: 'processStats',
               botId: this.botId,
               botType: BotType.grid,
-              payload: {
-                data: msg,
-                bot: {
-                  _id: this.botId,
-                  exchange: this.data.exchange,
-                  initialBalances: this.data.initialBalances,
-                  initialPrice: this.data.initialPrice,
-                  currentBalances: this.data.currentBalances,
-                  realInitialBalances: this.data.realInitialBalances,
-                  settings: {
-                    marginType: this.data.settings.marginType,
-                    leverage: this.data.settings.leverage,
-                    profitCurrency: this.data.settings.profitCurrency,
-                  },
-                  position: this.data.position,
-                  profit: {
-                    total: this.data.profit.total,
-                  },
-                  stats: this.data.stats,
-                },
-              },
+              payload: { data: msg, bot },
             }
             DealStats.getInstance().updateStats(data)
           }

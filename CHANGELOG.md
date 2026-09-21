@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.59.56] - 2026-09-21
+
+### Fixed
+
+- A futures grid bot's `valueChanged` take-profit / stop-loss now triggers where the setting says. The open position's live value was computed as `qty * ((last - entry) / entry) * last` — the true value `qty * (last - entry)` scaled by `last / entry` — which understated a long's open loss, so the stop ran on past its setting, and overstated a short's, so it fired early. The drawdown and run-up statistics were built from the same expression and carry the same correction (spec 064).
+- A grid bot's last window of drawdown, run-up and time-in-loss is no longer discarded. A grid bot is sampled at most once a minute and nothing removed it from the stats monitor, so the window it stops in — the one holding the move that fired the stop — was never sampled and never written. The bot now takes one final measurement at the price it is stopping on and flushes it before the closing order, bounded so a stalled write cannot hold up the close. The same flush-before-delete was missing on the DCA/combo deal-close path (spec 064).
+- Grid levels that fill inside one price message each book their own realized profit. The per-fill work was serialised per FILL, so fills delivered together all read the same running total before writing theirs, and every one but the last vanished from the transaction ledger's cumulative — and from the bot profit the take-profit / stop-loss check reads. It is now serialised per bot. A closing leg is also carried into the bot's in-memory profit, not only into its document, so the next round trip adds to it instead of replacing it (spec 073).
+
 ## [1.59.55] - 2026-09-21
 
 ### Fixed

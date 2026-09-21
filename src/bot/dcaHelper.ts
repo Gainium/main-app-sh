@@ -3756,7 +3756,12 @@ function createDCABotHelper<
       // `removeDealFromStopLossMethods`, which the settings-change path also
       // calls for a deal that is still very much open and mid-retry.
       this.clearTrailingRetryTimer(dealId)
-      DealStats.getInstance().removeStats({ event: 'removeStats', dealId })
+      // Awaited so the flush lands before the close rewrites the deal (spec 064).
+      await DealStats.getInstance().removeStats({
+        event: 'removeStats',
+        botType: this.combo ? BotType.combo : BotType.dca,
+        dealId,
+      })
       const deal = this.getDeal(dealId)
       this.pendingClose.delete(dealId)
       if (!deal) {
