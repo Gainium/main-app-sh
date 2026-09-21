@@ -28,3 +28,29 @@ export function lockedUpdateFields(item: {
 export function lockedInsertValue(item: { locked?: string | null }): number {
   return hasLocked(item) ? normalizeLocked(parseFloat(`${item.locked}`)) : 0
 }
+
+/**
+ * `free` to store for a streamed balance item (core spec 069).
+ *
+ * An item with no `locked` comes from a venue whose stream reports only the
+ * wallet TOTAL (Kraken spot v2) — the producer puts that total in `free`
+ * because it has nothing better. Stored verbatim beside a real hold written
+ * by the REST refresh, it double-counts the hold: `free + locked` exceeds the
+ * wallet. So the hold we already know is taken out of it.
+ *
+ * The stored hold can be stale until the next REST refresh. Stale-high
+ * understates what is spendable, which is the safe side; the floor at 0 keeps
+ * a hold that outlived its order from producing a negative balance.
+ */
+export function streamedFree(
+  item: { free: string; locked?: string | null },
+  storedLocked: number | null | undefined,
+): number {
+  const reported = parseFloat(item.free)
+  if (hasLocked(item) || !Number.isFinite(reported)) {
+    return reported
+  }
+  const free = Math.max(0, reported - normalizeLocked(storedLocked ?? 0))
+  // Trim binary subtraction residue; no venue quotes past 12 decimals here.
+  return +free.toFixed(12)
+}

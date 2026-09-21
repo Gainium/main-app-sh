@@ -85,9 +85,11 @@ const { getTimezoneOffset, findUSDRate } = utils
  * write boundary so the collection can never store a negative locked amount.
  */
 import {
+  hasLocked,
   lockedInsertValue,
   lockedUpdateFields,
   normalizeLocked,
+  streamedFree,
 } from './balanceWrite'
 
 /**
@@ -190,8 +192,41 @@ const processBalanceUpdate = async () => {
         }
         const redis = await RedisClient.getInstance()
         if (msg.eventType === 'outboundAccountPosition') {
+          // An item with no `locked` carries the wallet TOTAL in `free`
+          // (Kraken spot v2); the hold the REST refresh stored has to come out
+          // of it before it is shown or written (core spec 069).
+          const storedLocked: Map<string, number> = new Map()
+          const totalOnly = msg.balances.filter((b) => !hasLocked(b))
+          if (totalOnly.length) {
+            const stored = await balanceDb.readData(
+              {
+                asset: { $in: totalOnly.map((b) => b.asset) },
+                userId,
+                exchange: e.provider,
+                exchangeUUID: e.uuid,
+                paperContext: paperExchanges.includes(e.provider),
+              },
+              undefined,
+              {},
+              true,
+            )
+            if (stored.status === StatusEnum.ok) {
+              for (const r of stored.data.result) {
+                storedLocked.set(r.asset, r.locked)
+              }
+            }
+          }
+          const freeOf = (b: (typeof msg.balances)[number]) =>
+            streamedFree(b, storedLocked.get(b.asset))
+
           const data = msg.balances.map((b) => ({
             ...b,
+            ...(hasLocked(b)
+              ? {}
+              : {
+                  free: `${freeOf(b)}`,
+                  locked: `${normalizeLocked(storedLocked.get(b.asset) ?? 0)}`,
+                }),
             exchange: e.provider,
             exchangeUUID: e.uuid,
             paperContext: paperExchanges.includes(e.provider),
@@ -215,7 +250,7 @@ const processBalanceUpdate = async () => {
                 { exchangeUUID: e.uuid, asset: d.asset, userId },
                 {
                   ...d,
-                  free: parseFloat(d.free),
+                  free: freeOf(d),
                   locked: lockedInsertValue(d),
                   // After the spread, so the raw string from the event never
                   // reaches the doc.
@@ -241,7 +276,7 @@ const processBalanceUpdate = async () => {
                 {
                   $set: {
                     ...d,
-                    free: parseFloat(d.free),
+                    free: freeOf(d),
                     // Absent `locked` (Kraken spot v2) leaves the stored hold
                     // alone: `...d` carries no such key then, and the helper
                     // adds none (core spec 003 §4.2).

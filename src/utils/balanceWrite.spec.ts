@@ -11,6 +11,7 @@ import {
   lockedInsertValue,
   lockedUpdateFields,
   normalizeLocked,
+  streamedFree,
 } from './balanceWrite'
 
 describe('balanceWrite (spec 003 §4.2)', () => {
@@ -38,5 +39,28 @@ describe('balanceWrite (spec 003 §4.2)', () => {
   it('hasLocked treats empty string as absent', () => {
     expect(hasLocked({ locked: '' })).to.equal(false)
     expect(hasLocked({ locked: '0' })).to.equal(true)
+  })
+})
+
+describe('streamedFree (spec 069 §4)', () => {
+  it('§4.1 takes the stored hold out of a total-only item', () => {
+    expect(streamedFree({ free: '15000' }, 10372)).to.equal(4628)
+    expect(streamedFree({ free: '0.3' }, 0.1)).to.equal(0.2)
+  })
+
+  it('§4.2 leaves an item that carries its own locked alone', () => {
+    expect(streamedFree({ free: '4628', locked: '10372' }, 999)).to.equal(4628)
+    expect(streamedFree({ free: '5', locked: '0' }, 3)).to.equal(5)
+  })
+
+  it('§4.3 treats an unknown or invalid stored hold as none', () => {
+    expect(streamedFree({ free: '7' }, undefined)).to.equal(7)
+    expect(streamedFree({ free: '7' }, null)).to.equal(7)
+    expect(streamedFree({ free: '7' }, -2)).to.equal(7)
+    expect(streamedFree({ free: '7' }, NaN)).to.equal(7)
+  })
+
+  it('§4.4 never goes negative when the hold outlived the funds', () => {
+    expect(streamedFree({ free: '1.5' }, 260.83)).to.equal(0)
   })
 })

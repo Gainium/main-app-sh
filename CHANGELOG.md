@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.59.51] - 2026-09-21
+
+### Fixed
+
+- A streamed balance item with no `locked` field is a wallet total, and is now stored as one: the hold already on the row is taken out of it before `free` is written or pushed to the dashboard. Stored verbatim next to a real hold it made `free + locked` exceed the wallet until the next REST refresh. Items that carry their own `locked` are unchanged (spec 069; pairs with `exchange-connector-sh` 1.22.2, which makes Kraken spot report its hold).
+
 ## [1.59.50] - 2026-09-20
 
 ### Fixed
