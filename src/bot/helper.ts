@@ -1794,34 +1794,14 @@ function createBotHelper<
         /**
          * Cancel all unnecessery orders, remove them from orders property
          */
-        // Spec `076` §3. One venue call for the whole cancel phase, when the
-        // bot is armed for it; `cancelGridOnExchange` -> `cancelOrderOnExchange`
-        // consumes the answers and is otherwise unchanged. Primed with the
-        // orders those calls will resolve to — via the same lookup they use —
-        // so an entry it cannot find simply is not primed and that level is
-        // cancelled the way it always was. Cleared in `finally` because an
-        // entry is only true of the moment it was fetched.
-        //
-        // No branch inside this loop returns, so every primed order is
-        // reached: there is no path on which the batch cancels an order the
-        // loop then fails to write down.
-        await this.primeCancelBatch(
-          orderSettings.cancel
-            .map((g) => this.findOrderForGrid(g))
-            .filter((o): o is Order => !!o),
-        )
-        try {
-          for (const order of orderSettings.cancel) {
-            const result = await this.cancelGridOnExchange(order)
-            if (result && !realOrders) {
-              await this.countBalances(lastPrice)
-            }
-            if (result?.status === 'FILLED') {
-              this.handleUnknownOrder(result)
-            }
+        for (const order of orderSettings.cancel) {
+          const result = await this.cancelGridOnExchange(order)
+          if (result && !realOrders) {
+            await this.countBalances(lastPrice)
           }
-        } finally {
-          this.clearCancelBatch()
+          if (result?.status === 'FILLED') {
+            this.handleUnknownOrder(result)
+          }
         }
         if (realOrders) {
           this.endMethod(_id)
@@ -1831,25 +1811,18 @@ function createBotHelper<
           await utils.sleep(300)
         }
         let i = 0
-        const toPlace = [...orderSettings.new].sort(
-          (a, b) =>
-            Math.abs(a.price - lastPrice) - Math.abs(b.price - lastPrice),
-        )
         /**
          * Add new orders, add them to orders property
          */
-        // The loop body, unchanged and extracted, so that the batched orders
-        // and the sequential ones run the SAME code. The only edit is `stage`:
-        // the progress counter used to be read at the bottom from the shared
-        // `i`, which is still incremented here in placement order, but a body
-        // that shares its pre-send section with others must carry its own
-        // number rather than read whatever the counter has reached by then.
-        const placeOne = async (order: Grid) => {
-          const stage = ++i
+        for (const order of [...orderSettings.new].sort(
+          (a, b) =>
+            Math.abs(a.price - lastPrice) - Math.abs(b.price - lastPrice),
+        )) {
+          i++
           const get = this.getOrderFromMap(order.newClientOrderId)
           if (get && get.status !== 'CANCELED') {
             this.handleLog(`Order duplicate: ${order.newClientOrderId}`)
-            return
+            continue
           }
           const result = await this.placeRegularOrder(order, ed)
           if (result) {
@@ -1875,67 +1848,12 @@ function createBotHelper<
           if (this.firstRun) {
             const progress = {
               text: BotProgressCodeEnum.placeOrder,
-              stage,
+              stage: i,
               total: orderSettings.new.length,
               isAllowedToCancel: false,
             }
             this.updateProgress(progress)
           }
-        }
-        // Spec `076` §7. Which of these orders may share one venue call: the
-        // ones this loop would have sent anyway, decided here, serially,
-        // against the state as it is now — the same checks in the same order,
-        // plus a refusal to batch two orders this loop's own duplicate checks
-        // would have collapsed into one (see `batchablePlacements`). With the
-        // flag off, on any other venue, or with fewer than two eligible
-        // orders, `batched` is empty and the loop below is exactly today's.
-        const batched = this.batchablePlacements(
-          toPlace,
-          (order) =>
-            !this.getOrderFromMap(order.newClientOrderId) ||
-            this.getOrderFromMap(order.newClientOrderId)?.status === 'CANCELED',
-          (order) => !this.isOrderExist(order, TypeOrderEnum.regular),
-        )
-        if (batched.length) {
-          const batcher = this.installOpenBatcher(
-            batched.map((o) => o.newClientOrderId),
-          )
-          // Collected rather than propagated, so that ONE body throwing cannot
-          // leave the others parked: `Promise.all` rejects on the first
-          // rejection while its peers are still waiting for their answers, and
-          // those continuations would then run detached, after this method had
-          // already left. The first failure is re-thrown once everybody has
-          // settled, so a caller still sees it.
-          const failures: unknown[] = []
-          try {
-            await Promise.all(
-              batched.map(async (order) => {
-                try {
-                  await placeOne(order)
-                } catch (e) {
-                  failures.push(e)
-                } finally {
-                  // Reports this participant done whether it placed, was
-                  // skipped by its own duplicate check or threw. The batcher
-                  // reads a participant that never reached the send site as a
-                  // bail, so the rest of the burst never waits on it.
-                  batcher.settled(order.newClientOrderId)
-                }
-              }),
-            )
-          } finally {
-            this.removeOpenBatcher(batcher)
-          }
-          if (failures.length) {
-            throw failures[0]
-          }
-        }
-        const batchedIds = new Set(batched.map((o) => o.newClientOrderId))
-        for (const order of toPlace) {
-          if (batchedIds.has(order.newClientOrderId)) {
-            continue
-          }
-          await placeOne(order)
         }
         if (this.firstRun) {
           this.firstRun = false
@@ -2361,31 +2279,23 @@ function createBotHelper<
           status: cancelPartiallyFilled ? this.orderStatuses : 'NEW',
         })
         let i = 0
-        // Spec `076` §3 — one venue call for the whole teardown. Nothing in
-        // this loop returns early, so every order the batch cancels is also
-        // reached by the loop and written down locally.
-        await this.primeCancelBatch(newOrders)
-        try {
-          for (const order of newOrders) {
-            i++
-            const cancel = await this.cancelOrderOnExchange(order, setErrors)
+        for (const order of newOrders) {
+          i++
+          const cancel = await this.cancelOrderOnExchange(order, setErrors)
 
-            if (cancel?.status === 'FILLED') {
-              await this.handleUnknownOrder(cancel)
-            }
-            await this.countBalances(lastPrice)
-            if (!this.firstRun) {
-              const progress = {
-                text: BotProgressCodeEnum.cancelOrder,
-                stage: i,
-                total: newOrders.length,
-                isAllowedToCancel: false,
-              }
-              this.updateProgress(progress)
-            }
+          if (cancel?.status === 'FILLED') {
+            await this.handleUnknownOrder(cancel)
           }
-        } finally {
-          this.clearCancelBatch()
+          await this.countBalances(lastPrice)
+          if (!this.firstRun) {
+            const progress = {
+              text: BotProgressCodeEnum.cancelOrder,
+              stage: i,
+              total: newOrders.length,
+              isAllowedToCancel: false,
+            }
+            this.updateProgress(progress)
+          }
         }
         this.sendEndProcess(true)
       }

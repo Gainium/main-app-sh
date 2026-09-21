@@ -1,4 +1,4 @@
-import AbstractExchange, { OpenOrderRequest } from './index'
+import AbstractExchange from './index'
 import {
   AccountFill,
   AllPricesResponse,
@@ -15,7 +15,6 @@ import {
   UserFee,
   MarginType,
   PositionSide,
-  PositionSide_LT,
   LeverageBracket,
   PositionInfo,
   TradeResponse,
@@ -33,35 +32,9 @@ import RedisClient from '../db/redis'
 import { EXCHANGE_SERVICE_API_URL } from '../config'
 import { brokerCodesDb } from '../db/dbInit'
 import ExpirableMap from '../utils/expirableMap'
-import {
-  isAmbiguousOrderFailure,
-  isBatchRouteUnavailable,
-} from '../utils/exchange'
+import { isAmbiguousOrderFailure } from '../utils/exchange'
 
 const { sleep } = utils
-
-/**
- * One answer per order in a batch placement, positionally aligned with the
- * request. Exactly one of `order` / `reason` is set: the order that was placed,
- * or the venue's own verbatim refusal of THAT order. The shape is the
- * connector's, and it is duplicated nowhere else in this process — everything
- * downstream of {@link Exchange#openOrdersBatch} sees `BaseReturn<CommonOrder>`.
- */
-export type BatchOpenResult = {
-  newClientOrderId: string
-  order?: CommonOrder
-  reason?: string
-}
-
-/**
- * Exchanges whose connector has answered "no batch placement route" once.
- * Process-wide, like the bot engine's `unsupportedOrderBatch`, because the
- * answer describes the deployed connector rather than any one bot or moment —
- * and, deliberately, it is only ever set from an answer that CANNOT be a
- * transient ({@link isBatchRouteUnavailable}). Reset by a restart, which is
- * also when a connector that gained the route would start serving it.
- */
-const unsupportedOpenBatch = new Set<ExchangeEnum>()
 
 /**
  * In-flight `getAllPrices` connector calls, keyed by exchange.
@@ -501,62 +474,6 @@ class Exchange extends AbstractExchange {
     return result.data
   }
 
-  /**
-   * Cancel several orders in one connector call.
-   *
-   * Same best-effort contract as {@link Exchange#getOrdersBatch} — the answer
-   * names only what the call OBSERVED as cancelled, and every caller keeps its
-   * per-order loop for the rest — with one difference that makes this method
-   * more delicate than its sibling: it CHANGES the venue.
-   *
-   * That is why the transport ladders are off. `apiCall` retries a 404 five
-   * times at 3s apiece, so a connector deployed before this route existed would
-   * cost ~15s per bulk cancel to learn nothing, on the very path whose whole
-   * purpose is to spend fewer seconds. The non-retrying catch mirrors
-   * {@link Exchange#sendOpenOrder}: resending a cancel is far less dangerous
-   * than resending a placement, but it is still a venue-changing request whose
-   * repeat buys nothing — an already-cancelled order answers the same way, and
-   * the caller's per-order fallback re-asks anyway.
-   */
-  override async cancelOrdersBatch(
-    data: { symbol: string; newClientOrderIds: string[] },
-    timeProfile = this.getEmptyTimeProfile('cancelOrdersBatch'),
-  ): Promise<BaseReturn<CommonOrder[]>> {
-    const result = await this.apiCall<CommonOrder[]>(
-      {
-        endpoint: 'orders/cancelBatch',
-        method: 'post',
-        body: {
-          symbol: data.symbol,
-          newClientOrderIds: data.newClientOrderIds,
-        },
-        isPrivate: true,
-        noAutoRetry: true,
-      },
-      timeProfile,
-    ).catch(
-      // NOT `handleError` — see `sendOpenOrder`. Its ladder re-drives the whole
-      // method five more times, which is the retry this call has just opted
-      // out of at the transport layer.
-      async (
-        e: Error & { response?: { data?: { message: string } } },
-      ): Promise<{
-        data: BaseReturn<CommonOrder[]>
-        timeProfile: ExchangeRequestTimeProfile
-      }> => {
-        const message = e?.response?.data?.message || e?.message
-        return {
-          data: this.returnBad()(new Error(message)) as BaseReturn<
-            CommonOrder[]
-          >,
-          timeProfile,
-        }
-      },
-    )
-    this.saveTimeProfile(result.timeProfile)
-    return result.data
-  }
-
   async getUserFees(
     _symbol: string,
     timeProfile = this.getEmptyTimeProfile('getUserFees'),
@@ -657,12 +574,7 @@ class Exchange extends AbstractExchange {
       newClientOrderId?: string
       type?: 'LIMIT' | 'MARKET'
       reduceOnly?: boolean
-      // The string union as well as the enum: the bot engine's request object
-      // carries `PositionSide_LT` and always has — it reaches this method
-      // through the abstract signature, which does not name the field at all —
-      // so the batch methods, which DO pass a typed request through, would
-      // otherwise be the only callers that had to cast. Same three values.
-      positionSide?: PositionSide | PositionSide_LT
+      positionSide?: PositionSide
       marginType?: MarginType
       leverage?: number
     },
@@ -739,12 +651,7 @@ class Exchange extends AbstractExchange {
       newClientOrderId?: string
       type?: 'LIMIT' | 'MARKET'
       reduceOnly?: boolean
-      // The string union as well as the enum: the bot engine's request object
-      // carries `PositionSide_LT` and always has — it reaches this method
-      // through the abstract signature, which does not name the field at all —
-      // so the batch methods, which DO pass a typed request through, would
-      // otherwise be the only callers that had to cast. Same three values.
-      positionSide?: PositionSide | PositionSide_LT
+      positionSide?: PositionSide
       marginType?: MarginType
       leverage?: number
     },
@@ -761,12 +668,24 @@ class Exchange extends AbstractExchange {
       isAmbiguousOrderFailure(result.reason);
       attempt++
     ) {
-      const settled = await this.resolveAmbiguousPlacement(
-        { symbol: order.symbol, newClientOrderId: order.newClientOrderId },
-        result,
+      logger.error(
+        `Ambiguous new-order outcome (${result.reason}). Exchange: ${this.exchange}, symbol: ${order.symbol}, id: ${order.newClientOrderId}. Asking the venue before resending.`,
       )
-      if (settled) {
-        return settled
+      const placed = await this.getOrder({
+        symbol: order.symbol,
+        newClientOrderId: order.newClientOrderId,
+      })
+      if (placed.status === StatusEnum.ok && placed.data) {
+        logger.error(
+          `Order ${order.newClientOrderId} DID reach ${this.exchange} despite the failed response — adopting it instead of resending.`,
+        )
+        return placed
+      }
+      if (isAmbiguousOrderFailure(placed.reason)) {
+        logger.error(
+          `Cannot tell whether ${order.newClientOrderId} reached ${this.exchange} (lookup: ${placed.reason}). Not resending.`,
+        )
+        return result
       }
       // The venue answered and does not have it: the send genuinely did not
       // land, so this resend cannot duplicate anything.
@@ -774,238 +693,6 @@ class Exchange extends AbstractExchange {
       result = await this.sendOpenOrder(order, timeProfile)
     }
     return result
-  }
-
-  /**
-   * Step 2-5 of {@link Exchange#openOrder}'s ladder, on its own so the batch
-   * path can run the identical decision.
-   *
-   * Given a placement whose outcome is AMBIGUOUS, ask the venue what actually
-   * happened to that client order id and answer the only question a caller may
-   * act on: is it safe to send this order?
-   *
-   * - a `BaseReturn` back means DO NOT SEND. Either the venue has the order
-   *   (the ok answer, to be adopted in place of the failure) or the lookup was
-   *   itself inconclusive (`failure` returned unchanged, so the caller reports
-   *   an UNCONFIRMED order rather than a refused one — it still holds the id,
-   *   and the reconcile machinery resolves it).
-   * - `null` means the venue answered definitively that it does not have it,
-   *   which is the only state in which a send cannot duplicate a live order.
-   *
-   * Logged at `error` level, as it was inline: these lines are the record of a
-   * placement whose fate was in doubt, and they are read after the fact.
-   */
-  private async resolveAmbiguousPlacement(
-    id: { symbol: string; newClientOrderId: string },
-    failure: BaseReturn<CommonOrder>,
-  ): Promise<BaseReturn<CommonOrder> | null> {
-    logger.error(
-      `Ambiguous new-order outcome (${failure.reason}). Exchange: ${this.exchange}, symbol: ${id.symbol}, id: ${id.newClientOrderId}. Asking the venue before resending.`,
-    )
-    const placed = await this.getOrder({
-      symbol: id.symbol,
-      newClientOrderId: id.newClientOrderId,
-    })
-    if (placed.status === StatusEnum.ok && placed.data) {
-      logger.error(
-        `Order ${id.newClientOrderId} DID reach ${this.exchange} despite the failed response — adopting it instead of resending.`,
-      )
-      return placed
-    }
-    if (isAmbiguousOrderFailure(placed.reason)) {
-      logger.error(
-        `Cannot tell whether ${id.newClientOrderId} reached ${this.exchange} (lookup: ${placed.reason}). Not resending.`,
-      )
-      return failure
-    }
-    return null
-  }
-
-  /**
-   * Place several orders in one connector call, and own every fallback so that
-   * no caller ever has to reason about batches.
-   *
-   * The contract is per ORDER, not per batch: one answer per input order,
-   * positionally aligned, each of them exactly the shape
-   * {@link Exchange#openOrder} would have produced for that order. A caller
-   * cannot tell from the answers whether they were served by one call or by N.
-   *
-   * Three outcomes, and the difference between them is the whole method:
-   *
-   *   1. `ok` — the batch reached the venue and every item has a definitive
-   *      per-order answer. An item carrying an order was PLACED (report it as
-   *      placed even if the venue's re-read lagged: reporting it absent is how
-   *      a caller comes to place it a second time). An item carrying a reason
-   *      was refused by the venue, definitively, and must NOT be re-sent.
-   *   2. `notok` with a DEFINITIVE reason — a declined route, a connector that
-   *      predates it, a validation rejection of the whole batch. Nothing
-   *      reached the matching engine, so each order goes down the ordinary
-   *      `openOrder` path, sequentially, in input order. That reproduces
-   *      today's behaviour exactly, including "place as many as the balance
-   *      allows".
-   *   3. `notok` with an AMBIGUOUS reason — a timeout, a reset, a 5xx. The
-   *      batch may have landed in full, in part, or not at all, and nothing in
-   *      the response can say which. This is the case that can duplicate live
-   *      orders, so every order goes through `openOrder`'s own resolve-then-
-   *      resend decision: ask the venue first, adopt what it already has,
-   *      send only what it definitively does not.
-   *
-   * Note that (2) and (3) are told apart by `isAmbiguousOrderFailure` alone —
-   * the same classifier the single-order path trusts — rather than by any new
-   * rule about batches. One consequence worth naming: with the transport
-   * ladder off, a connector with no such route answers 404, which `apiCall`
-   * surfaces as `Exchange connector | Not Found`, and that string is
-   * AMBIGUOUS. So an old connector lands in (3) and costs one lookup per order
-   * before falling back. That is the safe direction to be wrong in, it is
-   * bounded by the latch below, and it is why the latch exists.
-   */
-  override async openOrdersBatch(data: {
-    symbol: string
-    orders: OpenOrderRequest[]
-  }): Promise<BaseReturn<CommonOrder>[]> {
-    const { orders, symbol } = data
-    // Nothing to coalesce, and Kraken's own AddOrderBatch has a floor of two
-    // in any case. Also the shape a one-participant flush takes, so the
-    // batcher can stay ignorant of batch minimums.
-    if (
-      orders.length < 2 ||
-      unsupportedOpenBatch.has(this.exchange) ||
-      // Every item must be addressable by a client order id, or an ambiguous
-      // outcome has nothing to resolve BY and the whole safety argument above
-      // collapses to a guess. The connector declines these too; refusing here
-      // saves the round trip that would tell us so.
-      orders.some((o) => !o.newClientOrderId)
-    ) {
-      return this.openOrdersSequentially(orders)
-    }
-    const timeProfile = this.getEmptyTimeProfile('openOrdersBatch')
-    const result = await this.apiCall<BatchOpenResult[]>(
-      {
-        endpoint: 'orders/openBatch',
-        method: 'post',
-        body: {
-          symbol,
-          orders: orders.map((o) => ({
-            side: o.side,
-            quantity: o.quantity,
-            price: o.price,
-            newClientOrderId: o.newClientOrderId,
-            type: o.type ?? 'LIMIT',
-          })),
-        },
-        isPrivate: true,
-        noAutoRetry: true,
-      },
-      timeProfile,
-    ).catch(
-      // NOT `handleError`: its ladder re-sends the whole batch on exactly the
-      // outcomes that do not say whether the batch landed. One logical burst
-      // could reach the venue six times over. See `sendOpenOrder`.
-      async (
-        e: Error & { response?: { data?: { message: string } } },
-      ): Promise<{
-        data: BaseReturn<BatchOpenResult[]>
-        timeProfile: ExchangeRequestTimeProfile
-      }> => {
-        const message = e?.response?.data?.message || e?.message
-        return {
-          data: this.returnBad()(new Error(message)) as BaseReturn<
-            BatchOpenResult[]
-          >,
-          timeProfile,
-        }
-      },
-    )
-    this.saveTimeProfile(result.timeProfile)
-    const answer = result.data
-    if (answer.status === StatusEnum.ok && answer.data) {
-      // Positional alignment is the contract; a reply of a different length is
-      // a contract violation and cannot be matched up to the request, so it is
-      // read as "the batch outcome is unknown" rather than silently zipped.
-      if (answer.data.length === orders.length) {
-        return answer.data.map((item, i) =>
-          item.order
-            ? this.returnGood<CommonOrder>()(item.order)
-            : (this.returnBad()(
-                new Error(
-                  item.reason ||
-                    `Batch placement returned no order and no reason for ${orders[i].newClientOrderId}`,
-                ),
-              ) as BaseReturn<CommonOrder>),
-        )
-      }
-      logger.error(
-        `Batch placement answered ${answer.data.length} result(s) for ${orders.length} order(s) on ${this.exchange} ${symbol} — resolving each order against the venue.`,
-      )
-      return this.resolveThenPlace(orders, {
-        status: StatusEnum.notok,
-        reason: 'Batch placement answer did not match the request',
-        data: null,
-      } as BaseReturn<CommonOrder>)
-    }
-    if (isBatchRouteUnavailable(answer.reason)) {
-      // A property of the deployed connector, not of this moment: ask once per
-      // process. Cleared only by a restart, which is also when a connector that
-      // gained the route would start answering it.
-      unsupportedOpenBatch.add(this.exchange)
-      logger.error(
-        `Batch placement not available on ${this.exchange} (${answer.reason}) — placing one at a time from now on.`,
-      )
-      return this.openOrdersSequentially(orders)
-    }
-    if (!isAmbiguousOrderFailure(answer.reason)) {
-      // Definitive: the venue validated the batch and refused it as a whole,
-      // so nothing was placed and each order may be sent on its own.
-      logger.error(
-        `Batch placement refused on ${this.exchange} ${symbol} (${answer.reason}) — placing ${orders.length} order(s) one at a time.`,
-      )
-      return this.openOrdersSequentially(orders)
-    }
-    logger.error(
-      `Ambiguous batch placement outcome on ${this.exchange} ${symbol} (${answer.reason}) — asking the venue about ${orders.length} order(s) before sending any of them again.`,
-    )
-    return this.resolveThenPlace(orders, answer as BaseReturn<CommonOrder>)
-  }
-
-  /** The fallback of record: today's path, unchanged, one order at a time. */
-  private async openOrdersSequentially(
-    orders: OpenOrderRequest[],
-  ): Promise<BaseReturn<CommonOrder>[]> {
-    const results: BaseReturn<CommonOrder>[] = []
-    for (const order of orders) {
-      results.push(await this.openOrder(order))
-    }
-    return results
-  }
-
-  /**
-   * The ambiguous arm: for each order, ask the venue before doing anything.
-   * Sequential for the same reason `openOrdersSequentially` is.
-   *
-   * `failure` is the batch's own outcome, and it is what an order gets back
-   * when the LOOKUP is inconclusive too — an ambiguous-shaped notok, so the
-   * caller treats that order as unconfirmed rather than refused. An order the
-   * venue definitively does not have is sent through the full `openOrder`
-   * ladder, which cannot duplicate anything the venue has just denied holding.
-   */
-  private async resolveThenPlace(
-    orders: OpenOrderRequest[],
-    failure: BaseReturn<CommonOrder>,
-  ): Promise<BaseReturn<CommonOrder>[]> {
-    const results: BaseReturn<CommonOrder>[] = []
-    for (const order of orders) {
-      const settled = order.newClientOrderId
-        ? await this.resolveAmbiguousPlacement(
-            {
-              symbol: order.symbol,
-              newClientOrderId: order.newClientOrderId,
-            },
-            failure,
-          )
-        : failure
-      results.push(settled ?? (await this.openOrder(order)))
-    }
-    return results
   }
 
   async getCandles(
