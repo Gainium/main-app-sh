@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.59.61] - 2026-09-21
+
+### Fixed
+
+- A combo bot no longer keeps funds reserved for a grid order the exchange has
+  cancelled. A cancelled grid level was only removed from the bot's ladder when
+  it had expired AND sat on the side that closes the position, so on a long bot
+  a cancelled buy stayed on the ladder for the life of the mini grid: the level
+  counts kept counting it and the deal kept quote reserved for an order that was
+  no longer on the book. With less free quote than it really had, the deal could
+  not re-place those levels, and the gap they left never filled back in. A grid
+  order the exchange reports cancelled or expired is now taken off the ladder
+  whichever side it was on, the level counts and reserved amounts are
+  recalculated from what is left, and a level another order is still resting on
+  is left alone (spec 077).
+
 ## [1.59.60] - 2026-09-21
 
 ### Fixed

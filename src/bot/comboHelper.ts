@@ -2440,42 +2440,99 @@ function createComboBotHelper<
     override async processCanceledOrder(
       order: Order,
       _updateTime: number,
-      expired: boolean,
+      _expired: boolean,
     ): Promise<void> {
-      if (!expired) {
+      if (order.typeOrder !== TypeOrderEnum.dealGrid) {
         return
       }
-      if (order.typeOrder === TypeOrderEnum.dealGrid) {
-        const positionChanged =
-          (this.isLong && order.side === OrderSideEnum.sell) ||
-          (!this.isLong && order.side === OrderSideEnum.buy)
-        if (positionChanged) {
-          const findMinigrid = this.getMinigrid(order.minigridId)
-
-          if (findMinigrid) {
-            findMinigrid.currentOrders = findMinigrid.currentOrders.filter(
-              (o) =>
-                !(
-                  o.price === +order.origPrice &&
-                  o.qty === +order.origQty &&
-                  o.side === order.side
-                ),
-            )
-            this.setMinigrid(findMinigrid)
+      // `CANCELED` and `EXPIRED` are the same fact — the level is off the book
+      // — and the side it sat on does not change that. Until spec 077 this ran
+      // only for `EXPIRED`, and then only for the side that closes the
+      // position, so on a long bot a cancelled BUY stayed on the ladder for the
+      // life of the minigrid. `currentOrders` is the only input to `grids` and,
+      // through `updateAssets`, to `deal.assets.used`, so every such cancel
+      // permanently overstated the quote the deal has reserved — and the deal,
+      // believing the funds were spoken for, could never re-place the levels
+      // into the hole the cancels left.
+      const price = +order.origPrice
+      const qty = +order.origQty
+      // The ladder is matched by LEVEL, not by client order id: it is
+      // regenerated wholesale on every fill and every entry is handed a fresh
+      // `newClientOrderId`, so the id on an entry is not the id of the order
+      // resting at it. A cancel that arrives after the engine has already
+      // re-placed that level must therefore leave it alone. `processOrderQueue`
+      // deletes the cancelled row from the live-order index before calling us,
+      // so anything still found here is a different, live order. Spec 077 §4.2.
+      const stillResting = this.getOrdersByStatusAndDealId({
+        dealId: order.dealId,
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      }).some(
+        (o) =>
+          o.typeOrder === TypeOrderEnum.dealGrid &&
+          o.minigridId === order.minigridId &&
+          o.side === order.side &&
+          +o.origPrice === price &&
+          +o.origQty === qty,
+      )
+      if (stillResting) {
+        return
+      }
+      // Grid levels of THIS minigrid only: the deal-side ladder carries
+      // `dealRegular` safety orders, and one of those at the same price is not
+      // this order. Spec 077 §4.3.
+      const isCanceledLevel = (o: Grid) =>
+        o.type === TypeOrderEnum.dealGrid &&
+        o.minigridId === order.minigridId &&
+        o.price === price &&
+        o.qty === qty &&
+        o.side === order.side
+      let pruned = false
+      const findMinigrid = this.getMinigrid(order.minigridId)
+      if (findMinigrid) {
+        const remaining = findMinigrid.currentOrders.filter(
+          (o) => !isCanceledLevel(o),
+        )
+        if (remaining.length !== findMinigrid.currentOrders.length) {
+          pruned = true
+          findMinigrid.currentOrders = remaining
+          // The same three the fill path rewrites off a regenerated ladder;
+          // without them the level counts keep the cancelled orders. Spec 077
+          // §4.4.
+          const currentBalances = this.calculateMinigridBalances(remaining)
+          findMinigrid.schema.currentBalances = currentBalances
+          findMinigrid.schema.assets = {
+            used: currentBalances,
+            required: currentBalances,
           }
-          const findDeal = this.getDeal(order.dealId)
-          if (findDeal) {
-            findDeal.currentOrders = findDeal.currentOrders.filter(
-              (o) =>
-                !(
-                  o.price === +order.origPrice &&
-                  o.qty === +order.origQty &&
-                  o.side === order.side
-                ),
-            )
-            this.saveDeal(findDeal)
+          findMinigrid.schema.grids = {
+            buy: remaining.filter((g) => g.side === OrderSideEnum.buy).length,
+            sell: remaining.filter((g) => g.side === OrderSideEnum.sell).length,
           }
+          this.setMinigrid(findMinigrid)
+          await this.saveMinigrid(findMinigrid, {
+            currentBalances: findMinigrid.schema.currentBalances,
+            assets: findMinigrid.schema.assets,
+            grids: findMinigrid.schema.grids,
+          })
         }
+      }
+      const findDeal = this.getDeal(order.dealId)
+      if (findDeal) {
+        const remaining = findDeal.currentOrders.filter(
+          (o) => !isCanceledLevel(o),
+        )
+        if (remaining.length !== findDeal.currentOrders.length) {
+          pruned = true
+          findDeal.currentOrders = remaining
+          this.saveDeal(findDeal)
+        }
+      }
+      if (pruned && order.dealId) {
+        // `used` is derived from the minigrids' ladders — this is the line that
+        // gives the deal its funds back. Only when something actually left a
+        // ladder: a close sweep cancels every resting order in turn, and this
+        // is the expensive part of the method. Spec 077 §4.4.
+        await this.updateAssets(order.dealId)
       }
     }
 
