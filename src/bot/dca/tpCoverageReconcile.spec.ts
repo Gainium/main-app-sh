@@ -70,16 +70,32 @@ describe('tpCoverageReconcile', () => {
       ).to.equal(600)
     })
 
-    it('subtracts base withdrawn by reduce funds', () => {
+    it('subtracts only the PENDING reduce funds (spec 080)', () => {
+      // An EXECUTED withdrawal is already out of `deal.size` — spec `026`
+      // §2.3 measured `|size| = entry - reduceFunds` on every open deal that
+      // had used one — so subtracting it here under-stated the position by
+      // the amount withdrawn and read a covered deal as over-covered. A
+      // PENDING one has not happened yet and is still inside `size`.
       expect(
         trackedPosition({
           size: 1000,
           tpHistory: [],
           filledCloseOrders: [],
-          reduceFundsBase: 100,
           pendingReduceFundsBase: 50,
         }),
-      ).to.equal(850)
+      ).to.equal(950)
+    })
+
+    it('does not take an executed withdrawal off a size that is already net', () => {
+      // The live shape: entered 60.3, withdrew 25.63, nothing sold. `size` is
+      // the 34.67 still held, and that is what a close may cover.
+      expect(
+        trackedPosition({
+          size: 34.67,
+          tpHistory: [],
+          filledCloseOrders: [],
+        }),
+      ).to.be.closeTo(34.67, 1e-9)
     })
   })
 

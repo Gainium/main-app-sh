@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.59.64] - 2026-09-22
+
+### Fixed
+
+- **A deal that has withdrawn funds is no longer measured as holding less than it does.** The check that asks how much a deal still holds — used to judge whether its close covers the position, and to cap how far a close may be raised to clear an exchange's minimum order value — subtracted every completed withdrawal from the deal's recorded position. That position is already recorded net of completed withdrawals, so the withdrawn amount came off twice and the deal was measured as holding less than it really did, by exactly what had been withdrawn. A fully covered deal could therefore read as over-covered, and a close that the deal could afford could be held below the exchange's minimum. Withdrawals that are still queued have not happened yet, are still part of the position, and are deliberately still excluded from what a close may cover.
+
 ## [1.59.63] - 2026-09-22
 
 ### Fixed

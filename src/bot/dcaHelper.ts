@@ -1061,10 +1061,8 @@ function createDCABotHelper<
         }).filter(
           (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
         ),
-        reduceFundsBase: (deal.reduceFunds ?? []).reduce(
-          (acc, v) => acc + v.qty,
-          0,
-        ),
+        // Spec 080: executed withdrawals are already out of `deal.size`; only
+        // the pending ones still sit inside it.
         pendingReduceFundsBase: this.getPendingReduceFunds(findDeal).base,
       })
     }
@@ -11430,11 +11428,10 @@ function createDCABotHelper<
                 ),
               }))
             : filledCloseOrders,
-          reduceFundsBase: (deal.reduceFunds ?? []).reduce(
-            (acc, v) =>
-              acc + (inContracts ? toContracts(v.qty, v.price) : v.qty),
-            0,
-          ),
+          // Spec 080: an EXECUTED reduce-funds is already out of `deal.size`,
+          // so it is not subtracted again here — doing so read a fully covered
+          // deal as over-covered by the amount withdrawn.
+          //
           // `getPendingReduceFunds` already returns the quote amount of the
           // pending withdrawal, and on an inverse contract the quote amount IS
           // the notional — so the contract count is a plain division, with no
@@ -16090,7 +16087,7 @@ function createDCABotHelper<
               size: dealSize,
               tpHistory: heldDeal?.tpHistory ?? [],
               filledCloseOrders,
-              reduceFundsBase,
+              // Spec 080: `dealSize` is already net of executed withdrawals.
               pendingReduceFundsBase: pendingReduceFunds.base,
             }),
             precision,

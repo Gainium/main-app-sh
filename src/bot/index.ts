@@ -8891,9 +8891,20 @@ class Bot<T extends UserSchema = UserSchema> {
     if (BotServiceType === BotType.grid) {
       return StatusEnum.ok
     }
-    for (const d of [data].flat()) {
-      const result = await this.singleWebhookProcess(d, ignoreSettings)
-      if ([data].flat().length === 1) {
+    const items = [data].flat()
+    for (let i = 0; i < items.length; i++) {
+      // Spec 078: only wait for a close to settle when something in THIS
+      // payload still has to run against the account it is flattening. A
+      // single-action payload — the overwhelming majority — answers as
+      // promptly as it always did, so a caller with a short webhook timeout
+      // (TradingView retries on one, and a retried flip is a second flip)
+      // never pays for a wait nothing is waiting on.
+      const result = await this.singleWebhookProcess(
+        items[i],
+        ignoreSettings,
+        i < items.length - 1,
+      )
+      if (items.length === 1) {
         return result ?? StatusEnum.ok
       }
     }
@@ -8966,6 +8977,8 @@ class Bot<T extends UserSchema = UserSchema> {
   private async singleWebhookProcess(
     data: WebhookData,
     ignoreSettings = false,
+    /** Spec 078: another action in this payload runs after this one. */
+    moreToRun = false,
   ) {
     if (!data) {
       return {
@@ -9388,7 +9401,12 @@ class Bot<T extends UserSchema = UserSchema> {
       // `leave` is deliberately NOT settled: it closes nothing by design, so
       // waiting for it would spend the window on a position that is staying
       // exactly where it is.
-      if (call && findBot && this.closesPosition(action, closeType)) {
+      if (
+        moreToRun &&
+        call &&
+        findBot &&
+        this.closesPosition(action, closeType)
+      ) {
         await this.awaitWebhookCloseSettled(findBot, symbol)
       }
       return result

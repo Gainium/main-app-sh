@@ -108,13 +108,20 @@ export const trackedPosition = ({
   size,
   tpHistory,
   filledCloseOrders,
-  reduceFundsBase = 0,
   pendingReduceFundsBase = 0,
 }: {
   size: number
   tpHistory: { id?: string; qty: number }[]
   filledCloseOrders: LiveTpOrder[]
-  reduceFundsBase?: number
+  /**
+   * Spec 080: only the PENDING withdrawals. An EXECUTED reduce-funds is
+   * already out of `deal.size` — spec `026` §2.3 measured it on every open
+   * deal that had used one (`|size| = entry - reduceFunds`, to the unit) —
+   * so subtracting it here took the same base off twice and under-stated the
+   * position by the amount withdrawn. A pending one has NOT happened yet, is
+   * still inside `size`, and is deliberately kept out of what a close may
+   * cover.
+   */
   pendingReduceFundsBase?: number
 }): number => {
   const filledIds = filledCloseOrders.map((o) => o.clientOrderId)
@@ -126,11 +133,7 @@ export const trackedPosition = ({
     0,
   )
   return (
-    Math.abs(size) -
-    soldViaHistory -
-    soldViaFilled -
-    reduceFundsBase -
-    pendingReduceFundsBase
+    Math.abs(size) - soldViaHistory - soldViaFilled - pendingReduceFundsBase
   )
 }
 
