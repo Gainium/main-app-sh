@@ -1139,10 +1139,24 @@ function createDCABotHelper<
         // correction this was modelled on runs under
         // `checkOrdersAfterReconnect`, which holds no deal lock, so it can and
         // must keep calling the guarded one.
-        await this.placeOrdersHoldingDealLock(this.botId, symbol, dealId, {
-          new: tpOrders,
-          cancel: [],
-        })
+        //
+        // `afterTerminalCloseRefusal` (spec `083`): unconditional, because this
+        // method has exactly one caller and that caller runs only once the
+        // close has terminally failed. Without it the close-in-flight guard
+        // returned before the order was sent for every automatic close — stop
+        // loss, indicator, and a trailing close the venue refused for a reason
+        // retrying cannot fix — which is the entire population spec `053` was
+        // written for.
+        await this.placeOrdersHoldingDealLock(
+          this.botId,
+          symbol,
+          dealId,
+          {
+            new: tpOrders,
+            cancel: [],
+          },
+          { afterTerminalCloseRefusal: true },
+        )
       }
       return resting().length > 0
     }
@@ -15018,12 +15032,16 @@ function createDCABotHelper<
      * `placeOrders` would have taken, so the deal's order path stays
      * serialised. Do NOT call it from anywhere that does not already hold
      * `` `${botId}${dealId}` `` — those callers must keep using `placeOrders`.
+     *
+     * `afterTerminalCloseRefusal` (spec `083`) is the one opt-out, and it opts
+     * out of exactly one thing: the close-in-flight guard below. See there.
      */
     protected async placeOrdersHoldingDealLock(
       _botId: string,
       symbol: string,
       dealId: string,
       orders: { new: Grid[]; cancel: Grid[] },
+      opts?: { afterTerminalCloseRefusal?: boolean },
     ): Promise<void | Order> {
       const _id = this.startMethod('placeOrders')
       const deal = this.getDeal(dealId)
@@ -15064,13 +15082,38 @@ function createDCABotHelper<
         this.endMethod(_id)
         return
       }
-      if (deal?.closeBySl) {
-        this.endMethod(_id)
-        return this.handleLog(`Deal ${dealId} closing by SL. Skip place orders`)
-      }
-      if (deal?.closeBySl || deal?.closeByTp) {
-        this.endMethod(_id)
-        return this.handleLog(`Deal ${dealId} closing by TP. Skip place orders`)
+      // `closeBySl` / `closeByTp` mean "a close is in flight in this worker"
+      // (see the comment at the deal defaults), and placing into a deal that is
+      // mid-close is how a position gets covered twice.
+      //
+      // Spec `083`: the refused-close RESTORE is the one caller for which that
+      // premise is false. It runs only from the terminal-refusal branch of
+      // `closeDealById`, i.e. after the slippage-retry, the
+      // position-already-closed and spec 050's trailing-retry branches have all
+      // declined it — the close has failed for good, and nothing on that path
+      // clears the flag the close armed on the way in (`triggerStopLoss`, the
+      // indicator unPnL close, `checkTPLevel`). So the restore announced itself,
+      // returned here, and left the deal open holding its whole position with
+      // nothing on the book and nothing that could fill to put one back — the
+      // exact state spec `053` exists to prevent.
+      //
+      // Scoped to that caller rather than fixed by clearing the flag: the flag
+      // is also what keeps `checkDealsStopLoss` off the deal, and the level that
+      // just fired is still registered, so clearing it re-sends the refused
+      // close on the next price tick. Spec §4.2.
+      if (!opts?.afterTerminalCloseRefusal) {
+        if (deal?.closeBySl) {
+          this.endMethod(_id)
+          return this.handleLog(
+            `Deal ${dealId} closing by SL. Skip place orders`,
+          )
+        }
+        if (deal?.closeBySl || deal?.closeByTp) {
+          this.endMethod(_id)
+          return this.handleLog(
+            `Deal ${dealId} closing by TP. Skip place orders`,
+          )
+        }
       }
       const settings = await this.getAggregatedSettings(deal?.deal)
       if (this.data?.status === BotStatusEnum.error) {

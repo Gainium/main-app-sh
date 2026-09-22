@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.1] - 2026-09-22
+
+### Fixed
+
+- **A deal whose close the exchange refused now really does get its take-profit put back on the book.** Closing a deal cancels the resting take-profit before it sends the closing order, so when the exchange refuses that order the deal is left holding its whole position with nothing on the book — and since a take-profit is only ever re-created as a side effect of a fill, nothing was left that could fill to put one back. The recovery written for exactly this case was itself being skipped: it ran into a guard whose job is to stop new orders being placed while a close is in flight, and for an automatic close — a stop loss, an indicator exit, or a trailing take profit the venue refused for a reason retrying cannot fix — that "closing" marker is set before the close is attempted and is not cleared when the close fails for good. So the engine announced it was restoring the take-profit and then sent nothing. The recovery is now exempt from that guard, which is sound because it is only ever reached once the close has terminally failed; every other caller is still held back while a close really is in flight, and the recovery still refuses to add a second close when one is already resting (spec 083).
+
 ## [1.60.0] - 2026-09-21
 
 ### Added
