@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.6] - 2026-09-23
+
+### Fixed
+
+- **Kraken spot bots and backtests can use the 3-minute, 2-hour and 8-hour indicator timeframes again.** Kraken's spot candle endpoint does not serve those three widths directly, but each one is an exact multiple of a width it does serve, so the platform builds them by combining the finer bars — a 2-hour candle is precisely two 1-hour candles. The list of timeframes the indicator service would accept for Kraken was never widened to match, so a bot or a backtest asking for one of them was still told the exchange did not support that interval and no indicator was computed, even though the candles were available. Kraken spot now accepts every timeframe its candle path can actually produce. Kraken futures is deliberately unchanged and still declines those three: its candle endpoint takes the timeframe directly and cannot combine finer bars, so the two product lines are now tracked as separate lists rather than one shared one (spec 017).
+
 ## [1.60.5] - 2026-09-22
 
 ### Fixed

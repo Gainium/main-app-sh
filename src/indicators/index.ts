@@ -121,7 +121,38 @@ const mexcSupported = [
   ExchangeIntervals.oneW,
 ]
 
-const krakenSupported = [
+/**
+ * Kraken spot serves eight widths natively and builds `3m`/`2h`/`8h` by
+ * aggregating a finer one — each is an exact integer multiple of a native
+ * width, so the aggregation is lossless. Mirrors `NATIVE_MINUTES` ∪
+ * `AGGREGATED_FROM` in `exchange-connector`
+ * `core/src/exchange/exchanges/kraken/candles.ts`.
+ */
+const krakenSpotSupported = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.threeM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.twoH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.eightH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+]
+
+/**
+ * Kraken futures must NOT gain the three aggregated widths: its candle path
+ * casts the interval straight into the derivatives `resolution` parameter
+ * (`exchange-connector` `core/src/exchange/exchanges/kraken/index.ts`), which
+ * accepts none of `3m`/`2h`/`8h` and has no aggregation step and no guard —
+ * they would reach the venue verbatim and be rejected, which is the failure
+ * shape of bug #709. Kept as its own list rather than derived from the spot
+ * one: the two paths are independent, and either can gain or lose a width
+ * without the other.
+ */
+const krakenUsdmSupported = [
   ExchangeIntervals.oneM,
   ExchangeIntervals.fiveM,
   ExchangeIntervals.fifteenM,
@@ -184,8 +215,11 @@ export const filterIndicatorIntervalsByExchange = (
   ) {
     return intervals.filter((i) => binanceSupported.includes(i))
   }
-  if ([ExchangeEnum.kraken, ExchangeEnum.krakenUsdm].includes(exchange)) {
-    return intervals.filter((i) => krakenSupported.includes(i))
+  if ([ExchangeEnum.kraken].includes(exchange)) {
+    return intervals.filter((i) => krakenSpotSupported.includes(i))
+  }
+  if ([ExchangeEnum.krakenUsdm].includes(exchange)) {
+    return intervals.filter((i) => krakenUsdmSupported.includes(i))
   }
   return intervals
 }
