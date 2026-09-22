@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.3] - 2026-09-22
+
+### Fixed
+
+- **A deal opened at the exchange's smallest allowed size can now pay for its own take-profit.** When the base order you configured is worth less than the minimum the exchange will accept, the engine raises it so the deal can still rest a take-profit that clears the same minimum. The raise added one fee on top of the minimum, but the take-profit it was paying for is one fee *below* the position — and adding a fee does not undo subtracting one. The gap is tiny, about one part in a million, but it lands on the wrong side of the line: the take-profit came out just under the exchange's minimum, was rounded back up to it, and then asked to sell marginally more of the coin than the deal was ever credited. The exchange refused it for insufficient funds every time, so such a deal sat open with no take-profit on the book until one of its safety orders filled. The raise is now the exact inverse of the fee the close pays, so the take-profit clears the minimum with the position that actually exists. Deals not sized at an exchange minimum, short deals, futures deals and accounts whose fees are charged in a third coin are unaffected (spec 085).
+
 ## [1.60.2] - 2026-09-22
 
 ### Fixed

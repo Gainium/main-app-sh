@@ -9426,9 +9426,24 @@ function createDCABotHelper<
 
           const tpPrice = price * (1 + perc)
           const tpQty = this.math.round(qty * (2 - feeFactor), precision, true)
+          // Spec `085`. Both raises exist to make `tpQty` — the close, which
+          // this block sizes one line above as `qty * (2 - feeFactor)` — clear
+          // the venue's floor. The compensation therefore has to be the INVERSE
+          // of that shave, `/ (2 - feeFactor)`, not `* feeFactor`: `(1 + f)` and
+          // `(1 - f)` are not inverses, and the round trip loses `f²` — one part
+          // in 10^6 at a 0.1 % fee. `baseAsset.step` was carrying the slack and
+          // is orders of magnitude too small for it (1e-8 against 6e-5 on a
+          // 60-unit floor), so the entry landed just under the floor it had been
+          // raised to clear. `getTPOrder` then clamps the close back up to
+          // `minAmount` — more base than the wallet was credited on any venue
+          // that charges the buy fee in base — and the venue refuses it for
+          // funds on every attempt, leaving the deal open with no close on the
+          // book until a safety order fills. `2 - feeFactor` is 1 wherever
+          // `feeFactor` is (futures, short, terminal-simple, third-asset-fee
+          // deals), so every path already exempt from the gross-up is untouched.
           if (tpQty * tpPrice < ed.quoteAsset.minAmount) {
             qty = this.math.round(
-              (ed.quoteAsset.minAmount / tpPrice) * feeFactor +
+              ed.quoteAsset.minAmount / tpPrice / (2 - feeFactor) +
                 ed.baseAsset.step,
               precision,
               false,
@@ -9437,7 +9452,7 @@ function createDCABotHelper<
           }
           if (tpQty < ed.baseAsset.minAmount) {
             qty = this.math.round(
-              ed.baseAsset.minAmount * feeFactor + ed.baseAsset.step,
+              ed.baseAsset.minAmount / (2 - feeFactor) + ed.baseAsset.step,
               precision,
               false,
               true,
