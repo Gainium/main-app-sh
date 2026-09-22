@@ -9911,6 +9911,23 @@ class MainBot<T extends IMainBot> {
             : lastPrice === g.price.sell,
         )
         lastPrice = basicInitialGrid?.price?.buy ?? _lastPrice
+        /**
+         * Spec 086. A combo minigrid splits ONE budget across its levels, and on
+         * futures `comboHelper.getBaseOrder` then re-sizes the base order to the
+         * sum of those levels so the position equals the ladder that unwinds it.
+         * Flooring each level to the lot step on its own therefore loses up to
+         * one step PER LEVEL off the position itself. Carry the residual: each
+         * level takes the floored cumulative target minus what the earlier
+         * levels actually took, so the grid lands within one lot step of the
+         * budget and, the target being floored, never over it.
+         *
+         * Spot keeps the independent floor — there the floor is what holds a
+         * sell ladder inside the base the deal really has, and the base order is
+         * only ever raised from the grid, never replaced by it. Coin-margined
+         * sizing is decided by the `coinm` branch below, not here.
+         */
+        const carryLotResidual = combo && this.futures && !this.coinm
+        let allocatedBase = 0
         let i = 0
         for (const g of initialGrids) {
           if (initialGrids) {
@@ -10016,12 +10033,24 @@ class MainBot<T extends IMainBot> {
 
             if (profitCurrency === 'quote') {
               if (orderFixedIn === 'base') {
-                qty = this.math.round(
-                  baseAmount,
-                  quotedAssetPrecision,
-                  combo,
-                  overrideRound ?? !this.futures,
-                )
+                qty = carryLotResidual
+                  ? // Re-quantised: the subtraction of two floats leaves noise
+                    // that the callers' `qtyByGrids` ceiling would turn into a
+                    // whole extra lot step on the sum.
+                    this.math.round(
+                      this.math.round(
+                        baseAmount * (i + 1),
+                        quotedAssetPrecision,
+                        true,
+                      ) - allocatedBase,
+                      quotedAssetPrecision,
+                    )
+                  : this.math.round(
+                      baseAmount,
+                      quotedAssetPrecision,
+                      combo,
+                      overrideRound ?? !this.futures,
+                    )
               }
             }
             if (this.coinm && !this.isBitget) {
@@ -10090,6 +10119,19 @@ class MainBot<T extends IMainBot> {
                   true,
                 )
               }
+            }
+            /**
+             * Spec 086 §4.2/§5.3. Track what the level ACTUALLY got, after the
+             * minimum-quantity and min-notional clamps above — a level the venue
+             * forced upward is then repaid by the levels after it instead of
+             * compounding, and a grid the venue minimum already governs is left
+             * exactly where it was.
+             */
+            if (carryLotResidual) {
+              allocatedBase = this.math.round(
+                allocatedBase + grid.qty,
+                quotedAssetPrecision,
+              )
             }
             grids.push(grid)
           }

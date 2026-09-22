@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.4] - 2026-09-22
+
+### Fixed
+
+- **A Combo futures bot opens its base order at the size you configured, instead of a fraction of it.** A Combo bot lays a small grid over its base order, and on futures the base order is deliberately re-sized to the sum of that grid's levels so the position and the ladder that unwinds it are the same size. Each level was being rounded down to the exchange's quantity step on its own, though, so the grid lost up to one step on *every* level — and the base order inherited the whole loss. On a contract with a coarse quantity step this was severe: a base order configured as a notional value and split across five grid levels could open a position worth barely half of it. Each level now carries its rounding remainder into the next one, so the levels still sit exactly on the exchange's step but their total lands on the configured size instead of under it. The total is still rounded down, so the bot never commits more than you asked for. Spot Combo bots and grid bots are unchanged, as are grids the exchange's own minimum order size already governs (spec 086).
+
 ## [1.60.3] - 2026-09-22
 
 ### Fixed
