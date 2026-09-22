@@ -45,6 +45,7 @@ import {
 import {
   BotStatusEnum,
   BotType,
+  DCADealStatusEnum,
   ExchangeEnum,
   MessageTypeEnum,
   OrderSideEnum,
@@ -141,10 +142,12 @@ import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
 import RetryBackoff from './retryBackoff'
 import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
 import { PriceStreamGapTracker } from './priceStreamGap'
+import { awaitPositionFlat } from './opposingPositionSettle'
 import {
-  OPPOSING_POSITION_SETTLE,
-  awaitPositionFlat,
-} from './opposingPositionSettle'
+  opposingPositionRefusal,
+  settleWindowFor,
+  type OpposingHolder,
+} from './opposingPositionOwner'
 import { paperExchanges } from '../exchange/paper/utils'
 import type { InitialGrid } from './helper'
 import { gridLevelMinimum, type GridSizingReport } from './gridBudgetGuard'
@@ -160,7 +163,9 @@ import {
   botMessageDb,
   brokerCodesDb,
   comboBotDb,
+  comboDealsDb,
   dcaBotDb,
+  dcaDealsDb,
   orderDb,
   rateDb,
   userProfitByHourDb,
@@ -4012,10 +4017,21 @@ class MainBot<T extends IMainBot> {
                     // Spec 041: a long/short flip starts this bot while the
                     // opposite bot's market close is still in flight, so one
                     // read sees a position that is gone a second later. Look
-                    // again for a few seconds before refusing — but only when
-                    // the refusal would stop the bot, and never on a service
-                    // restart, where nothing is closing it.
+                    // again before refusing — but only when the refusal would
+                    // stop the bot, and never on a service restart, where
+                    // nothing is closing it.
+                    //
+                    // Spec 078: HOW LONG to look depends on who holds the
+                    // position. A running bot with an open deal on that side
+                    // is not unwinding anything, so waiting a minute buys the
+                    // same answer a minute later; a close in flight, a stopped
+                    // bot, or a leftover nobody owns is worth the longer park.
+                    // The same lookup names the holder in the refusal.
                     const exchange = this.exchange
+                    const holder =
+                      !skipFuturesError && !this.serviceRestart
+                        ? await this.findOpposingDealHolder(symbol)
+                        : null
                     const settled =
                       !skipFuturesError && !this.serviceRestart
                         ? await awaitPositionFlat(
@@ -4024,7 +4040,7 @@ class MainBot<T extends IMainBot> {
                                 ? exchange.futures_getPositions()
                                 : exchange.futures_getPositions(symbol),
                             symbol,
-                            { ...OPPOSING_POSITION_SETTLE, sleep },
+                            { ...settleWindowFor(holder), sleep },
                           )
                         : undefined
                     if (settled) {
@@ -4033,8 +4049,20 @@ class MainBot<T extends IMainBot> {
                       )
                       positionsRequest = settled
                     } else {
+                      if (holder) {
+                        this.handleLog(
+                          `Opposing ${side} position on ${symbol} is held by deal ${holder.dealId} on bot ${holder.botId} (${
+                            holder.botStopped ? 'stopped' : 'running'
+                          })`,
+                        )
+                      }
                       this.handleErrors(
-                        `Cannot start when existing position not met bot settings. Side in active position is ${side}, but bot will open ${requiredSide}. Symbol: ${symbol}`,
+                        opposingPositionRefusal({
+                          side,
+                          requiredSide,
+                          symbol,
+                          holder,
+                        }),
                         'load data',
                         'check positions',
                         false,
@@ -4316,6 +4344,115 @@ class MainBot<T extends IMainBot> {
       }
     }
     return result
+  }
+
+  /**
+   * Spec 078: which OTHER bot of this user holds an open deal on `symbol`, if
+   * any — the owner of the position this bot is being refused for.
+   *
+   * Answers two questions with one read: what to tell the user (an open deal
+   * on a named bot reads very differently from a leftover nobody owns), and
+   * whether waiting for the position to clear is worth anything at all
+   * (`settleWindowFor`).
+   *
+   * Best-effort by design: it runs on the refusal path, and an unreadable
+   * deals collection must degrade to the old wording, never to a throw inside
+   * `loadData` — whose caller awaits it outside its try/catch.
+   *
+   * `exchangeUUID` is matched in code rather than in the filter: it is a newer
+   * field, and a deal that predates it must not be read as "no holder" and
+   * reported to the user as a leftover.
+   */
+  private async findOpposingDealHolder(
+    symbol: string,
+  ): Promise<OpposingHolder> {
+    try {
+      if (!this.userId || !this.botId) {
+        return null
+      }
+      const paperContext = !!this.data?.paperContext
+      const uuid = this.data?.exchangeUUID
+      const onThisAccount = (deal: {
+        botId?: string
+        exchangeUUID?: string
+      }): boolean =>
+        !!deal.botId &&
+        (!uuid || !deal.exchangeUUID || deal.exchangeUUID === uuid)
+      const fields = { botId: 1, exchangeUUID: 1 } as const
+      const options = { limit: 5 } as const
+
+      const dcaRes = await dcaDealsDb.readData(
+        {
+          userId: this.userId,
+          'symbol.symbol': symbol,
+          status: DCADealStatusEnum.open,
+          isDeleted: { $ne: true },
+          botId: { $ne: `${this.botId}` },
+          paperContext: paperContext ? { $eq: true } : { $ne: true },
+        },
+        fields,
+        options,
+        true,
+      )
+      let deal =
+        dcaRes.status === StatusEnum.ok
+          ? (dcaRes.data?.result ?? []).find(onThisAccount)
+          : undefined
+      if (!deal) {
+        const comboRes = await comboDealsDb.readData(
+          {
+            userId: this.userId,
+            'symbol.symbol': symbol,
+            status: DCADealStatusEnum.open,
+            isDeleted: { $ne: true },
+            botId: { $ne: `${this.botId}` },
+            paperContext: paperContext ? { $eq: true } : { $ne: true },
+          },
+          fields,
+          options,
+          true,
+        )
+        deal =
+          comboRes.status === StatusEnum.ok
+            ? (comboRes.data?.result ?? []).find(onThisAccount)
+            : undefined
+      }
+      if (!deal?.botId) {
+        return null
+      }
+
+      const botId = new Types.ObjectId(`${deal.botId}`)
+      const botFields = { status: 1, settings: 1 } as const
+      const dcaBotRes = await dcaBotDb.readData({ _id: botId }, botFields, {})
+      let bot =
+        dcaBotRes.status === StatusEnum.ok ? dcaBotRes.data?.result : undefined
+      if (!bot) {
+        const comboBotRes = await comboBotDb.readData(
+          { _id: botId },
+          botFields,
+          {},
+        )
+        bot =
+          comboBotRes.status === StatusEnum.ok
+            ? comboBotRes.data?.result
+            : undefined
+      }
+      return {
+        dealId: `${deal._id ?? ''}`,
+        botId: `${deal.botId}`,
+        botName: bot?.settings?.name,
+        // Unknown status counts as running: claiming a bot is stopped when we
+        // could not read it would send the user to look at the wrong thing.
+        botStopped: !!bot?.status && bot.status !== BotStatusEnum.open,
+      }
+    } catch (e) {
+      this.handleWarn(
+        `Cannot resolve opposing position holder for ${symbol}: ${
+          (e as Error)?.message ?? e
+        }`,
+      )
+      return null
+    }
   }
 
   /**

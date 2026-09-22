@@ -150,6 +150,7 @@ import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { emptyBotStats } from './dca/botStatsReset'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
+import { bookReduceFundsFill } from './dca/reduceFundsFill'
 import { executedFillQty } from './dca/executedFill'
 import {
   pickRestoreBaseEntry,
@@ -8368,10 +8369,14 @@ function createDCABotHelper<
             findDeal.deal.pendingReduceFunds = (
               findDeal.deal.pendingReduceFunds ?? []
             ).filter((r) => r.id !== order.reduceFundsId)
-            findDeal.deal.reduceFunds = [
-              ...(findDeal.deal.reduceFunds ?? []),
-              { price, qty },
-            ]
+            // Spec 079: the withdrawal goes INTO `reduceFunds` and OUT of
+            // `size` in the same step. `size` is refreshed from usage below,
+            // but a take-profit sized in between would otherwise reconstruct
+            // the gross entry volume with this quantity counted twice — and
+            // close the position the deal held before the withdrawal.
+            const booked = bookReduceFundsFill(findDeal.deal, { price, qty })
+            findDeal.deal.reduceFunds = booked.reduceFunds
+            findDeal.deal.size = booked.size
           } else {
             this.handleLog(`Multiple TP order FILLED ${order.clientOrderId}`)
           }
@@ -8480,6 +8485,7 @@ function createDCABotHelper<
             tpHistory: findDeal.deal.tpHistory,
             reduceFunds: findDeal.deal.reduceFunds,
             pendingReduceFunds: findDeal.deal.pendingReduceFunds,
+            size: findDeal.deal.size,
           }).then(async () => {
             if (isReduce) {
               this.updateUsage(dealId)

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.59.63] - 2026-09-22
+
+### Fixed
+
+- **Withdrawing funds from a deal no longer leaves that amount counted both as still held and as already withdrawn.** A deal reconstructs how much it originally entered by adding what it has withdrawn back onto the position it currently holds. The withdrawal was recorded the moment its order filled, while the held position was refreshed a moment later, so in between the same amount was counted in both places and the deal read as having entered more than it did. A take-profit priced in that brief window was sized for the position the deal held before the withdrawal — larger than what was actually held, which on an account that keeps one net position per symbol would not have closed the deal but reversed it. Withdrawal and position are now recorded in a single step, so the two always agree. Neither of the two deals seen in this state had a take-profit placed during the window.
+
+## [1.59.62] - 2026-09-22
+
+### Fixed
+
+- **A bot refused for an existing position now says what is holding that position, and only waits when waiting can change the answer.** On an account that keeps one net position per symbol, a bot whose direction fights an open position cannot start — its closing orders would be refused and its deal would be stranded. The refusal named the direction of the position and nothing else, which sent people to their exchange to look at a position that usually belongs to the opposite bot they had just stopped. The refusal now looks up which bot holds the position and says so: that it belongs to an open deal on a named bot which is still running, or to one on a bot that is stopped — stopping a bot without asking it to close leaves the position exactly where it was — or that no deal on the account holds it at all, in which case nothing on this side is going to close it and it has to be closed at the exchange. How long the start waits before refusing now follows the same answer. A close that is already on its way is given about a minute instead of ten seconds, and so is a position no deal owns, since both can go away on their own; a bot that is running and holding an open deal on the other side is not unwinding anything, so that start is refused promptly rather than sitting silent for a minute to reach the same conclusion. The first sentence of the message is unchanged.
+- **A close sent by webhook now finishes before the next action in the same payload runs.** A payload can carry several actions and they are performed in order, but a close was only handed to the bot that owns it, so the next action began while the close was still in flight. Reversing a position in one payload — close one side, start the other — therefore started the second bot against a position the first was still closing, and it was refused for holding a position against its own direction. A close that is meant to flatten is now waited on, for up to about fifteen seconds, before the payload moves on. A close that has not completed in that time is not waited on further, and the start that follows behaves as it did before. Stopping a bot while leaving its position open is not waited on at all: it closes nothing by design.
+
 ## [1.59.61] - 2026-09-21
 
 ### Fixed

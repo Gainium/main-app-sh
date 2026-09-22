@@ -7,6 +7,8 @@ import {
   missingWebhookFieldsReason,
 } from '../server/tradeSignalContract'
 import { isPaper } from '../utils'
+import utils from '../utils'
+import { CLOSE_SETTLE, awaitDealsClosed } from './closeSettle'
 import { ProjectionFields, Types, type PipelineStage } from 'mongoose'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import {
@@ -8898,6 +8900,68 @@ class Bot<T extends UserSchema = UserSchema> {
     return StatusEnum.ok
   }
 
+  /**
+   * Spec 078: does this webhook action mean "flatten the position"?
+   *
+   * `close`/`closeSl` always do. `stopBot` only does when the payload asked
+   * for it: with no `closeType` the signal falls through to `leave`, which
+   * stops the bot and leaves the position open — the single most common reason
+   * an opposite bot is then refused forever.
+   */
+  private closesPosition(
+    action: WebhookActionEnum,
+    closeType?: 'limit' | 'market' | 'leave' | 'cancel',
+  ): boolean {
+    if (
+      action === WebhookActionEnum.close ||
+      action === WebhookActionEnum.closeSl
+    ) {
+      return true
+    }
+    return (
+      action === WebhookActionEnum.stopBot &&
+      (closeType === 'market' || closeType === 'limit')
+    )
+  }
+
+  /**
+   * Spec 078: wait for `bot`'s open deals to close, so the NEXT action in the
+   * same webhook payload does not race this one's close.
+   *
+   * Counting deals rather than reading the venue keeps this off the exchange
+   * rate limit: the deal is booked closed only once its closing order fills,
+   * which is the event the next action is waiting for. Never throws — the
+   * remaining items of the payload must still run.
+   */
+  private async awaitWebhookCloseSettled(
+    bot: { id: string; type: BotType },
+    symbol?: string,
+  ): Promise<void> {
+    const filter = {
+      botId: `${bot.id}`,
+      status: DCADealStatusEnum.open,
+      isDeleted: { $ne: true },
+      ...(symbol ? { 'symbol.symbol': symbol } : {}),
+    }
+    const settled = await awaitDealsClosed(
+      async () => {
+        const res =
+          bot.type === BotType.combo
+            ? await this.comboDealsDb.countData(filter)
+            : await this.dcaDealsDb.countData(filter)
+        return res.status === StatusEnum.ok ? res.data.result : undefined
+      },
+      { ...CLOSE_SETTLE, sleep: utils.sleep },
+    )
+    if (!settled) {
+      this.handleWarn(
+        `Close for bot ${bot.id} has not settled within ${
+          (CLOSE_SETTLE.attempts * CLOSE_SETTLE.intervalMs) / 1000
+        }s; continuing with the rest of the webhook payload`,
+      )
+    }
+  }
+
   @IdMute(mutex, (data?: WebhookData) => `${data?.uuid}singleWebhookProcess`)
   private async singleWebhookProcess(
     data: WebhookData,
@@ -9311,6 +9375,21 @@ class Bot<T extends UserSchema = UserSchema> {
         this.handleDebug(
           `Response ${action} signal for ${uuid}: ${JSON.stringify(result)}`,
         )
+      }
+      // Spec 078: a close action only POSTS to the worker, so awaiting it here
+      // means "the message was sent". A flip arrives as one array —
+      // [close/stop A, start B] — and the loop in `webhookProcess` moves to B
+      // the instant that post returns, which is how B ends up refused for a
+      // position A is still closing. Wait for A's deals to actually close
+      // before the next item runs. Bounded and best-effort: a close that has
+      // not landed inside the window falls back to the start-side settle
+      // (`opposingPositionOwner.ts`), i.e. exactly today's behaviour.
+      //
+      // `leave` is deliberately NOT settled: it closes nothing by design, so
+      // waiting for it would spend the window on a position that is staying
+      // exactly where it is.
+      if (call && findBot && this.closesPosition(action, closeType)) {
+        await this.awaitWebhookCloseSettled(findBot, symbol)
       }
       return result
     }
