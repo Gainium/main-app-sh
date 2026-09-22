@@ -69,7 +69,12 @@ import {
   comboSolveParts,
 } from './combo/tpSolve'
 import type { ComboTpSolveInput } from './combo/tpSolve'
-import { notEnoughBalanceNewDeal, standingConditionKey } from './conditionLatch'
+import {
+  baseGridBelowMinimumBudget,
+  notEnoughBalanceNewDeal,
+  standingConditionKey,
+} from './conditionLatch'
+import { gridBudgetVerdict, gridBudgetRefusalMessage } from './gridBudgetGuard'
 
 const mutex = new IdMutex()
 const mutexConcurrently = new IdMutex(300)
@@ -4336,6 +4341,92 @@ function createComboBotHelper<
       }
     }
 
+    /**
+     * Refuse a new deal whose base order budget cannot fund every base-grid
+     * level at the venue's per-order minimum. Spec 087.<br />
+     *
+     * A combo base grid splits the base order's own notional across its levels,
+     * and on futures {@link getBaseOrder} then re-sizes the base order to the
+     * sum of those levels so the position and the ladder that unwinds it agree
+     * (spec 086). When a level's budget share falls below the venue minimum,
+     * `MainBot.generateGridsOnPrice` raises it to that minimum, and the inflated
+     * sum lands on the POSITION — silently, and by a factor that grows with the
+     * level count. There is no size the grid could take instead: below the
+     * minimum it is unplaceable. So the deal must not open.<br />
+     *
+     * Grid bots answer this at start, for the whole bot
+     * ({@link BotHelper#refuseStartBelowMinimumBudget}, spec 068). A combo bot
+     * holds a pair LIST and the needed budget is per-pair
+     * (`≈ levels × max(minQty × price, minNotional)`), so the refusal is per
+     * pair and per deal — a pair that cannot be funded opens no deal while the
+     * rest of the bot trades on. That also reaches bots already running in this
+     * state, which a start-time check would not until someone restarted them.
+     * <br />
+     *
+     * Futures only: the spot branch of {@link getBaseOrder} never copies the
+     * grid sum onto the base order, so the clamps cannot reach the position
+     * there. Fail-open on anything unsizeable (no price, no exchange info, no
+     * sizing report) — that is the behaviour before this check existed.
+     *
+     * @returns {boolean} true when the deal was refused
+     */
+    async refuseDealBelowMinimumBudget(symbol: string): Promise<boolean> {
+      const key = standingConditionKey(baseGridBelowMinimumBudget, symbol)
+      if (!this.futures) {
+        return false
+      }
+      // No dealId: read-only. `getBaseOrder` only writes `balanceStart` when it
+      // is given one, and this is the same call `checkBalance` already makes.
+      const base = await this.getBaseOrder(symbol)
+      const sizing = this.lastGridSizing
+      const budget = base?.minigridBudget
+      if (!base || !sizing || !budget) {
+        return false
+      }
+      const verdict = gridBudgetVerdict({
+        budget,
+        wanted: sizing.wanted,
+        minimum: sizing.minimum,
+      })
+      if (!verdict.refuse) {
+        // The condition cleared — re-arm so a return of it is reported.
+        this.standingConditionLatch.clear(key)
+        return false
+      }
+      const settings = await this.getAggregatedSettings()
+      const ed = await this.getExchangeInfo(symbol)
+      // Once per (pair, condition), not once per cycle — the level count and
+      // the base order size are settings, so nothing but an edit clears this.
+      // See `openNewDeal`'s balance refusal and spec 008.
+      if (this.standingConditionLatch.shouldReport(key, +new Date())) {
+        this.handleErrors(
+          gridBudgetRefusalMessage({
+            budget,
+            minimumBudget: verdict.minimumBudget,
+            asset:
+              (this.coinm ? ed?.baseAsset.name : ed?.quoteAsset.name) ?? '',
+            levels: Math.floor(
+              +(settings.baseGridLevels ?? settings.gridLevel ?? '1'),
+            ),
+            pair: symbol,
+            // Not the grid bots' "Bot will stop": this refuses one pair and
+            // leaves the bot running.
+            advice:
+              'Increase the base order size or reduce the number of base grid levels. No deal will start on this pair',
+          }),
+          'openNewDeal',
+          '',
+          false,
+          true,
+          true,
+          false,
+          // `symbol` so the alert names the pair the refusal happened on.
+          symbol,
+        )
+      }
+      return true
+    }
+
     override async getBaseOrder(
       symbol: string,
       dealId?: string,
@@ -5266,6 +5357,17 @@ function createComboBotHelper<
           (skipRange || (await this.checkInRange(symbol))) &&
           this.data?.status !== BotStatusEnum.closed
         ) {
+          // Spec 087. Before the balance check, because this is a settings
+          // fault whatever the account holds — and a shortfall computed from an
+          // over-committed base order would name the wrong cause.
+          if (await this.refuseDealBelowMinimumBudget(symbol)) {
+            this.resetPending(this.botId, symbol)
+            this.endMethod(_id)
+            if (cbIfNotOpened) {
+              cbIfNotOpened()
+            }
+            return
+          }
           let checkBalance = await this.checkBalance(symbol)
           if (!checkBalance.status) {
             this.handleDebug(

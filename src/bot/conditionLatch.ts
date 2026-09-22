@@ -78,6 +78,20 @@ export function standingConditionKey(reason: string, symbol?: string): string {
 export const notEnoughBalanceNewDeal = 'notEnoughBalanceNewDeal'
 
 /**
+ * A combo `openNewDeal` refused because the base order's budget cannot fund
+ * every base-grid level at the venue's per-order minimum (issue #912, spec
+ * 087).
+ *
+ * Standing by nature, and for a reason only the user can act on: the level count
+ * and the base order size are settings, and the venue's minimums do not move, so
+ * nothing but an edit (or a large enough price fall) clears it. Keyed by PAIR
+ * like {@link notEnoughBalanceNewDeal}: the budget a level count needs is
+ * `≈ levels × max(minQty × price, minNotional)`, which is per-pair, so one pair
+ * of a combo bot can be unfundable while the rest trade.
+ */
+export const baseGridBelowMinimumBudget = 'baseGridBelowMinimumBudget'
+
+/**
  * A deal's resting take-profit no longer covers the position it tracks
  * (issue #696, spec `013.tp-coverage-drift-after-partial-tp`).
  *

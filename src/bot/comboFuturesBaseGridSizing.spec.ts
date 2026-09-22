@@ -272,16 +272,21 @@ describe('combo futures base order is sized by the base grid (spec 086)', () => 
       expect(+order.origQty * PRICE).to.be.closeTo(budget, 1e-9)
     })
 
-    it('§5.3 a grid the venue minimum cannot fund is left exactly as it was', async () => {
+    it('§5.3 a grid the venue minimum cannot fund sizes the same, and is now refused', async () => {
       // 11 levels × (0.01 × ~117.6) needs 12.93 against a 9.40 budget, so every
       // level is floored UP to the venue minimum and the grid over-commits.
-      // Pre-existing (the combo base grid has no minimum-budget refusal); this
-      // change must not move it in either direction.
+      // Spec 086 left that SIZING exactly where it was and pinned it here as a
+      // control; it still is, because there is no placeable size below the venue
+      // minimum. What changed is that spec 087 stops a deal from reaching it —
+      // `refuseDealBelowMinimumBudget` refuses the pair before any base order is
+      // placed. Pinned in `comboBaseGridBudgetRefusal.spec.ts`; asserted here so
+      // the two cannot drift apart.
       const bot = makeBot({ levels: 11 })
       const { order, grids } = await baseOrderAndGrid(bot)
       expect(grids).to.have.length(11)
       expect(grids.every((g: any) => g.qty === MIN_QTY)).to.equal(true)
       expect(+order.origQty).to.be.closeTo(0.11, 1e-9)
+      expect(await bot.refuseDealBelowMinimumBudget('SOL-USD')).to.equal(true)
     })
   })
 })

@@ -120,9 +120,18 @@ export const gridBudgetRefusalMessage = (input: {
   asset: string
   levels: number
   pair: string
+  /**
+   * What happens next, and what to change. Defaults to the grid-bot wording,
+   * where the refusal stops the whole bot. A caller that refuses something
+   * narrower passes its own — a combo bot refuses one PAIR's deal and keeps
+   * running (spec 087), so it must not promise a stop that will not happen.
+   * Subject to the same `errorDict` rule as the rest of the text.
+   */
+  advice?: string
 }): string => {
   const { budget, minimumBudget, asset, levels, pair } = input
   const advice =
+    input.advice ??
     'Increase the budget or reduce the number of levels. Bot will stop'
   if (minimumBudget === null || !usable(minimumBudget)) {
     return `Budget ${budget} ${asset} is too small to place ${levels} levels on ${pair} at the exchange minimum order size. ${advice}`

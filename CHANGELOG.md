@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.5] - 2026-09-22
+
+### Fixed
+
+- **A Combo futures bot no longer opens a position larger than the base order you configured.** A Combo bot lays a small grid over its base order, and on futures the base order is re-sized to the sum of that grid's levels so the position and the ladder that unwinds it are the same size. When the base order's value is split across more levels than it can pay for at the exchange's smallest allowed order size, every level has to be raised to that minimum — and the base order inherited the inflated total, opening a position materially larger than the configured one, with nothing said. The larger the level count, the larger the excess. The bot now refuses to open a deal on such a pair and says what budget the level count actually needs, instead of committing capital you did not ask it to. The refusal is per pair, so the bot keeps trading the pairs it can fund, and it is reported once rather than on every cycle. Pairs whose budget does fund every level are sized exactly as before (spec 087).
+
 ## [1.60.4] - 2026-09-22
 
 ### Fixed
