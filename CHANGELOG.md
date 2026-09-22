@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.60.2] - 2026-09-22
+
+### Fixed
+
+- **Two spot orders the exchange could only refuse are no longer sent.** When a deal ends with part of its position unfilled, the engine trades the remainder back. It checked that remainder against the exchange's minimum quantity and minimum order value *before* rounding it onto the symbol's quantity step — so on a market with a coarse step, a remainder that cleared both minimums could round away to nothing and still be submitted, as an order for zero units. The remainder is now rounded first and both minimums are measured against the quantity that will actually be sent, together with an explicit check that it is above zero: some venues publish a minimum quantity of zero, so the minimum alone cannot catch this.
+- **A Bitget spot market buy is no longer sized to more decimals than the venue accepts.** A spot market buy is sized in the quote coin, and that amount was rounded to the number of decimals Bitget publishes for the symbol. For some symbols that published figure is larger than what Bitget's own order validator accepts, so those orders were rejected on submission every time. The amount is now capped at the scale the venue really takes; symbols already within it are unchanged.
+- An order whose quantity is zero is now refused before it reaches the exchange, alongside the existing refusal of a quantity that is not a number. No venue accepts a zero-size order, so this cannot cost a fill, and it bounds any other path that rounds a size away (spec 084).
+
 ## [1.60.1] - 2026-09-22
 
 ### Fixed

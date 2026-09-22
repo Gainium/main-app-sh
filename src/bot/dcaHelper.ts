@@ -7916,20 +7916,34 @@ function createDCABotHelper<
           qtyWithoutFee = +qty - totalFee
         }
         const price = await this.getLatestPrice(symbol)
+        // Spec `084` §4.1 (#871). Measure the minimums against the quantity
+        // that is actually SENT, not the raw remainder. The send floors
+        // `qtyWithoutFee` onto the symbol's base step, so on a coarse-step
+        // symbol the two disagree: a SOL-USDC remainder of 0.00984 cleared
+        // both checks and left as `origQty '0'`, which the venue refused
+        // (`parameter verification exception delegateamount`) after the row
+        // had already been written ahead.
+        //
+        // `> 0` is NOT redundant with `baseAsset.minAmount`: that minimum is
+        // mapped from Bitget's `minTradeAmount`, which the venue reports as
+        // "0" for every spot symbol, so `qty >= minAmount` is `x >= 0` and is
+        // true for zero as well.
+        const sellQty = this.math.round(
+          qtyWithoutFee,
+          await this.baseAssetPrecision(symbol),
+          !this.futures,
+        )
         if (
-          qtyWithoutFee >= ed.baseAsset.minAmount &&
-          qtyWithoutFee * price >= ed.quoteAsset.minAmount
+          sellQty > 0 &&
+          sellQty >= ed.baseAsset.minAmount &&
+          sellQty * price >= ed.quoteAsset.minAmount
         ) {
           const result = await this.sendGridToExchange(
             {
               price: this.math.round(price, ed.priceAssetPrecision),
               number: 0,
               side: !long ? OrderSideEnum.buy : OrderSideEnum.sell,
-              qty: this.math.round(
-                qtyWithoutFee,
-                await this.baseAssetPrecision(symbol),
-                !this.futures,
-              ),
+              qty: sellQty,
               type: TypeOrderEnum.dealTP,
               newClientOrderId: this.getOrderId(`D-SR`),
               dealId,
@@ -8098,9 +8112,9 @@ function createDCABotHelper<
           })
         } else {
           this.handleDebug(
-            `Sell remainder | qty less than minimals qty: ${qtyWithoutFee},min: ${
+            `Sell remainder | qty less than minimals qty: ${sellQty} (before rounding ${qtyWithoutFee}), min: ${
               ed.baseAsset.minAmount
-            }, quote: ${qtyWithoutFee * price}, min ${ed.quoteAsset.minAmount} `,
+            }, quote: ${sellQty * price}, min ${ed.quoteAsset.minAmount} `,
           )
         }
       }

@@ -658,6 +658,9 @@ export const errorDict = {
   'closed due to position liquidation': futuresLiquidation,
   'The order price cannot be': orderPrice,
   'Order qty is not a number': orderParams,
+  // Spec `084` §4.3: the submission boundary's own refusal of a size that
+  // rounded away to zero. Same class as the non-finite one above.
+  'Order qty must be greater than zero': orderParams,
   'The quantity increment is invalid': orderParams,
   'Quantity parameter cannot be empty': orderParams,
   'The order amount must': orderParams,

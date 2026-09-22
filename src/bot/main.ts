@@ -222,6 +222,17 @@ const { findUSDRate, sleep, id } = utils
 export const KRAKEN_CL_ORD_ID_MAX_LENGTH = 18
 
 /**
+ * The most decimals Bitget's spot order-entry validator accepts on the amount
+ * a MARKET BUY is sized in.
+ *
+ * This is deliberately NOT read from the symbol: Bitget's own `quotePrecision`
+ * is the number that is wrong. `ICPUSDT` publishes 7 and then refuses the
+ * order — `checkbdscale error value=4.9999286 checkscale=6`.
+ * `specs/084.a-zero-remainder-and-an-over-scaled-market-buy-amount.md` §4.2.
+ */
+const BITGET_SPOT_QUOTE_MAX_SCALE = 6
+
+/**
  * Return from findDiff function
  */
 type findDiffReturn = {
@@ -7620,6 +7631,32 @@ class MainBot<T extends IMainBot> {
       this.endMethod(_id)
       return returnError ? reason : undefined
     }
+    // Spec `084` §4.3 (#871). The same boundary, one value further along: a
+    // quantity of ZERO is finite, so the guard above waves it through. On
+    // 2026-09-20 `sellRemainder` floored a remainder onto a coarse base step
+    // and this method wrote `origQty '0'` ahead and sent it (`qty 0, price
+    // 108.7, side BUY`); Bitget answered `parameter verification exception
+    // delegateamount`. No venue accepts a zero-size order, so refusing one
+    // here cannot cost a fill either — and it bounds the next producer that
+    // rounds a size away, the way the guard above bounds the next one that
+    // produces a NaN.
+    //
+    // Its own string rather than the one above: zero IS a number, and that
+    // message is asserted on by four other specs. `bot/utils.ts` maps both to
+    // the same `Order params` subtype, so nothing downstream reclassifies.
+    if (sendQty <= 0) {
+      const reason = `Order qty must be greater than zero. Order ${order.clientOrderId} ${order.symbol} qty ${order.origQty}, price ${order.price}, side ${order.side}`
+      await this.handleOrderErrors(
+        reason,
+        order,
+        'sendOrderToExchange()',
+        `Send new order request ${order.clientOrderId}`,
+        false,
+        false,
+      )
+      this.endMethod(_id)
+      return returnError ? reason : undefined
+    }
     const ed = await this.getExchangeInfo(order.symbol)
     if (
       this.isBitget &&
@@ -7697,7 +7734,21 @@ class MainBot<T extends IMainBot> {
         requestData.quantity = this.math.round(
           requestData.quantity * requestData.price,
           this.data.exchange === ExchangeEnum.bitget
-            ? (ed?.quoteAsset.precision ?? 0)
+            ? // Spec `084` §4.2 (#871). Bitget's own `quotePrecision` is NOT
+              // the scale its order-entry validator enforces on the amount
+              // field. `ICPUSDT` publishes `quotePrecision 7` and refused
+              // `4.9999286` with `checkbdscale error value=4.9999286
+              // checkscale=6`, so every market buy on a symbol above the cap
+              // is rejected outright. Bitget lists 409 of its 2706 spot
+              // symbols with a `quotePrecision` over 6, up to 13.
+              //
+              // A CAP on the scale, not a change of rounding: the amount is
+              // still rounded to nearest, and for the 2297 symbols already at
+              // 6 or below this is the precision they always had.
+              Math.min(
+                ed?.quoteAsset.precision ?? 0,
+                BITGET_SPOT_QUOTE_MAX_SCALE,
+              )
             : (ed?.priceAssetPrecision ?? 0),
         )
       }
