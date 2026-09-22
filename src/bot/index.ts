@@ -9,6 +9,7 @@ import {
 import { isPaper } from '../utils'
 import utils from '../utils'
 import { CLOSE_SETTLE, awaitDealsClosed } from './closeSettle'
+import { buyDialogEventsFor } from './buyDialogEvent'
 import { ProjectionFields, Types, type PipelineStage } from 'mongoose'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import {
@@ -5757,25 +5758,19 @@ class Bot<T extends UserSchema = UserSchema> {
         }
       }
     }
-    if (buyCount) {
-      this.botEventDb.createData({
-        userId: userId,
-        botId: id,
-        event: 'Buy dialog',
-        botType: type,
-        description: `Buy count: ${buyCount}`,
-        paperContext,
-      })
-    }
-    if (buyType) {
-      this.botEventDb.createData({
-        userId: userId,
-        botId: id,
-        event: 'Buy dialog',
-        botType: type,
-        description: `Buy type: ${buyType}`,
-        paperContext,
-      })
+    // Spec 081 — a manual buy is only what a branch above actually applied
+    // (grid -> open). Writing this from the presence of the optional input
+    // labelled every grid Stop a "Manual buy" the user never made.
+    for (const event of buyDialogEventsFor({
+      userId,
+      botId: id,
+      type,
+      status,
+      buyType,
+      buyCount,
+      paperContext,
+    })) {
+      this.botEventDb.createData(event)
     }
     return await this.getBot(type, userId, id, undefined, paperContext)
   }

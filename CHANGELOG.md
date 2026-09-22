@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.59.65] - 2026-09-22
+
+### Fixed
+
+- **Stopping a grid bot no longer records a manual buy in its event log.** The grid start dialog lets you choose how the initial buy is placed, and the dashboards carry that choice on every status change they send, a stop included. The event log wrote a "Manual buy" entry whenever that field was merely present, rather than when the choice was actually applied — so a plain Stop left behind a "Manual buy — Buy type: all" entry for an action that placed no order and in which the choice was discarded, and DCA, combo and hedge bots recorded the same entry even though they have no such dialog and never receive the value. The entry is now written only for the one case that applies the choice: a grid bot being started. Genuine grid starts are unchanged, and no order placement is affected — this is the event log only.
+
 ## [1.59.64] - 2026-09-22
 
 ### Fixed
