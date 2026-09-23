@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.8] - 2026-09-23
+
+### Fixed
+
+- **A futures Grid bot no longer closes with an order larger than the position it holds.** The bot keeps a running total of its open position by adding each order as it fills. Several ordinary situations hand the bot the same filled order a second time — most often when it tears down its grid to close: it cancels the levels it believed were still resting, the exchange answers that one of them is no longer there because it had just filled, and the bot re-reads it and finds it filled. Nothing checked whether that fill had already been counted, so its quantity was added to the running total again, once per repeat, and nothing later corrected it. The take profit or stop loss was then sized from the inflated total. Exchanges that trim a reduce-only order down to the real position absorbed the difference, but an exchange that rejects one instead would have left the close unplaced while the bot treated itself as closed; the same inflated total also fed the profit percentage the take-profit and stop-loss triggers are judged against. Each fill is now counted once no matter how many times it is delivered, and the total a bot rebuilds when it starts is recognised as already counted before it tears down its grid. The profit ledger was never affected — it has always refused a repeated fill (spec 089).
+
 ## [1.60.7] - 2026-09-23
 
 ### Fixed

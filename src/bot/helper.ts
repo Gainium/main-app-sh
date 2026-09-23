@@ -158,6 +158,20 @@ function createBotHelper<
     private filledWhileLoading: Map<string, Order> = new Map()
     private feeOrders: Set<string> = new Set()
     private feeProcessed: Set<string> = new Set()
+    /**
+     * Fills already folded into {@link BotHelper#data}`.position`, by
+     * `clientOrderId` — the position fold's half of the per-fill idempotency
+     * `createTransaction` gets from its ledger's unique `index` (spec `089`).
+     *
+     * The fold is incremental, so a fill delivered to `processFilledOrder`
+     * twice used to be ADDED twice and nothing later corrected it. It is
+     * re-delivered routinely: `cancelAllOrder` walks a stale order snapshot,
+     * the venue answers "Order not found" for one that filled in the gap, and
+     * the unknown-order ladder re-reads it, logs "already processed while
+     * request was in progress" and returns it anyway — plus the reconcile
+     * sweep and `checkOrders`, which replay filled orders by design.
+     */
+    private positionBooked: Set<string> = new Set()
     private blockCheck = false
     protected startTimeoutTime = 0
     protected limitTimer: NodeJS.Timeout | null = null
@@ -307,17 +321,20 @@ function createBotHelper<
             [...orders]
               .sort((a, b) => b.updateTime - a.updateTime)
               .find((o) => o.typeOrder === TypeOrderEnum.stop)?.updateTime ?? 0
-          this.data.position = await this.calculatePositionForOrders(
-            orders.filter(
-              (o) =>
-                o.status === 'FILLED' &&
-                o.updateTime > lastTP &&
-                (this.data?.lastPositionChange
-                  ? o.updateTime > this.data.lastPositionChange
-                  : true) &&
-                o.typeOrder !== TypeOrderEnum.stab,
-            ),
+          const positionOrders = orders.filter(
+            (o) =>
+              o.status === 'FILLED' &&
+              o.updateTime > lastTP &&
+              (this.data?.lastPositionChange
+                ? o.updateTime > this.data.lastPositionChange
+                : true) &&
+              o.typeOrder !== TypeOrderEnum.stab,
           )
+          this.data.position =
+            await this.calculatePositionForOrders(positionOrders)
+          // Same slice the sum was built from, so the two cannot drift
+          // (spec `089` §4.2) — `start()` runs `cancelAllOrder()` after this.
+          this.seedBookedPosition(positionOrders)
           this.updateData({ position: this.data.position })
           this.emit('bot settings update', { position: this.data.position })
         }
@@ -2154,10 +2171,30 @@ function createBotHelper<
       }
       return pos
     }
+    /**
+     * Record fills as already folded into `data.position` (spec `089` §4.2).
+     *
+     * `start()` rebuilds the position wholesale from an order slice and THEN
+     * runs `cancelAllOrder()`, so without this every bot run re-books the
+     * orders the rebuild just summed.
+     */
+    protected seedBookedPosition(orders: { clientOrderId: string }[]) {
+      this.positionBooked = new Set(orders.map((o) => o.clientOrderId))
+    }
     private async calculatePosition(order: Order) {
       if (!this.data || !this.futures) {
         return
       }
+      // Spec `089`: the fold below is incremental, so it must run at most once
+      // per fill. `createTransaction`, called on the line above this method's
+      // only hot caller, is refused by its own ledger guard on a re-delivery —
+      // this is the same refusal for the position.
+      if (this.positionBooked.has(order.clientOrderId)) {
+        return this.handleDebug(
+          `Position already booked for ${order.clientOrderId}, skip`,
+        )
+      }
+      this.positionBooked.add(order.clientOrderId)
 
       const qty = +(order.executedQty ?? '0') || +order.origQty
       const price = +order.price
@@ -2501,6 +2538,9 @@ function createBotHelper<
       this.orders = new Map()
       this.orderStatusMap = new Map()
       this.orderDealMap = new Map()
+      // In lockstep with `orders` above: `loadOrders` refills both, and the
+      // position rebuild there re-seeds this one (spec `089` §4.3).
+      this.positionBooked = new Set()
       this.lockTpSlCheck = false
       this.lockProcessQueueMethod = false
       this.lastFilled = null
