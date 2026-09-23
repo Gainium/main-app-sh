@@ -66,7 +66,7 @@
 
 ### Fixed
 
-- **Withdrawing funds from a deal no longer leaves that amount counted both as still held and as already withdrawn.** A deal reconstructs how much it originally entered by adding what it has withdrawn back onto the position it currently holds. The withdrawal was recorded the moment its order filled, while the held position was refreshed a moment later, so in between the same amount was counted in both places and the deal read as having entered more than it did. A take-profit priced in that brief window was sized for the position the deal held before the withdrawal — larger than what was actually held, which on an account that keeps one net position per symbol would not have closed the deal but reversed it. Withdrawal and position are now recorded in a single step, so the two always agree. Neither of the two deals seen in this state had a take-profit placed during the window.
+- **Withdrawing funds from a deal no longer leaves that amount counted both as still held and as already withdrawn.** A deal reconstructs how much it originally entered by adding what it has withdrawn back onto the position it currently holds. The withdrawal was recorded the moment its order filled, while the held position was refreshed a moment later, so in between the same amount was counted in both places and the deal read as having entered more than it did. A take-profit priced in that brief window was sized for the position the deal held before the withdrawal — larger than what was actually held, which on an account that keeps one net position per symbol would not have closed the deal but reversed it. Withdrawal and position are now recorded in a single step, so the two always agree.
 
 ## [1.59.62] - 2026-09-22
 
