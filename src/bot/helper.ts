@@ -1991,7 +1991,8 @@ function createBotHelper<
           if (!this.data || !this.futures || this.data.position.qty === 0) {
             return
           }
-          const { qty, price, side } = this.data.position
+          const { qty, side } = this.data.position
+          const price = await this.closeEntryPrice(order.clientOrderId)
           const profit =
             side === PositionSide.LONG
               ? _price * qty - price * qty
@@ -2827,11 +2828,137 @@ function createBotHelper<
       this.secondRestart = false
       this.endMethod(_id)
     }
+    /**
+     * Entry price the close leg of `data.position` is valued against (spec 099).
+     *
+     * A NEUTRAL grid books its round trips pairwise at grid-level prices, so
+     * the position left at close is exactly the fills no paired transaction
+     * booked — not `position.price`, which still averages every fill that ever
+     * added to the position, paired ones included. Their net cash is the entry.
+     * Everything else, or a ledger that does not net to the position, keeps
+     * `position.price`.
+     */
+    private async closeEntryPrice(closeOrderId: string): Promise<number> {
+      const position = this.data?.position
+      if (
+        !this.data ||
+        !position ||
+        this.coinm ||
+        this.futuresStrategy !== FuturesStrategyEnum.neutral
+      ) {
+        return position?.price ?? 0
+      }
+      try {
+        const [orders, transactions] = await Promise.all([
+          this.ordersDb.readData(
+            {
+              botId: this.botId,
+              status: 'FILLED',
+              typeOrder: { $in: [TypeOrderEnum.regular, TypeOrderEnum.stop] },
+            },
+            {
+              clientOrderId: 1,
+              side: 1,
+              price: 1,
+              origQty: 1,
+              executedQty: 1,
+              updateTime: 1,
+              typeOrder: 1,
+            },
+            {},
+            true,
+          ),
+          this.transactionDb.readData(
+            {
+              idBuy: { $ne: '' },
+              idSell: { $ne: '' },
+              botId: this.botId,
+              userId: this.userId,
+            },
+            { idBuy: 1, idSell: 1 },
+            {},
+            true,
+          ),
+        ])
+        if (
+          orders.status !== StatusEnum.ok ||
+          transactions.status !== StatusEnum.ok
+        ) {
+          throw new Error(
+            orders.status !== StatusEnum.ok
+              ? orders.reason
+              : (transactions as { reason: string }).reason,
+          )
+        }
+        const paired = new Set<string>()
+        for (const t of transactions.data.result) {
+          if (t.idBuy && t.idSell) {
+            paired.add(t.idBuy)
+            paired.add(t.idSell)
+          }
+        }
+        // Same slice `loadOrders` rebuilds the position from.
+        const since = Math.max(
+          this.data.lastPositionChange ?? 0,
+          ...orders.data.result
+            .filter(
+              (o) =>
+                o.typeOrder === TypeOrderEnum.stop &&
+                o.clientOrderId !== closeOrderId,
+            )
+            .map((o) => o.updateTime ?? 0),
+        )
+        let netQty = 0
+        let netQuote = 0
+        for (const o of orders.data.result) {
+          if (
+            o.typeOrder !== TypeOrderEnum.regular ||
+            o.updateTime <= since ||
+            paired.has(o.clientOrderId)
+          ) {
+            continue
+          }
+          const sign = o.side === OrderSideEnum.buy ? 1 : -1
+          const qty = +(o.executedQty ?? '0') || +o.origQty
+          netQty += sign * qty
+          netQuote -= sign * qty * +o.price
+        }
+        const signedPosition =
+          (position.side === PositionSide.SHORT ? -1 : 1) * position.qty
+        const entry =
+          (position.side === PositionSide.SHORT ? netQuote : -netQuote) /
+          position.qty
+        if (
+          Math.abs(netQty - signedPosition) >
+            1e-8 * Math.max(1, position.qty) ||
+          !(entry > 0) ||
+          !isFinite(entry)
+        ) {
+          this.handleWarn(
+            `Close entry: unpaired fills net ${netQty} against position ${signedPosition}, using position price ${position.price}`,
+          )
+          return position.price
+        }
+        this.handleLog(
+          `Close entry: ${entry} from unpaired fills (position price ${position.price})`,
+        )
+        return entry
+      } catch (e) {
+        this.handleWarn(
+          `Close entry: cannot read the ledger (${(e as Error)?.message ?? e}), using position price ${position.price}`,
+        )
+        return position.price
+      }
+    }
     protected async profitAfterPositionClosed(result: Order) {
       if (!this.data || !this.futures || this.data.position.qty === 0) {
         return
       }
-      const { qty, price, side } = this.data.position
+      const { qty, side } = this.data.position
+      const price = await this.closeEntryPrice(result.clientOrderId)
+      if (!this.data || this.data.position.qty === 0) {
+        return
+      }
       const profit =
         (side === PositionSide.LONG
           ? +result.price * qty - price * qty

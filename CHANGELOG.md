@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.18] - 2026-09-23
+
+### Fixed
+
+- **A neutral futures Grid bot now books its closing position at the price it actually paid for it.** A neutral grid records each completed round trip between two neighbouring grid levels at those two levels' prices. When the bot closed, the position still open was valued against the average entry of every order that had ever added to the position, including orders already counted in completed round trips, instead of against the orders that were actually still open. The close could then show a gain where the bot had a loss (or the reverse), and the bot's total profit no longer matched what it had bought and sold. The close, and the loss booked on a liquidation, are now valued against the orders that no round trip used. If those orders do not add up to the position being closed, the previous valuation is kept. Long and short grids, COIN-M grids, spot grids and the round-trip rows are unchanged (spec 099).
+
 ## [1.60.17] - 2026-09-23
 
 ### Fixed
