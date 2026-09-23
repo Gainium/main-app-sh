@@ -238,7 +238,7 @@ export const DCA_FORM_DEFAULTS: DCABotSettings = {
   useSeparateMaxDealsOverAndUnderPerSymbol: false,
   maxDealsOverPerSymbol: '1',
   maxDealsUnderPerSymbol: '1',
-  rejectBelowExchangeMin: false,
+  allowRaiseToExchangeMin: false,
   dcaByMarket: false,
 }
 

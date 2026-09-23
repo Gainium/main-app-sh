@@ -4436,7 +4436,7 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           example: false,
         },
         {
-          name: 'rejectBelowExchangeMin',
+          name: 'allowRaiseToExchangeMin',
           type: 'boolean',
           required: false,
           validators: ['mustBeBoolean'],

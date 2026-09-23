@@ -1,5 +1,5 @@
 /**
- * Opt-in refusal of DCA orders that the exchange minimum would inflate.
+ * Refusal of DCA orders that the exchange minimum would inflate.
  *
  * When a configured Base Order or Safety Order is below a pair's exchange
  * minimum, the sizing routines (`getBaseOrder`, `createInitialDealOrders`)
@@ -8,9 +8,10 @@
  * 10.80 base order placed as 39.59 — which changes the strategy's position
  * sizing and risk without asking.
  *
- * A DCA bot with `rejectBelowExchangeMin` set asks for the other trade-off: do
- * not open the deal, and say which order is too small and what the minimum is,
- * so the user can remove the pair or raise the sizes. The sizing routines keep
+ * By default a DCA bot now takes the other trade-off: it does not open the deal,
+ * and says which order is too small and what the minimum is, so the user can
+ * remove the pair, raise the sizes, or turn `allowRaiseToExchangeMin` on to go
+ * back to raising. The sizing routines keep
  * sizing exactly as they always have; they only record, per order, the quantity
  * the configured size produced and the quantity after the exchange-minimum
  * raises ({@link MinOrderFloor}). The decision lives here, as plain functions
@@ -48,7 +49,7 @@ const usable = (n: number) => Number.isFinite(n) && n > 0
 
 /**
  * True when the exchange minimum raised this order past the tolerance.
- * Fail-open on anything unsizeable — that is the behaviour without the setting.
+ * Fail-open on anything unsizeable — the deal opens as it always did.
  */
 export const raisedPastConfigured = (f: MinOrderFloor): boolean =>
   usable(f.configuredQty) &&
@@ -104,5 +105,5 @@ export const minOrderRefusalMessage = (input: {
     .join(' and ')
   return `Deal not opened on ${pair}: order size is below the exchange minimum${
     minimum ? ` (${minimum} per order)` : ''
-  }. ${listed.join('; ')}. The bot is set to reject orders below the exchange minimum instead of increasing them. Remove ${pair} from the bot, or increase the Base/Safety Order size. No deal will start on this pair`
+  }. ${listed.join('; ')}. Remove ${pair} from the bot, increase the Base/Safety Order size, or turn on "Allow increasing orders to exchange minimum" in the bot settings. No deal will start on this pair`
 }

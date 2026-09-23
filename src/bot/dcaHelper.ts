@@ -14524,16 +14524,21 @@ function createDCABotHelper<
     )
     /**
      * Refuse a new deal whose base order or safety orders the exchange minimum
-     * would raise past what the user configured — only on a bot set to
-     * `rejectBelowExchangeMin`. Without the setting the orders are raised to the
-     * minimum and placed, as they always have been.<br />
+     * would raise past what the user configured. The default for DCA bots: a
+     * bot opts back into the old behaviour — raise the orders to the minimum
+     * and place them — with `allowRaiseToExchangeMin`. A missing value means
+     * refuse; every bot that existed before this default was introduced had the
+     * setting written `true` explicitly, so none of them changed behaviour.<br />
+     *
+     * Regular DCA bots only. Terminal deals and hedge-DCA legs run through this
+     * engine too, but their forms do not offer the switch, so they keep raising
+     * rather than getting a behaviour their users cannot turn off.<br />
      *
      * Sizes the deal exactly as it would open — {@link getBaseOrder} and the
      * {@link createInitialDealOrders} ladder at the current price — with no
      * dealId, so nothing is written. Per pair, per deal: a pair whose minimum is
      * too high opens no deal while the rest of the bot trades on. Fail-open on
-     * anything unsizeable (no price, no exchange info), which is the behaviour
-     * without the setting.
+     * anything unsizeable (no price, no exchange info).
      *
      * @returns {boolean} true when the deal was refused
      */
@@ -14544,8 +14549,9 @@ function createDCABotHelper<
     ): Promise<boolean> {
       const settings = await this.getAggregatedSettings()
       if (
-        !settings.rejectBelowExchangeMin ||
-        settings.terminalDealType === TerminalDealTypeEnum.import
+        settings.allowRaiseToExchangeMin ||
+        settings.type === DCATypeEnum.terminal ||
+        this.data?.parentBotId
       ) {
         return false
       }
@@ -14594,11 +14600,8 @@ function createDCABotHelper<
       )
       // Once per (pair, condition), not once per cycle — order sizes are
       // settings, so nothing but an edit clears this. See the balance refusal
-      // below and spec 008. Terminal deals are a one-shot and always answered.
-      if (
-        settings.type === DCATypeEnum.terminal ||
-        this.standingConditionLatch.shouldReport(key, +new Date())
-      ) {
+      // below and spec 008.
+      if (this.standingConditionLatch.shouldReport(key, +new Date())) {
         this.handleErrors(
           minOrderRefusalMessage({
             pair: `${ed.baseAsset.name}/${ed.quoteAsset.name}`,
@@ -14861,9 +14864,6 @@ function createDCABotHelper<
               this.endMethod(_id)
               if (cbIfNotOpened) {
                 cbIfNotOpened()
-              }
-              if (settings.type === DCATypeEnum.terminal) {
-                this.stop()
               }
               return
             }

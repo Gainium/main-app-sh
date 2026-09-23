@@ -148,9 +148,9 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
     description: 'Execute DCA orders at market price',
     example: false,
   },
-  rejectBelowExchangeMin: {
+  allowRaiseToExchangeMin: {
     description:
-      'Do not open a deal when the exchange minimum would raise its base or safety orders above the configured size; notify instead',
+      'Raise base/safety orders to the exchange minimum when the configured size is below it. When false (default), a deal whose orders would be raised is not opened on that pair and a notification is sent',
     example: false,
   },
 

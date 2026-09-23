@@ -1,9 +1,10 @@
 process.env.NODE_ENV = 'testing'
 
 /**
- * `rejectBelowExchangeMin`: a DCA bot set to reject orders the exchange minimum
- * would inflate must refuse the deal and say why, instead of placing a base or
- * safety order several times the configured size.
+ * A DCA bot must refuse a deal whose orders the exchange minimum would inflate,
+ * and say why, instead of placing a base or safety order several times the
+ * configured size — unless `allowRaiseToExchangeMin` is on. A missing value
+ * refuses (every pre-existing bot was backfilled `true`).
  *
  * Drives the REAL `dcaHelper.refuseDealBelowExchangeMin` — and through it the
  * real `getBaseOrder` and `createInitialDealOrders` clamps — over the mixin with
@@ -127,7 +128,6 @@ const buildBot = (overrides: Record<string, unknown> = {}) => {
         useTp: true,
         tpPerc: '1',
         dealCloseCondition: 'tp',
-        rejectBelowExchangeMin: true,
         ...overrides,
       }
     }
@@ -151,7 +151,7 @@ const buildBot = (overrides: Record<string, unknown> = {}) => {
   return { bot, reported }
 }
 
-describe('rejectBelowExchangeMin — refuse instead of inflating BO/SO', () => {
+describe('exchange minimum — refuse instead of inflating BO/SO', () => {
   before(function () {
     this.timeout(180000)
     Helper = loadModule('../dcaHelper').default(FakeBase as any)
@@ -167,6 +167,7 @@ describe('rejectBelowExchangeMin — refuse instead of inflating BO/SO', () => {
     expect(msg).to.contain('Base Order 10.8')
     expect(msg).to.contain('Safety Order 1 3.6')
     expect(msg).to.contain('Remove SYN/USD from the bot')
+    expect(msg).to.contain('Allow increasing orders to exchange minimum')
   })
 
   it('reports a standing condition once, not once per cycle', async () => {
@@ -177,10 +178,31 @@ describe('rejectBelowExchangeMin — refuse instead of inflating BO/SO', () => {
     expect(reported).to.have.length(1)
   })
 
-  it('does nothing when the setting is off — orders are raised as before', async () => {
-    const { bot, reported } = buildBot({ rejectBelowExchangeMin: false })
+  it('refuses when the setting is missing — the default for new bots', async () => {
+    const { bot } = buildBot({ allowRaiseToExchangeMin: undefined })
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(true)
+  })
+
+  it('refuses when the setting is explicitly off', async () => {
+    const { bot } = buildBot({ allowRaiseToExchangeMin: false })
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(true)
+  })
+
+  it('raises as before when allowRaiseToExchangeMin is on', async () => {
+    const { bot, reported } = buildBot({ allowRaiseToExchangeMin: true })
     expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(false)
     expect(reported).to.deep.equal([])
+  })
+
+  it('leaves terminal deals raising — their form has no switch', async () => {
+    const { bot } = buildBot({ type: DCATypeEnum.terminal })
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(false)
+  })
+
+  it('leaves hedge-DCA legs raising — their form has no switch', async () => {
+    const { bot } = buildBot()
+    bot.data = { ...bot.data, parentBotId: '000000000000000000000p99' }
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(false)
   })
 
   it('opens when every order clears the minimum', async () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.62.0] - 2026-09-23
+
+### Changed
+
+- **DCA bots no longer increase orders to meet the exchange minimum by default.** A Base or Safety Order smaller than a pair's minimum order size would be raised to that minimum, placing an order that could be several times the configured size. Now the deal is not opened on that pair and a notification names the pair, each order that is too small with its configured size and the size the minimum would force, the exchange minimum, and what to change. The rest of the bot's pairs keep trading. The new setting "Allow increasing orders to exchange minimum" (`allowRaiseToExchangeMin`) restores the old behaviour. Bots that existed before this release keep the old behaviour: the setting is turned on for them. New bots have it off. Raises of up to 10% (rounding) are always allowed. Terminal deals, Hedge DCA and Combo bots are unchanged. `rejectBelowExchangeMin` from 1.61.0 is replaced by this setting and no longer has any effect.
+
 ## [1.61.0] - 2026-09-23
 
 ### Added

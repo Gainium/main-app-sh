@@ -94,7 +94,7 @@ export const baseGridBelowMinimumBudget = 'baseGridBelowMinimumBudget'
 /**
  * A DCA `openNewDeal` refused because the exchange minimum would raise the base
  * order or a safety order past what the user configured, on a bot set to
- * reject such orders (`rejectBelowExchangeMin`).
+ * refuse such orders (the default; `allowRaiseToExchangeMin` off).
  *
  * Standing by nature: order sizes are settings and venue minimums rarely move,
  * so nothing but an edit (or a large enough price move) clears it. Keyed by

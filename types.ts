@@ -920,11 +920,12 @@ export interface DCABotSettings extends BaseSettings {
   maxDealsOverPerSymbol?: string
   maxDealsUnderPerSymbol?: string
   /**
-   * Refuse to open a deal when the exchange minimum would raise its base order
-   * or a safety order past the configured size, and notify, instead of placing
-   * the raised order.
+   * Let the bot raise a Base/Safety Order to the exchange minimum when the
+   * configured size is below it. Off or missing: the deal is not opened on that
+   * pair and the user is notified. Bots that existed before this default were
+   * backfilled `true`. Regular DCA bots only.
    */
-  rejectBelowExchangeMin?: boolean
+  allowRaiseToExchangeMin?: boolean
   dcaByMarket?: boolean
 }
 
