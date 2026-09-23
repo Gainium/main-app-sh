@@ -123,6 +123,7 @@ async function makeBot(
   bot.startTimeoutTime = new Map()
   bot.stopList = new Set()
   bot.pendingOrdersList = new Map()
+  bot.ordersInBetweenUpdates = new Set<string>()
 
   for (const [k, v] of [
     ['futures', false],
@@ -499,7 +500,11 @@ describe('Spec 015: TP dust avoidance and two-stage placement (integration)', ()
 
     it('fork B — the estimated-fee resend also fails: the sticky flag is not confirmed', async () => {
       const { calls, errors, deal } = await driveClose(false)
-      expect(calls).to.equal(2)
+      // The real-fee close and its estimated-fee resend, both refused; then
+      // spec 053's terminal-refusal restore rests a take-profit, which goes
+      // through the same two-stage sizing and is refused twice too. Nothing
+      // is ever live on the venue here, so the restore is expected.
+      expect(calls).to.equal(4)
       // §7.3 — written PENDING before the resend, left there (not confirmed,
       // not cleared) when the resend fails too: two rejections in a row
       // don't prove the fee assumption was at fault.

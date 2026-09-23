@@ -6593,11 +6593,13 @@ function createDCABotHelper<
      * surface a bot error (the one signal an operator actually sees); on
      * failure, leave it pending and do not attempt a third size.
      *
-     * Returns the resend's own outcome so the caller falls through to its
-     * existing success/failure handling using it, or `undefined` if the
-     * ambiguous-outcome check aborted this fallback for the current tick —
-     * the caller should keep treating its ORIGINAL rejection as
-     * authoritative; nothing here touched the exchange.
+     * Returns the resend's own outcome as `result` so the caller falls
+     * through to its existing success/failure handling using it, or no
+     * `result` if nothing was resent — the caller should keep treating its
+     * ORIGINAL rejection as authoritative. `fateUnconfirmed` is set when the
+     * abort came from the ambiguous-outcome check: the real-fee order may be
+     * live on the venue, so the caller must not place another close on top of
+     * it either (see the terminal-refusal restore in `closeDealById`).
      */
     private async runFeeSizingFallback(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
@@ -6607,7 +6609,7 @@ function createDCABotHelper<
       rejectionReason: string,
       symbol: ClearPairsSchema,
       sendOptions: OrderAdditionalParams,
-    ): Promise<Order | string | undefined> {
+    ): Promise<{ result?: Order | string; fateUnconfirmed?: true }> {
       const dealId = findDeal.deal._id
       const since = +new Date()
       await this.saveDeal(findDeal, {
@@ -6634,7 +6636,7 @@ function createDCABotHelper<
             rejectedOrder.newClientOrderId
           }'s own fate is not confirmed-not-live (status ${lookup?.status}, reason ${lookup?.reason})`,
         )
-        return undefined
+        return { fateUnconfirmed: true }
       }
       const refreshedDeal = this.getDeal(dealId) ?? findDeal
       const fullSizeOrder = await this.prepareTpOrder(
@@ -6644,7 +6646,7 @@ function createDCABotHelper<
         true,
       )
       if (!fullSizeOrder) {
-        return undefined
+        return {}
       }
       const resendOrder = {
         ...fullSizeOrder,
@@ -6682,7 +6684,7 @@ function createDCABotHelper<
           true,
         )
       }
-      return resendResult ?? undefined
+      return { result: resendResult ?? undefined }
     }
 
     private isPositionAlreadyClosedReason(text: string): boolean {
@@ -7150,6 +7152,10 @@ function createDCABotHelper<
                     ),
                   }
                 : tpOrder
+              // Set when the fee-sizing fallback could not confirm the
+              // real-fee close is NOT live on the venue — see the restore at
+              // the end of the terminal-refusal branch.
+              let realFeeFateUnconfirmed = false
               let result = await this.sendGridToExchange(
                 {
                   ...realFeeOrder,
@@ -7169,7 +7175,7 @@ function createDCABotHelper<
                 // Spec 015 §7.4 — checked BEFORE the adaptive-close/notional
                 // branches below: those would just recompute the same
                 // too-small size again without this running first.
-                const fallbackResult = await this.runFeeSizingFallback(
+                const fallback = await this.runFeeSizingFallback(
                   findDeal,
                   slSource,
                   sl,
@@ -7178,9 +7184,10 @@ function createDCABotHelper<
                   symbol,
                   sendOptions,
                 )
-                if (fallbackResult !== undefined) {
-                  result = fallbackResult
+                if (fallback.result !== undefined) {
+                  result = fallback.result
                 }
+                realFeeFateUnconfirmed = !!fallback.fateUnconfirmed
               }
               if (result) {
                 if (
@@ -7407,7 +7414,18 @@ function createDCABotHelper<
                       // 074's two gates — this branch is re-entered on every
                       // close attempt, so an unconditional recovery here is an
                       // unbounded one.
-                      if (!retrying) {
+                      //
+                      // Nor when the fee-sizing fallback found the real-fee
+                      // close live (or could not rule it out): that order is
+                      // the close, it just is not in memory yet, and restoring
+                      // here would rest a second full-size take-profit on top
+                      // of it — the §8 item 3 double close the fallback's own
+                      // check exists to prevent.
+                      if (realFeeFateUnconfirmed) {
+                        this.handleDebug(
+                          `close refused | deal ${dealId} (${symbol.pair}) not restoring: real-fee close ${realFeeOrder.newClientOrderId} may be live on the venue`,
+                        )
+                      } else if (!retrying) {
                         await this.restoreOrReportRefusedClose(
                           dealId,
                           symbol.pair,
@@ -15670,7 +15688,7 @@ function createDCABotHelper<
                 this.isFeeSizingRejection(result) &&
                 deal
               ) {
-                const fallbackResult = await this.runFeeSizingFallback(
+                const fallback = await this.runFeeSizingFallback(
                   deal,
                   false,
                   false,
@@ -15679,8 +15697,8 @@ function createDCABotHelper<
                   ed,
                   sendOptions,
                 )
-                if (fallbackResult !== undefined) {
-                  result = fallbackResult
+                if (fallback.result !== undefined) {
+                  result = fallback.result
                 }
               }
               // `returnError: true` above means sendOrderToExchange's own

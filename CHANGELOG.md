@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.62.1] - 2026-09-23
+
+### Fixed
+
+- **A refused spot close no longer places a second take-profit on top of one that may already be live.** When a close was refused for balance and the fee-sizing fallback then found the original close order live on the exchange (or could not rule that out), it correctly did not resend — but the take-profit restore that runs after a refused close did not know that, and rested a fresh full-size take-profit alongside it. On an account where other bots hold the same coin, both could fill and sell twice the deal's position. The restore now stands down in that case.
+
 ## [1.62.0] - 2026-09-23
 
 ### Changed
