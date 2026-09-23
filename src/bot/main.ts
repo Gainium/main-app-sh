@@ -62,6 +62,7 @@ import {
   streamFeeFields,
 } from './orderFee'
 import { isFillEvidenceFree, statesQuantity } from './fillEvidence'
+import { executionReportRewindsOrder } from './staleExecutionReport'
 import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
@@ -5679,6 +5680,10 @@ class MainBot<T extends IMainBot> {
       this.handleDebug(`Order ${orderId} already filled`)
       return null
     }
+    // Read BEFORE the merge below rewrites them onto the copy — the comparison
+    // is between the row the engine HOLDS and the report as converted, so both
+    // quantities and both timestamps are in the same units. Spec 090 §4.2.
+    const held = { status: find.status, updateTime: find.updateTime }
     const order = { ...find }
     // The venue just told us about this order, so it demonstrably exists and
     // any decision to stop polling it is void. This is the push half of the
@@ -5725,6 +5730,25 @@ class MainBot<T extends IMainBot> {
     order.updateTime = updateTime
     if (price !== 0) {
       order.price = `${price}`
+    }
+    // An order's state only moves forward, but the stream's delivery order is
+    // not guaranteed: production has a `NEW` acknowledgement arriving 10 ms
+    // AFTER the `PARTIALLY_FILLED` it precedes, carrying the venue's own
+    // earlier timestamp. Applied, it puts `NEW`/`0` over a real fill, and
+    // every guard written for a part-filled base entry then reads that —
+    // `shouldSettlePartialBaseEntry` declines a `NEW` row, and `checkBaseOrder`
+    // falls through to the arm that cancels the entry and places a SECOND base
+    // order on a position the account already holds. Dropped here rather than
+    // downstream, because this is the merge that loses the fill and
+    // `processOrderQueue` persists whatever it is handed. `handleLog`, not
+    // `handleDebug`: the bot services do not run at debug level, and once this
+    // stops causing harm the line is the only trace the condition leaves.
+    // Spec 090 §4.2/§4.4.
+    if (process && executionReportRewindsOrder(held, order)) {
+      this.handleLog(
+        `Order ${orderId} report ${order.status} at ${order.updateTime} is older than the ${held.status} row held at ${held.updateTime}. Ignoring it`,
+      )
+      return null
     }
     // The venue told us what this trade cost. websocket-connector has always
     // forwarded `commission`/`commissionAsset` on both `executionReport` and

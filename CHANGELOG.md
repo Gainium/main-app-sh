@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.9] - 2026-09-23
+
+### Fixed
+
+- **A bot no longer forgets a fill because the exchange announced the order late.** An exchange sends one message per change to an order — it was placed, it traded, it ended — and those messages are not guaranteed to arrive in the order they were sent. The "your order is on the book" message sometimes arrived after the message reporting that part of the order had already traded, and the bot applied it anyway, so its working copy of the order went back to saying nothing had traded yet. Everything that then read the order believed it: a deal's opening order that had really part filled looked untouched, so the machinery that opens the deal on what was actually bought stood down, and the timer that repositions an unfilled entry cancelled it and prepared to buy again on top of a position the account was already holding. A bot now keeps the newest report it has seen of an order and ignores one that is older, on every venue and every bot type (spec 090).
+
 ## [1.60.8] - 2026-09-23
 
 ### Fixed
