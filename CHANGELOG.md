@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.20] - 2026-09-23
+
+### Fixed
+
+- **A Combo deal whose entry order was cancelled directly on the exchange, before any of it filled, is now cancelled instead of being left waiting.** The same fix as 1.60.19 for DCA bots: the deal stayed in its starting state and every restart of the bot service placed the entry again. Combo bots now notice a cancel they did not issue themselves and, 15 seconds later, if the deal still has no entry order resting and has not started, cancel the deal as cancelling it from the dashboard would. Grid order cancels are handled exactly as before.
+
 ## [1.60.19] - 2026-09-23
 
 ### Fixed

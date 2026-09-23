@@ -2447,6 +2447,10 @@ function createComboBotHelper<
       _updateTime: number,
       _expired: boolean,
     ): Promise<void> {
+      if (order.typeOrder === TypeOrderEnum.dealStart) {
+        this.checkUnfilledBaseEntryCancel(order)
+        return
+      }
       if (order.typeOrder !== TypeOrderEnum.dealGrid) {
         return
       }

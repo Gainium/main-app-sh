@@ -18354,20 +18354,8 @@ function createDCABotHelper<
           })
         ) {
           await this.settlePartialBaseEntry(order, order.dealId)
-        } else if (
-          order.dealId &&
-          isUnattributedUnfilledBaseEntryCancel({
-            orderStatus: order.status,
-            executedQty: order.executedQty,
-            dealStatus: this.getDeal(order.dealId)?.deal.status,
-            hasPendingCheck: this.dealTimersMap.has(order.dealId),
-            ownCancel: this.isOwnCancel(order.clientOrderId),
-          })
-        ) {
-          this.handleLog(
-            `Base order ${order.clientOrderId} of deal ${order.dealId} was canceled on the exchange with nothing filled, not by the bot. Checking the deal in ${canceledBaseEntryDelayMs / 1000}s`,
-          )
-          this.armCanceledBaseEntryDealCancel(order.dealId, order.clientOrderId)
+        } else {
+          this.checkUnfilledBaseEntryCancel(order)
         }
         return
       }
@@ -18413,6 +18401,29 @@ function createDCABotHelper<
         return
       }
       await this.updatePartiallyFilledTP(order)
+    }
+
+    /**
+     * A base order someone else cancelled before any of it traded: schedule
+     * the deal's cancel. Shared by the DCA and Combo cancel callbacks.
+     */
+    checkUnfilledBaseEntryCancel(order: Order) {
+      if (
+        !order.dealId ||
+        !isUnattributedUnfilledBaseEntryCancel({
+          orderStatus: order.status,
+          executedQty: order.executedQty,
+          dealStatus: this.getDeal(order.dealId)?.deal.status,
+          hasPendingCheck: this.dealTimersMap.has(order.dealId),
+          ownCancel: this.isOwnCancel(order.clientOrderId),
+        })
+      ) {
+        return
+      }
+      this.handleLog(
+        `Base order ${order.clientOrderId} of deal ${order.dealId} was canceled on the exchange with nothing filled, not by the bot. Checking the deal in ${canceledBaseEntryDelayMs / 1000}s`,
+      )
+      this.armCanceledBaseEntryDealCancel(order.dealId, order.clientOrderId)
     }
 
     /** One pending check per deal; a newer cancel replaces it. */

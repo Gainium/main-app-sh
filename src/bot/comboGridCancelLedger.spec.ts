@@ -490,4 +490,66 @@ describe('a cancelled grid order keeps its reservation (spec 077)', () => {
       expect(deal.currentOrders[0].newClientOrderId).to.equal('CMB-RO-regular')
     })
   })
+
+  describe('a base order cancelled off the venue before it traded', () => {
+    const unfilledBase = (over: Record<string, unknown> = {}) =>
+      ({
+        symbol: SYMBOL,
+        clientOrderId: 'CMB-BO-canceled',
+        dealId: DEAL_ID,
+        botId: BOT_ID,
+        typeOrder: TypeOrderEnum.dealStart,
+        side: OrderSideEnum.buy,
+        origPrice: '20',
+        origQty: '1',
+        executedQty: '0',
+        status: 'CANCELED',
+        ...over,
+      }) as any
+    const startBot = () => {
+      const h = buildBot({ live: [] })
+      h.deal.deal.status = 'start'
+      h.bot.data.status = 'open'
+      const closed: any[] = []
+      h.bot.closeDealById = async (...args: any[]) => {
+        closed.push(args)
+      }
+      return { ...h, closed }
+    }
+    const armed = (bot: any) => {
+      const timers = bot.canceledBaseEntryTimers as Map<string, any>
+      const has = timers?.has(DEAL_ID) ?? false
+      for (const t of timers?.values() ?? []) clearTimeout(t)
+      return has
+    }
+
+    it('arms a check of the deal instead of ignoring the cancel', async () => {
+      const { bot, savedMinigrid } = startBot()
+      await bot.processCanceledOrder(unfilledBase(), 1790023332404, false)
+      expect(armed(bot)).to.equal(true)
+      expect(savedMinigrid, 'the grid ladder is untouched').to.have.length(0)
+    })
+
+    it('does not arm for a cancel the bot issued or a part-filled entry', async () => {
+      const own = startBot()
+      own.bot.isOwnCancel = () => true
+      await own.bot.processCanceledOrder(unfilledBase(), 1790023332404, false)
+      expect(armed(own.bot), 'own cancel').to.equal(false)
+      const part = startBot()
+      await part.bot.processCanceledOrder(
+        unfilledBase({ executedQty: '0.4' }),
+        1790023332404,
+        false,
+      )
+      expect(armed(part.bot), 'part filled').to.equal(false)
+    })
+
+    it('cancels the start deal when the check fires', async () => {
+      const { bot, closed } = startBot()
+      await bot.cancelDealOfCanceledBaseEntry(DEAL_ID, 'CMB-BO-canceled')
+      expect(closed).to.have.length(1)
+      expect(closed[0][1]).to.equal(DEAL_ID)
+      expect(closed[0][2]).to.equal('cancel')
+    })
+  })
 })
