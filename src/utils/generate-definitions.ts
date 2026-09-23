@@ -520,6 +520,7 @@ const DCA_SECTIONS: SectionLayout[] = [
       'dcaVolumeRequiredChangeRef',
       'dcaVolumeMaxValue',
       'dcaByMarket',
+      'rejectBelowExchangeMin',
       'dcaCustom',
       'useSmartOrders',
       'gridLevel',

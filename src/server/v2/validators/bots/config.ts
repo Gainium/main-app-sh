@@ -1959,6 +1959,7 @@ export const dcaBotSchemaConfig: Record<
     min: -1,
     max: 200,
   },
+  rejectBelowExchangeMin: { validators: [ValidatorsEnum.shouldBeBoolean] },
   dcaByMarket: { validators: [ValidatorsEnum.shouldBeBoolean] },
 }
 
@@ -2045,6 +2046,7 @@ export const COMBO_EXCLUDED_FIELDS: (keyof typeof COMBO_FORM_DEFAULTS)[] = [
   'useRiskReward',
   'riskMaxSl',
   'riskMinSl',
+  'rejectBelowExchangeMin',
   'dcaByMarket',
   'useLimitPrice',
   'baseSlOn',

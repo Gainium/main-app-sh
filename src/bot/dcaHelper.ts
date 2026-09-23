@@ -264,9 +264,16 @@ import { getSubTypeBehavior } from './errorRulesCache'
 import {
   limitOnlyEntryFallback,
   notEnoughBalanceNewDeal,
+  orderBelowExchangeMin,
   standingConditionKey,
   tpCoverageDrift,
 } from './conditionLatch'
+import {
+  MinOrderFloor,
+  MinOrderViolation,
+  minOrderRefusalMessage,
+  raisedPastConfigured,
+} from './minOrderFloor'
 
 export type PercentileResult = {
   percentile?: number
@@ -9202,6 +9209,12 @@ function createDCABotHelper<
       sizes?: Sizes | null,
       _override_orderSizeType?: OrderSizeTypeEnum,
       forceLimit = false,
+      /**
+       * Filled in with the quantity the configured size produced and the
+       * quantity after the exchange-minimum raises below. Read by
+       * {@link refuseDealBelowExchangeMin}; sizing itself is unchanged.
+       */
+      floor?: MinOrderFloor,
     ) {
       const fee = await this.getUserFee(symbol)
       const ed = await this.getExchangeInfo(symbol)
@@ -9437,6 +9450,7 @@ function createDCABotHelper<
             )
           }
         }
+        const configuredQty = qty
         if (
           settings.useTp &&
           ((settings.tpPerc &&
@@ -9532,6 +9546,11 @@ function createDCABotHelper<
             )
           }
         }
+        if (floor) {
+          floor.configuredQty = configuredQty
+          floor.raisedQty = qty
+          floor.price = notionalPrice
+        }
         if (this.coinm) {
           const cont = (price * qty) / ed.quoteAsset.minAmount
           if (cont < 1) {
@@ -9541,6 +9560,9 @@ function createDCABotHelper<
               false,
               true,
             )
+            if (floor) {
+              floor.raisedQty = qty
+            }
           } else if (cont % 1 > Number.EPSILON) {
             qty = this.math.round(
               (this.math.round(cont, 0) * ed.quoteAsset.minAmount) / price,
@@ -14500,6 +14522,104 @@ function createDCABotHelper<
       mutex,
       (botId: string, symbol: string) => `${botId}newDeal@${symbol}`,
     )
+    /**
+     * Refuse a new deal whose base order or safety orders the exchange minimum
+     * would raise past what the user configured — only on a bot set to
+     * `rejectBelowExchangeMin`. Without the setting the orders are raised to the
+     * minimum and placed, as they always have been.<br />
+     *
+     * Sizes the deal exactly as it would open — {@link getBaseOrder} and the
+     * {@link createInitialDealOrders} ladder at the current price — with no
+     * dealId, so nothing is written. Per pair, per deal: a pair whose minimum is
+     * too high opens no deal while the rest of the bot trades on. Fail-open on
+     * anything unsizeable (no price, no exchange info), which is the behaviour
+     * without the setting.
+     *
+     * @returns {boolean} true when the deal was refused
+     */
+    async refuseDealBelowExchangeMin(
+      symbol: string,
+      fixSize = 0,
+      sizes?: Sizes | null,
+    ): Promise<boolean> {
+      const settings = await this.getAggregatedSettings()
+      if (
+        !settings.rejectBelowExchangeMin ||
+        settings.terminalDealType === TerminalDealTypeEnum.import
+      ) {
+        return false
+      }
+      const key = standingConditionKey(orderBelowExchangeMin, symbol)
+      const ed = await this.getExchangeInfo(symbol)
+      const price = await this.getLatestPrice(symbol)
+      if (!ed || !price || !Number.isFinite(price)) {
+        return false
+      }
+      const violations: MinOrderViolation[] = []
+      const bo: MinOrderFloor = { configuredQty: 0, raisedQty: 0, price: 0 }
+      const base = await this.getBaseOrder(
+        symbol,
+        undefined,
+        undefined,
+        price,
+        0,
+        fixSize,
+        sizes,
+        undefined,
+        false,
+        bo,
+      )
+      if (base && raisedPastConfigured(bo)) {
+        violations.push({ ...bo, level: 0 })
+      }
+      if (settings.useDca) {
+        const levels: MinOrderViolation[] = []
+        await this.createInitialDealOrders(
+          symbol,
+          price,
+          '',
+          undefined,
+          undefined,
+          levels,
+        )
+        violations.push(...levels.filter(raisedPastConfigured))
+      }
+      if (!violations.length) {
+        // The condition cleared — re-arm so a return of it is reported.
+        this.standingConditionLatch.clear(key)
+        return false
+      }
+      this.handleLog(
+        `Deal refused on ${symbol}: ${violations.length} order(s) below exchange minimum`,
+      )
+      // Once per (pair, condition), not once per cycle — order sizes are
+      // settings, so nothing but an edit clears this. See the balance refusal
+      // below and spec 008. Terminal deals are a one-shot and always answered.
+      if (
+        settings.type === DCATypeEnum.terminal ||
+        this.standingConditionLatch.shouldReport(key, +new Date())
+      ) {
+        this.handleErrors(
+          minOrderRefusalMessage({
+            pair: `${ed.baseAsset.name}/${ed.quoteAsset.name}`,
+            baseAsset: ed.baseAsset.name,
+            quoteAsset: ed.quoteAsset.name,
+            minBase: ed.baseAsset.minAmount,
+            minQuote: this.coinm ? 0 : ed.quoteAsset.minAmount,
+            violations,
+          }),
+          'openNewDeal',
+          '',
+          false,
+          true,
+          true,
+          false,
+          symbol,
+        )
+      }
+      return true
+    }
+
     async openNewDeal(
       _botId: string,
       symbol: string,
@@ -14735,6 +14855,17 @@ function createDCABotHelper<
             let sizes: Sizes | undefined | null
             if (this.useCompountReduce) {
               sizes = await this.calculateCompoundReduce(symbol)
+            }
+            if (await this.refuseDealBelowExchangeMin(symbol, fixSize, sizes)) {
+              this.resetPending(this.botId, symbol)
+              this.endMethod(_id)
+              if (cbIfNotOpened) {
+                cbIfNotOpened()
+              }
+              if (settings.type === DCATypeEnum.terminal) {
+                this.stop()
+              }
+              return
             }
             this.updateDealLastTime(this.botId, 'opened', +new Date(), symbol)
             await this.placeBaseOrder(
@@ -16993,6 +17124,12 @@ function createDCABotHelper<
       dealId: string,
       deal?: ExcludeDoc<Deal>,
       _price?: number,
+      /**
+       * Collects, per DCA level, the quantity the configured size produced and
+       * the quantity after the exchange-minimum raises. Read by
+       * {@link refuseDealBelowExchangeMin}; sizing itself is unchanged.
+       */
+      floors?: MinOrderViolation[],
     ): Promise<Grid[]> {
       this.handleLog('Generate initial deal orders')
       const ed = await this.getExchangeInfo(_symbol)
@@ -17429,6 +17566,12 @@ function createDCABotHelper<
             ) {
               break
             }
+            const floor: MinOrderViolation = {
+              level: i,
+              configuredQty: qty,
+              raisedQty: qty,
+              price,
+            }
             if (qty < symbol.baseAsset.minAmount) {
               qty = symbol.baseAsset.minAmount
             }
@@ -17440,6 +17583,7 @@ function createDCABotHelper<
                 true,
               )
             }
+            floor.raisedQty = qty
             if (settings.coinm && !this.isBitget) {
               const cont = (price * qty) / symbol.quoteAsset.minAmount
               if (cont < 1) {
@@ -17449,6 +17593,7 @@ function createDCABotHelper<
                   false,
                   true,
                 )
+                floor.raisedQty = qty
               } else if (cont % 1 > Number.EPSILON) {
                 qty = this.math.round(
                   (this.math.round(cont, 0) * symbol.quoteAsset.minAmount) /
@@ -17499,6 +17644,7 @@ function createDCABotHelper<
                 return []
               }
             }
+            floors?.push(floor)
             orders.push({
               qty,
               price,

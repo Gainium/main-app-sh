@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.61.0] - 2026-09-23
+
+### Added
+
+- **DCA bots can reject orders below the exchange minimum instead of increasing them.** When a Base or Safety Order is smaller than a pair's minimum order size, the bot raises it to that minimum so the exchange accepts it, which can place an order several times the configured size. The new bot setting "Reject Orders Below Exchange Minimum" (`rejectBelowExchangeMin`, off by default) makes the bot skip the deal on that pair instead and send a notification naming the pair, each order that is too small with its configured size and the size the minimum would force, the exchange minimum, and what to change. The rest of the bot's pairs keep trading. The notification is sent once while the condition lasts, not on every attempt. Raises of up to 10% (rounding next to the minimum) are still allowed. Combo bots are unchanged.
+
 ## [1.60.21] - 2026-09-23
 
 ### Fixed

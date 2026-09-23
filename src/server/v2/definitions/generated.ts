@@ -4436,6 +4436,14 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           example: false,
         },
         {
+          name: 'rejectBelowExchangeMin',
+          type: 'boolean',
+          required: false,
+          validators: ['mustBeBoolean'],
+          default: false,
+          example: false,
+        },
+        {
           name: 'dcaCustom',
           type: 'array',
           required: false,

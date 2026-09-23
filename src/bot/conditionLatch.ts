@@ -92,6 +92,18 @@ export const notEnoughBalanceNewDeal = 'notEnoughBalanceNewDeal'
 export const baseGridBelowMinimumBudget = 'baseGridBelowMinimumBudget'
 
 /**
+ * A DCA `openNewDeal` refused because the exchange minimum would raise the base
+ * order or a safety order past what the user configured, on a bot set to
+ * reject such orders (`rejectBelowExchangeMin`).
+ *
+ * Standing by nature: order sizes are settings and venue minimums rarely move,
+ * so nothing but an edit (or a large enough price move) clears it. Keyed by
+ * PAIR like {@link notEnoughBalanceNewDeal}: the minimum is per pair, so one
+ * pair of a multi-pair bot can be refused while the rest trade.
+ */
+export const orderBelowExchangeMin = 'orderBelowExchangeMin'
+
+/**
  * A deal's resting take-profit no longer covers the position it tracks
  * (issue #696, spec `013.tp-coverage-drift-after-partial-tp`).
  *

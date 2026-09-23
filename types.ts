@@ -919,6 +919,12 @@ export interface DCABotSettings extends BaseSettings {
   useSeparateMaxDealsOverAndUnderPerSymbol?: boolean
   maxDealsOverPerSymbol?: string
   maxDealsUnderPerSymbol?: string
+  /**
+   * Refuse to open a deal when the exchange minimum would raise its base order
+   * or a safety order past the configured size, and notify, instead of placing
+   * the raised order.
+   */
+  rejectBelowExchangeMin?: boolean
   dcaByMarket?: boolean
 }
 

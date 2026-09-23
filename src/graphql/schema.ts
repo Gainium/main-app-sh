@@ -3201,6 +3201,7 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    rejectBelowExchangeMin: Boolean
     dcaByMarket: Boolean
     terminalDealType: TerminalDealTypeEnum
     useMultiTp: Boolean
@@ -4918,6 +4919,7 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    rejectBelowExchangeMin: Boolean
     dcaByMarket: Boolean
     terminalDealType: TerminalDealTypeEnum
     useMultiTp: Boolean
@@ -5321,6 +5323,7 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    rejectBelowExchangeMin: Boolean
     dcaByMarket: Boolean
     orderSizeType: OrderSizeTypeEnum
     useMultiTp: Boolean
