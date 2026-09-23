@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.10] - 2026-09-23
+
+### Fixed
+
+- **A futures bot now follows the position mode your exchange account is actually in.** A futures account is either in one-way mode, where it holds a single net position per contract, or in hedge mode, where the long and the short side are held separately — and every order has to say which of the two it is for, or the exchange refuses it. The platform recorded that setting when the connection was added and when you changed it here, but nothing told it when you changed the setting at the exchange itself, and a bot coming back up after a service restart reused the recorded value instead of asking. An account whose mode had been changed at the exchange therefore had every order from those bots refused — OKX answers "Parameter posSide error", Binance futures reports a position-side mismatch — which left an open position with no orders around it, and each restart repeated it. Bots now read the position mode from the exchange when they start, sharing one read per connection when a whole service restarts so that a restart is no more work than it was, and keep what they read; if the exchange is unreachable the recorded value is still used, exactly as before. An order that is refused for its position side now triggers a re-read and is sent again under the mode the exchange reports, except for a bot that trades both directions and so has no single side of its own, which is left alone rather than guessed at. Nothing on this path ever changes the position mode on your exchange account (spec 091).
+
 ## [1.60.9] - 2026-09-23
 
 ### Fixed

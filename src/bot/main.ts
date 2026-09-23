@@ -106,6 +106,12 @@ import QtyStepGuard, {
   deriveAcceptedDecimals,
   isQtyDecimalsRefusal,
 } from './qtyStepGuard'
+import {
+  HEDGE_REFUSAL_MAX_AGE_MS,
+  hedgeLegForSettings,
+  isPositionSideRefusal,
+  readHedgeMode,
+} from './hedgeModeGuard'
 
 /**
  * Retry budget for a deal whose start carries no timing of its own (ASAP): the
@@ -172,6 +178,7 @@ import {
   dcaDealsDb,
   orderDb,
   rateDb,
+  userDb,
   userProfitByHourDb,
 } from '../db/dbInit'
 import Rabbit from '../db/rabbit'
@@ -3998,10 +4005,37 @@ class MainBot<T extends IMainBot> {
             if (allPositions) {
               this.handleLog(`Get hedge`)
             }
-            let hedge = allPositions
-              ? skipFutures
-                ? { data: !!keys.hedge, status: StatusEnum.ok }
-                : await this.exchange.getHedge()
+            // `skipFutures` used to substitute the STORED `keys.hedge` for this
+            // read, so a service restart adopted whatever the account's
+            // position mode was the last time the user told us about it. The
+            // user is free to change that mode at the exchange, where nothing
+            // tells us, and then every order this bot builds names the mode we
+            // remember instead of the one the venue enforces — OKX answers
+            // `Parameter posSide error`, Binance USD-M `-4061`, and the bot
+            // cannot place an order at all until it is restarted from a path
+            // that does read live.
+            //
+            // The read is back for every futures connection, but it is no
+            // longer per BOT: `readHedgeMode` coalesces it per connection, so a
+            // mass restart makes one call per account rather than one per bot —
+            // fewer calls than the code this substitution originally replaced.
+            // A venue that does not answer still falls back to `keys.hedge`,
+            // which is exactly the behaviour being replaced.
+            //
+            // Note the non-`allPositions` venues below already re-read live on
+            // every restart (`getHedge(symbol)`); this only stops binance/okx/
+            // bitget/kucoin from being the exception.
+            //
+            // The coalescing window applies to the SERVICE RESTART only. A
+            // user-initiated start keeps the uncached read it has today: the
+            // `setHedge` mutation runs in the API process and cannot invalidate
+            // a bot worker's cache, so a user who changes the mode here and
+            // immediately starts a bot must not be served a window-old answer.
+            let hedge: BaseReturn<boolean> | null = allPositions
+              ? await this.readAccountHedge(
+                  !!keys.hedge,
+                  skipFutures ? undefined : 0,
+                )
               : null
             if (allPositions) {
               this.handleLog(`Got hedge: ${hedge?.data}`)
@@ -4458,6 +4492,71 @@ class MainBot<T extends IMainBot> {
 
   async getUser(force = false) {
     return await this.sharedData.getUserSchema(this.userId, this.botId, force)
+  }
+
+  /**
+   * The connection's position mode as the VENUE reports it, with the stored
+   * copy as the fallback and a write-back when the two disagree.
+   *
+   * Returns the same `{ status, data }` shape `Exchange.getHedge()` does so the
+   * call sites keep their existing branches, and never reports `notok`: an
+   * unanswered read is not a reason to refuse to start a bot, it is a reason to
+   * keep believing what we already believed.
+   *
+   * @param storedHedge what `user.exchanges[].hedge` currently says.
+   * @param maxAgeMs how stale a coalesced answer may be for this caller.
+   */
+  protected async readAccountHedge(
+    storedHedge: boolean,
+    maxAgeMs?: number,
+  ): Promise<{ status: StatusEnum.ok; data: boolean }> {
+    const exchange = this.exchange
+    const uuid = `${this.data?.exchangeUUID ?? ''}`
+    const live = exchange
+      ? await readHedgeMode(uuid, () => exchange.getHedge(), maxAgeMs)
+      : null
+    if (live === null) {
+      return { status: StatusEnum.ok, data: storedHedge }
+    }
+    if (live !== storedHedge) {
+      this.handleLog(
+        `Position mode on the exchange is ${
+          live ? 'hedge' : 'one-way'
+        }, stored as ${storedHedge ? 'hedge' : 'one-way'}. Updating`,
+      )
+      await this.persistHedgeMode(uuid, live)
+    }
+    return { status: StatusEnum.ok, data: live }
+  }
+
+  /**
+   * Write a venue-read position mode back onto the connection.
+   *
+   * Scoped to the one array element and guarded by `$ne`, so it is a no-op when
+   * the stored copy already agrees and it can never touch another connection or
+   * another field. Deliberately does NOT set `status` / `lastUpdated` the way
+   * the `setHedge` mutation does: this is not the user changing the mode, it is
+   * us catching up with a change they made at the exchange.
+   *
+   * The mutation's own active-bot guard is untouched and still applies — this
+   * path never calls `setHedge`, so no bot can flip the mode on the account.
+   */
+  private async persistHedgeMode(uuid: string, hedge: boolean): Promise<void> {
+    if (!uuid || !this.userId) {
+      return
+    }
+    const result = await userDb.updateData(
+      {
+        _id: this.userId,
+        exchanges: { $elemMatch: { uuid, hedge: { $ne: hedge } } },
+      } as any,
+      { $set: { 'exchanges.$.hedge': hedge } } as any,
+    )
+    if (result.status === StatusEnum.notok) {
+      this.handleWarn(
+        `Cannot store position mode for exchange ${uuid}: ${result.reason}`,
+      )
+    }
   }
 
   async getBalancesFromExchange() {
@@ -8410,6 +8509,48 @@ class MainBot<T extends IMainBot> {
                   }, re-quantized ${order.origQty} -> ${requantized}, retry`,
                 )
                 order.origQty = `${requantized}`
+                this.endMethod(_id)
+                return this.sendOrderToExchange(order, returnError, count)
+              }
+            }
+          }
+          // The POSITION MODE twin of the two branches above: another cached
+          // property of the account went stale, and the venue is the only one
+          // who can say what it is now. `user.exchanges[].hedge` is written
+          // when the connection is added and when the user flips the mode
+          // through Gainium — never when they flip it at the exchange — so a
+          // bot can hold the wrong mode for as long as the account lives, and
+          // every order it builds is refused: OKX `Parameter posSide error`
+          // (51000), Binance USD-M/COIN-M `-4061`. Both directions of the
+          // disagreement produce it.
+          //
+          // Re-read the mode, store it so the next load and every other bot on
+          // this connection start from the truth, and re-send this order under
+          // it. Self-limiting with no counter, exactly like the tick-size
+          // branch: the resubmission carries the mode we just read, so a second
+          // refusal finds nothing left to change and falls through to normal
+          // error handling.
+          //
+          // Refuses to act rather than guess when the bot's settings name no
+          // single leg (a NEUTRAL grid): on a hedge account a wrong leg does
+          // not fail, it opens a position on the other side.
+          if (this.futures && isPositionSideRefusal(request.reason)) {
+            const fresh = await this.readAccountHedge(
+              this.hedge,
+              HEDGE_REFUSAL_MAX_AGE_MS,
+            )
+            if (fresh.data !== this.hedge) {
+              this.hedge = fresh.data
+              const corrected = fresh.data
+                ? hedgeLegForSettings(this.data.settings as any)
+                : PositionSide.BOTH
+              if (corrected && corrected !== order.positionSide) {
+                this.handleLog(
+                  `Order ${order.clientOrderId} refused on position side. Exchange reports ${
+                    fresh.data ? 'hedge' : 'one-way'
+                  } mode, re-sending as ${corrected}`,
+                )
+                order.positionSide = corrected
                 this.endMethod(_id)
                 return this.sendOrderToExchange(order, returnError, count)
               }
