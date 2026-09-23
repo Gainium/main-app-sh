@@ -141,6 +141,7 @@ const buildBot = (
   bot.deals = new Map<string, any>([[DEAL_ID, deal]])
   bot.orderLimitRepositionTimeout = 10_000
   bot.enterMarketTimeout = 25_000
+  bot.limitFallbackTimeout = 25_000
   bot.exchange = {
     returnBad: () => (e: Error) => ({
       status: StatusEnum.notok,

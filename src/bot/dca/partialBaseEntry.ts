@@ -197,7 +197,7 @@ export type TopUpSettledBaseEntryInputs = {
   now: number
   /**
    * The bot's own entry window —
-   * `orderLimitRepositionTimeout + enterMarketTimeout`.
+   * `orderLimitRepositionTimeout + limitFallbackTimeout` (spec `100` §1.3.2).
    *
    * Not a constant: a bot that widened its `limitTimeout` widened the period
    * in which "enter at market" is still the answer it asked for, and this

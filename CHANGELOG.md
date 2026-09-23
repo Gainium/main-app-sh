@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.21] - 2026-09-23
+
+### Fixed
+
+- **A DCA bot's "Enter Market Timeout" now only runs when it is switched on.** With the switch off, a limit entry order that had not filled was still sent as a market order 35 seconds after the deal opened, so an entry the user had chosen to place at a limit price became a market entry, with taker fees and slippage. With the switch off, an unfilled limit entry is now moved to the current price every 10 seconds until it fills, and is never sent at market. If repositioning is also disabled, the order is left where it is. With the switch on, the order goes to market after the number of seconds set, as before. Closing a deal by limit and the handling of partly filled entries keep their current timing.
+
 ## [1.60.20] - 2026-09-23
 
 ### Fixed

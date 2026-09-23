@@ -160,6 +160,10 @@ import {
   shouldSettlePartialBaseEntry,
   shouldTopUpSettledBaseEntry,
 } from './dca/partialBaseEntry'
+import {
+  resolveLimitTimeouts,
+  defaultLimitFallbackMs,
+} from './dca/limitTimeouts'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
   canceledTpRestoreDelayMs,
@@ -565,6 +569,11 @@ function createDCABotHelper<
     timer: NodeJS.Timeout | null
     /** Timeout first time */
     startTimeoutTime: Map<string, number>
+    /**
+     * Market fallback for a close-by-limit and the base-entry top-up window —
+     * the timeout the base-order switch does not govern. Spec `100` §1.3.
+     */
+    limitFallbackTimeout: number
     /** Indicators */
     indicators: Map<string, LocalIndicators> = new Map()
     indicatorsIntervalActionMap: Map<string, number> = new Map()
@@ -741,6 +750,7 @@ function createDCABotHelper<
       this.timer = null
       this.orderLimitRepositionTimeout = 10000
       this.enterMarketTimeout = 35000
+      this.limitFallbackTimeout = defaultLimitFallbackMs
       this.startTimeoutTime = new Map()
       this.openDealByTimer = this.openDealByTimer.bind(this)
       this.startTimeBasedTrigger = this.startTimeBasedTrigger.bind(this)
@@ -7426,13 +7436,13 @@ function createDCABotHelper<
                           }
 
                           if (
-                            this.enterMarketTimeout === 0 ||
-                            (this.enterMarketTimeout !== 0 &&
+                            this.limitFallbackTimeout === 0 ||
+                            (this.limitFallbackTimeout !== 0 &&
                               new Date().getTime() +
                                 this.orderLimitRepositionTimeout >
                                 (this.startTimeoutTime.get(deal.deal._id) ??
                                   new Date().getTime()) +
-                                  this.enterMarketTimeout)
+                                  this.limitFallbackTimeout)
                           ) {
                             dealTimer.limitTimer = setTimeout(
                               () =>
@@ -7450,7 +7460,7 @@ function createDCABotHelper<
                           }
                         }
                         if (
-                          this.enterMarketTimeout !== 0 &&
+                          this.limitFallbackTimeout !== 0 &&
                           !dealTimer.enterMarketTimer &&
                           (!this.data.settings.notUseLimitReposition ||
                             (this.data.settings.notUseLimitReposition &&
@@ -9112,7 +9122,7 @@ function createDCABotHelper<
           updateTime: settled.updateTime,
           now: Date.now(),
           entryWindowMs:
-            this.orderLimitRepositionTimeout + this.enterMarketTimeout,
+            this.orderLimitRepositionTimeout + this.limitFallbackTimeout,
         })
       ) {
         return settled
@@ -18726,6 +18736,10 @@ function createDCABotHelper<
         settings.dealCloseConditionSL === CloseConditionEnum.dynamicAr
       )
       this.isLong = settings.strategy === StrategyEnum.long
+      const timeouts = resolveLimitTimeouts(settings)
+      this.orderLimitRepositionTimeout = timeouts.orderLimitRepositionTimeout
+      this.enterMarketTimeout = timeouts.enterMarketTimeout
+      this.limitFallbackTimeout = timeouts.limitFallbackTimeout
     }
 
     async isDealForMoveSl(d: FullDeal<ExcludeDoc<Deal>>) {
@@ -20642,18 +20656,6 @@ function createDCABotHelper<
             (this.data?.status === BotStatusEnum.error &&
               this.data.previousStatus === BotStatusEnum.monitoring))
         this.handleLog(`Bot use monitoring ${this.useMonitoring}`)
-        const settings = await this.getAggregatedSettings()
-        if (settings.limitTimeout && settings.useLimitTimeout) {
-          let timeout = parseFloat(settings.limitTimeout || '0') * 1000
-          timeout = isNaN(timeout) ? 0 : timeout
-          this.enterMarketTimeout = timeout
-          if (
-            this.enterMarketTimeout < this.orderLimitRepositionTimeout &&
-            this.enterMarketTimeout !== 0
-          ) {
-            this.orderLimitRepositionTimeout = 0
-          }
-        }
         if (this.data) {
           if (this.data.status === BotStatusEnum.closed && reload) {
             this.data.status = BotStatusEnum.closed
