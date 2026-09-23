@@ -1728,6 +1728,7 @@ components:
               description: Bot status for stopping
               enum:
                 - closed
+                - monitoring
               example: closed
             dealCloseCondition:
               type: string

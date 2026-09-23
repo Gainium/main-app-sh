@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.13] - 2026-09-23
+
+### Fixed
+
+- **The public API reference now lists `monitoring` as a valid stop status for DCA and Combo bots.** A setting whose type is written inline as a short list of words (for example "closed or monitoring") was documented with only the first word of that list, so the reference said a DCA bot's stop status could only be `closed` — although the API accepts `monitoring` too, and it is the value that leaves a stopped bot watching its open deals. The reference generator now keeps every word of such a list. Of the settings the reference publishes, this was the only one affected. No accepted value changed, and nothing about how a stopped bot behaves changed; only the documentation (spec 094).
+
 ## [1.60.12] - 2026-09-23
 
 ### Fixed

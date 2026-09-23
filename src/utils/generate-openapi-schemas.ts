@@ -923,6 +923,12 @@ class SchemaGenerator {
     }
   }
 
+  private literalText(type: ts.TypeNode): string | null {
+    return ts.isLiteralTypeNode(type) && ts.isStringLiteral(type.literal)
+      ? type.literal.text
+      : null
+  }
+
   /**
    * `export type TpSlAction = 'stop' | 'stopAndSell'` carries a closed set of
    * values just like an enum, but it is a type alias, so `parseEnum` never sees
@@ -930,18 +936,13 @@ class SchemaGenerator {
    * published field then had no `enum` at all.
    */
   private parseStringLiteralUnion(node: ts.TypeAliasDeclaration) {
-    const literalText = (type: ts.TypeNode): string | null =>
-      ts.isLiteralTypeNode(type) && ts.isStringLiteral(type.literal)
-        ? type.literal.text
-        : null
-
     const members = ts.isUnionTypeNode(node.type)
       ? node.type.types
       : [node.type]
 
     const values: string[] = []
     for (const member of members) {
-      const text = literalText(member)
+      const text = this.literalText(member)
       // Any non-string-literal member means this is not a closed string set.
       if (text === null) return
       values.push(text)
@@ -1122,14 +1123,21 @@ class SchemaGenerator {
           t.kind === ts.SyntaxKind.NullKeyword,
       )
 
-      // Get the actual type (non-null/undefined)
-      const actualType = types.find(
+      // Get the actual types (non-null/undefined)
+      const actualTypes = types.filter(
         (t) =>
           t.kind !== ts.SyntaxKind.UndefinedKeyword &&
           t.kind !== ts.SyntaxKind.NullKeyword,
       )
+      const actualType = actualTypes[0]
+      const literals = actualTypes.map((t) => this.literalText(t))
 
-      if (actualType) {
+      // An inline closed string set (`'closed' | 'monitoring'`) keeps every
+      // member — parsing only the first one published a one-value enum.
+      if (literals.length > 0 && literals.every((t) => t !== null)) {
+        propType = 'string'
+        enumValues = literals as string[]
+      } else if (actualType) {
         const parsed = this.parseTypeNode(actualType)
         propType = parsed.type
         enumValues = parsed.enum
