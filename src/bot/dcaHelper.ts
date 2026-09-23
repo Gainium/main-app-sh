@@ -160,6 +160,12 @@ import {
 } from './dca/partialBaseEntry'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
+  canceledTpRestoreDelayMs,
+  canceledTpRestoreMaxDeferrals,
+  decideCanceledTpRestore,
+  isUnattributedUnfilledTpCancel,
+} from './dca/canceledTpRestore'
+import {
   dealsClosedByLiquidation,
   liquidationCopyClientOrderId,
   liquidationDealLinks,
@@ -657,6 +663,11 @@ function createDCABotHelper<
      * `clearClassProperties`, so a stopped bot leaves nothing holding it.
      */
     trailingRetryTimers: Map<string, NodeJS.Timeout> = new Map()
+    /**
+     * Pending restores of a take-profit cancelled off the venue, one per deal
+     * (spec `095`). Cleared by `clearClassProperties`.
+     */
+    canceledTpRestoreTimers: Map<string, NodeJS.Timeout> = new Map()
     /** Trailing guard mode as last read from Redis, and when. */
     trailingGuardModeRead: { mode: TrailingGuardMode; at: number } | null = null
     /** When each deal's trailing lag was last reported, to rate-limit it. */
@@ -18314,6 +18325,21 @@ function createDCABotHelper<
       const executed = +order.executedQty
       const original = +order.origQty
       if (!isFinite(executed) || executed <= 0) {
+        // Nothing sold, so nothing to book — but if this bot did not ask for
+        // the cancel, the deal has just lost its exit. Only the restart path
+        // used to notice. Spec `095`.
+        if (
+          isUnattributedUnfilledTpCancel({
+            executedQty: order.executedQty,
+            ownCancel: this.isOwnCancel(order.clientOrderId),
+            dealId: order.dealId,
+          })
+        ) {
+          this.handleLog(
+            `TP ${order.clientOrderId} of deal ${order.dealId} was ${order.status} on the exchange with nothing filled, not by the bot. Checking the deal in ${canceledTpRestoreDelayMs / 1000}s`,
+          )
+          this.armCanceledTpRestore(`${order.dealId}`, 0)
+        }
         return
       }
       // A fully executed order is the FILLED path's to close, not ours.
@@ -18335,6 +18361,99 @@ function createDCABotHelper<
         return
       }
       await this.updatePartiallyFilledTP(order)
+    }
+
+    /** One pending restore per deal; a newer cancel replaces it. Spec 095 §4.7. */
+    armCanceledTpRestore(dealId: string, deferrals: number) {
+      const pending = this.canceledTpRestoreTimers.get(dealId)
+      if (pending) {
+        clearTimeout(pending)
+      }
+      const timer = setTimeout(() => {
+        this.canceledTpRestoreTimers.delete(dealId)
+        this.restoreCanceledTp(this.botId, dealId, deferrals).catch((e) =>
+          this.handleWarn(
+            `Cannot restore canceled TP of deal ${dealId}: ${(e as Error)?.message ?? e}`,
+          ),
+        )
+      }, canceledTpRestoreDelayMs)
+      this.canceledTpRestoreTimers.set(dealId, timer)
+    }
+
+    /**
+     * Put back a take-profit someone else cancelled, if the deal still needs
+     * it — what `checkOrders` does for the same deal on a restart ("TP order
+     * wasn't found in orders, but must be in grid"), done now instead.
+     *
+     * Holds the deal lock `placeOrders` takes, so every placement the engine
+     * makes for the deal is either finished (and its take-profit is seen
+     * resting below) or not yet started. Spec `095` §4.3–§4.6.
+     */
+    @IdMute(mutex, (botId: string, dealId: string) => `${botId}${dealId}`)
+    async restoreCanceledTp(
+      _botId: string,
+      dealId: string,
+      deferrals: number,
+    ): Promise<void> {
+      const deal = this.getDeal(dealId)
+      const planned = (deal?.currentOrders ?? []).filter(
+        (g) =>
+          g.type === TypeOrderEnum.dealTP &&
+          !((deal?.deal.tpSlTargetFilled ?? []) as string[]).includes(
+            g.tpSlTarget ?? '',
+          ),
+      )
+      const decision = decideCanceledTpRestore({
+        proceed: this.shouldProceed(),
+        botStatus: this.data?.status,
+        dealStatus: deal?.deal.status,
+        closing: Boolean(deal?.closeBySl || deal?.closeByTp),
+        marketClose: deal ? await this.isDealForTPLevelCheck(deal) : false,
+        reconcileRunning: Boolean(this.blockCheck || this.serviceRestart),
+        restingTp: this.getOrdersByStatusAndDealId({
+          dealId,
+          status: ['NEW', 'PARTIALLY_FILLED'],
+        }).filter((o) => o.typeOrder === TypeOrderEnum.dealTP).length,
+        plannedTp: planned.length,
+      })
+      if (decision.action === 'defer') {
+        if (deferrals < canceledTpRestoreMaxDeferrals) {
+          this.armCanceledTpRestore(dealId, deferrals + 1)
+        } else {
+          this.handleWarn(
+            `Deal ${dealId} canceled TP not restored: ${decision.reason} for too long`,
+          )
+        }
+        return
+      }
+      if (decision.action === 'skip') {
+        this.handleDebug(
+          `Deal ${dealId} canceled TP not restored: ${decision.reason}`,
+        )
+        return
+      }
+      if (!deal) {
+        return
+      }
+      this.handleLog(
+        `Deal ${dealId} has no take-profit on the exchange after an external cancel. Placing ${planned.length} TP order(s) again`,
+      )
+      await this.placeOrdersHoldingDealLock(
+        this.botId,
+        deal.deal.symbol.symbol,
+        dealId,
+        {
+          // A fresh id: the plan still carries the id of the order that was
+          // just cancelled, and not every venue accepts one twice.
+          new: planned.map((g) => ({
+            ...g,
+            newClientOrderId: this.getOrderId(
+              g.tpSlTarget ? (g.sl ? 'D-MSL' : 'D-MTP') : 'D-TP',
+            ),
+          })),
+          cancel: [],
+        },
+      )
     }
     /**
      * Sort function for order queue
@@ -22148,6 +22267,10 @@ function createDCABotHelper<
         this.openNewDealTimer.delete(id)
       }
       this.clearTrailingRetryTimers()
+      for (const timer of this.canceledTpRestoreTimers.values()) {
+        clearTimeout(timer)
+      }
+      this.canceledTpRestoreTimers = new Map()
       for (const [id, timer] of this.dealTimersMap.entries()) {
         if (timer.enterMarketTimer) {
           clearTimeout(timer.enterMarketTimer)

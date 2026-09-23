@@ -313,6 +313,11 @@ const userStreamSilenceMs =
     ? Number(process.env.USER_STREAM_SILENCE_MS)
     : 6 * 60_000
 const proberStaleMs = 3 * 60_000
+/**
+ * How long a cancel this bot issued is remembered as its own. The venue's
+ * CANCELED arrives within seconds; an hour only bounds the map. Spec 095 §4.1.
+ */
+const ownCancelTtlMs = 60 * 60_000
 
 type AllowedMethods =
   | 'checkClosedDeals'
@@ -894,6 +899,15 @@ class MainBot<T extends IMainBot> {
    */
   protected cancelBatch: Map<string, CommonOrder> | null = null
   /**
+   * Client ids of orders this bot has asked the venue to cancel, with when.
+   * Written BEFORE the venue round trip: the user stream's CANCELED can land
+   * before our own HTTP answer, and a cancel callback reading this must see
+   * the record by then. Lets `processCanceledOrder` tell a cancel we made from
+   * one made by the account owner or the venue. In memory only, pruned by age.
+   * Spec `095` §4.1.
+   */
+  protected ownCancels: Map<string, number> = new Map()
+  /**
    * The coalescer for the burst of placements currently running, or null.
    * Installed by a burst loop around its own orders and removed in that loop's
    * `finally`; {@link MainBot#sendOrderToExchange} consults it for the orders
@@ -1323,6 +1337,10 @@ class MainBot<T extends IMainBot> {
       }
       idsBySymbol.set(o.symbol, ids)
     }
+    // The bulk call cancels on the venue before the per-order loop runs.
+    for (const o of orders) {
+      this.noteOwnCancel(o?.clientOrderId)
+    }
     const map = new Map<string, CommonOrder>()
     let asked = 0
     try {
@@ -1378,6 +1396,30 @@ class MainBot<T extends IMainBot> {
         `Bulk cancel confirmed ${map.size}/${asked} order(s) in ${idsBySymbol.size} call group(s)`,
       )
     }
+  }
+
+  /** Record that this bot is about to cancel `clientOrderId`. Spec 095 §4.1. */
+  protected noteOwnCancel(clientOrderId: string | undefined) {
+    if (!clientOrderId) {
+      return
+    }
+    const now = Date.now()
+    // `??=`: a bot built off the prototype has no field initialisers.
+    const own = (this.ownCancels ??= new Map())
+    if (own.size > 256) {
+      for (const [id, at] of own) {
+        if (now - at > ownCancelTtlMs) {
+          own.delete(id)
+        }
+      }
+    }
+    own.set(clientOrderId, now)
+  }
+
+  /** Did this bot ask to cancel `clientOrderId` (recently)? Spec 095 §4.1. */
+  isOwnCancel(clientOrderId: string | undefined) {
+    const at = clientOrderId ? this.ownCancels?.get(clientOrderId) : undefined
+    return at !== undefined && Date.now() - at <= ownCancelTtlMs
   }
 
   /**
@@ -9180,6 +9222,7 @@ class MainBot<T extends IMainBot> {
       // the DB write are what make a cancelled order cancelled locally, and a
       // batched order that skipped any of them would be a subtly different
       // order. Spec `082` §4.
+      this.noteOwnCancel(order.clientOrderId)
       const primed = this.cancelBatch?.get(`${order.orderId}`)
       if (primed) {
         this.cancelBatch?.delete(`${order.orderId}`)

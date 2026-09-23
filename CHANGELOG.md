@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.14] - 2026-09-23
+
+### Fixed
+
+- **A DCA deal whose take-profit order is cancelled on the exchange now gets it back within seconds, not at the next restart.** When a resting take-profit was cancelled by someone other than the bot — from the exchange's own interface, or by the exchange itself — with nothing filled, the bot noted nothing and placed nothing, so the deal kept its open position with no exit until the bot was next reloaded, which is the only moment it used to re-place the missing order. The bot now looks at the deal a few seconds after such a cancel and, if it still holds an open position, has no take-profit resting and is not closing, places its planned take-profit again under a new order id — the same order a restart would place. Cancels the bot makes itself (re-sizing a take-profit, closing, stopping, editing a deal) are recorded before they are sent and are never answered this way. Deals that close at market, and Combo bots, are unchanged (spec 095).
+
 ## [1.60.13] - 2026-09-23
 
 ### Fixed
