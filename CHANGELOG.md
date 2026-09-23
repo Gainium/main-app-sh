@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.19] - 2026-09-23
+
+### Fixed
+
+- **A DCA deal whose entry order was cancelled directly on the exchange, before any of it filled, is now cancelled instead of being left waiting.** The deal stayed in its starting state with nothing on the exchange, the dashboard offered no action to end it, and every restart of the bot service placed the same entry order again, so a trade the user had already cancelled kept coming back. The bot now notices a cancel it did not issue itself and, 15 seconds later, if the deal still has no entry order resting and has not started, cancels the deal the same way cancelling it from the dashboard would. Cancels the bot makes itself (repositioning, re-sizing, closing), entries that partly filled, and orders the exchange expired on its own are unchanged.
+
 ## [1.60.18] - 2026-09-23
 
 ### Fixed

@@ -127,6 +127,64 @@ export function shouldSettlePartialBaseEntry(
   return !hasPendingCheck
 }
 
+/** How long after the cancel report the deal is looked at again. */
+export const canceledBaseEntryDelayMs = 15_000
+
+/** What the cancelled-entry decision reads. */
+export type UnfilledBaseEntryCancelInputs = {
+  /** Status of the `dealStart` row the cancel report is about. */
+  orderStatus: OrderStatusType | string | null | undefined
+  /** What the venue reports as executed on it. */
+  executedQty?: string | number | null
+  /** The deal's own status. */
+  dealStatus: DCADealStatusEnum | string | null | undefined
+  /** Timer state for the deal — see {@link PartialBaseEntryInputs}. */
+  hasPendingCheck: boolean
+  /** Whether this bot asked for the cancel (`isOwnCancel`). */
+  ownCancel: boolean
+  /** Other `dealStart` rows of the deal still resting on the venue. */
+  liveEntries?: number
+}
+
+/**
+ * A base order someone else cancelled before any of it traded.
+ *
+ * The deal has nothing on the venue and no position, but stays in `start`, and
+ * `restoreWork` re-sends the entry on every worker start — a trade the user
+ * cancelled comes back each deploy, and a `start` deal offers no action in the
+ * dashboard to end it. Cancelling the deal is what a cancel from the dashboard
+ * would have done.
+ *
+ * Only `CANCELED`: an `EXPIRED` row is the venue ending the order on its own
+ * terms, not the account holder deciding against the trade. Everything the
+ * engine cancels itself — a reposition, a re-size, a close — is either
+ * recorded by `noteOwnCancel`, covered by the deal's timers, or happens after
+ * the deal has already left `start`.
+ */
+export function isUnattributedUnfilledBaseEntryCancel(
+  args: UnfilledBaseEntryCancelInputs,
+): boolean {
+  const {
+    orderStatus,
+    executedQty,
+    dealStatus,
+    hasPendingCheck,
+    ownCancel,
+    liveEntries = 0,
+  } = args
+  if (orderStatus !== 'CANCELED') {
+    return false
+  }
+  const executed = +(executedQty || 0)
+  if (!isFinite(executed) || executed > 0) {
+    return false
+  }
+  if (dealStatus !== DCADealStatusEnum.start) {
+    return false
+  }
+  return !ownCancel && !hasPendingCheck && liveEntries === 0
+}
+
 /** What the top-up decision reads. */
 export type TopUpSettledBaseEntryInputs = {
   /** What the settled row executed, as the venue reported it. */

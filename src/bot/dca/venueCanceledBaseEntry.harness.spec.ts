@@ -25,6 +25,7 @@ import { describe, it, before } from 'mocha'
 import { expect } from 'chai'
 import { createRequire } from 'module'
 import {
+  isUnattributedUnfilledBaseEntryCancel,
   pickRestoreBaseEntry,
   shouldSettlePartialBaseEntry,
 } from './partialBaseEntry'
@@ -72,6 +73,7 @@ class FakeBase {
   hyperliquid = false
   data: any = {
     settings: { type: 'regular', pair: [SYMBOL] },
+    status: 'open',
     exchange: ExchangeEnum.kraken,
     paperContext: false,
     flags: [],
@@ -107,12 +109,18 @@ const buildBot = (opts: {
   order?: any
   /** Every `dealStart` row the deal has, as `restoreWork` reads them. */
   dbRows?: any[]
+  /** Client order ids this bot cancelled itself. */
+  ownCancels?: string[]
+  /** Rows `getOrdersByStatusAndDealId` returns; defaults to `[order]`. */
+  liveRows?: any[]
 }) => {
   const {
     dealStatus = DCADealStatusEnum.start,
     timers = null,
     order = canceledBaseOrder(),
     dbRows,
+    ownCancels = [],
+    liveRows,
   } = opts
   const raised: Raised = {
     started: [],
@@ -176,7 +184,10 @@ const buildBot = (opts: {
       return id === DEAL_ID ? deal : undefined
     }
     getOrdersByStatusAndDealId() {
-      return order ? [order] : []
+      return liveRows ?? (order ? [order] : [])
+    }
+    isOwnCancel(id: string) {
+      return ownCancels.includes(id)
     }
     getOpenDeals() {
       return [deal]
@@ -515,6 +526,94 @@ describe('a venue-cancelled base entry is never booked (spec 048)', () => {
       const raised = bot.raised as Raised
       expect(raised.replaced, 're-placed').to.deep.equal([DEAL_ID])
       expect(raised.started).to.have.length(0)
+    })
+
+    describe('a base order cancelled off the venue before it traded', () => {
+      const unfilled = () =>
+        canceledBaseOrder({
+          type: OrderTypeEnum.limit,
+          executedQty: '0',
+          cummulativeQuoteQty: '0',
+        })
+      const armed = (bot: any) => {
+        const timers = bot.canceledBaseEntryTimers as Map<string, any>
+        const has = timers?.has(DEAL_ID) ?? false
+        for (const t of timers?.values() ?? []) clearTimeout(t)
+        return has
+      }
+
+      it('the decision', () => {
+        const base = {
+          orderStatus: 'CANCELED',
+          executedQty: '0',
+          dealStatus: DCADealStatusEnum.start,
+          hasPendingCheck: false,
+          ownCancel: false,
+        }
+        expect(isUnattributedUnfilledBaseEntryCancel(base)).to.equal(true)
+        expect(
+          isUnattributedUnfilledBaseEntryCancel({ ...base, executedQty: null }),
+        ).to.equal(true)
+        for (const [over, why] of [
+          [{ orderStatus: 'EXPIRED' }, 'venue expiry'],
+          [{ executedQty: '0.01' }, 'part filled — spec 048 settles it'],
+          [{ dealStatus: DCADealStatusEnum.open }, 'deal already open'],
+          [{ dealStatus: DCADealStatusEnum.canceled }, 'deal already closing'],
+          [{ hasPendingCheck: true }, 'reposition timers own it'],
+          [{ ownCancel: true }, 'the bot cancelled it'],
+          [{ liveEntries: 1 }, 'a newer entry is resting'],
+        ] as const) {
+          expect(
+            isUnattributedUnfilledBaseEntryCancel({ ...base, ...over }),
+            why,
+          ).to.equal(false)
+        }
+      })
+
+      it('arms a check of the deal', async () => {
+        const bot: any = buildBot({ order: unfilled(), timers: null })
+        await bot.processCanceledOrder(unfilled(), 1789416749994, false)
+        expect(armed(bot)).to.equal(true)
+        expect((bot.raised as Raised).started).to.have.length(0)
+      })
+
+      it('does not arm when the bot cancelled it', async () => {
+        const bot: any = buildBot({
+          order: unfilled(),
+          timers: null,
+          ownCancels: [CLIENT_ORDER_ID],
+        })
+        await bot.processCanceledOrder(unfilled(), 1789416749994, false)
+        expect(armed(bot)).to.equal(false)
+      })
+
+      it('cancels the deal instead of leaving it to be replayed', async () => {
+        const bot: any = buildBot({
+          order: unfilled(),
+          timers: null,
+          liveRows: [],
+        })
+        await bot.cancelDealOfCanceledBaseEntry(DEAL_ID, CLIENT_ORDER_ID)
+        expect((bot.raised as Raised).replaced).to.deep.equal([
+          `cancelled:${DEAL_ID}`,
+        ])
+      })
+
+      it('leaves the deal alone once a new entry is resting', async () => {
+        const bot: any = buildBot({
+          order: unfilled(),
+          timers: null,
+          liveRows: [
+            {
+              clientOrderId: 'D-BO-newer',
+              typeOrder: TypeOrderEnum.dealStart,
+              status: 'NEW',
+            },
+          ],
+        })
+        await bot.cancelDealOfCanceledBaseEntry(DEAL_ID, CLIENT_ORDER_ID)
+        expect((bot.raised as Raised).replaced).to.have.length(0)
+      })
     })
   })
 })

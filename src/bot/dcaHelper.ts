@@ -153,6 +153,8 @@ import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
 import { executedFillQty } from './dca/executedFill'
 import {
+  canceledBaseEntryDelayMs,
+  isUnattributedUnfilledBaseEntryCancel,
   pickRestoreBaseEntry,
   settledBaseEntryFill,
   shouldSettlePartialBaseEntry,
@@ -669,6 +671,11 @@ function createDCABotHelper<
      * (spec `095`). Cleared by `clearClassProperties`.
      */
     canceledTpRestoreTimers: Map<string, NodeJS.Timeout> = new Map()
+    /**
+     * Pending cancels of a `start` deal whose base order was cancelled off the
+     * venue unfilled, one per deal. Cleared by `clearClassProperties`.
+     */
+    canceledBaseEntryTimers: Map<string, NodeJS.Timeout> = new Map()
     /** Trailing guard mode as last read from Redis, and when. */
     trailingGuardModeRead: { mode: TrailingGuardMode; at: number } | null = null
     /** When each deal's trailing lag was last reported, to rate-limit it. */
@@ -18347,6 +18354,20 @@ function createDCABotHelper<
           })
         ) {
           await this.settlePartialBaseEntry(order, order.dealId)
+        } else if (
+          order.dealId &&
+          isUnattributedUnfilledBaseEntryCancel({
+            orderStatus: order.status,
+            executedQty: order.executedQty,
+            dealStatus: this.getDeal(order.dealId)?.deal.status,
+            hasPendingCheck: this.dealTimersMap.has(order.dealId),
+            ownCancel: this.isOwnCancel(order.clientOrderId),
+          })
+        ) {
+          this.handleLog(
+            `Base order ${order.clientOrderId} of deal ${order.dealId} was canceled on the exchange with nothing filled, not by the bot. Checking the deal in ${canceledBaseEntryDelayMs / 1000}s`,
+          )
+          this.armCanceledBaseEntryDealCancel(order.dealId, order.clientOrderId)
         }
         return
       }
@@ -18392,6 +18413,67 @@ function createDCABotHelper<
         return
       }
       await this.updatePartiallyFilledTP(order)
+    }
+
+    /** One pending check per deal; a newer cancel replaces it. */
+    armCanceledBaseEntryDealCancel(dealId: string, clientOrderId: string) {
+      const timers = (this.canceledBaseEntryTimers ??= new Map())
+      const pending = timers.get(dealId)
+      if (pending) {
+        clearTimeout(pending)
+      }
+      const timer = setTimeout(() => {
+        timers.delete(dealId)
+        this.cancelDealOfCanceledBaseEntry(dealId, clientOrderId).catch((e) =>
+          this.handleWarn(
+            `Cannot cancel deal ${dealId} after its base order was canceled: ${(e as Error)?.message ?? e}`,
+          ),
+        )
+      }, canceledBaseEntryDelayMs)
+      timers.set(dealId, timer)
+    }
+
+    /**
+     * Cancel a `start` deal whose base order someone else cancelled unfilled,
+     * if nothing has changed since. Not under the deal lock: `closeDealById`
+     * takes it.
+     */
+    async cancelDealOfCanceledBaseEntry(dealId: string, clientOrderId: string) {
+      if (!this.shouldProceed() || this.data?.status !== BotStatusEnum.open) {
+        return
+      }
+      const deal = this.getDeal(dealId)
+      if (
+        !isUnattributedUnfilledBaseEntryCancel({
+          orderStatus: 'CANCELED',
+          executedQty: 0,
+          dealStatus: deal?.deal.status,
+          hasPendingCheck: this.dealTimersMap.has(dealId),
+          ownCancel: this.isOwnCancel(clientOrderId),
+          liveEntries: this.getOrdersByStatusAndDealId({
+            dealId,
+            status: ['NEW', 'PARTIALLY_FILLED'],
+          }).filter((o) => o.typeOrder === TypeOrderEnum.dealStart).length,
+        })
+      ) {
+        return
+      }
+      this.handleLog(
+        `Deal ${dealId} has no base order on the exchange after an external cancel. Cancelling the deal`,
+      )
+      await this.closeDealById(
+        this.botId,
+        dealId,
+        CloseDCATypeEnum.cancel,
+        true,
+        false,
+        false,
+        false,
+        '',
+        undefined,
+        false,
+        DCACloseTriggerEnum.auto,
+      )
     }
 
     /** One pending restore per deal; a newer cancel replaces it. Spec 095 §4.7. */
@@ -22302,6 +22384,12 @@ function createDCABotHelper<
         clearTimeout(timer)
       }
       this.canceledTpRestoreTimers = new Map()
+      for (const timer of (
+        this.canceledBaseEntryTimers ?? new Map()
+      ).values()) {
+        clearTimeout(timer)
+      }
+      this.canceledBaseEntryTimers = new Map()
       for (const [id, timer] of this.dealTimersMap.entries()) {
         if (timer.enterMarketTimer) {
           clearTimeout(timer.enterMarketTimer)
