@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.7] - 2026-09-23
+
+### Fixed
+
+- **A DCA deal whose opening order only part filled on the order book is now priced and counted off its whole entry.** When the opening order cannot be filled in full at the limit price, the bot cancels what is left of it and buys the missing part at market, merging the two into one entry. On Coinbase the exchange's own cancellation notice for the original order — which describes only the part that traded on the book, before the market purchase — arrived after that merge and was written back over it in the bot's working copy of its orders. The stored order record stayed correct, so the deal's capital usage was right, but until the bot next reloaded its orders it priced the deal off its safety orders alone and reported one order used where it had used two. The take profit was therefore placed against an average entry price lower than the deal really paid on a long, closing it earlier and for less than configured. The notice can no longer replace an entry the bot has already completed, on any venue (spec 088).
+
 ## [1.60.6] - 2026-09-23
 
 ### Fixed

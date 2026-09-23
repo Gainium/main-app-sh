@@ -6181,17 +6181,36 @@ class MainBot<T extends IMainBot> {
     if (!this.allowToProcessBr(order.clientOrderId, order.typeOrder)) {
       return order
     }
+    // A POST-MUTEX RE-READ, and it has to come before the venue guard below.
+    // The mutex on this method serialises the settle's call and the venue's own
+    // cancel report for the same order, so whoever arrives second is holding a
+    // snapshot taken BEFORE the remainder was merged in. `processOrderQueue`
+    // writes back whatever this returns — `deleteOrder` then `setOrder` — so a
+    // stale copy returned here replaces the merged row in the order map, and
+    // every ledger that recomputes from the map (`getAvgPrice`, the
+    // `levels.complete` recompute, `findBaseOrderByDeal`) then reads the
+    // fraction that filled on the book instead of the whole entry. The merged
+    // row stays in Mongo, so the engine and its own database disagree until the
+    // next reload: an entry for 3334.9 units that traded 100.4 on the book and
+    // bought the other 3206.1 at market priced its take profit off the safety
+    // order alone and reported one order where the deal used two. Spec `088`.
+    if (this.partiallyFilledFilledSet.has(order.clientOrderId)) {
+      const processed = this.getOrderFromMap(order.clientOrderId)
+      return processed ?? order
+    }
     // Undocumented, and older than this repository's history — so it is kept
     // for the stream-driven path it was written for rather than removed on a
     // guess. A settled base entry opts out: the remainder it sends is a fresh
     // MARKET order, and `sendOrderToExchange` is what applies Coinbase's
     // quote-denomination to it.
+    //
+    // Not narrowed by the re-read above, which places nothing and sends
+    // nothing — it returns a row that is already in the map. On this venue
+    // `buyRemainder` is the only thing that fills that set and is reachable
+    // only from here, with `settledBaseEntry`, so the set holds settled base
+    // entries and nothing else. Spec `057` §4.4/§5.
     if (!settledBaseEntry && this.data?.exchange === ExchangeEnum.coinbase) {
       return order
-    }
-    if (this.partiallyFilledFilledSet.has(order.clientOrderId)) {
-      const processed = this.getOrderFromMap(order.clientOrderId)
-      return processed ?? order
     }
     order = await this.buyRemainder(order)
     this.orders.set(order.clientOrderId, order)
