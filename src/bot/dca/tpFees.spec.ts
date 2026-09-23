@@ -28,6 +28,7 @@ import { expect } from 'chai'
 import {
   quantityFeeIsThirdAssetOnly,
   ordersFeeIsThirdAssetOnly,
+  comboEntryBaseFee,
   tpPriceDisplacement,
   worstFee,
 } from './tpFees'
@@ -197,6 +198,43 @@ describe('tpFees', () => {
       expect(ordersFeeIsThirdAssetOnly([order({})], 'BTC', 'USDT')).to.equal(
         false,
       )
+    })
+  })
+
+  describe('comboEntryBaseFee (spec 097)', () => {
+    const bo = order({ executedQty: '1000' })
+    it('§4.1 zero rate, venue reported the fee in base → the observed fee', () => {
+      expect(
+        comboEntryBaseFee(
+          [{ ...bo, feePaid: '1', feeAsset: 'PEPE' }],
+          0,
+          'PEPE',
+          'USDT',
+        ),
+      ).to.equal(1)
+    })
+    it('§4.1 estimate larger than the observed leg → the estimate', () => {
+      expect(
+        comboEntryBaseFee(
+          [{ ...bo, feePaid: '0.5', feeAsset: 'PEPE' }],
+          0.001,
+          'PEPE',
+          'USDT',
+        ),
+      ).to.equal(1)
+    })
+    it('§4.1 fee in quote or unknown → the estimate alone', () => {
+      expect(
+        comboEntryBaseFee(
+          [{ ...bo, feePaid: '5', feeAsset: 'USDT' }, bo],
+          0.001,
+          'PEPE',
+          'USDT',
+        ),
+      ).to.equal(2)
+    })
+    it('§4.1 zero rate and no fee data → 0', () => {
+      expect(comboEntryBaseFee([bo], 0, 'PEPE', 'USDT')).to.equal(0)
     })
   })
 })

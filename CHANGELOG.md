@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.16] - 2026-09-23
+
+### Fixed
+
+- **A Combo bot's take-profit no longer asks to sell more than the deal holds when the exchange charged the entry fee in the coin being bought.** A Combo deal sizes its close from its own balance and subtracts the entry fee using the fee rate configured for the account. On an account marked as zero-fee, that rate is 0, so nothing was subtracted even when the exchange had in fact taken its fee out of the purchased coin, and the exchange refused the take-profit for insufficient balance; the bot then put the same oversized order back and the deal was left with no exit. The close now also reads the fee each filled entry order reports and subtracts whichever is larger, the configured estimate or the fee the exchange actually took in that coin. The take-profit can only get smaller because of this, never larger, and accounts whose configured rate already matches are unchanged (spec 097).
+
 ## [1.60.15] - 2026-09-23
 
 ### Security

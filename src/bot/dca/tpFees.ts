@@ -102,3 +102,33 @@ export function ordersFeeIsThirdAssetOnly(
   }
   return hasThirdAssetFee && !hasOnPairFee
 }
+
+/**
+ * Base a combo close must leave behind for the fees its entry fills paid in
+ * base (spec 097).
+ *
+ * Per filled entry-side row, the LARGER of the account-rate estimate
+ * (`executedQty × maxFee`) and the base leg the row itself reports. The
+ * estimate alone is blind whenever the configured rate is 0 — an account
+ * flagged `zeroFee` on a venue that still charged the entry in base — and the
+ * close then asks for base the deal does not hold. Taking the max means the
+ * observed fee can only ever LOWER a close, never raise it: a row with no fee
+ * data, a quote-denominated fee or a short's SELL entry keeps the estimate
+ * exactly as before.
+ */
+export function comboEntryBaseFee(
+  filled: Partial<Order>[],
+  maxFee: number,
+  baseAsset?: string,
+  quoteAsset?: string,
+): number {
+  return filled.reduce(
+    (acc, o) =>
+      acc +
+      Math.max(
+        +(o.executedQty ?? 0) * maxFee,
+        observedFeeSplit(o, baseAsset, quoteAsset)?.base ?? 0,
+      ),
+    0,
+  )
+}

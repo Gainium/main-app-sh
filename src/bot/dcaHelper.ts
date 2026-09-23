@@ -181,6 +181,7 @@ import {
   tpPriceDisplacement,
   worstFee,
   ordersFeeIsThirdAssetOnly,
+  comboEntryBaseFee,
 } from './dca/tpFees'
 import {
   buyAndHoldOutcome,
@@ -16067,9 +16068,18 @@ function createDCABotHelper<
           // CONFIRMED feeSizingFallback/forceFullFeeSizing (the §7 resend),
           // so reusing it here wires combo into the same two-stage placement
           // as DCA for free.
+          // Spec 097: the estimate alone reads 0 on a `zeroFee` account even
+          // when the venue took the entry fee in base, and the close then asks
+          // for base the deal does not hold. The rows' own reported base fee
+          // is the floor.
           const f = tpQuantityFeeIsThirdAssetOnly
             ? 0
-            : filled.reduce((acc, v) => acc + +v.executedQty * maxFee, 0)
+            : comboEntryBaseFee(
+                filled,
+                maxFee,
+                _deal?.symbol?.baseAsset,
+                _deal?.symbol?.quoteAsset,
+              )
           qty -= f
           if (qty < symbol.baseAsset.minAmount && !this.futures) {
             this.handleDebug(
