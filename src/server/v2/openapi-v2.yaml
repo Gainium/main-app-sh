@@ -641,9 +641,15 @@ components:
           type: string
           example: null
         profitCurrency:
-          type: object
+          type: string
+          enum:
+            - quote
+            - base
         orderFixedIn:
-          type: object
+          type: string
+          enum:
+            - quote
+            - base
         pair:
           type: string
           description: Trading pair symbol
@@ -737,41 +743,59 @@ components:
               description: Enable advance order placement
               example: true
             prioritize:
-              type: object
+              type: string
               description: Prioritization settings
-              example: volume
+              enum:
+                - gridStep
+                - level
+              example: gridStep
             sellDisplacement:
               type: number
               description: Displacement for sell orders
               example: 0.5
             gridType:
-              type: object
+              type: string
               description: Type of grid
+              enum:
+                - geometric
+                - arithmetic
               example: arithmetic
             tpSl:
               type: boolean
               description: Combined TP/SL for grid
               example: false
             tpSlCondition:
-              type: object
+              type: string
               description: Condition for TP/SL trigger
-              example: any
+              enum:
+                - valueChanged
+                - priceReached
+              example: priceReached
             tpSlAction:
-              type: object
+              type: string
               description: Action for TP/SL
-              example: close
+              enum:
+                - stop
+                - stopAndSell
+              example: stop
             sl:
               type: boolean
               description: Enable stop loss for grid
               example: false
             slCondition:
-              type: object
+              type: string
               description: Stop loss trigger condition
-              example: price
+              enum:
+                - valueChanged
+                - priceReached
+              example: priceReached
             slAction:
-              type: object
+              type: string
               description: Stop loss action
-              example: closeAll
+              enum:
+                - stop
+                - stopAndSell
+              example: stop
             tpPerc:
               type: number
               description: Take profit percentage

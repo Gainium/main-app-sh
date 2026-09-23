@@ -482,7 +482,7 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
     description: 'How pairs are prioritized',
     example: 'alphabetical',
   },
-  prioritize: { description: 'Prioritization settings', example: 'volume' },
+  prioritize: { description: 'Prioritization settings', example: 'gridStep' },
 
   // Futures specific
   futures: { description: 'Enable futures trading', example: false },
@@ -579,11 +579,17 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
     example: true,
   },
   tpSl: { description: 'Combined TP/SL for grid', example: false },
-  tpSlCondition: { description: 'Condition for TP/SL trigger', example: 'any' },
-  tpSlAction: { description: 'Action for TP/SL', example: 'close' },
+  tpSlCondition: {
+    description: 'Condition for TP/SL trigger',
+    example: 'priceReached',
+  },
+  tpSlAction: { description: 'Action for TP/SL', example: 'stop' },
   sl: { description: 'Enable stop loss for grid', example: false },
-  slCondition: { description: 'Stop loss trigger condition', example: 'price' },
-  slAction: { description: 'Stop loss action', example: 'closeAll' },
+  slCondition: {
+    description: 'Stop loss trigger condition',
+    example: 'priceReached',
+  },
+  slAction: { description: 'Stop loss action', example: 'stop' },
   tpTopPrice: { description: 'Take profit top price', example: 60000 },
   slLowPrice: { description: 'Stop loss bottom price', example: 40000 },
   lastPriceRangeAlert: {
@@ -835,6 +841,10 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
 class SchemaGenerator {
   private sourceFile: ts.SourceFile
   private enums: Map<string, EnumInfo> = new Map()
+  // Type aliases that are a union of string literals — documented as a string
+  // enum, exactly like a TS enum. Kept apart from `enums` because they are not
+  // enum declarations and must not be reported as generated enum schemas.
+  private stringLiteralUnions: Map<string, string[]> = new Map()
   private types: Map<string, TypeInfo> = new Map()
   // Schema types that can be referenced via $ref
   private referenceableSchemas = new Set([
@@ -859,14 +869,18 @@ class SchemaGenerator {
   }
 
   parse() {
-    // First pass: collect all enums
+    // First pass: collect all enums and string-literal union aliases
     ts.forEachChild(this.sourceFile, (node) => {
       if (ts.isEnumDeclaration(node)) {
         this.parseEnum(node)
+      } else if (ts.isTypeAliasDeclaration(node)) {
+        this.parseStringLiteralUnion(node)
       }
     })
 
-    console.log(`\nParsed ${this.enums.size} enums\n`)
+    console.log(
+      `\nParsed ${this.enums.size} enums and ${this.stringLiteralUnions.size} string unions\n`,
+    )
 
     // Second pass: parse interfaces and type aliases (now all enums are available)
     ts.forEachChild(this.sourceFile, (node) => {
@@ -894,6 +908,35 @@ class SchemaGenerator {
 
     if (values.length > 0) {
       this.enums.set(name, { name, values })
+    }
+  }
+
+  /**
+   * `export type TpSlAction = 'stop' | 'stopAndSell'` carries a closed set of
+   * values just like an enum, but it is a type alias, so `parseEnum` never sees
+   * it and `parseTypeNode` used to fall through to `{ type: 'object' }` — the
+   * published field then had no `enum` at all.
+   */
+  private parseStringLiteralUnion(node: ts.TypeAliasDeclaration) {
+    const literalText = (type: ts.TypeNode): string | null =>
+      ts.isLiteralTypeNode(type) && ts.isStringLiteral(type.literal)
+        ? type.literal.text
+        : null
+
+    const members = ts.isUnionTypeNode(node.type)
+      ? node.type.types
+      : [node.type]
+
+    const values: string[] = []
+    for (const member of members) {
+      const text = literalText(member)
+      // Any non-string-literal member means this is not a closed string set.
+      if (text === null) return
+      values.push(text)
+    }
+
+    if (values.length > 0) {
+      this.stringLiteralUnions.set(node.name.text, values)
     }
   }
 
@@ -1122,6 +1165,14 @@ class SchemaGenerator {
         return {
           type: 'string',
           enum: enumValues,
+        }
+      }
+
+      // Closed string sets declared as a union type alias
+      if (this.stringLiteralUnions.has(typeName)) {
+        return {
+          type: 'string',
+          enum: this.stringLiteralUnions.get(typeName)!,
         }
       }
 

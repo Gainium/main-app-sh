@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.11] - 2026-09-23
+
+### Fixed
+
+- **The public API reference now lists the values each grid take-profit and stop-loss setting accepts, and its examples are values the API actually takes.** Settings whose value comes from a fixed list — the take-profit and stop-loss trigger conditions and actions, how a grid prioritises its levels, the grid type, and the currency the profit and order size are fixed in — were published as free-form objects with no list of choices, and the sample values shown for five of them were not among the values the create endpoint accepts, so anyone building an integration straight from the reference had their request refused. The reference is generated from the platform's own types, and a setting whose type is written as a fixed set of words was not recognised as such and fell through to the generic description. It is now read correctly, so those settings are documented as text with the exact list of permitted values, and the reference is checked against the rules the create endpoint enforces so the two cannot drift apart unnoticed. No accepted value changed; only what the documentation says about them (spec 092).
+
 ## [1.60.10] - 2026-09-23
 
 ### Fixed
