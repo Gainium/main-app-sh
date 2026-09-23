@@ -7615,11 +7615,6 @@ class MainBot<T extends IMainBot> {
    *
    * - **`market`** — the venue's batch route places LIMIT orders only, and a
    *   market order's whole point is that it does not wait for company.
-   * - **`minigridId`** — such an order's body removes itself from a list
-   *   SHARED by every order of that minigrid (`pendingOrdersList`), a
-   *   read-modify-write that two concurrent bodies would resolve by losing one
-   *   of the two removals. Serialising a shared list is a bigger change than
-   *   the round trip is worth, so these keep the sequential path.
    * - **the shape guard** — the loops' duplicate checks (`isOrderExist`,
    *   `isOrderExistInDeal`) match on (price, side, qty, type), not on the
    *   client order id. Run sequentially, the second of two identically shaped
@@ -7628,6 +7623,14 @@ class MainBot<T extends IMainBot> {
    *   could produce a duplicate live order, so identically shaped orders are
    *   never batched together — the second takes the sequential path and meets
    *   the same check it always did.
+   *
+   * Minigrid orders ARE batched, across every minigrid of the burst. Their
+   * body removes itself from a list shared by the whole minigrid
+   * (`pendingOrdersList`), but it does so in one synchronous statement, before
+   * the body's first `await` — so concurrent bodies run those removals one
+   * after another and none is lost. A combo counter-order burst is made of
+   * nothing else, so refusing them left combo bots entirely on the per-order
+   * path.
    *
    * Fewer than two survivors means there is nothing to coalesce, and the
    * caller runs its loop exactly as it does today.
@@ -7642,7 +7645,7 @@ class MainBot<T extends IMainBot> {
     const picked: Grid[] = []
     const shapes = new Set<string>()
     for (const order of orders) {
-      if (!order?.newClientOrderId || order.market || order.minigridId) {
+      if (!order?.newClientOrderId || order.market) {
         continue
       }
       if (!eligible.every((check) => check(order))) {

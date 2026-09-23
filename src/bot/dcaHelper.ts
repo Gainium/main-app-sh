@@ -15223,17 +15223,23 @@ function createDCABotHelper<
         //
         // What is eligible is decided serially, here, against the state as it
         // is now, using this loop's own pre-send checks in this loop's own
-        // order — see `batchablePlacements` for the three refusals batching
-        // adds on top (market orders, minigrid orders, identically shaped
-        // orders). Orders sent here are skipped by the loop by id, never by
+        // order — see `batchablePlacements` for the two refusals batching
+        // adds on top (market orders, identically shaped orders). Orders sent here are skipped by the loop by id, never by
         // their freshly written row: a REFUSED order's row is deleted by the
         // error path, and a loop that recognised its participants by presence
         // would re-send exactly those.
         const batched = this.batchablePlacements(
           toPlace,
-          (order) => order.type === TypeOrderEnum.dealRegular,
+          // A combo minigrid level is a `dealGrid`, and a combo counter-order
+          // burst is made of nothing else. Its path through the loop is the
+          // `dealRegular` one minus the by-market skip below, which the loop
+          // applies to `dealRegular` alone.
+          (order) =>
+            order.type === TypeOrderEnum.dealRegular ||
+            order.type === TypeOrderEnum.dealGrid,
           (order) => !this.stopList.has(order.newClientOrderId),
-          () =>
+          (order) =>
+            order.type !== TypeOrderEnum.dealRegular ||
             !(
               deal?.deal.action === ActionsEnum.useOppositeBalance ||
               settings.dcaByMarket
@@ -15245,10 +15251,12 @@ function createDCABotHelper<
           (order) => !this.isOrderExistInDeal(order, order.type, dealId),
         )
         if (batched.length) {
-          // Exactly what the loop below does for a `dealRegular`, which is a
-          // short path: no TP branch (that is `dealTP` only), no fee-sizing
-          // branch (likewise), no minigrid list and no market orders — those
-          // are precisely the cases `batchablePlacements` refuses. The FILLED
+          // Exactly what the loop below does for a `dealRegular` or a
+          // `dealGrid`, which is a short path: no TP branch (that is `dealTP`
+          // only), no fee-sizing branch (likewise) and no market orders —
+          // `batchablePlacements` refuses those. The minigrid-list removal is
+          // the loop's own statement, run first and synchronously, so every
+          // body has made its removal before any of them awaits. The FILLED
           // handling stays here, inside the per-order body, so it runs during
           // the batcher's one-at-a-time delivery rather than in a second pass.
           //
@@ -15262,6 +15270,14 @@ function createDCABotHelper<
           // anything (which is also why identically shaped orders are never
           // batched together in the first place).
           const placeBatched = async (order: Grid) => {
+            if (order.minigridId) {
+              this.pendingOrdersList.set(
+                order.minigridId,
+                (this.pendingOrdersList.get(order.minigridId) ?? []).filter(
+                  (o) => o.newClientOrderId !== order.newClientOrderId,
+                ),
+              )
+            }
             const sendOptions: OrderAdditionalParams = {
               dealId,
               type: order.market ? 'MARKET' : 'LIMIT',

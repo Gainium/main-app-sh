@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.12] - 2026-09-23
+
+### Fixed
+
+- **Kraken spot Combo bots now place their grid orders in bulk too.** Bulk order placement on Kraken spot sends up to fifteen orders in one request instead of one request each, which matters because Kraken paces each account's requests and a burst of single placements queues behind that pace. Combo bots were left out: every grid order of a Combo bot belongs to a mini grid, and mini-grid orders were excluded from bulk placement, so the replacement orders a Combo bot sends after a fill still went out one at a time, seconds apart. They are now placed in bulk like any other grid order, including orders from several mini grids of the same deal. Kraken spot only, and only where bulk placement is switched on.
+
 ## [1.60.11] - 2026-09-23
 
 ### Fixed

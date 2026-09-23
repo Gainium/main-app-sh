@@ -104,14 +104,53 @@ describe('batchablePlacements (spec 082 §7.2)', () => {
     ])
   })
 
-  it('leaves minigrid orders alone — their pre-send section shares a list', () => {
+  it('batches minigrid orders, across minigrids — a combo counter-order burst is nothing else', () => {
+    // Each body's removal from the shared `pendingOrdersList` is one
+    // synchronous statement ahead of its first await, so concurrent bodies
+    // cannot lose one. Refusing these left every combo burst per-order.
+    const minigridLevel = (price: number, minigridId: string, id: string) =>
+      grid({
+        price,
+        side: OrderSideEnum.sell,
+        type: TypeOrderEnum.dealGrid,
+        minigridId,
+        newClientOrderId: id,
+      })
     const orders = [
-      ...levels(2),
-      grid({ minigridId: 'mg1', newClientOrderId: 'CMB-RO-1' }),
+      minigridLevel(101, 'mg1', 'CMB-RO-1'),
+      minigridLevel(102, 'mg1', 'CMB-RO-2'),
+      minigridLevel(103, 'mg2', 'CMB-RO-3'),
     ]
     expect(ids(bot().batchablePlacements(orders))).to.deep.equal([
-      'D-RO-SYNTHETIC0',
-      'D-RO-SYNTHETIC1',
+      'CMB-RO-1',
+      'CMB-RO-2',
+      'CMB-RO-3',
+    ])
+  })
+
+  it('still sends the second of two same-shape minigrid levels on its own', () => {
+    // Two minigrids of one deal can hold a level of identical shape. Run
+    // sequentially, `isOrderExistInDeal` sees the first one's row and skips
+    // the second; the shape guard keeps that decision where it was.
+    const a = grid({
+      type: TypeOrderEnum.dealGrid,
+      minigridId: 'mg1',
+      newClientOrderId: 'CMB-RO-A',
+    })
+    const b = grid({
+      type: TypeOrderEnum.dealGrid,
+      minigridId: 'mg2',
+      newClientOrderId: 'CMB-RO-B',
+    })
+    const c = grid({
+      price: 99,
+      type: TypeOrderEnum.dealGrid,
+      minigridId: 'mg2',
+      newClientOrderId: 'CMB-RO-C',
+    })
+    expect(ids(bot().batchablePlacements([a, b, c]))).to.deep.equal([
+      'CMB-RO-A',
+      'CMB-RO-C',
     ])
   })
 
