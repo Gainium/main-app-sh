@@ -34,6 +34,7 @@ import { addHealthEndpoint } from '../utils/healthServer'
 import swaggerDoc from './swagger.json'
 import { startAdminConfigSync } from '../utils/adminConfig'
 import { startEncryptKeyBackfill } from '../utils/encryptKeyBackfill'
+import { getClientIp, parseTrustProxy } from './clientIp'
 
 swaggerDoc.servers = [{ url: `${SERVER_HOST}` }]
 
@@ -103,12 +104,7 @@ const authLimiter = rateLimit({
   legacyHeaders: true,
   skip: (req) => !isAuthOperation(req as express.Request),
   keyGenerator: (req) => {
-    return ipKeyGenerator(
-      (req.headers['x-forwarded-for'] as string) ||
-        req.socket.remoteAddress ||
-        req.ip ||
-        'unknown',
-    )
+    return ipKeyGenerator(getClientIp(req as express.Request) || 'unknown')
   },
 })
 
@@ -118,12 +114,7 @@ const apiLimiter = rateLimit({
   standardHeaders: false,
   legacyHeaders: true,
   keyGenerator: (req) => {
-    return ipKeyGenerator(
-      (req.headers['x-forwarded-for'] as string) ||
-        req.socket.remoteAddress ||
-        req.ip ||
-        'unknown',
-    )
+    return ipKeyGenerator(getClientIp(req as express.Request) || 'unknown')
   },
 })
 
@@ -145,6 +136,12 @@ async function start() {
   const port = GRAPH_QL_PORT
 
   const app = express()
+
+  // Resolve `req.ip` / `getClientIp(req)` through the configured proxy chain
+  // instead of reading `X-Forwarded-For` raw, which any client can set. Unset
+  // `TRUST_PROXY` trusts nothing: the socket peer is the client. Behind a
+  // reverse proxy set it to the hop count (one nginx -> `1`). See clientIp.ts.
+  app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY))
 
   if (!SERVER_HOST) {
     throw 'Missed server host'
@@ -641,9 +638,7 @@ async function start() {
           token: (req.headers.token as string) || '',
           userAgent: req.headers['user-agent'],
           paperContext: req.headers['paper-context'] === 'true',
-          ip:
-            (req.headers['x-forwarded-for'] as string) ||
-            req.socket.remoteAddress,
+          ip: getClientIp(req as unknown as express.Request),
           req: req as unknown as express.Request,
         } as ApolloContext
       },
