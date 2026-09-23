@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.60.17] - 2026-09-23
+
+### Fixed
+
+- **A DCA bot's take-profit no longer asks to sell more than the deal holds when the exchange charged the entry fee in the coin being bought.** A long spot DCA deal subtracts the entry fee from its close using the fee rate configured for the account. On an account marked as zero-fee that rate is 0, so nothing was subtracted even when the exchange had in fact taken its fee out of the purchased coin, and the exchange refused the close for insufficient balance, leaving the deal with no exit. The close now also reads the fee each filled entry order reports and subtracts whichever is larger, the configured estimate or the fee the exchange actually took in that coin, rounding the result down to the exchange's step. The close can only get smaller because of this, never larger; accounts whose configured rate already covers the fee, short deals and Combo bots are unchanged (spec 098).
+
 ## [1.60.16] - 2026-09-23
 
 ### Fixed

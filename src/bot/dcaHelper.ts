@@ -15941,14 +15941,31 @@ function createDCABotHelper<
             tpFeeDeal?.symbol?.baseAsset,
             tpFeeDeal?.symbol?.quoteAsset,
           )
+        // Spec 098, the DCA twin of combo's spec 097: `_qty * (1 - maxFee)` is
+        // blind whenever the configured rate is 0 — a `zeroFee` account on a
+        // venue that still took the entry fee in base — and the close then
+        // asks for base the deal does not hold. The entry rows' own reported
+        // base fee is the floor; it can only ever lower a long close. Short
+        // (`1 / (1 - fee)`) and the third-asset gate are untouched.
+        const entryBaseFee =
+          long && !this.futures && !tpQuantityFeeIsThirdAssetOnly
+            ? comboEntryBaseFee(
+                bo ? [bo, ...filledOrders] : filledOrders,
+                maxFee,
+                tpFeeDeal?.symbol?.baseAsset,
+                tpFeeDeal?.symbol?.quoteAsset,
+              )
+            : 0
+        const netOfObservedBaseFee = entryBaseFee > _qty * maxFee
         let qty =
-          _qty *
-            (this.futures || tpQuantityFeeIsThirdAssetOnly
-              ? 1
-              : long
-                ? 1 - maxFee
-                : 1 / (1 - maxFee)) +
-          add
+          (netOfObservedBaseFee
+            ? _qty - entryBaseFee
+            : _qty *
+              (this.futures || tpQuantityFeeIsThirdAssetOnly
+                ? 1
+                : long
+                  ? 1 - maxFee
+                  : 1 / (1 - maxFee))) + add
         let origQty = qty
         const priceDisplacement = tpPriceDisplacement(priceFee, long)
         let tpPrice = this.math.round(
@@ -16135,7 +16152,11 @@ function createDCABotHelper<
           qty: this.math.round(
             qty,
             precision,
-            this.futures || kucoinSpot || (this.zeroFee && !this.combo)
+            // A netted observed fee (spec 098) leaves a fractional holding;
+            // rounding it to nearest could round straight back up to gross.
+            this.futures ||
+              kucoinSpot ||
+              (this.zeroFee && !this.combo && !netOfObservedBaseFee)
               ? false
               : true,
           ),
