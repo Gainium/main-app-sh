@@ -1170,7 +1170,7 @@ components:
                 - monitoring
               nullable: true
               description: Previous bot status
-              example: null
+              example: open
             currentBalances:
               type: array
               nullable: true
@@ -1728,7 +1728,7 @@ components:
               description: Bot status for stopping
               enum:
                 - closed
-              example: monitoring
+              example: closed
             dealCloseCondition:
               type: string
               description: Condition for closing deal
@@ -3693,7 +3693,7 @@ components:
             - OBFVG
             - SESSION
             - LW
-          example: regular
+          example: RSI
         indicatorLength:
           type: number
           description: Indicator period length
@@ -3726,7 +3726,7 @@ components:
             - 8h
             - 1d
             - 1w
-          example: oneH
+          example: 1h
         groupId:
           type: string
           description: Indicator group ID

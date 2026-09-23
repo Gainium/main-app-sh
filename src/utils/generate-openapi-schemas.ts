@@ -15,6 +15,7 @@ import * as ts from 'typescript'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as yaml from 'js-yaml'
+import { findEnumExampleMismatches } from './openapiEnumExamples'
 
 interface EnumInfo {
   name: string
@@ -458,7 +459,7 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   stopType: { description: 'How to stop the bot', example: 'cancel' },
   stopStatus: {
     description: 'Bot status for stopping',
-    example: 'monitoring',
+    example: 'closed',
   },
   dealCloseCondition: {
     description: 'Condition for closing deal',
@@ -601,7 +602,7 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   indicatorLength: { description: 'Indicator period length', example: 14 },
   indicatorValue: { description: 'Indicator value threshold', example: '70' },
   indicatorCondition: { description: 'Comparison condition', example: 'gt' },
-  indicatorInterval: { description: 'Chart timeframe', example: 'oneH' },
+  indicatorInterval: { description: 'Chart timeframe', example: '1h' },
   groupId: { description: 'Indicator group ID', example: 'group-1' },
   uuid: {
     description: 'Unique identifier',
@@ -836,6 +837,17 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
 
   // DCA Custom
   size: { description: 'Custom order size', example: '150' },
+}
+
+// Per-schema overrides of fieldMetadata, for a field name that means different
+// things on different schemas (the flat map above is keyed by field name only).
+const schemaFieldMetadata: Record<
+  string,
+  Record<string, Partial<{ description: string; example: any }>>
+> = {
+  SettingsIndicators: {
+    type: { example: 'RSI' },
+  },
 }
 
 class SchemaGenerator {
@@ -1265,7 +1277,7 @@ class SchemaGenerator {
         }
         // Add properties to the second object in allOf
         typeInfo.properties.forEach((prop) => {
-          const propSchema = this.propertyToOpenAPI(prop)
+          const propSchema = this.propertyToOpenAPI(prop, typeName)
           schema.allOf[1].properties[prop.name] = propSchema
         })
         return schema
@@ -1285,19 +1297,22 @@ class SchemaGenerator {
     }
 
     typeInfo.properties.forEach((prop) => {
-      schema.properties[prop.name] = this.propertyToOpenAPI(prop)
+      schema.properties[prop.name] = this.propertyToOpenAPI(prop, typeName)
     })
 
     return schema
   }
 
-  private propertyToOpenAPI(prop: PropertyInfo): any {
+  private propertyToOpenAPI(prop: PropertyInfo, typeName: string): any {
     const schema: any = {
       type: prop.type,
     }
 
     // Add description from metadata or property info
-    const metadata = fieldMetadata[prop.name]
+    const metadata = fieldMetadata[prop.name] && {
+      ...fieldMetadata[prop.name],
+      ...schemaFieldMetadata[typeName]?.[prop.name],
+    }
     if (metadata?.description) {
       schema.description = metadata.description
     } else if (prop.description) {
@@ -1430,6 +1445,17 @@ async function main() {
       console.log(`✓ Updated schema: ${schemaName}`)
     }
   })
+
+  // An example outside its enum is a value the API rejects — refuse to publish it
+  const mismatches = findEnumExampleMismatches(
+    openApiSpec.components.schemas,
+    'components.schemas',
+  )
+  if (mismatches.length) {
+    throw new Error(
+      `OpenAPI examples not in their enum:\n  ${mismatches.join('\n  ')}`,
+    )
+  }
 
   // Write back to openapi-v2.yaml
   const yamlOutput = yaml.dump(openApiSpec, {
