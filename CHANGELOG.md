@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.62.2] - 2026-09-24
+
+### Fixed
+
+- **A Combo deal whose entry order the exchange cancelled after part of it filled now opens on what filled.** The same fix as DCA bots already had: the deal stayed in its starting state with its controls unavailable while the account held the bought coins, and a restart of the bot service placed the entry again on top of them. Combo bots now open the deal on the executed quantity, tell the user once that the entry was cut short, and, on restart, open such a deal instead of buying again. An entry cancelled before anything filled is handled exactly as before.
+
 ## [1.62.1] - 2026-09-23
 
 ### Fixed

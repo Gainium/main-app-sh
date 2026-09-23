@@ -18,11 +18,14 @@ import type {
   BotParentProcessStatsEventDtoDcaCombo,
   DealStopLossCombo,
   CompareBalancesResponse,
-  OrderStatusType,
 } from '../../types'
 import type { InitialGrid } from './helper'
 import type { FullDeal } from './dcaHelper'
 import { nextLadderLevel } from './dca/ladderLevels'
+import {
+  pickRestoreBaseEntry,
+  shouldSettlePartialBaseEntry,
+} from './dca/partialBaseEntry'
 import {
   minigridDb,
   comboTransactionsDb,
@@ -2448,7 +2451,24 @@ function createComboBotHelper<
       _expired: boolean,
     ): Promise<void> {
       if (order.typeOrder === TypeOrderEnum.dealStart) {
-        this.checkUnfilledBaseEntryCancel(order)
+        // A Combo entry is a MARKET order and arms no base-order timer, so this
+        // callback is the only report of a venue cancel. One that ended part
+        // filled is a position the account holds: open the deal on it, exactly
+        // as the DCA callback does. Spec 101 §4.1.
+        if (
+          order.dealId &&
+          shouldSettlePartialBaseEntry({
+            orderStatus: order.status,
+            dealStatus: this.getDeal(order.dealId)?.deal.status,
+            executedQty: order.executedQty,
+            updateTime: order.updateTime,
+            hasPendingCheck: this.dealTimersMap.has(order.dealId),
+          })
+        ) {
+          await this.settlePartialBaseEntry(order, order.dealId)
+        } else {
+          this.checkUnfilledBaseEntryCancel(order)
+        }
         return
       }
       if (order.typeOrder !== TypeOrderEnum.dealGrid) {
@@ -6244,41 +6264,47 @@ function createComboBotHelper<
       )
       if (startDeals.length > 0) {
         for (const d of startDeals) {
-          const inDb = await this.ordersDb.readData<{
-            symbol: string
-            clientOrderId: string
-            status: OrderStatusType
-          }>(
+          // Not filtered on status: a base order the venue cancelled after a
+          // part fill was hidden by `status: { $ne: 'CANCELED' }`, and the deal
+          // fell through to "not started yet" and bought its entry again on top
+          // of the position. `pickRestoreBaseEntry` keeps the old choice
+          // wherever the old query made one. Spec 101 §4.2, as DCA's spec 048.
+          const inDb = await this.ordersDb.readData<Order>(
             {
               botId: this.botId,
               dealId: d.deal._id,
               typeOrder: TypeOrderEnum.dealStart,
-              status: { $ne: 'CANCELED' },
             },
-            { symbol: 1, clientOrderId: 1, status: 1 },
+            undefined,
+            {},
+            true,
           )
-          if (inDb && inDb.status === StatusEnum.ok && inDb.data.result) {
-            if (inDb.data.result.status !== 'FILLED') {
+          const baseRow =
+            inDb && inDb.status === StatusEnum.ok
+              ? pickRestoreBaseEntry(inDb.data.result)
+              : undefined
+          if (baseRow) {
+            if (baseRow.status !== 'FILLED') {
+              // `checkBaseOrder` reads the order map. A cold load from Mongo
+              // leaves terminal rows out of it, so put this one back.
+              if (
+                (baseRow.status === 'CANCELED' ||
+                  baseRow.status === 'EXPIRED') &&
+                !this.getOrderFromMap(baseRow.clientOrderId)
+              ) {
+                this.setOrder(baseRow, false)
+              }
               await this.checkBaseOrder(
                 this.botId,
-                inDb.data.result.symbol,
-                inDb.data.result.clientOrderId,
+                baseRow.symbol,
+                baseRow.clientOrderId,
                 d.deal._id,
               )
             } else {
               this.handleLog(
                 `Deal ${d.deal._id} in status start, but found filled base order`,
               )
-              const full = await this.ordersDb.readData({
-                clientOrderId: inDb.data.result.clientOrderId,
-              })
-              if (full.data?.result) {
-                await this.startDeal(full.data.result)
-              } else {
-                this.handleWarn(
-                  `Cannot find full order for ${inDb.data.result.clientOrderId}`,
-                )
-              }
+              await this.startDeal(baseRow)
             }
           } else {
             this.handleLog(
