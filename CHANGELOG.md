@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.64.5] - 2026-09-24
+
+### Fixed
+
+- **Pair names no longer disappear when the pairs sync rewrites a pair.** The sync replaced a changed pair's base-asset block with the exchange connection's copy, which carries no display name, so every rewrite erased the name until the naming job ran again. A pair's existing display name is now kept.
+
 ## [1.64.4] - 2026-09-24
 
 ### Fixed
