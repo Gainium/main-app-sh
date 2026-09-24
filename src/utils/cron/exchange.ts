@@ -190,6 +190,15 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 const _id = getPair._id.toString()
                 updateMap.set(_id, {
                   ...info,
+                  // The connector's baseAsset carries no `displayName` (the
+                  // naming job adds it); keep the stored one rather than
+                  // wiping every name on each rewrite of the row.
+                  baseAsset: getPair.baseAsset.displayName
+                    ? {
+                        ...info.baseAsset,
+                        displayName: getPair.baseAsset.displayName,
+                      }
+                    : info.baseAsset,
                   exchange: provider,
                   assetCategory,
                   isCanonical,
