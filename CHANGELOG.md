@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.64.1] - 2026-09-24
+
+### Fixed
+
+- **DCA safety orders now land where the step percentage puts them on pairs with a coarse price tick.** Each safety-order price was rounded to the tick and the next level was then measured from that rounded price, so every level's rounding carried into all the levels after it. On a pair whose price step is large relative to the price — a price near 0.25 with a 0.001 tick — a 30 × 1% ladder placed its last order anywhere from 24% to 36% below the start, depending on the start price, instead of 30%. Each level is now worked out from the unrounded distance to the start and only that level is rounded, so every safety order sits within one tick of its configured percentage. Step scale is applied the same way. Ladders built from indicators, custom steps or ATR/ADR scaling are unchanged. Deals already open keep the orders they have; the new prices apply to ladders built after the update.
+
 ## [1.64.0] - 2026-09-24
 
 ### Added

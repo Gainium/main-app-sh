@@ -271,8 +271,11 @@ describe('DCA ladder NaN refusal (spec 025, issue #715)', () => {
     )
     expect(regular[0].qty).to.equal(12761)
     expect(regular[0].price).to.equal(0.002586)
-    expect(regular[29].qty).to.equal(74144)
-    expect(regular[29].price).to.equal(0.001832)
+    // Level 30 sits at 30% below 0.002612 (0.0018284 on a 1e-6 tick). The
+    // pin was 0.001832 / 74144 until the ladder stopped carrying each level's
+    // rounding into the next (spec 007 in the backtester).
+    expect(regular[29].qty).to.equal(74307)
+    expect(regular[29].price).to.equal(0.001828)
   })
 
   it('§4.5 a healthy sizing-price override is untouched', async () => {
