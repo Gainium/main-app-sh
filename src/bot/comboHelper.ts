@@ -3779,14 +3779,16 @@ function createComboBotHelper<
               )
             }
           }
+          // Unrounded running level of the ladder. Each level is
+          // `step × scale^(i-1)` of the start price beyond the one before; only
+          // the level itself is rounded to the tick, so the rounding does not
+          // carry into every level after it.
+          let ladderLevel = latestPrice
           for (let i = 1; i <= (ordersCount ?? 0); i++) {
             const stepVal = stepScale ** (i - 1)
             const volumeVal = volumeScale ** (i - 1)
-            let price = this.math.round(
-              (i === 1 ? latestPrice : orders[orders.length - 1].price) -
-                (this.isLong ? 1 : -1) * gridStep * stepVal,
-              symbol.priceAssetPrecision,
-            )
+            ladderLevel -= (this.isLong ? 1 : -1) * gridStep * stepVal
+            let price = this.math.round(ladderLevel, symbol.priceAssetPrecision)
             if (i === 1) {
               if (price === latestPrice) {
                 price = this.math.round(
@@ -3798,7 +3800,14 @@ function createComboBotHelper<
               }
             }
             if (i > 1) {
-              if (price === orders[orders.length - 1].price) {
+              const prevPrice = orders[orders.length - 1]?.price ?? 0
+              if (
+                price === prevPrice ||
+                // A level rounded off the unrounded ladder can land behind the
+                // previous one when this guard pushed that one a tick further.
+                (orders.length > 0 &&
+                  (this.isLong ? price > prevPrice : price < prevPrice))
+              ) {
                 price = this.math.round(
                   orders[orders.length - 1].price +
                     (this.isLong ? -1 : 1) *

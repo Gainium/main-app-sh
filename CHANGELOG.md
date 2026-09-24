@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.64.4] - 2026-09-24
+
+### Fixed
+
+- **Combo bot safety orders now land where the step percentage puts them on pairs with a coarse price tick.** The combo ladder had the same defect the DCA ladder had: each level was rounded to the tick and the next level was measured from that rounded price, so on a price near 0.25 with a 0.001 tick a 30 × 1% ladder ended 24% to 36% from the start instead of 30%. Each level is now worked out from the unrounded distance to the start and only that level is rounded, so every safety order sits within one tick of its configured percentage. Each level's mini-grid keeps its width and starts from its own level.
+
 ## [1.64.3] - 2026-09-24
 
 ### Fixed
