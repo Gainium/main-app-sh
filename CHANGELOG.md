@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.62.3] - 2026-09-24
+
+### Fixed
+
+- **OKX USDT-margined futures orders now record the right filled value.** OKX sizes these orders in contracts, and a contract can be a fraction of a coin or many coins (0.001 gold, 1,000,000 SHIB). The order's filled quantity was already converted from contracts to coins, but its filled value was stored per contract, so it was too large on symbols with a contract smaller than one coin (a thousand times on gold) and too small on symbols with a larger one. The filled value is now converted the same way as the quantity, whether the fill arrives with the order response, from the live order stream, or from an order status check. The quantity, price and deal accounting are unchanged. Orders recorded before this release keep their stored value.
+
 ## [1.62.2] - 2026-09-24
 
 ### Fixed

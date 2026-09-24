@@ -5318,6 +5318,10 @@ class MainBot<T extends IMainBot> {
         }
       }
       result.data.executedQty = await this.convertOrderExecutedQty(result.data)
+      result.data.cummulativeQuoteQty = await this.convertOrderQuoteQty(
+        result.data.symbol,
+        result.data.cummulativeQuoteQty,
+      )
       if (
         this.kucoinFutures &&
         result.data.cummulativeQuoteQty &&
@@ -5860,7 +5864,10 @@ class MainBot<T extends IMainBot> {
     order.cummulativeQuoteQty = this.kucoinFutures
       ? `${+msg.price * +order.executedQty}`
       : msg.eventType === 'executionReport'
-        ? msg.totalQuoteTradeQuantity
+        ? await this.convertOrderQuoteQty(
+            msg.symbol,
+            msg.totalQuoteTradeQuantity,
+          )
         : `${(+msg.averagePrice || +msg.price) * +order.executedQty}`
     if (this.hyperliquid) {
       order.type = find.type
@@ -7523,6 +7530,27 @@ class MainBot<T extends IMainBot> {
     }
   }
 
+  /**
+   * OKX USDT-margined swaps state an order's filled value as
+   * `avgPx × accFillSz`, and `accFillSz` counts CONTRACTS — both the connector
+   * and the user stream forward it that way. {@link convertOrderExecutedQty}
+   * divides the quantity by {@link getOKXDenominator}; the value must be
+   * divided by the same figure or it is booked `1 / ctVal` times too large
+   * (too small where `ctVal > 1`). KuCoin futures derives its quote from the
+   * converted quantity instead and is left to its own branches. Spec 102.
+   */
+  async convertOrderQuoteQty(symbol: string, quote?: string) {
+    if (
+      this.data?.exchange !== ExchangeEnum.okxLinear ||
+      !this.sizedInContracts ||
+      !quote ||
+      !Number.isFinite(+quote)
+    ) {
+      return quote
+    }
+    return `${+quote / (await this.getOKXDenominator(symbol))}`
+  }
+
   async convertOrderExecutedQty(order: Order | CommonOrder) {
     const ed = await this.getExchangeInfo(order.symbol)
     let executedQty = order.executedQty
@@ -9069,6 +9097,14 @@ class MainBot<T extends IMainBot> {
         if (!this.kucoinFutures) {
           orderToPush.executedQty =
             await this.convertOrderExecutedQty(orderToPush)
+          // Only the venue's own figure is in contracts; a quote the payload
+          // did not state is the row we already hold, in base (spec 102 §4.4).
+          if (processedOrder.cummulativeQuoteQty) {
+            orderToPush.cummulativeQuoteQty = await this.convertOrderQuoteQty(
+              orderToPush.symbol,
+              processedOrder.cummulativeQuoteQty,
+            )
+          }
         }
         this.setOrder(orderToPush)
         this.handleLog(`Save order ${order.clientOrderId}`)
