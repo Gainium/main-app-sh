@@ -824,6 +824,9 @@ export const BotSchema = /* GraphQL */ `
     getLeverageBracketsByUUID(
       input: getLeverageInput
     ): getLeverageBracketResponse
+    getPooledMarginAvailable(
+      input: getLeverageInput!
+    ): getPooledMarginAvailableResponse
     getBacktestByShareId(
       input: getBacktestsInput!
     ): getBacktestByShareIdResponse
@@ -1264,6 +1267,15 @@ export const BotSchema = /* GraphQL */ `
     status: Status
     reason: String
     data: String
+  }
+  """
+  USD a connection can still commit when its collateral is pooled across
+  coins; data is null when it is not.
+  """
+  type getPooledMarginAvailableResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: Float
   }
   type getLeverageBracketResponse implements BasicResponse {
     status: Status

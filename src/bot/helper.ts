@@ -556,8 +556,7 @@ function createBotHelper<
         gridBudgetRefusalMessage({
           budget: +budget,
           minimumBudget: verdict.minimumBudget,
-          asset:
-            (this.coinm ? ed?.baseAsset.name : ed?.quoteAsset.name) ?? '',
+          asset: (this.coinm ? ed?.baseAsset.name : ed?.quoteAsset.name) ?? '',
           levels: +levels,
           pair,
         }),
@@ -851,8 +850,18 @@ function createBotHelper<
                 ? quote
                 : base
 
+            let free = balance?.free ?? Infinity
+            if (this.futures && required / this.currentLeverage > free) {
+              // Pooled collateral (Kraken flex, Bitget Unified multi_assets)
+              // margins from coins the per-asset figure does not count.
+              free = await this.pooledMarginOrKeep(
+                ed.quoteAsset.name,
+                free,
+                price,
+              )
+            }
             if (
-              required / this.currentLeverage > (balance?.free ?? Infinity) &&
+              required / this.currentLeverage > free &&
               !this.data.settings.skipBalanceCheck
             ) {
               this.sendEndProcess()

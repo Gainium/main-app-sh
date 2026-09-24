@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.63.0] - 2026-09-24
+
+### Added
+
+- **Inverse (coin-margined) futures can be funded from pooled collateral.** On an account that margins every contract from its whole wallet — a Bitget Unified Trading Account in multi-assets mode — an inverse contract does not need to be funded in its own coin, but DCA, Combo and Grid bots still refused to open when that coin's balance was short. When the coin balance does not cover a deal, the bot now asks the exchange connection for its pooled margin, converts it to the coin at the deal price and uses it if it covers the order. Bots on isolated margin, and every account that does not pool its collateral, keep the per-coin check. Grid bots on pooled USD-margined accounts gain the same fallback DCA and Combo bots already had. A new `getPooledMarginAvailable` query lets the dashboard make the same check before a trading-terminal order is sent.
+
 ## [1.62.4] - 2026-09-24
 
 ### Fixed

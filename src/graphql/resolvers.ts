@@ -4031,6 +4031,53 @@ const resolvers = <
           ).futures_leverageBracket(),
       )
     },
+    /**
+     * USD the connection can still commit when its collateral is pooled across
+     * coins (Kraken Futures flex, Bitget Unified `multi_assets` — see
+     * exchange-connector spec 028); `data: null` when it is not. The trading
+     * terminal asks only after its own per-coin check came up short.
+     */
+    getPooledMarginAvailable: async (
+      _parent: any,
+      { input: { uuid } }: { input: { uuid: string } },
+      { token, req }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const find = user.data.exchanges.find((e) => e.uuid === uuid)
+      if (!find) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Exchange not exist on user',
+          data: null,
+        }
+      }
+      if (!isFutures(find.provider) || isPaper(find.provider)) {
+        return { status: StatusEnum.ok, reason: null, data: null }
+      }
+      const result = await new Exchange(
+        find.provider,
+        find.key,
+        find.secret,
+        find.passphrase,
+        undefined,
+        undefined,
+        find.okxSource,
+      ).getMarginAvailableUsd()
+      return {
+        status: StatusEnum.ok,
+        reason: null,
+        data:
+          result.status === StatusEnum.ok && typeof result.data === 'number'
+            ? result.data
+            : null,
+      }
+    },
     getBacktestByShareId: async (
       _parent: any,
       { input }: { input: { shareId: string } },

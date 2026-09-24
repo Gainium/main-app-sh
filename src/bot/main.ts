@@ -195,6 +195,7 @@ import {
 } from './userStreamLiveness'
 import FundingStream, { fundingChannel } from './fundingStream'
 import FundingStore from './fundingStore'
+import { widenByPool } from './pooledMargin'
 import {
   computeFunding,
   type SignedFill,
@@ -9598,12 +9599,24 @@ class MainBot<T extends IMainBot> {
    * every non-pooled venue and on any error: a venue with no opinion must
    * never widen or block sizing. The pooled figure is USD-denominated, so it
    * is trusted only when USD actually is the quote asset.
+   *
+   * COIN-M: `available` is in the base coin, so the pool is converted at
+   * `price` (exchange-connector spec 028 — a Bitget Unified account in
+   * `multi_assets` mode margins inverse contracts from USDT). An isolated bot
+   * keeps the per-coin rule; only cross/inherit margin draws on the pool.
    */
   protected async pooledMarginOrKeep(
     quoteAsset: string,
     available: number,
+    price?: number,
   ): Promise<number> {
-    if (!this.futures || this.coinm || quoteAsset !== 'USD' || !this.exchange) {
+    if (!this.futures || quoteAsset !== 'USD' || !this.exchange) {
+      return available
+    }
+    if (
+      this.coinm &&
+      (!price || this.data?.settings.marginType === BotMarginTypeEnum.isolated)
+    ) {
       return available
     }
     const res = await this.exchange.getMarginAvailableUsd()
@@ -9612,7 +9625,7 @@ class MainBot<T extends IMainBot> {
     }
     // The venue already nets margin committed to open positions, so this is
     // what can actually be committed now. Never shrink what the caller found.
-    return Math.max(available, res.data)
+    return widenByPool(available, res.data, this.coinm, price)
   }
 
   /**

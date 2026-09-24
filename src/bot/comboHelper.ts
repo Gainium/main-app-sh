@@ -4312,7 +4312,11 @@ function createComboBotHelper<
             ? (balance?.get(ed.quoteAsset.name)?.free ?? 0)
             : balance?.get(ed.baseAsset.name)?.free) ?? 0
       if (requiredAmount / leverage > available) {
-        available = await this.pooledMarginOrKeep(ed.quoteAsset.name, available)
+        available = await this.pooledMarginOrKeep(
+          ed.quoteAsset.name,
+          available,
+          latestPrice,
+        )
       }
       if (requiredAmount / leverage > available) {
         return {
