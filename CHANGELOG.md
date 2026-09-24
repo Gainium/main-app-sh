@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.66.0] - 2026-09-24
+
+### Added
+
+- **Use available balance if short (DCA).** A new DCA bot setting, `reduceToAvailableBalance`. When the free balance cannot fund the whole deal (base order plus every safety order), the bot opens the deal scaled down to what is available instead of skipping it: the base order and each safety order shrink by the same ratio, so the ladder keeps its shape, and the reduction is stored on the deal for its whole life. An optional floor, `reduceToAvailableMinSize` (in the base order size's unit), skips the deal when the reduced base order would be smaller. The bot records a deal event with the percentage it opened at. Applies to regular DCA bots with a fixed order size (base, quote or USD); off by default, and has no effect with Skip Balance Check on. Exposed on GraphQL and the v2 REST API.
+
+### Fixed
+
+- **A take-profit re-derived from the nominal base order keeps a deal's size adjustment.** When a deal's base order row is not in memory, the take-profit falls back to the configured base order size; it now adds the deal's per-deal size delta (compound/risk reduction, and the new reduced deals), so it is not sized for more than the deal bought.
+
 ## [1.65.1] - 2026-09-24
 
 ### Added

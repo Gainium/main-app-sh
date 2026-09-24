@@ -521,6 +521,8 @@ const DCA_SECTIONS: SectionLayout[] = [
       'dcaVolumeMaxValue',
       'dcaByMarket',
       'allowRaiseToExchangeMin',
+      'reduceToAvailableBalance',
+      'reduceToAvailableMinSize',
       'dcaCustom',
       'useSmartOrders',
       'gridLevel',

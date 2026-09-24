@@ -931,6 +931,20 @@ export interface DCABotSettings extends BaseSettings {
    * backfilled `true`. Regular DCA bots only.
    */
   allowRaiseToExchangeMin?: boolean
+  /**
+   * When the free balance cannot fund the whole deal (base order plus every
+   * safety order), open it anyway, scaled down to what is available: the base
+   * order and each safety order shrink by the same ratio, so the ladder keeps
+   * its shape. Off or missing: the deal is skipped, as before. Regular DCA bots
+   * with a fixed order size (base / quote / usd) only.
+   */
+  reduceToAvailableBalance?: boolean
+  /**
+   * Smallest base order a reduced deal may open with, in the base order size's
+   * unit. Below it the deal is skipped. Empty or 0: no floor beyond the
+   * exchange minimum.
+   */
+  reduceToAvailableMinSize?: string
   dcaByMarket?: boolean
 }
 

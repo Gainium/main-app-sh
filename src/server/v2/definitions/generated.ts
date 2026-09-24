@@ -4444,6 +4444,23 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           example: false,
         },
         {
+          name: 'reduceToAvailableBalance',
+          type: 'boolean',
+          required: false,
+          validators: ['mustBeBoolean'],
+          default: false,
+          example: false,
+        },
+        {
+          name: 'reduceToAvailableMinSize',
+          type: 'numberInString',
+          required: false,
+          validators: ['mustBeString', 'canBeEmptyString', 'mustBeValidNumber'],
+          min: 0,
+          default: '',
+          example: '',
+        },
+        {
           name: 'dcaCustom',
           type: 'array',
           required: false,

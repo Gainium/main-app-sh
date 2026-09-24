@@ -14643,6 +14643,117 @@ function createDCABotHelper<
       return sizes
     }
     /**
+     * With `reduceToAvailableBalance`, the fraction of the configured deal the
+     * free balance can fund — used to open a smaller deal instead of skipping
+     * it. `null` when the deal must be skipped as before: setting off, a size
+     * type that already follows the balance (percFree / percTotal), a sizing
+     * the ratio would distort (risk/reward), terminal deals and hedge legs
+     * (their forms do not offer it), nothing available, or a reduced base
+     * order below the user's floor.
+     */
+    async reduceToAvailableRatio(check: {
+      required: number
+      available: number
+    }): Promise<{ ratio: number | null; belowFloor?: number }> {
+      const settings = await this.getAggregatedSettings()
+      if (
+        !settings.reduceToAvailableBalance ||
+        settings.type === DCATypeEnum.terminal ||
+        this.data?.parentBotId ||
+        settings.useRiskReward ||
+        ![
+          OrderSizeTypeEnum.base,
+          OrderSizeTypeEnum.quote,
+          OrderSizeTypeEnum.usd,
+        ].includes(settings.orderSizeType ?? OrderSizeTypeEnum.percFree)
+      ) {
+        return { ratio: null }
+      }
+      if (
+        !Number.isFinite(check.required) ||
+        !Number.isFinite(check.available) ||
+        check.required <= 0 ||
+        check.available <= 0
+      ) {
+        return { ratio: null }
+      }
+      // A 1% reserve: the requirement is priced at the current price with the
+      // market slippage allowance, and the fill can still land a little worse.
+      const ratio = (check.available / check.required) * 0.99
+      if (!(ratio > 0 && ratio < 1)) {
+        return { ratio: null }
+      }
+      const floor = +(settings.reduceToAvailableMinSize ?? 0)
+      const reducedBase = +(settings.baseOrderSize ?? 0) * ratio
+      if (Number.isFinite(floor) && floor > 0 && reducedBase < floor) {
+        return { ratio: null, belowFloor: reducedBase }
+      }
+      return { ratio }
+    }
+    /**
+     * Per-deal {@link Sizes} that scale the base order and every safety order
+     * of a new deal by `ratio`, on top of any compound/risk-reduction `sizes`.
+     * `Sizes` are base-quantity deltas stored on the deal, so the reduction
+     * holds for the deal's whole life (restarts, ladder rebuilds) exactly as the
+     * compound adjustment does. Deltas are taken against the quantities the
+     * configured sizes produce BEFORE any exchange-minimum raise — the same
+     * point `getBaseOrder` / `createInitialDealOrders` add them — so a reduced
+     * order that falls under the minimum is still caught by
+     * {@link refuseDealBelowExchangeMin}. `null` when the deal cannot be sized.
+     */
+    async scaleDealSizes(
+      symbol: string,
+      ratio: number,
+      sizes?: Sizes | null,
+    ): Promise<Sizes | null> {
+      const settings = await this.getAggregatedSettings()
+      const price = await this.getLatestPrice(symbol)
+      if (!price || !Number.isFinite(price)) {
+        return null
+      }
+      const bo: MinOrderFloor = { configuredQty: 0, raisedQty: 0, price: 0 }
+      const base = await this.getBaseOrder(
+        symbol,
+        undefined,
+        undefined,
+        price,
+        0,
+        0,
+        null,
+        undefined,
+        false,
+        bo,
+      )
+      if (!base || !(bo.configuredQty > 0)) {
+        return null
+      }
+      const levels: MinOrderViolation[] = []
+      if (settings.useDca) {
+        await this.createInitialDealOrders(
+          symbol,
+          price,
+          '',
+          undefined,
+          undefined,
+          levels,
+        )
+      }
+      const origDca: number[] = []
+      for (const l of levels) {
+        origDca[l.level - 1] = l.configuredQty
+      }
+      for (let i = 0; i < origDca.length; i++) {
+        origDca[i] = origDca[i] ?? 0
+      }
+      const origBase = bo.configuredQty
+      return {
+        base: (origBase + (sizes?.base ?? 0)) * ratio - origBase,
+        dca: origDca.map((q, i) => (q + (sizes?.dca?.[i] ?? 0)) * ratio - q),
+        origBase,
+        origDca,
+      }
+    }
+    /**
      * Open new deal
      */
     @IdMute(
@@ -14854,14 +14965,22 @@ function createDCABotHelper<
             }
             return
           }
-          if (checkBalance.status) {
+          // `reduceToAvailableBalance`: a shortfall opens a smaller deal
+          // instead of none, unless the reduced base order is under the floor.
+          const reduce = checkBalance.status
+            ? { ratio: null }
+            : await this.reduceToAvailableRatio(checkBalance)
+          if (checkBalance.status || reduce.ratio !== null) {
             // The shortfall cleared — re-arm, so if it returns the user is told
             // again. Keyed on the balance condition alone; whether a deal
             // actually opens below (cooldowns can still decline) is a different
-            // question.
-            this.standingConditionLatch.clear(
-              standingConditionKey(notEnoughBalanceNewDeal, symbol),
-            )
+            // question. A reduced deal leaves the latch alone: the shortfall
+            // is still there, only handled.
+            if (checkBalance.status) {
+              this.standingConditionLatch.clear(
+                standingConditionKey(notEnoughBalanceNewDeal, symbol),
+              )
+            }
             if (!(skip && !dynamic)) {
               const cooldownStart = await this.checkCooldownStart(
                 this.botId,
@@ -14986,6 +15105,25 @@ function createDCABotHelper<
             if (this.useCompountReduce) {
               sizes = await this.calculateCompoundReduce(symbol)
             }
+            if (reduce.ratio !== null) {
+              const reduced = await this.scaleDealSizes(
+                symbol,
+                reduce.ratio,
+                sizes,
+              )
+              if (!reduced) {
+                this.handleDebug(
+                  `Cannot size a reduced deal for ${symbol}, wont open new deal`,
+                )
+                this.resetPending(this.botId, symbol)
+                this.endMethod(_id)
+                if (cbIfNotOpened) {
+                  cbIfNotOpened()
+                }
+                return
+              }
+              sizes = reduced
+            }
             if (await this.refuseDealBelowExchangeMin(symbol, fixSize, sizes)) {
               this.resetPending(this.botId, symbol)
               this.endMethod(_id)
@@ -14993,6 +15131,21 @@ function createDCABotHelper<
                 cbIfNotOpened()
               }
               return
+            }
+            if (reduce.ratio !== null) {
+              const pct = this.math.round(reduce.ratio * 100, 1)
+              const message = `Not enough balance for the full deal on ${symbol} (required: ${checkBalance.required}, available: ${checkBalance.available}). Opening it at ${pct}% of the configured size: base and safety orders are reduced by the same ratio`
+              this.handleLog(message)
+              this.botEventDb.createData({
+                userId: this.userId,
+                botId: this.botId,
+                event: 'Deal',
+                botType: this.botType,
+                description: message,
+                paperContext: !!this.data?.paperContext,
+                symbol,
+                type: MessageTypeEnum.info,
+              })
             }
             this.updateDealLastTime(this.botId, 'opened', +new Date(), symbol)
             await this.placeBaseOrder(
@@ -15025,6 +15178,10 @@ function createDCABotHelper<
             } ${asset}, available: ${checkBalance.available} ${asset}${
               checkBalance.price
                 ? `, price: ${checkBalance.price} ${ed.quoteAsset.name}`
+                : ''
+            }${
+              reduce.belowFloor !== undefined
+                ? `. A reduced deal would need a base order of ${this.math.round(reduce.belowFloor, 8)}, below the minimum reduced base order of ${settings.reduceToAvailableMinSize}`
                 : ''
             }`
             // Report the shortfall once per (pair, condition) rather than on
@@ -17309,12 +17466,15 @@ function createDCABotHelper<
         const ordersSide = this.isLong ? OrderSideEnum.buy : OrderSideEnum.sell
         const scaleAr = this.scaleAr && settings?.useDca
         const bo = this.findBaseOrderByDeal(dealId)
+        // The nominal fallback carries the deal's per-deal size delta
+        // (`reduceToAvailableBalance`, compound/risk reduction), or a reduced
+        // deal would re-derive its take-profit for the full configured size.
         let baseQty =
           parseFloat(bo?.origQty || '0') ||
           (orderSizeType === OrderSizeTypeEnum.quote
             ? (baseOrderSize * (this.coinm ? ed.quoteAsset.minAmount : 1)) /
               latestPrice
-            : baseOrderSize)
+            : baseOrderSize) + (deal?.sizes?.base ?? 0)
         const baseQtyOrig = baseQty
         baseQty = this.math.round(baseQty, precision, true)
         // Spec `025` §4.2 (#715). The other way into this function's

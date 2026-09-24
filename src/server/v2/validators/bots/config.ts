@@ -1960,6 +1960,15 @@ export const dcaBotSchemaConfig: Record<
     max: 200,
   },
   allowRaiseToExchangeMin: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  reduceToAvailableBalance: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  reduceToAvailableMinSize: {
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.canBeEmptyString,
+      ValidatorsEnum.shouldBeValidNumber,
+    ],
+    min: 0,
+  },
   dcaByMarket: { validators: [ValidatorsEnum.shouldBeBoolean] },
 }
 
@@ -2047,6 +2056,8 @@ export const COMBO_EXCLUDED_FIELDS: (keyof typeof COMBO_FORM_DEFAULTS)[] = [
   'riskMaxSl',
   'riskMinSl',
   'allowRaiseToExchangeMin',
+  'reduceToAvailableBalance',
+  'reduceToAvailableMinSize',
   'dcaByMarket',
   'useLimitPrice',
   'baseSlOn',

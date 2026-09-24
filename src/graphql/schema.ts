@@ -3216,6 +3216,8 @@ export const BotSchema = /* GraphQL */ `
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
     allowRaiseToExchangeMin: Boolean
+    reduceToAvailableBalance: Boolean
+    reduceToAvailableMinSize: String
     rejectBelowExchangeMin: Boolean
       @deprecated(reason: "Renamed with inverted meaning; use allowRaiseToExchangeMin. Always null.")
     dcaByMarket: Boolean
@@ -4936,6 +4938,8 @@ export const BotSchema = /* GraphQL */ `
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
     allowRaiseToExchangeMin: Boolean
+    reduceToAvailableBalance: Boolean
+    reduceToAvailableMinSize: String
     """
     Deprecated and ignored: renamed with inverted meaning to allowRaiseToExchangeMin.
     Accepted only so dashboards built before the rename can still save.
@@ -5345,6 +5349,8 @@ export const BotSchema = /* GraphQL */ `
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
     allowRaiseToExchangeMin: Boolean
+    reduceToAvailableBalance: Boolean
+    reduceToAvailableMinSize: String
     """
     Deprecated and ignored: renamed with inverted meaning to allowRaiseToExchangeMin.
     Accepted only so dashboards built before the rename can still save.

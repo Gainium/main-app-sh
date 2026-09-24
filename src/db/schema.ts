@@ -1384,6 +1384,8 @@ const dcaBotSettings = new Schema({
   closeDealType: { type: String, enum: CloseDCATypeEnum },
   closeOrderType: { type: String, enum: OrderTypeEnum },
   allowRaiseToExchangeMin: Boolean,
+  reduceToAvailableBalance: Boolean,
+  reduceToAvailableMinSize: String,
   dcaByMarket: Boolean,
   terminalDealType: { type: String, enum: TerminalDealTypeEnum },
   useMultiTp: Boolean,

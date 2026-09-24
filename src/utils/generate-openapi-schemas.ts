@@ -153,6 +153,16 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
       'Raise base/safety orders to the exchange minimum when the configured size is below it. When false (default), a deal whose orders would be raised is not opened on that pair and a notification is sent',
     example: false,
   },
+  reduceToAvailableBalance: {
+    description:
+      'When the free balance cannot fund the whole deal (base order plus all safety orders), open it scaled down to the available balance instead of skipping it. Base and safety orders shrink by the same ratio. Fixed order sizes (base, quote, usd) only',
+    example: false,
+  },
+  reduceToAvailableMinSize: {
+    description:
+      'Smallest base order a reduced deal may open with, in the base order size unit. Below it the deal is skipped. Empty or 0: no floor beyond the exchange minimum',
+    example: '20',
+  },
 
   // Start conditions
   startCondition: {
