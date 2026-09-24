@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.64.3] - 2026-09-24
+
+### Fixed
+
+- **Isolated-margin inverse bots also fund from pooled collateral.** The previous release widened the funds check for inverse (coin-margined) futures on pooled-collateral accounts only for cross margin; isolated bots still required the contract's own coin. They now use the pooled margin too, and the exchange decides whether it funds the position.
+
 ## [1.64.2] - 2026-09-24
 
 ### Fixed

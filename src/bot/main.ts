@@ -9602,8 +9602,9 @@ class MainBot<T extends IMainBot> {
    *
    * COIN-M: `available` is in the base coin, so the pool is converted at
    * `price` (exchange-connector spec 028 — a Bitget Unified account in
-   * `multi_assets` mode margins inverse contracts from USDT). An isolated bot
-   * keeps the per-coin rule; only cross/inherit margin draws on the pool.
+   * `multi_assets` mode margins inverse contracts from USDT). Isolated bots
+   * draw on it too: the pool is the account's, and the venue refuses an
+   * isolated position it cannot fund — no worse than refusing it here.
    */
   protected async pooledMarginOrKeep(
     quoteAsset: string,
@@ -9613,10 +9614,7 @@ class MainBot<T extends IMainBot> {
     if (!this.futures || quoteAsset !== 'USD' || !this.exchange) {
       return available
     }
-    if (
-      this.coinm &&
-      (!price || this.data?.settings.marginType === BotMarginTypeEnum.isolated)
-    ) {
+    if (this.coinm && !price) {
       return available
     }
     const res = await this.exchange.getMarginAvailableUsd()
