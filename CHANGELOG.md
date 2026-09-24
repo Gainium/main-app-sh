@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.0] - 2026-09-24
+
+### Added
+
+- **Pooled collateral covers USDC-quoted contracts.** A futures account whose venue reports pooled collateral (Kraken flex, Bitget Unified multi_assets, and now OKX Multi-currency / Portfolio margin) margins a USDC-quoted contract from every coin it holds, counting USDC at par with the USD pool. The deal-start, swap and not-enough-balance checks previously consulted the pool only for a USD quote, so an OKX Europe account funded in EUR read 0 USDC and could not open an X-Perp deal without skipping the balance check.
+- **Percent-of-balance order sizes count pooled collateral.** DCA and Combo base orders sized as a percentage of free or total balance now size from the pool when it is larger than the quote-asset balance, instead of failing with "asset not found in user balances" on an account that holds none of the quote asset.
+
 ## [1.64.6] - 2026-09-24
 
 ### Fixed

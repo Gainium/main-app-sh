@@ -4532,7 +4532,18 @@ function createComboBotHelper<
               : long
                 ? ed.quoteAsset.name
                 : ed.baseAsset.name
-            const find = balances.data.find((b) => b.asset === asset)
+            const held = balances.data.find((b) => b.asset === asset)
+            // Pooled collateral (OKX Multi-currency margin, Kraken flex,
+            // Bitget multi_assets): the quote row can be 0 or missing while
+            // the account margins the deal from other coins.
+            const find = this.futures
+              ? await this.withPooledCollateral(
+                  asset,
+                  ed.quoteAsset.name,
+                  held,
+                  priceRequest,
+                )
+              : held
             if (find) {
               let useQty =
                 orderSizeType === OrderSizeTypeEnum.percFree

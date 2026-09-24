@@ -195,7 +195,7 @@ import {
 } from './userStreamLiveness'
 import FundingStream, { fundingChannel } from './fundingStream'
 import FundingStore from './fundingStore'
-import { widenByPool } from './pooledMargin'
+import { poolCoversQuote, widenByPool } from './pooledMargin'
 import {
   computeFunding,
   type SignedFill,
@@ -9598,7 +9598,7 @@ class MainBot<T extends IMainBot> {
    * the common path costs no extra request. Returns `available` unchanged for
    * every non-pooled venue and on any error: a venue with no opinion must
    * never widen or block sizing. The pooled figure is USD-denominated, so it
-   * is trusted only when USD actually is the quote asset.
+   * is trusted only for a USD or USDC quote (`poolCoversQuote`).
    *
    * COIN-M: `available` is in the base coin, so the pool is converted at
    * `price` (exchange-connector spec 028 — a Bitget Unified account in
@@ -9611,7 +9611,7 @@ class MainBot<T extends IMainBot> {
     available: number,
     price?: number,
   ): Promise<number> {
-    if (!this.futures || quoteAsset !== 'USD' || !this.exchange) {
+    if (!this.futures || !poolCoversQuote(quoteAsset) || !this.exchange) {
       return available
     }
     if (this.coinm && !price) {
@@ -9624,6 +9624,26 @@ class MainBot<T extends IMainBot> {
     // The venue already nets margin committed to open positions, so this is
     // what can actually be committed now. Never shrink what the caller found.
     return widenByPool(available, res.data, this.coinm, price)
+  }
+
+  /**
+   * The balance row a percent-of-balance order is sized from, widened by the
+   * account's pooled collateral (see `pooledMarginOrKeep`). An account that
+   * holds none of `asset` still sizes from the pool; `held` is returned
+   * untouched whenever the venue reports no pool.
+   */
+  protected async withPooledCollateral(
+    asset: string,
+    quoteAsset: string,
+    held: { asset: string; free: number; locked: number } | undefined,
+    price: number,
+  ): Promise<{ asset: string; free: number; locked: number } | undefined> {
+    const free = held?.free ?? 0
+    const pooled = await this.pooledMarginOrKeep(quoteAsset, free, price)
+    if (pooled <= free) {
+      return held
+    }
+    return { asset, free: pooled, locked: held?.locked ?? 0 }
   }
 
   /**
@@ -9654,7 +9674,12 @@ class MainBot<T extends IMainBot> {
     quoteAsset: string,
     cachedFree: number,
   ): Promise<number> {
-    if (!this.futures || this.coinm || quoteAsset !== 'USD' || !this.exchange) {
+    if (
+      !this.futures ||
+      this.coinm ||
+      !poolCoversQuote(quoteAsset) ||
+      !this.exchange
+    ) {
       return cachedFree
     }
     const now = +new Date()

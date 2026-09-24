@@ -12,6 +12,16 @@
  * Only ever widens `available` — a venue with no opinion, or a price that
  * cannot convert, leaves it unchanged.
  */
+/**
+ * Quote assets the USD pool can stand in for. The pool is a USD figure; a
+ * USDC-quoted contract is margined in a dollar the venue counts at par, so it
+ * draws on the same pool: OKX Europe X-Perps are USDC-quoted and an account in
+ * Multi-currency margin funds them from EUR. Only venues that report a pool
+ * (`/marginAvailableUsd` non-null) are ever widened.
+ */
+export const poolCoversQuote = (quoteAsset: string): boolean =>
+  quoteAsset === 'USD' || quoteAsset === 'USDC'
+
 export const widenByPool = (
   available: number,
   poolUsd: number,

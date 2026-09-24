@@ -8,7 +8,7 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import { widenByPool } from './pooledMargin'
+import { poolCoversQuote, widenByPool } from './pooledMargin'
 
 describe('pooled margin — widenByPool (exchange-connector spec 028)', () => {
   it('linear: a USD pool is used as is', () => {
@@ -34,5 +34,13 @@ describe('pooled margin — widenByPool (exchange-connector spec 028)', () => {
   it('an empty or unreadable pool widens nothing', () => {
     expect(widenByPool(2, 0, true, 0.25)).to.equal(2)
     expect(widenByPool(2, NaN, false)).to.equal(2)
+  })
+
+  it('the USD pool covers USD and USDC quotes, nothing else', () => {
+    expect(poolCoversQuote('USD')).to.equal(true)
+    expect(poolCoversQuote('USDC')).to.equal(true)
+    expect(poolCoversQuote('USDT')).to.equal(false)
+    expect(poolCoversQuote('EUR')).to.equal(false)
+    expect(poolCoversQuote('BTC')).to.equal(false)
   })
 })
