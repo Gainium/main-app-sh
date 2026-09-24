@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.65.1] - 2026-09-24
+
+### Added
+
+- **A bot says when its order is waiting for liquidity.** When the exchange accepts an order but reports that nobody is on the other side of the book — Bitget Reality stock tokens outside the hours their market makers quote — the bot shows a warning explaining that the order will wait. The order is placed as before; nothing is refused.
+
 ## [1.65.0] - 2026-09-24
 
 ### Added

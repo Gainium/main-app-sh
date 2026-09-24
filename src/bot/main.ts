@@ -8314,6 +8314,24 @@ class MainBot<T extends IMainBot> {
           (batcher?.has(requestData.newClientOrderId)
             ? await batcher.send(requestData)
             : await this.exchange.openOrder(requestData))
+        // Accepted, but the venue said something the user should know (a
+        // Bitget Reality token with nobody on the other side of its book, so
+        // the order will wait). The order stands; this is a warning only.
+        if (request.status === StatusEnum.ok && request.data?.notice) {
+          await this.processError(
+            this.botId,
+            'Order waiting for liquidity',
+            (this.data?.settings as DCABotSettings)?.type ===
+              DCATypeEnum.terminal,
+            false,
+            true,
+            request.data.notice,
+            +new Date(),
+            request.data.notice,
+            false,
+            requestData.symbol,
+          )
+        }
         // Open/widen the cooldown only for a REAL, venue-returned hard-auth
         // rejection — never a replayed one, or the window would slide forward
         // forever and never self-heal.

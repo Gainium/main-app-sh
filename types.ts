@@ -3350,6 +3350,12 @@ export type CommonOrder = {
   status: OrderStatusType
   type: OrderTypeT
   side: OrderSideType
+  /**
+   * Something the user should know about an order the venue ACCEPTED, from the
+   * exchange connector — e.g. a Bitget Reality token whose book has nobody on
+   * the other side, so the order will wait. Never a refusal.
+   */
+  notice?: string
   fills?: {
     price: string
     qty: string
