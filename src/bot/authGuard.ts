@@ -61,6 +61,17 @@ export const AUTH_FAILURE_SIGNATURES = [
   // seen, and Kraken's neighbouring `EAPI:Invalid nonce` / `EAPI:Invalid
   // signature` are genuinely retryable and must stay transient.
   'eapi:invalid key',
+  // Bitget: the key was deleted (40037), or the passphrase does not belong to
+  // it (40012). Bitget's other key-scoped refusals stay out on purpose:
+  // - `invalid ip,current request ip …` (40018) names ONE egress IP. Bitget
+  //   calls are not pinned to a connector, so a key allow-listing only some of
+  //   the fleet's IPs is refused on some calls and accepted on the next.
+  // - `sign signature error` (40009) can come from how one request was
+  //   signed, the same reason Kraken's `EAPI:Invalid signature` stays out.
+  // - `user status is abnormal` is a restriction Bitget can lift without the
+  //   user touching the key, which the fee cron's key-disable would not notice.
+  'apikey does not exist',
+  'apikey/password is incorrect',
 ]
 
 /** Does this exchange rejection describe a dead credential? */

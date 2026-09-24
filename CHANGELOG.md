@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.64.6] - 2026-09-24
+
+### Fixed
+
+- **A deleted Bitget API key is recognised as a dead key.** Bitget answers a deleted key with "apikey does not exist" and a key whose passphrase does not match with "apikey/password is incorrect"; neither was on the list of dead-credential answers, so bots on such a key re-asked the exchange on every cycle and the hourly fee refresh kept polling it. Both now open the per-account cooldown and count toward pausing the fee refresh, as the other exchanges' dead-key answers already do. Bitget's IP allow-list refusal is deliberately not treated as a dead key: it names one outgoing address, and a key that allows only some of them succeeds on the next call.
+
 ## [1.64.5] - 2026-09-24
 
 ### Fixed
