@@ -64,7 +64,7 @@
 
 ### Security
 
-- **The login rate limit on a self-hosted server can no longer be bypassed by changing a request header.** The limit on credential attempts (and the general API limit) identified the caller by the first address in the `X-Forwarded-For` header, which any client can set, so a caller that changed it on every request was never throttled, and the address recorded for a login was whatever the caller wrote. The server now resolves the caller through Express's `trust proxy` setting, driven by a new `TRUST_PROXY` variable. Left unset, the header is ignored and the connecting address is used. Behind a reverse proxy, set `TRUST_PROXY` to the number of proxies in front of the server (one nginx → `1`) and have the proxy append the connecting address to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`); until you do, every client behind that proxy shares one limit (spec 096).
+- **The login rate limit on a self-hosted server now identifies the caller through Express's `trust proxy` setting.** The limit on credential attempts (and the general API limit), and the address recorded for a login, are now resolved through that setting, driven by a new `TRUST_PROXY` variable. Left unset, the `X-Forwarded-For` header is ignored and the connecting address is used. Behind a reverse proxy, set `TRUST_PROXY` to the number of proxies in front of the server (one nginx → `1`) and have the proxy append the connecting address to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`); until you do, every client behind that proxy shares one limit (spec 096).
 
 ## [1.60.14] - 2026-09-23
 
