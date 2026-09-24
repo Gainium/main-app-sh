@@ -166,6 +166,10 @@ import {
 } from './dca/limitTimeouts'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
+  repositionKeepsRestingBaseEntry,
+  repositionTickDue,
+} from './dca/baseEntryReposition'
+import {
   canceledTpRestoreDelayMs,
   canceledTpRestoreMaxDeferrals,
   decideCanceledTpRestore,
@@ -8866,12 +8870,16 @@ function createDCABotHelper<
               executedQty: find.executedQty,
               updateTime: find.updateTime,
               // This branch is the reposition timer while the bot is running,
-              // and the restore path just after it starts. Timer state for the
-              // deal is what tells the two apart: `placeBaseOrder` sets it the
-              // moment it arms anything, and a process that has not placed this
-              // deal's base order holds nothing for it — so there is no
-              // callback left to look at the order again. Spec 038 §4.2/§4.3.
-              hasPendingCheck: this.dealTimersMap.has(find.dealId),
+              // and the restore path just after it starts. On the restore path
+              // the process holds no timer state for the deal. On the timer,
+              // this tick has fired and does not re-arm itself, so the only
+              // check still coming is the enter-market timer. A bot whose
+              // "Enter Market Timeout" switch is off arms none (spec 100), and
+              // reading "any timer state" here left its part-filled entry in
+              // `start` until the next bot start. Spec 038 §4.2/§4.3, spec 103
+              // §4.3.
+              hasPendingCheck: !!this.dealTimersMap.get(find.dealId)
+                ?.enterMarketTimer,
             })
           ) {
             return await this.settlePartialBaseEntry(find, find.dealId)
@@ -8882,6 +8890,9 @@ function createDCABotHelper<
             find.status !== 'PARTIALLY_FILLED'
           ) {
             const deal = this.getDeal(find.dealId)
+            if (await this.keepRestingBaseEntry(find, symbol, forceMarket)) {
+              return
+            }
             this.handleLog(`${id} not filled. Create new one`)
             const cancelBase = await this.cancelOrderOnExchange(find)
             if (cancelBase?.status === 'FILLED') {
@@ -9001,6 +9012,107 @@ function createDCABotHelper<
           }
         }
       }
+    }
+
+    /**
+     * Arm the next reposition tick for a resting LIMIT base order, if
+     * repositioning is on and the tick still fits before the enter-market
+     * timer. Shared by `placeBaseOrder` and by the keep path of
+     * `keepRestingBaseEntry`, so both follow one rule.
+     */
+    armBaseRepositionTick(
+      dealTimer: {
+        limitTimer: NodeJS.Timeout | null
+        enterMarketTimer: NodeJS.Timeout | null
+      },
+      dealId: string,
+      symbol: string,
+      clientOrderId: string,
+    ) {
+      if (
+        this.orderLimitRepositionTimeout === 0 ||
+        this.data?.settings.notUseLimitReposition
+      ) {
+        return
+      }
+      if (!this.startTimeoutTime.get(dealId)) {
+        this.startTimeoutTime.set(dealId, new Date().getTime())
+      }
+      if (
+        repositionTickDue({
+          enterMarketTimeout: this.enterMarketTimeout,
+          repositionTimeout: this.orderLimitRepositionTimeout,
+          startedAt: this.startTimeoutTime.get(dealId) ?? +new Date(),
+          now: new Date().getTime(),
+        })
+      ) {
+        dealTimer.limitTimer = setTimeout(
+          () => this.checkBaseOrder(this.botId, symbol, clientOrderId, dealId),
+          this.orderLimitRepositionTimeout,
+        )
+      }
+    }
+
+    /**
+     * Leave a resting LIMIT base order on the book when repositioning it
+     * would re-place it at the price it already rests at, and arm the next
+     * tick instead.
+     *
+     * Repositioning is cancel + re-place. On a pair whose price does not move,
+     * it re-derived the same price every 10 s for hours, which spent two
+     * rate-limited private calls per deal per tick and changed nothing.
+     *
+     * Only on the live reposition tick, meaning this process holds timer
+     * state for the deal. The restore path after a bot start has armed
+     * nothing, so it keeps re-placing and `placeBaseOrder` arms the timers
+     * afresh. Spec 103 §4.1/§4.2.
+     */
+    async keepRestingBaseEntry(
+      order: Order,
+      symbol: string,
+      forceMarket: boolean,
+    ): Promise<boolean> {
+      const dealId = order.dealId
+      const dealTimer = dealId ? this.dealTimersMap.get(dealId) : undefined
+      if (
+        forceMarket ||
+        !dealId ||
+        !dealTimer ||
+        this.getDeal(dealId)?.deal.status !== DCADealStatusEnum.start
+      ) {
+        return false
+      }
+      const settings = await this.getAggregatedSettings()
+      const ed = await this.getExchangeInfo(symbol)
+      if (!ed) {
+        return false
+      }
+      const repositionPrice = this.math.round(
+        await this.getLatestPrice(symbol),
+        ed.priceAssetPrecision,
+      )
+      if (
+        !repositionKeepsRestingBaseEntry({
+          orderStatus: order.status,
+          orderType: order.type,
+          restingPrice: order.price,
+          startOrderType: settings.startOrderType,
+          repositionPrice,
+        })
+      ) {
+        return false
+      }
+      this.handleDebug(
+        `${order.clientOrderId} not filled, price unchanged at ${order.price}. Keeping it`,
+      )
+      this.armBaseRepositionTick(
+        dealTimer,
+        dealId,
+        symbol,
+        order.clientOrderId,
+      )
+      this.dealTimersMap.set(dealId, dealTimer)
+      return true
     }
 
     /**
@@ -9140,8 +9252,15 @@ function createDCABotHelper<
      * Spec `058` §4.1/§4.2/§4.3.
      */
     async topUpSettledBaseEntry(settled: Order): Promise<Order> {
+      const settings = await this.getAggregatedSettings()
       if (
         !shouldTopUpSettledBaseEntry({
+          // A LIMIT-entry bot with the "Enter Market Timeout" switch off never
+          // enters at market (spec 100), and a top-up is a market order.
+          // Spec 103 §4.4.
+          marketEntryAllowed:
+            settings.startOrderType !== OrderTypeEnum.limit ||
+            this.enterMarketTimeout !== 0,
           executedQty: settled.executedQty,
           origQty: settled.origQty,
           updateTime: settled.updateTime,
@@ -10127,37 +10246,12 @@ function createDCABotHelper<
                     limitTimer: null,
                     enterMarketTimer: null,
                   }
-                  if (
-                    this.orderLimitRepositionTimeout !== 0 &&
-                    !this.data.settings.notUseLimitReposition
-                  ) {
-                    if (!this.startTimeoutTime.get(deal.deal._id)) {
-                      this.startTimeoutTime.set(
-                        deal.deal._id,
-                        new Date().getTime(),
-                      )
-                    }
-                    if (
-                      this.enterMarketTimeout === 0 ||
-                      (this.enterMarketTimeout !== 0 &&
-                        new Date().getTime() +
-                          this.orderLimitRepositionTimeout <
-                          (this.startTimeoutTime.get(deal.deal._id) ??
-                            +new Date()) +
-                            this.enterMarketTimeout)
-                    ) {
-                      dealTimer.limitTimer = setTimeout(
-                        () =>
-                          this.checkBaseOrder(
-                            this.botId,
-                            symbol,
-                            baseOrder.clientOrderId,
-                            dealId,
-                          ),
-                        this.orderLimitRepositionTimeout,
-                      )
-                    }
-                  }
+                  this.armBaseRepositionTick(
+                    dealTimer,
+                    deal.deal._id,
+                    symbol,
+                    baseOrder.clientOrderId,
+                  )
                   if (
                     this.enterMarketTimeout !== 0 &&
                     !dealTimer.enterMarketTimer &&

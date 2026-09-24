@@ -204,6 +204,13 @@ export type TopUpSettledBaseEntryInputs = {
    * widens with it.
    */
   entryWindowMs: number
+  /**
+   * Whether this bot may enter at market at all. `false` for a LIMIT-entry bot
+   * whose "Enter Market Timeout" switch is off: that user chose never to
+   * take the book, and a top-up is a market order (spec `100`, spec `103`
+   * §4.4). Omitted means allowed, which is the spec `057` behaviour.
+   */
+  marketEntryAllowed?: boolean
 }
 
 /**
@@ -238,6 +245,9 @@ export function shouldTopUpSettledBaseEntry(
   args: TopUpSettledBaseEntryInputs,
 ): boolean {
   const { executedQty, origQty, updateTime, now, entryWindowMs } = args
+  if (args.marketEntryAllowed === false) {
+    return false
+  }
   const executed = Number(executedQty)
   const requested = Number(origQty)
   if (

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.64.2] - 2026-09-24
+
+### Fixed
+
+- **A DCA start order at a limit price is no longer cancelled and re-placed at the same price every 10 seconds.** With auto-adjust on and "Enter Market Timeout" off, an unfilled start order used to be cancelled and sent again at the latest price every 10 seconds, even when that price had not changed. On a quiet pair this went on for hours, used up exchange request limits and sent the order to the back of the queue each time. The order now stays on the book while its price would not change, and moves only when the price does.
+- **A DCA start order at a limit price that fills partway now opens the deal.** With "Enter Market Timeout" off, a start order that filled partly was never checked again. The deal stayed in its starting state, the bought coins were not shown, and no safety orders or take-profit were placed until the bot service restarted. The next auto-adjust check now cancels the rest of the order and opens the deal on what filled. A bot with "Enter Market Timeout" off still never buys the missing part at market.
+
 ## [1.64.1] - 2026-09-24
 
 ### Fixed
