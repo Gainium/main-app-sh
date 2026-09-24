@@ -1016,6 +1016,9 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
   // Set only for Hyperliquid spot (HL-canonical or Unit-bridged); absent for
   // every other exchange => treated as canonical.
   isCanonical: Boolean,
+  // Clean equity ticker behind a tokenized-stock market (`AAPL` for `rAAPL`);
+  // see `resolveUnderlying`. Absent => the base name is the ticker.
+  underlying: String,
   ...CreatedUpdated,
 })
 

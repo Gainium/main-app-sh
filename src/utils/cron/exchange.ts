@@ -15,7 +15,7 @@ import {
   StatusEnum,
   OKXSource,
 } from '../../../types'
-import { classifyAssetClass } from '../assetClass'
+import { classifyAssetClass, resolveUnderlying } from '../assetClass'
 import { Kraken } from 'node-kraken-api'
 import axios from 'axios'
 
@@ -89,7 +89,14 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
         // paper copy in `providers`, so the lookup is populated by the time we
         // reach paper.
         let paperRealMap:
-          | Map<string, { assetCategory?: AssetClass; isCanonical?: boolean }>
+          | Map<
+              string,
+              {
+                assetCategory?: AssetClass
+                isCanonical?: boolean
+                underlying?: string
+              }
+            >
           | undefined
         if (isPaper(provider)) {
           const realName = provider.replace(/^paper/, '')
@@ -97,7 +104,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
             realName.slice(1)) as ExchangeEnum
           const realPairs = await pairDb.readData<ClearPairsSchema>(
             { exchange: realExchange },
-            { pair: 1, assetCategory: 1, isCanonical: 1 },
+            { pair: 1, assetCategory: 1, isCanonical: 1, underlying: 1 },
             {},
             true,
             true,
@@ -106,7 +113,11 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
             paperRealMap = new Map(
               realPairs.data.result.map((p) => [
                 p.pair,
-                { assetCategory: p.assetCategory, isCanonical: p.isCanonical },
+                {
+                  assetCategory: p.assetCategory,
+                  isCanonical: p.isCanonical,
+                  underlying: p.underlying,
+                },
               ]),
             )
           }
@@ -134,6 +145,15 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
             const isCanonical = paperRealMap
               ? paperRealMap.get(info.pair)?.isCanonical
               : info.isCanonical
+            // Clean ticker behind a tokenized stock, from the exchange's own
+            // flag (connector) or the curated map; paper mirrors its twin.
+            const underlying = paperRealMap
+              ? paperRealMap.get(info.pair)?.underlying
+              : resolveUnderlying({
+                  exchange: provider,
+                  baseAsset: info.baseAsset.name,
+                  connectorUnderlying: info.underlying,
+                })
             if (getPair) {
               if (
                 getPair.wsCode !== info.wsCode ||
@@ -143,6 +163,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 // Same for the canonical flag (undefined -> bool backfills on
                 // first run; then only rewrites when it actually changes).
                 getPair.isCanonical !== isCanonical ||
+                getPair.underlying !== underlying ||
                 getPair.code !== info.code ||
                 getPair.baseAsset.name !== info.baseAsset.name ||
                 getPair.baseAsset.minAmount !== info.baseAsset.minAmount ||
@@ -172,6 +193,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   exchange: provider,
                   assetCategory,
                   isCanonical,
+                  underlying,
                   _id,
                 })
               }
@@ -182,6 +204,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 exchange: provider,
                 assetCategory,
                 isCanonical,
+                underlying,
               })
             }
           }

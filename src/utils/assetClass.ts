@@ -35,25 +35,66 @@ export interface NormalizeStockTickerOpts {
    * lower-case wrappers, so a missing exchange can never mangle a clean ticker.
    */
   exchange?: string
+  /**
+   * The pair's `underlying` (see `resolveUnderlying`). When present it IS the
+   * ticker — the exchange (or the curated map) said so — and no shape rule runs.
+   */
+  underlying?: string
+}
+
+/**
+ * Curated underlying tickers for stock markets whose base name is not the
+ * ticker and whose exchange exposes no field saying what it is. Keyed
+ * `<venue>:<base>` with the venue lower-cased and paper-stripped. Every entry
+ * is checked by hand (price against the listed stock, logo): Bitget suffixes
+ * `STOCK` to a perp whose ticker collides with a crypto coin. `QNTSTOCK` is
+ * deliberately absent — its underlying could not be confirmed.
+ */
+const CURATED_UNDERLYING: Record<string, string> = {
+  'bitgetusdm:BBSTOCK': 'BB',
+  'bitgetusdm:CVXSTOCK': 'CVX',
+  'bitgetusdm:DIASTOCK': 'DIA',
+  'bitgetusdm:NOKSTOCK': 'NOK',
+  'bitgetusdm:RTXSTOCK': 'RTX',
+  'bitgetusdm:STXSTOCK': 'STX',
+}
+
+/**
+ * The clean ticker behind a stock market, from an authoritative source only:
+ * the connector's `underlying` (the exchange flagged the market as a wrapper —
+ * Bitget `isReality`), else the curated map above. Returns undefined when
+ * neither knows, rather than inferring one from the symbol's shape.
+ */
+export function resolveUnderlying(input: {
+  exchange: string
+  baseAsset: string
+  connectorUnderlying?: string
+}): string | undefined {
+  if (input.connectorUnderlying) {
+    return input.connectorUnderlying.toUpperCase()
+  }
+  const venue = input.exchange.toLowerCase().replace(/^paper/, '')
+  return CURATED_UNDERLYING[`${venue}:${input.baseAsset}`]
 }
 
 /**
  * Canonical equity-ticker normalization for the icon pipeline (backend) and
  * `CoinIcon` (frontend mirrors this exact rule). Maps a tokenized-stock base to
- * the clean underlying ticker for logo lookup: reality `rTSLA`/`RAAPL` → `TSLA`
- * /`AAPL`, lower-case wrappers `AAPLon`/`AAPLx` → `AAPL`, Bybit-spot xstock
- * `AAPLX` → `AAPL`. A clean perp base like `AAPL` or `NFLX` (no wrapper) is
+ * the clean underlying ticker for logo lookup: an explicit `underlying` wins;
+ * otherwise reality `rTSLA` → `TSLA`, lower-case wrappers `AAPLon`/`AAPLx` →
+ * `AAPL`, Bybit-spot xstock `AAPLX` → `AAPL`. A clean perp base like `AAPL` or `NFLX` (no wrapper) is
  * returned upper-cased and intact. Only ever called for stock/etf rows, so it
  * can't mis-hit a crypto base.
  *
  * Lower-case wrappers (`rTSLA`, `AAPLx`, `AAPLon`) are unambiguous — no clean
  * upper-case ticker looks like that — so they strip on any venue. Upper-case
- * wrappers (`RAAPL`, `AAPLX`) are NOT: a clean ticker can legitimately start
- * with `R` (`RBLX`/`RIVN`/`RDDT`) or end in `X` (`NFLX`). We therefore strip
- * those ONLY on the venue that produces that wrapper:
- *   - Bitget stock-class bases are always reality (`R`-prefixed); Bitget never
- *     lists a clean `R`-ticker as a stock, so any Bitget stock base starting
- *     with `R` is a wrapper.
+ * wrappers (`AAPLX`) are NOT: a clean ticker can legitimately end in `X`
+ * (`NFLX`). We therefore strip those ONLY on the venue that produces that
+ * wrapper:
+ *   - Bitget is not handled by shape at all: its Reality tokens carry an
+ *     explicit `underlying` from the connector (`isReality`), and its stock
+ *     perps are clean tickers — including ones that start with `R` (`RDDT`,
+ *     `RKLB`), which an `R`-prefix rule used to mangle.
  *   - Bybit SPOT xstocks are `X`-suffixed (`AAPLX`); the clean `NFLX`/`AAPL`
  *     perps live on `bybitLinear`, so gate on the spot `exchange === 'bybit'`.
  *   - Kraken xStocks are `X`-suffixed too (`AAPLX`, on `krakenUsdm`); Kraken has
@@ -65,6 +106,7 @@ export function normalizeStockTicker(
   symbol: string,
   opts?: NormalizeStockTickerOpts,
 ): string {
+  if (opts?.underlying) return opts.underlying.toUpperCase()
   const raw = symbol || ''
   // Hyperliquid HIP-3 builder-dex bases carry a `dex:` prefix (`xyz:AAPL`,
   // `flx:NVDA`) that main-app persists verbatim. Strip it so the clean
@@ -91,11 +133,6 @@ export function normalizeStockTicker(
   m = noLedger.match(/^([A-Z0-9.]+)x$/) // Kraken AAPLx → AAPL, BRK.Bx → BRK.B
   if (m) return m[1].toUpperCase()
 
-  // Upper-case wrappers — venue-gated so we don't mangle a clean ticker.
-  if (exchange.startsWith('bitget')) {
-    m = noLedger.match(/^R([A-Z][A-Z0-9]+)$/) // Bitget reality RAAPL → AAPL
-    if (m) return m[1].toUpperCase()
-  }
   // Upper-case `X` suffix = an xstock wrapper. Strip it only where the venue's
   // stock listings are EXCLUSIVELY tokenized, so we never mangle a clean ticker
   // ending in X (`NFLX`):

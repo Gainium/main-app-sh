@@ -282,6 +282,11 @@ export type ExchangeInfo = {
   // every other exchange => treated as canonical. Drives the pair-picker
   // "Canonical only" toggle. Danger List #1.
   isCanonical?: boolean
+  // Clean equity ticker behind a tokenized-stock market (`AAPL` for Bitget's
+  // `rAAPL`), set by the connector only where the exchange itself flags the
+  // market as a wrapper (Bitget v3 `isReality`). Absent => base name is the
+  // ticker. Danger List #1.
+  underlying?: string
 }
 
 export type TpSlCondition = 'valueChanged' | 'priceReached'
@@ -2663,6 +2668,13 @@ export interface PairsSchema extends SchemaI {
    * canonical. Drives the pair-picker "Canonical only" toggle.
    */
   isCanonical?: boolean
+  /**
+   * Clean equity ticker behind a tokenized-stock market, for logo/name lookup.
+   * From the connector where the exchange flags the wrapper (Bitget
+   * `isReality`), else from the curated `CURATED_UNDERLYING` map; resolved by
+   * `resolveUnderlying` in the pairs cron. Absent => the base name is the ticker.
+   */
+  underlying?: string
 }
 
 export interface StoreFilesSchema extends SchemaI {

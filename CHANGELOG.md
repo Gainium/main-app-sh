@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.64.0] - 2026-09-24
+
+### Added
+
+- **Pairs carry the ticker of the stock a tokenized stock tracks (`underlying`).** It comes from the exchange connection where the exchange itself marks a market as a wrapper (Bitget Reality tokens: `rAAPL` → `AAPL`, `rT` → `T`), and otherwise from a short hand-checked list for Bitget stock perpetuals whose name carries a `STOCK` suffix (`CVXSTOCK` → `CVX`). It is stored on the pair, mirrored to paper twins and returned by `getAllPairs`. Stock logos and names use it before any rule based on the symbol's shape.
+
+### Fixed
+
+- **Bitget stock perpetuals whose ticker starts with R showed another company's logo.** Stock-logo lookup removed a leading R from every Bitget stock, treating it as a Reality-token prefix, so a clean perpetual such as `RDDT` or `RKLB` was looked up as `DDT` or `KLB`. The R-prefix rule is gone; Bitget tickers now come only from `underlying` or the plain base name. One-letter Reality tokens such as `rT`, which the old rule did not match, now resolve too.
+
 ## [1.63.0] - 2026-09-24
 
 ### Added

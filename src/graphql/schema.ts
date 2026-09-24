@@ -54,6 +54,7 @@ export const BasicSchema = /* GraphQL */ `
     crossAvailable: Boolean
     assetCategory: String
     isCanonical: Boolean
+    underlying: String
     source: String
   }
   type getPairResponse implements BasicResponse {
@@ -90,6 +91,7 @@ export const BasicSchema = /* GraphQL */ `
     crossAvailable: Boolean
     assetCategory: String
     isCanonical: Boolean
+    underlying: String
     source: String
   }
   type allPairInfo {
