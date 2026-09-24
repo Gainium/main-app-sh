@@ -1262,6 +1262,12 @@ export type Sizes = {
   dca: number[]
   origBase: number
   origDca: number[]
+  /**
+   * The deal was opened reduced to the available balance
+   * (`reduceToAvailableBalance`). While such a deal is open the bot opens no
+   * other reduced deal: the available balance goes to one deal, not split.
+   */
+  reducedToAvailable?: boolean
 }
 
 export enum DCADealFlags {

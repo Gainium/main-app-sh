@@ -1,10 +1,16 @@
 # Changelog
 
+## [1.66.1] - 2026-09-24
+
+### Changed
+
+- **The available balance goes to one deal, not several.** With `reduceToAvailableBalance`, the first deal that hits the shortfall opens with the available balance; while it is open, other pairs (or further deals) that hit the shortfall are skipped instead of each opening on what is left, and the not-enough-balance message says the balance is already in use. Pairs that reach the shortfall at the same moment cannot both take it. The reduced deal is marked (`sizes.reducedToAvailable`) so this holds across restarts.
+
 ## [1.66.0] - 2026-09-24
 
 ### Added
 
-- **Use available balance if short (DCA).** A new DCA bot setting, `reduceToAvailableBalance`. When the free balance cannot fund the whole deal (base order plus every safety order), the bot opens the deal scaled down to what is available instead of skipping it: the base order and each safety order shrink by the same ratio, so the ladder keeps its shape, and the reduction is stored on the deal for its whole life. An optional floor, `reduceToAvailableMinSize` (in the base order size's unit), skips the deal when the reduced base order would be smaller. The bot records a deal event with the percentage it opened at. Applies to regular DCA bots with a fixed order size (base, quote or USD); off by default, and has no effect with Skip Balance Check on. Exposed on GraphQL and the v2 REST API.
+- **Use available balance when insufficient (DCA).** A new DCA bot setting, `reduceToAvailableBalance`. When the free balance cannot fund the whole deal (base order plus every safety order), the bot opens the deal scaled down to what is available instead of skipping it: the base order and each safety order shrink by the same ratio, so the ladder keeps its shape, and the reduction is stored on the deal for its whole life. An optional floor, `reduceToAvailableMinSize` (in the base order size's unit), skips the deal when the reduced base order would be smaller. The bot records a deal event with the percentage it opened at. Applies to regular DCA bots with a fixed order size (base, quote or USD); off by default, and has no effect with Skip Balance Check on. Exposed on GraphQL and the v2 REST API.
 
 ### Fixed
 

@@ -14206,6 +14206,7 @@ function createDCABotHelper<
 
     @IdMute(mutex, (botId: string) => `${botId}resetPending`)
     resetPending(_botId: string, symbol: string) {
+      this.releaseReduceToAvailableClaim(symbol)
       this.pendingDeals -= 1
       if (this.pendingDeals < 0) {
         this.pendingDeals = 0
@@ -14651,10 +14652,15 @@ function createDCABotHelper<
      * (their forms do not offer it), nothing available, or a reduced base
      * order below the user's floor.
      */
-    async reduceToAvailableRatio(check: {
-      required: number
-      available: number
-    }): Promise<{ ratio: number | null; belowFloor?: number }> {
+    async reduceToAvailableRatio(
+      check: { required: number; available: number },
+      symbol: string,
+    ): Promise<{
+      ratio: number | null
+      belowFloor?: number
+      /** Another deal of this bot already holds the available balance. */
+      heldByOtherDeal?: boolean
+    }> {
       const settings = await this.getAggregatedSettings()
       if (
         !settings.reduceToAvailableBalance ||
@@ -14688,7 +14694,32 @@ function createDCABotHelper<
       if (Number.isFinite(floor) && floor > 0 && reducedBase < floor) {
         return { ratio: null, belowFloor: reducedBase }
       }
+      // One reduced deal at a time: the available balance is not split
+      // between pairs (or deals). The first deal to hit the shortfall takes it;
+      // the rest are skipped while that deal is open. Check-and-claim with no
+      // await in between, because pairs open concurrently and would all read
+      // the same free balance.
+      if (
+        (this.reduceToAvailableClaim &&
+          this.reduceToAvailableClaim !== symbol) ||
+        this.getOpenDeals().some((d) => d.deal.sizes?.reducedToAvailable)
+      ) {
+        return { ratio: null, heldByOtherDeal: true }
+      }
+      this.reduceToAvailableClaim = symbol
       return { ratio }
+    }
+    /**
+     * The pair currently opening a reduced deal — see
+     * {@link reduceToAvailableRatio}. Released once the deal exists (it then
+     * blocks through its `sizes.reducedToAvailable`) or when the attempt ends
+     * without one ({@link resetPending}).
+     */
+    reduceToAvailableClaim: string | null = null
+    releaseReduceToAvailableClaim(symbol: string) {
+      if (this.reduceToAvailableClaim === symbol) {
+        this.reduceToAvailableClaim = null
+      }
     }
     /**
      * Per-deal {@link Sizes} that scale the base order and every safety order
@@ -14751,6 +14782,7 @@ function createDCABotHelper<
         dca: origDca.map((q, i) => (q + (sizes?.dca?.[i] ?? 0)) * ratio - q),
         origBase,
         origDca,
+        reducedToAvailable: true,
       }
     }
     /**
@@ -14969,7 +15001,7 @@ function createDCABotHelper<
           // instead of none, unless the reduced base order is under the floor.
           const reduce = checkBalance.status
             ? { ratio: null }
-            : await this.reduceToAvailableRatio(checkBalance)
+            : await this.reduceToAvailableRatio(checkBalance, symbol)
           if (checkBalance.status || reduce.ratio !== null) {
             // The shortfall cleared — re-arm, so if it returns the user is told
             // again. Keyed on the balance condition alone; whether a deal
@@ -15161,6 +15193,7 @@ function createDCABotHelper<
               dynamicAr,
               sizes,
             )
+            this.releaseReduceToAvailableClaim(symbol)
           } else {
             const asset = this.futures
               ? this.coinm
@@ -15182,7 +15215,9 @@ function createDCABotHelper<
             }${
               reduce.belowFloor !== undefined
                 ? `. A reduced deal would need a base order of ${this.math.round(reduce.belowFloor, 8)}, below the minimum reduced base order of ${settings.reduceToAvailableMinSize}`
-                : ''
+                : reduce.heldByOtherDeal
+                  ? '. The available balance is already used by another deal opened with the available balance'
+                  : ''
             }`
             // Report the shortfall once per (pair, condition) rather than on
             // every cycle. `openNewDeal` re-runs about once a minute and the

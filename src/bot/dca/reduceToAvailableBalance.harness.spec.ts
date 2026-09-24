@@ -128,6 +128,10 @@ const buildBot = (overrides: Record<string, unknown> = {}) => {
     getOrderId(prefix: string) {
       return `${prefix}-0000000000000000000000000099`
     }
+    openDeals: any[] = []
+    getOpenDeals() {
+      return this.openDeals
+    }
     getDeal() {
       return undefined
     }
@@ -155,28 +159,30 @@ describe('reduceToAvailableBalance — open a smaller deal instead of none', () 
 
   it('returns the fundable fraction with a 1% reserve', async () => {
     const { bot } = buildBot()
-    const r = await bot.reduceToAvailableRatio(SHORT)
+    const r = await bot.reduceToAvailableRatio(SHORT, PAIR)
     expect(r.ratio).to.be.closeTo(0.4 * 0.99, 1e-12)
   })
 
   it('skips as before when the setting is off or missing', async () => {
     for (const v of [false, undefined]) {
       const { bot } = buildBot({ reduceToAvailableBalance: v })
-      expect((await bot.reduceToAvailableRatio(SHORT)).ratio).to.equal(null)
+      expect((await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio).to.equal(
+        null,
+      )
     }
   })
 
   it('skips when the reduced base order is under the floor', async () => {
     // 100 × 0.396 = 39.6 < 40
     const { bot } = buildBot({ reduceToAvailableMinSize: '40' })
-    const r = await bot.reduceToAvailableRatio(SHORT)
+    const r = await bot.reduceToAvailableRatio(SHORT, PAIR)
     expect(r.ratio).to.equal(null)
     expect(r.belowFloor).to.be.closeTo(39.6, 1e-9)
   })
 
   it('opens when the reduced base order clears the floor', async () => {
     const { bot } = buildBot({ reduceToAvailableMinSize: '39' })
-    expect((await bot.reduceToAvailableRatio(SHORT)).ratio).to.be.closeTo(
+    expect((await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio).to.be.closeTo(
       0.396,
       1e-12,
     )
@@ -185,14 +191,18 @@ describe('reduceToAvailableBalance — open a smaller deal instead of none', () 
   it('treats an empty or zero floor as no floor', async () => {
     for (const v of ['', '0']) {
       const { bot } = buildBot({ reduceToAvailableMinSize: v })
-      expect((await bot.reduceToAvailableRatio(SHORT)).ratio).to.not.equal(null)
+      expect(
+        (await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio,
+      ).to.not.equal(null)
     }
   })
 
   it('does not apply to balance-percentage sizes', async () => {
     for (const t of [OrderSizeTypeEnum.percFree, OrderSizeTypeEnum.percTotal]) {
       const { bot } = buildBot({ orderSizeType: t })
-      expect((await bot.reduceToAvailableRatio(SHORT)).ratio).to.equal(null)
+      expect((await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio).to.equal(
+        null,
+      )
     }
   })
 
@@ -201,29 +211,35 @@ describe('reduceToAvailableBalance — open a smaller deal instead of none', () 
       (
         await buildBot({
           type: DCATypeEnum.terminal,
-        }).bot.reduceToAvailableRatio(SHORT)
+        }).bot.reduceToAvailableRatio(SHORT, PAIR)
       ).ratio,
     ).to.equal(null)
     expect(
       (
         await buildBot({ useRiskReward: true }).bot.reduceToAvailableRatio(
           SHORT,
+          PAIR,
         )
       ).ratio,
     ).to.equal(null)
     const { bot } = buildBot()
     bot.data = { ...bot.data, parentBotId: '000000000000000000000p99' }
-    expect((await bot.reduceToAvailableRatio(SHORT)).ratio).to.equal(null)
+    expect((await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio).to.equal(null)
   })
 
   it('does nothing with no balance at all or no shortfall', async () => {
     const { bot } = buildBot()
     expect(
-      (await bot.reduceToAvailableRatio({ required: 250, available: 0 })).ratio,
+      (await bot.reduceToAvailableRatio({ required: 250, available: 0 }, PAIR))
+        .ratio,
     ).to.equal(null)
     expect(
-      (await bot.reduceToAvailableRatio({ required: 250, available: 300 }))
-        .ratio,
+      (
+        await bot.reduceToAvailableRatio(
+          { required: 250, available: 300 },
+          PAIR,
+        )
+      ).ratio,
     ).to.equal(null)
   })
 
@@ -282,6 +298,47 @@ describe('reduceToAvailableBalance — open a smaller deal instead of none', () 
         (full.origDca[i] + 2) * 0.5,
         1e-9,
       ),
+    )
+  })
+  it('gives the available balance to one deal: another open reduced deal blocks', async () => {
+    const { bot } = buildBot()
+    bot.openDeals = [{ deal: { sizes: { reducedToAvailable: true } } }]
+    const r = await bot.reduceToAvailableRatio(SHORT, PAIR)
+    expect(r.ratio).to.equal(null)
+    expect(r.heldByOtherDeal).to.equal(true)
+  })
+
+  it('a full-size or compound-resized open deal does not block', async () => {
+    const { bot } = buildBot()
+    bot.openDeals = [{ deal: {} }, { deal: { sizes: { base: -1, dca: [] } } }]
+    expect((await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio).to.not.equal(
+      null,
+    )
+  })
+
+  it('another pair holding the claim blocks; the same pair does not; release frees it', async () => {
+    const { bot } = buildBot()
+    expect((await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio).to.not.equal(
+      null,
+    )
+    expect(bot.reduceToAvailableClaim).to.equal(PAIR)
+    const other = await bot.reduceToAvailableRatio(SHORT, 'OTHER-USD')
+    expect(other.ratio).to.equal(null)
+    expect(other.heldByOtherDeal).to.equal(true)
+    expect((await bot.reduceToAvailableRatio(SHORT, PAIR)).ratio).to.not.equal(
+      null,
+    )
+    bot.releaseReduceToAvailableClaim(PAIR)
+    expect(bot.reduceToAvailableClaim).to.equal(null)
+    expect(
+      (await bot.reduceToAvailableRatio(SHORT, 'OTHER-USD')).ratio,
+    ).to.not.equal(null)
+  })
+
+  it('marks the reduced sizes so the deal blocks further reductions', async () => {
+    const { bot } = buildBot()
+    expect((await bot.scaleDealSizes(PAIR, 0.5)).reducedToAvailable).to.equal(
+      true,
     )
   })
 })

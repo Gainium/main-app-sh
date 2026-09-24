@@ -2160,6 +2160,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     dca: [Number],
     origBase: Number,
     origDca: [Number],
+    reducedToAvailable: Boolean,
   },
   tags: [String],
   ac: {

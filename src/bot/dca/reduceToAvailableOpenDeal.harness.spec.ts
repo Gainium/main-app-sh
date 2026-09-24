@@ -25,6 +25,7 @@ import { ExchangeEnum } from '../../../types'
 const BOT_ID = '000000000000000000000b77'
 const USER_ID = '000000000000000000000477'
 const PAIR = 'SYN-USDT'
+const PAIR_2 = 'ALT-USDT'
 const PRICE = 2
 /** Base order 100 USDT → 50 SYN at 2; no safety orders in this fixture. */
 const REQUIRED = 100
@@ -58,7 +59,7 @@ class FakeBase {
   exchange: any = {}
   orders = new Map()
   data: any = {
-    settings: { type: 'regular', pair: [PAIR] },
+    settings: { type: 'regular', pair: [PAIR, PAIR_2] },
     status: 'open',
     exchange: ExchangeEnum.binance,
     exchangeUUID: 'uuid-77',
@@ -75,7 +76,13 @@ class FakeBase {
 const loadModule = createRequire(__filename)
 let Helper: any
 
-const SIZES_MARKER = { base: -1, dca: [], origBase: 50, origDca: [] }
+const SIZES_MARKER = {
+  base: -1,
+  dca: [],
+  origBase: 50,
+  origDca: [],
+  reducedToAvailable: true,
+}
 
 const buildBot = (settings: Record<string, unknown>) => {
   const raised = {
@@ -88,7 +95,11 @@ const buildBot = (settings: Record<string, unknown>) => {
     raised = raised
     data: any = new FakeBase().data
     standingConditionLatch = new ConditionLatch(STANDING_CONDITION_REARM_MS)
-    pairs = new Set([PAIR])
+    pairs = new Set([PAIR, PAIR_2])
+    openDeals: any[] = []
+    getOpenDeals() {
+      return this.openDeals
+    }
     botEventDb = {
       createData: (e: any) => {
         raised.events.push(e)
@@ -100,7 +111,8 @@ const buildBot = (settings: Record<string, unknown>) => {
     async getAggregatedSettings() {
       return {
         type: 'regular',
-        pair: [PAIR],
+        pair: [PAIR, PAIR_2],
+        useMulti: true,
         skipBalanceCheck: false,
         startCondition: 'ASAP',
         orderSizeType: 'quote',
@@ -149,6 +161,8 @@ const buildBot = (settings: Record<string, unknown>) => {
     updateDealLastTime() {}
     async placeBaseOrder(...args: any[]) {
       raised.placedBase.push(args)
+      // As the real one does: the deal now exists, carrying its sizes.
+      this.openDeals.push({ deal: { symbol: args[1], sizes: args[10] } })
     }
     async handleErrors(...args: any[]) {
       raised.errors.push(args)
@@ -171,9 +185,9 @@ const buildBot = (settings: Record<string, unknown>) => {
   return new TestBot() as any
 }
 
-const openDeal = async (bot: any) => {
+const openDeal = async (bot: any, pair = PAIR) => {
   let notOpened = false
-  await bot.openNewDeal(BOT_ID, PAIR, false, false, 0, () => {
+  await bot.openNewDeal(BOT_ID, pair, false, false, 0, () => {
     notOpened = true
   })
   return notOpened
@@ -243,5 +257,32 @@ describe('reduceToAvailableBalance — openNewDeal wiring', () => {
     expect(bot.raised.placedBase).to.have.length(1)
     expect(bot.raised.placedBase[0][10]).to.equal(undefined)
     expect(bot.raised.events).to.have.length(0)
+  })
+  it('multi-pair: the first pair takes the available balance, the rest are skipped', async function () {
+    this.timeout(30000)
+    const bot = buildBot({ reduceToAvailableBalance: true })
+    // Both pairs hit the shortfall together and read the same free balance.
+    const [first, second] = await Promise.all([
+      openDeal(bot, PAIR),
+      openDeal(bot, PAIR_2),
+    ])
+    expect([first, second].filter((notOpened) => !notOpened)).to.have.length(1)
+    expect(bot.raised.placedBase).to.have.length(1)
+    expect(bot.raised.ratios).to.have.length(1)
+    expect(bot.raised.errors).to.have.length(1)
+    expect(`${bot.raised.errors[0][0]}`).to.contain(
+      'already used by another deal opened with the available balance',
+    )
+    // The claim does not outlive the attempt.
+    expect(bot.reduceToAvailableClaim).to.equal(null)
+  })
+
+  it('a skipped reduced attempt releases its claim', async function () {
+    this.timeout(30000)
+    const bot = buildBot({ reduceToAvailableBalance: true })
+    bot.refuseDealBelowExchangeMin = async () => true
+    await openDeal(bot)
+    expect(bot.raised.placedBase).to.have.length(0)
+    expect(bot.reduceToAvailableClaim).to.equal(null)
   })
 })
