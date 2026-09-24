@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.62.4] - 2026-09-24
+
+### Fixed
+
+- **A balance refresh the exchange refuses is now logged.** When the exchange answered a balance request with an error rather than failing outright — for example because the API key lacks a read permission the account type requires — nothing was stored and nothing was logged, so the connection showed no balances with no record of why. The refusal is now logged with the connection and the exchange's reason. Repeats are coalesced: each connection is logged at most once an hour per reason, and when many connections on one exchange fail with the same reason (the exchange itself being unavailable) only the first few are logged individually and the rest are reported as a single hourly count.
+
 ## [1.62.3] - 2026-09-24
 
 ### Fixed

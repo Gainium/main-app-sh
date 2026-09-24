@@ -28,6 +28,7 @@ import type { Socket } from 'socket.io-client'
 import utils from '.'
 import { resolveConnection } from './credentials'
 import logger from './logger'
+import { BalanceFailureLog } from './balanceFailureLog'
 import {
   botEventDb,
   botMessageDb,
@@ -424,6 +425,13 @@ const processBalanceUpdate = async () => {
 const balanceFetchConcurrency = () =>
   Math.max(1, parseInt(process.env.BALANCE_FETCH_CONCURRENCY ?? '', 10) || 8)
 
+/**
+ * Coalesces the per-connection line written when the connector refuses a
+ * balance refresh, so a venue outage cannot flood the log. See
+ * `balanceFailureLog.ts`.
+ */
+const balanceFailureLog = new BalanceFailureLog()
+
 const updateUserBalance = async (
   user: ClearUserSchema,
   uuid?: string,
@@ -473,6 +481,23 @@ const updateUserBalance = async (
         e.bybitHost,
       )
       const balances = await provider.getBalance()
+      if (balances.status !== 'OK') {
+        // The connector reports a refusal as a NOTOK result, not a throw, so
+        // the catch below never sees it. Without this line the connection
+        // shows no balances and nothing says why.
+        const reason = `${balances.reason ?? 'no reason'}`
+        const note = balanceFailureLog.note(e.provider, reason, e.uuid)
+        for (const s of note.summaries) {
+          logger.warn(
+            `updateUserBalance | ${s.provider} NOTOK repeated ${s.failures}x across ${s.connections} connection(s) in the last ${s.windowMinutes}m: ${s.reason}`,
+          )
+        }
+        if (note.log) {
+          logger.warn(
+            `updateUserBalance | ${userId} ${e.provider} ${e.uuid} NOTOK: ${reason}`,
+          )
+        }
+      }
       if (balances.status === 'OK' && userBalances.status === StatusEnum.ok) {
         const balancesMap: Map<string, FreeAsset[0]> = new Map()
         for (const b of balances.data) {
