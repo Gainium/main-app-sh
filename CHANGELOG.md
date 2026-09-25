@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.68.0] - 2026-09-25
+
+### Added
+
+- **Per-pair statistics from the deals.** A new `getBotPairStats` query returns one row per pair of a DCA, Combo or hedge bot, folded from the bot's deals when asked: closed deals, wins and losses, realized profit, gross profit and loss, profit factor, fees (in the pair's quote asset), the largest capital a single deal used, average and longest deal duration, the deepest intra-deal drawdown, and the open deals with their current P&L and capital. An optional `from` / `to` window filters the closed deals by close time; open deals are always included. Pairs the bot is configured for but has never traded get a zero row. Access follows the bot: its owner, or a visitor holding the share link of a shared bot.
+
+### Fixed
+
+- **Profit factor is now gross profit divided by gross loss.** Live bot statistics stored the number of winning deals divided by the number of losing deals under this name, both for the bot and for each pair, which could read well above 1 for a bot losing money. It is now computed from money, the same way backtests compute it. The bot-wide value is corrected on the bot's next closed deal from totals it already kept. Each pair now also keeps its gross profit and loss; a pair recorded before this version seeds both once from its earlier deals on its next close, so its factor covers its whole history rather than only the deals that follow. The AI bot details recompute the bot-wide factor from the stored totals and omit a pair's factor until it has been seeded.
+
 ## [1.67.0] - 2026-09-25
 
 ### Added

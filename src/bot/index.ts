@@ -93,6 +93,13 @@ import {
   updateRelatedBotsInVar,
 } from './utils'
 import { statsAfterReset } from './dca/botStatsReset'
+import {
+  buildPairStatsPipeline,
+  shapePairStats,
+  type BotPairStatsRow,
+  type PairStatsGroup,
+  type PairStatsRange,
+} from './pairStats'
 import { IdMute, IdMutex } from '../utils/mutex'
 import { mapDataGridOptionsToMongoOptions } from '../db/utils'
 import RabbitClient from '../db/rabbit'
@@ -10722,6 +10729,77 @@ class Bot<T extends UserSchema = UserSchema> {
       return findTransactionsRequest
     }
     return bot
+  }
+
+  /**
+   * Per-pair performance of a DCA / Combo / hedge bot, folded from its deals —
+   * see `pairStats.ts` for the populations and why this is not `symbolStats`.
+   *
+   * Access is exactly `getBot`'s: the owner, or anyone holding the share id of
+   * a bot shared with `share: true`. The deals are then read by the bot ids
+   * that check returned, never by an id from the input.
+   */
+  public async getBotPairStats(
+    userId: string,
+    type: BotType,
+    id: string,
+    shareId?: string,
+    publicBot = false,
+    paperContext?: boolean,
+    range: PairStatsRange = {},
+  ) {
+    if (type === BotType.grid) {
+      return {
+        status: StatusEnum.notok,
+        reason: 'Pair statistics are available for DCA and Combo bots',
+        data: null,
+      }
+    }
+    const bot = (await this.getBot(
+      type,
+      userId,
+      id,
+      publicBot,
+      paperContext ?? false,
+      shareId,
+    )) as BaseReturn<Record<string, unknown>>
+    if (bot.status !== StatusEnum.ok || !bot.data) {
+      return bot
+    }
+    const hedge = type === BotType.hedgeDca || type === BotType.hedgeCombo
+    const bots = (
+      hedge ? ((bot.data.bots as Record<string, unknown>[]) ?? []) : [bot.data]
+    ).filter(Boolean)
+    const botIds = bots.map((b) => `${b._id}`)
+    const configuredPairs = bots.flatMap((b) => {
+      const assets = new Map(
+        (
+          (b.symbol as
+            | { value?: { symbol?: string; baseAsset?: string; quoteAsset?: string } }[]
+            | undefined) ?? []
+        ).map((s) => [s.value?.symbol, s.value]),
+      )
+      const pairs =
+        ((b.settings as { pair?: string[] } | undefined)?.pair as string[]) ?? []
+      return pairs.map((symbol) => ({
+        symbol,
+        baseAsset: assets.get(symbol)?.baseAsset,
+        quoteAsset: assets.get(symbol)?.quoteAsset,
+      }))
+    })
+    const combo = type === BotType.combo || type === BotType.hedgeCombo
+    const dealsDb = (combo ? this.comboDealsDb : this.dcaDealsDb) as typeof this.dcaDealsDb
+    const groups = await dealsDb.aggregate<PairStatsGroup>(
+      buildPairStatsPipeline(botIds, range),
+    )
+    if (groups.status !== StatusEnum.ok) {
+      return groups
+    }
+    const data: BotPairStatsRow[] = shapePairStats(
+      groups.data?.result ?? [],
+      configuredPairs,
+    )
+    return { status: StatusEnum.ok as const, reason: null, data }
   }
 
   public async getBotDealsStats(

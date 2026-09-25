@@ -150,6 +150,12 @@ import {
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import { emptyBotStats } from './dca/botStatsReset'
+import { profitFactorOf } from './profitFactor'
+import {
+  buildPairGrossPipeline,
+  shapePairGross,
+  type PairGross,
+} from './pairStats'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
 import { executedFillQty } from './dca/executedFill'
@@ -25322,6 +25328,8 @@ function createDCABotHelper<
               dailyProfitPerc: 0,
               winRate: 0,
               profitFactor: 0,
+              grossProfit: usdAsset(),
+              grossLoss: usdAsset(),
             },
           },
           duration: {
@@ -26102,14 +26110,10 @@ function createDCABotHelper<
                   : totalDeals >= 273 && totalDeals < 385
                     ? 'A'
                     : 'A+'
-      stats.numerical.ratios.profitFactor =
-        stats.numerical.deals.profit / stats.numerical.deals.loss
-      if (!isFinite(stats.numerical.ratios.profitFactor)) {
-        stats.numerical.ratios.profitFactor = -1
-      }
-      if (isNaN(stats.numerical.ratios.profitFactor)) {
-        stats.numerical.ratios.profitFactor = 0
-      }
+      stats.numerical.ratios.profitFactor = profitFactorOf(
+        stats.numerical.profit.grossProfit.usd,
+        stats.numerical.loss.grossLoss.usd,
+      )
 
       const maxUsage = this.futures
         ? this.coinm
@@ -26281,13 +26285,52 @@ function createDCABotHelper<
           findSymbol.numerical.general.winRate =
             findSymbol.numerical.deals.profit / totalSymbolDeals
         }
-        findSymbol.numerical.general.profitFactor =
-          findSymbol.numerical.deals.profit / findSymbol.numerical.deals.loss
-        if (!isFinite(findSymbol.numerical.general.profitFactor)) {
-          findSymbol.numerical.general.profitFactor = -1
+        // Gross totals behind the pair's profit factor. A record written
+        // before they existed (in Mongo, or restored from the Redis snapshot)
+        // has neither, and starting it at 0 would give a factor over only the
+        // deals closed from now on — so seed it ONCE from the pair's earlier
+        // deals, then accumulate like every other counter here. A failed read
+        // leaves the pair unseeded (factor untouched) and the next close
+        // retries, rather than persisting a partial total.
+        const pairGeneral = findSymbol.numerical.general
+        if (!pairGeneral.grossProfit || !pairGeneral.grossLoss) {
+          const earlier = await this.dealsDb.aggregate<PairGross>(
+            buildPairGrossPipeline(
+              this.botId,
+              findSymbol.symbol,
+              readResetTime,
+              `${deal._id}`,
+            ),
+          )
+          if (earlier.status === StatusEnum.ok) {
+            const gross = shapePairGross(earlier.data?.result ?? [])
+            pairGeneral.grossProfit = {
+              usd: gross.grossProfitUsd,
+              asset: gross.grossProfitAsset,
+            }
+            pairGeneral.grossLoss = {
+              usd: gross.grossLossUsd,
+              asset: gross.grossLossAsset,
+            }
+          } else {
+            this.handleLog(
+              `Bot update stats | ${findSymbol.symbol} gross seed failed: ${earlier.reason}`,
+            )
+          }
         }
-        if (isNaN(findSymbol.numerical.general.profitFactor)) {
-          findSymbol.numerical.general.profitFactor = 0
+        if (pairGeneral.grossProfit && pairGeneral.grossLoss) {
+          if (isProfit) {
+            pairGeneral.grossProfit.usd += d.deal.profit.totalUsd
+            pairGeneral.grossProfit.asset += d.deal.profit.total
+          }
+          if (isLoss) {
+            pairGeneral.grossLoss.usd += d.deal.profit.totalUsd
+            pairGeneral.grossLoss.asset += d.deal.profit.total
+          }
+          pairGeneral.profitFactor = profitFactorOf(
+            pairGeneral.grossProfit.usd,
+            pairGeneral.grossLoss.usd,
+          )
         }
         if (duration > findSymbol.duration.maxDealDuration) {
           findSymbol.duration.maxDealDuration = duration

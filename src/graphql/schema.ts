@@ -791,6 +791,7 @@ export const BotSchema = /* GraphQL */ `
     ): botComboDealsResponse
     getDCABotDealsById(input: getComboBotDealsByIdInput): botDealsResponse
     getBotDealsStats(input: getBotDealsStatsInput): botDealsStatsResponse
+    getBotPairStats(input: getBotPairStatsInput!): botPairStatsResponse
     getComboBotDealsStats(input: getBotDealsStatsInput): botDealsStatsResponse
     getHedgeComboBotDealsStats(
       input: getBotDealsStatsInput
@@ -1452,6 +1453,48 @@ export const BotSchema = /* GraphQL */ `
   input getBotDealsStatsInput {
     id: String!
     shareId: String
+  }
+  input getBotPairStatsInput {
+    id: String!
+    type: botTypeEnum!
+    shareId: String
+    """
+    Window on the CLOSED deals, by close time (ms). Open deals are always
+    included — they are the pair's current position, not history.
+    """
+    from: Float
+    to: Float
+  }
+  """
+  One pair of a bot, derived from its deals. Money is USD unless named
+  otherwise; fees are in the pair's quote asset.
+  """
+  type botPairStats {
+    symbol: String
+    baseAsset: String
+    quoteAsset: String
+    closedDeals: Int
+    wins: Int
+    losses: Int
+    realizedProfitUsd: Float
+    grossProfitUsd: Float
+    grossLossUsd: Float
+    profitFactor: FloatOrInfinity
+    feesQuote: Float
+    "Largest capital any single deal of this pair committed."
+    maxDealCapitalUsd: Float
+    avgDealDuration: Float
+    maxDealDuration: Float
+    "Worst intra-deal drawdown of any deal of this pair, as a fraction."
+    maxDrawdownPerc: Float
+    openDeals: Int
+    unrealizedProfitUsd: Float
+    openCapitalUsd: Float
+  }
+  type botPairStatsResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: [botPairStats]
   }
   type fullOrders {
     orders: [botOrder]
@@ -3617,6 +3660,8 @@ export const BotSchema = /* GraphQL */ `
     dailyProfitPerc: Float
     winRate: Float
     profitFactor: FloatOrInfinity
+    grossProfit: usdAssetNumber
+    grossLoss: usdAssetNumber
   }
   type botSymbolsStatsDuration {
     maxDealDuration: Float

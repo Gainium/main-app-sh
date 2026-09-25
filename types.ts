@@ -2382,7 +2382,16 @@ export type BotSymbolsStats = {
       dailyProfit: UsdAssetNumber
       dailyProfitPerc: number
       winRate: number
+      /** Gross profit / gross loss; see `profitFactorOf` for the encoding. */
       profitFactor: number
+      /**
+       * Sum of the winning / losing deals' profit (loss is negative). Optional:
+       * a record written before they existed carries neither until its pair's
+       * next close, which seeds both from the pair's deals (dcaHelper
+       * `botUpdateStats`).
+       */
+      grossProfit?: UsdAssetNumber
+      grossLoss?: UsdAssetNumber
     }
   }
   duration: {

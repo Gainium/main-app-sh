@@ -1780,6 +1780,8 @@ const botSymbolsStats: Schema<BotSymbolsStats> = new Schema({
       dailyProfitPerc: Number,
       winRate: Number,
       profitFactor: Number,
+      grossProfit: usdAssetNumber,
+      grossLoss: usdAssetNumber,
     },
   },
   duration: {

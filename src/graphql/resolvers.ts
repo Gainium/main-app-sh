@@ -1857,6 +1857,40 @@ const resolvers = <
         paperContext,
       )
     },
+    getBotPairStats: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: {
+          id: string
+          type: BotType
+          shareId?: string
+          from?: number
+          to?: number
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      // Same rule as getComboBot: a share-link visitor has no user, and the
+      // share id is then the only credential `getBot` accepts.
+      if (user.status === StatusEnum.notok && !input.shareId) {
+        return user
+      }
+      return await Bot.getBotPairStats(
+        user.data?._id.toString() ?? '',
+        input.type,
+        input.id,
+        input.shareId,
+        token === 'demo',
+        paperContext,
+        { from: input.from, to: input.to },
+      )
+    },
     getComboBotDealsStats: async (
       _parent: any,
       {
