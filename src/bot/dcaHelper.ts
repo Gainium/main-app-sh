@@ -196,6 +196,7 @@ import {
   nextLadderLevel,
   remainingLadderLevels,
 } from './dca/ladderLevels'
+import { splitPendingFunds } from './dca/pendingFundsResend'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
@@ -12821,24 +12822,7 @@ function createDCABotHelper<
                 cancel: [],
               },
             )
-            const pendingAddFunds = d.deal.pendingAddFunds ?? []
-            if (pendingAddFunds.length) {
-              d.deal.pendingAddFunds = []
-              this.saveDeal(d, { pendingAddFunds: [] })
-              for (const pending of pendingAddFunds) {
-                const { id: _id, ...settings } = pending
-                this.addDealFunds(this.botId, d.deal._id, settings)
-              }
-            }
-            const pendingReduceFunds = d.deal.pendingReduceFunds ?? []
-            if (pendingReduceFunds.length) {
-              d.deal.pendingReduceFunds = []
-              this.saveDeal(d, { pendingReduceFunds: [] })
-              for (const pending of pendingReduceFunds) {
-                const { id: _id, ...settings } = pending
-                this.reduceDealFunds(this.botId, d.deal._id, settings)
-              }
-            }
+            this.resendPendingFunds(d)
           }
         }
       }
@@ -23502,6 +23486,44 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * Send the deal's pending add-funds / reduce-funds orders again, after a
+     * reload or a deal settings update. Only the entries whose order is gone
+     * are re-sent: on a keep-orders reload the orders are still resting, and
+     * re-sending those placed a second copy of each one. Spec `110`.
+     */
+    resendPendingFunds(d: FullDeal<ExcludeDoc<Deal>>) {
+      const orders = this.getOrdersByStatusAndDealId({
+        dealId: `${d.deal._id}`,
+      })
+      const add = splitPendingFunds(
+        d.deal.pendingAddFunds ?? [],
+        orders,
+        'addFundsId',
+      )
+      if (add.resend.length) {
+        d.deal.pendingAddFunds = add.standing
+        this.saveDeal(d, { pendingAddFunds: add.standing })
+        for (const pending of add.resend) {
+          const { id: _id, ...settings } = pending
+          this.addDealFunds(this.botId, d.deal._id, settings)
+        }
+      }
+      const reduce = splitPendingFunds(
+        d.deal.pendingReduceFunds ?? [],
+        orders,
+        'reduceFundsId',
+      )
+      if (reduce.resend.length) {
+        d.deal.pendingReduceFunds = reduce.standing
+        this.saveDeal(d, { pendingReduceFunds: reduce.standing })
+        for (const pending of reduce.resend) {
+          const { id: _id, ...settings } = pending
+          this.reduceDealFunds(this.botId, d.deal._id, settings)
+        }
+      }
+    }
+
     async getOrdersToRestartAfterSettingsUpdate(dealId: string) {
       const findDeal = this.getDeal(dealId)
       return this.findDiff(findDeal?.currentOrders ?? [], [])
@@ -23768,24 +23790,7 @@ function createDCABotHelper<
               dealId,
               await this.getOrdersToRestartAfterSettingsUpdate(dealId),
             )
-            const pendingAddFunds = findDeal.deal.pendingAddFunds ?? []
-            if (pendingAddFunds.length) {
-              findDeal.deal.pendingAddFunds = []
-              this.saveDeal(findDeal, { pendingAddFunds: [] })
-              for (const pending of pendingAddFunds) {
-                const { id: _id, ...settings } = pending
-                this.addDealFunds(this.botId, findDeal.deal._id, settings)
-              }
-            }
-            const pendingReduceFunds = findDeal.deal.pendingReduceFunds ?? []
-            if (pendingReduceFunds.length) {
-              findDeal.deal.pendingReduceFunds = []
-              this.saveDeal(findDeal, { pendingReduceFunds: [] })
-              for (const pending of pendingReduceFunds) {
-                const { id: _id, ...settings } = pending
-                this.reduceDealFunds(this.botId, findDeal.deal._id, settings)
-              }
-            }
+            this.resendPendingFunds(findDeal)
           } else {
             await this.placeBaseOrder(
               this.botId,

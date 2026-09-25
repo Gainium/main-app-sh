@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.68.4] - 2026-09-25
+
+### Fixed
+
+- **Saving a DCA bot or reloading it no longer places a second copy of a pending add-funds or reduce-funds limit order.** A reload re-sent every pending addition and reduction, including the ones whose order was still waiting on the exchange, so each got a twin and both could fill — the deal bought (or sold) that amount twice. Only an entry whose order is gone (cancelled, or never placed) is sent again now; a waiting order is left as it is.
+
 ## [1.68.3] - 2026-09-25
 
 ### Fixed
