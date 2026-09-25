@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.68.2] - 2026-09-25
+
+### Changed
+
+- **Per-pair statistics report peak capital, not the largest single deal.** `getBotPairStats` replaces `maxDealCapitalUsd` with `peakCapitalUsd`: the most capital the pair had committed at once, summed over its deals open at the same time (a deal closing as another opens re-uses the same capital). A bot running several deals per pair ties up their sum, so return on capital measured against one deal overstated it many times over.
+
 ## [1.68.1] - 2026-09-25
 
 ### Fixed

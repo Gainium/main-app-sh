@@ -94,9 +94,12 @@ import {
 } from './utils'
 import { statsAfterReset } from './dca/botStatsReset'
 import {
+  buildPairCapitalPipeline,
   buildPairStatsPipeline,
+  peakCapitalBySymbol,
   shapePairStats,
   type BotPairStatsRow,
+  type PairCapitalDeal,
   type PairStatsGroup,
   type PairStatsRange,
 } from './pairStats'
@@ -10775,12 +10778,19 @@ class Bot<T extends UserSchema = UserSchema> {
       const assets = new Map(
         (
           (b.symbol as
-            | { value?: { symbol?: string; baseAsset?: string; quoteAsset?: string } }[]
+            | {
+                value?: {
+                  symbol?: string
+                  baseAsset?: string
+                  quoteAsset?: string
+                }
+              }[]
             | undefined) ?? []
         ).map((s) => [s.value?.symbol, s.value]),
       )
       const pairs =
-        ((b.settings as { pair?: string[] } | undefined)?.pair as string[]) ?? []
+        ((b.settings as { pair?: string[] } | undefined)?.pair as string[]) ??
+        []
       return pairs.map((symbol) => ({
         symbol,
         baseAsset: assets.get(symbol)?.baseAsset,
@@ -10788,16 +10798,25 @@ class Bot<T extends UserSchema = UserSchema> {
       }))
     })
     const combo = type === BotType.combo || type === BotType.hedgeCombo
-    const dealsDb = (combo ? this.comboDealsDb : this.dcaDealsDb) as typeof this.dcaDealsDb
-    const groups = await dealsDb.aggregate<PairStatsGroup>(
-      buildPairStatsPipeline(botIds, range),
-    )
+    const dealsDb = (
+      combo ? this.comboDealsDb : this.dcaDealsDb
+    ) as typeof this.dcaDealsDb
+    const [groups, capital] = await Promise.all([
+      dealsDb.aggregate<PairStatsGroup>(buildPairStatsPipeline(botIds, range)),
+      dealsDb.aggregate<PairCapitalDeal>(
+        buildPairCapitalPipeline(botIds, range),
+      ),
+    ])
     if (groups.status !== StatusEnum.ok) {
       return groups
+    }
+    if (capital.status !== StatusEnum.ok) {
+      return capital
     }
     const data: BotPairStatsRow[] = shapePairStats(
       groups.data?.result ?? [],
       configuredPairs,
+      peakCapitalBySymbol(capital.data?.result ?? []),
     )
     return { status: StatusEnum.ok as const, reason: null, data }
   }

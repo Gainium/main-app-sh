@@ -3,8 +3,10 @@ process.env.NODE_ENV = 'testing'
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
 import {
+  buildPairCapitalPipeline,
   buildPairGrossPipeline,
   buildPairStatsPipeline,
+  peakCapitalBySymbol,
   shapePairGross,
   shapePairStats,
   type PairStatsGroup,
@@ -21,7 +23,6 @@ const group = (over: Partial<PairStatsGroup>): PairStatsGroup => ({
   grossProfitUsd: 0,
   grossLossUsd: 0,
   feesQuote: 0,
-  maxDealCapitalUsd: 0,
   totalDuration: 0,
   maxDealDuration: 0,
   maxDrawdownPerc: 0,
@@ -131,5 +132,77 @@ describe('pairStats — gross seed for the engine', () => {
       grossLossUsd: 0,
       grossLossAsset: 0,
     })
+  })
+})
+
+describe('pairStats — peak concurrent capital', () => {
+  const deal = (
+    symbol: string,
+    start: number,
+    end: number | null,
+    capital: number,
+  ) => ({
+    symbol,
+    start,
+    end,
+    capital,
+  })
+
+  it('sums deals that are open together, not the largest single deal', () => {
+    // Three $20 deals overlapping between t=30 and t=40.
+    const peaks = peakCapitalBySymbol([
+      deal('BTC-USDC', 10, 50, 20),
+      deal('BTC-USDC', 20, 60, 20),
+      deal('BTC-USDC', 30, 40, 20),
+    ])
+    expect(peaks.get('BTC-USDC')).to.equal(60)
+  })
+
+  it('a deal closing as the next opens re-uses the same capital', () => {
+    const peaks = peakCapitalBySymbol([
+      deal('SOL-USDC', 0, 100, 20),
+      deal('SOL-USDC', 100, 200, 20),
+      deal('SOL-USDC', 200, 300, 20),
+    ])
+    expect(peaks.get('SOL-USDC')).to.equal(20)
+  })
+
+  it('holds an open deal until now and keeps pairs apart', () => {
+    const peaks = peakCapitalBySymbol(
+      [
+        deal('ETH-USDC', 10, null, 30),
+        deal('ETH-USDC', 500, 600, 30),
+        deal('ADA-USDC', 10, 20, 5),
+      ],
+      1000,
+    )
+    expect(peaks.get('ETH-USDC')).to.equal(60)
+    expect(peaks.get('ADA-USDC')).to.equal(5)
+  })
+
+  it('ignores deals with no capital or no start', () => {
+    const peaks = peakCapitalBySymbol([
+      deal('X-USDC', 0, 10, 50),
+      deal('X-USDC', 5, 10, 0),
+    ])
+    expect(peaks.has('X-USDC')).to.equal(false)
+  })
+
+  it('projects the deals of the same population as the stats', () => {
+    const [match, project] = buildPairCapitalPipeline(['a'], { from: 1 })
+    const stats = buildPairStatsPipeline(['a'], { from: 1 })[0]
+    expect(match).to.deep.equal(stats)
+    expect(
+      Object.keys((project as { $project: object }).$project),
+    ).to.include.members(['symbol', 'start', 'end', 'capital'])
+  })
+
+  it('carries the peak onto the pair row', () => {
+    const [row] = shapePairStats(
+      [group({ closedDeals: 2, realizedProfitUsd: 6 })],
+      [],
+      new Map([['BTC-USDC', 120]]),
+    )
+    expect(row?.peakCapitalUsd).to.equal(120)
   })
 })

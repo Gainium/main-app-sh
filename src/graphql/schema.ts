@@ -1481,8 +1481,11 @@ export const BotSchema = /* GraphQL */ `
     grossLossUsd: Float
     profitFactor: FloatOrInfinity
     feesQuote: Float
-    "Largest capital any single deal of this pair committed."
-    maxDealCapitalUsd: Float
+    """
+    Most capital the pair had committed at once: the peak of the summed
+    capital of its deals open at the same time.
+    """
+    peakCapitalUsd: Float
     avgDealDuration: Float
     maxDealDuration: Float
     "Worst intra-deal drawdown of any deal of this pair, as a fraction."

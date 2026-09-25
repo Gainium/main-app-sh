@@ -31,7 +31,12 @@ export type BotPairStatsRow = {
   profitFactor: number
   /** Fees paid by the closed deals, in the pair's quote asset. */
   feesQuote: number
-  maxDealCapitalUsd: number
+  /**
+   * The most capital the pair had committed at once: the peak, over time, of
+   * the summed `usage.maxUsd` of its deals open at that moment. A pair running
+   * several deals together ties up their sum, not the largest one.
+   */
+  peakCapitalUsd: number
   avgDealDuration: number
   maxDealDuration: number
   /** Worst intra-deal drawdown over closed AND open deals, as a fraction. */
@@ -52,18 +57,22 @@ const OPEN = [
 
 const num = (path: string) => ({ $ifNull: [path, 0] })
 
+const finite = (v: unknown) =>
+  typeof v === 'number' && Number.isFinite(v) ? v : 0
+
 export type PairStatsGroup = Omit<
   BotPairStatsRow,
-  'symbol' | 'profitFactor' | 'avgDealDuration'
+  'symbol' | 'profitFactor' | 'avgDealDuration' | 'peakCapitalUsd'
 > & {
   _id: string
   totalDuration: number
 }
 
-export const buildPairStatsPipeline = (
+/** The deals both pair-stats aggregations fold: closed in the window, plus open. */
+const pairStatsMatch = (
   botIds: string[],
-  range: PairStatsRange = {},
-): PipelineStage[] => {
+  range: PairStatsRange,
+): PipelineStage.Match => {
   const closeTime: Record<string, number> = {}
   if (typeof range.from === 'number' && Number.isFinite(range.from)) {
     closeTime.$gte = range.from
@@ -78,6 +87,18 @@ export const buildPairStatsPipeline = (
   if (Object.keys(closeTime).length) {
     closedMatch.closeTime = closeTime
   }
+  return {
+    $match: {
+      botId: { $in: botIds },
+      $or: [closedMatch, { status: { $in: OPEN } }],
+    },
+  }
+}
+
+export const buildPairStatsPipeline = (
+  botIds: string[],
+  range: PairStatsRange = {},
+): PipelineStage[] => {
   const isOpen = { $in: ['$status', OPEN] }
   const whenClosed = (expr: unknown) => ({ $cond: [isOpen, 0, expr] })
   const whenOpen = (expr: unknown) => ({ $cond: [isOpen, expr, 0] })
@@ -85,12 +106,7 @@ export const buildPairStatsPipeline = (
   const profitUsd = num('$profit.totalUsd')
 
   return [
-    {
-      $match: {
-        botId: { $in: botIds },
-        $or: [closedMatch, { status: { $in: OPEN } }],
-      },
-    },
+    pairStatsMatch(botIds, range),
     {
       $group: {
         _id: '$symbol.symbol',
@@ -116,11 +132,6 @@ export const buildPairStatsPipeline = (
               },
               num('$feePaid.quote'),
             ],
-          }),
-        },
-        maxDealCapitalUsd: {
-          $max: whenClosed({
-            $ifNull: ['$usage.maxUsd', num('$stats.maxUsage')],
           }),
         },
         totalDuration: {
@@ -157,6 +168,78 @@ export const buildPairStatsPipeline = (
       },
     },
   ]
+}
+
+export type PairCapitalDeal = {
+  symbol: string
+  start: number
+  /** Close time; null while the deal is open. */
+  end: number | null
+  capital: number
+}
+
+/**
+ * One lean row per deal in the same population as the stats — what
+ * {@link peakCapitalBySymbol} sweeps. Kept separate from the `$group` because a
+ * peak over time needs the deals' intervals, not an accumulator.
+ */
+export const buildPairCapitalPipeline = (
+  botIds: string[],
+  range: PairStatsRange = {},
+): PipelineStage[] => [
+  pairStatsMatch(botIds, range),
+  {
+    $project: {
+      _id: 0,
+      symbol: '$symbol.symbol',
+      start: '$createTime',
+      end: {
+        $cond: [
+          { $in: ['$status', OPEN] },
+          null,
+          { $ifNull: ['$closeTime', '$updateTime'] },
+        ],
+      },
+      capital: { $ifNull: ['$usage.maxUsd', num('$stats.maxUsage')] },
+    },
+  },
+]
+
+/**
+ * Peak concurrent capital per pair. Each deal holds its capital from start to
+ * end (open deals: to now); the peak is the largest running sum. A deal that
+ * closes at the same instant another opens is released first, so a sequential
+ * bot re-using one deal's capital reads as that one deal, not two.
+ */
+export const peakCapitalBySymbol = (
+  deals: PairCapitalDeal[],
+  now: number = Date.now(),
+): Map<string, number> => {
+  const events = new Map<string, [number, number][]>()
+  for (const d of deals) {
+    const capital = finite(d.capital)
+    const start = finite(d.start)
+    if (!d.symbol || capital <= 0 || !start) {
+      continue
+    }
+    const end = d.end === null || d.end === undefined ? now : finite(d.end)
+    const list = events.get(d.symbol) ?? []
+    list.push([start, capital], [Math.max(start, end), -capital])
+    events.set(d.symbol, list)
+  }
+  const peaks = new Map<string, number>()
+  for (const [symbol, list] of events) {
+    // Releases (negative) before acquisitions at the same timestamp.
+    list.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    let running = 0
+    let peak = 0
+    for (const [, delta] of list) {
+      running += delta
+      peak = Math.max(peak, running)
+    }
+    peaks.set(symbol, peak)
+  }
+  return peaks
 }
 
 export type PairGross = {
@@ -209,9 +292,6 @@ export const buildPairGrossPipeline = (
   ]
 }
 
-const finite = (v: unknown) =>
-  typeof v === 'number' && Number.isFinite(v) ? v : 0
-
 /** An empty result (no earlier deals) is a legitimate zero, not a failure. */
 export const shapePairGross = (rows: Partial<PairGross>[]): PairGross => ({
   grossProfitUsd: finite(rows[0]?.grossProfitUsd),
@@ -234,6 +314,7 @@ export const shapePairStats = (
     baseAsset?: string
     quoteAsset?: string
   }[] = [],
+  peaks: Map<string, number> = new Map(),
 ): BotPairStatsRow[] => {
   const rows = new Map<string, BotPairStatsRow>()
   for (const g of groups) {
@@ -255,7 +336,7 @@ export const shapePairStats = (
       grossLossUsd,
       profitFactor: profitFactorOf(grossProfitUsd, grossLossUsd),
       feesQuote: finite(g.feesQuote),
-      maxDealCapitalUsd: finite(g.maxDealCapitalUsd),
+      peakCapitalUsd: peaks.get(g._id) ?? 0,
       avgDealDuration: closedDeals ? finite(g.totalDuration) / closedDeals : 0,
       maxDealDuration: finite(g.maxDealDuration),
       maxDrawdownPerc: finite(g.maxDrawdownPerc),
@@ -280,7 +361,7 @@ export const shapePairStats = (
       grossLossUsd: 0,
       profitFactor: 0,
       feesQuote: 0,
-      maxDealCapitalUsd: 0,
+      peakCapitalUsd: 0,
       avgDealDuration: 0,
       maxDealDuration: 0,
       maxDrawdownPerc: 0,
