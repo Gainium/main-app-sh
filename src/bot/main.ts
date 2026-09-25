@@ -538,8 +538,49 @@ export function isDefinitiveOrderNotFound(res?: {
   return (
     /\border not found\b/.test(reason) ||
     /\border does not exist\b/.test(reason) ||
-    reason === 'unknownoid'
+    reason === 'unknownoid' ||
+    isKucoinOrderNotExist(reason)
   )
+}
+
+/**
+ * KuCoin's "no such order" on a lookup: `validation.queryOrder.orderNotExist |
+ * 400100`. Before Spec 109 it matched none of the wordings above, so a KuCoin
+ * order the venue had never seen — a refused placement left NEW with orderId
+ * -1 — was asked about on every reconcile forever and never retired.
+ */
+export function isKucoinOrderNotExist(reason?: string | null) {
+  return /queryorder\.ordernotexist/.test(`${reason ?? ''}`.toLowerCase())
+}
+
+/**
+ * A "no such order" that is NOT an answer about an order handed to the venue
+ * seconds ago. Hyperliquid's `unknownOid` (also an ambiguous failure) and
+ * KuCoin's `orderNotExist` both describe propagation lag as readily as
+ * absence, so a just-placed order keeps the full ladder and is held for the
+ * reconcile path (whose 24h age floor makes the same answer trustworthy).
+ * Spec 109.
+ */
+export function isNotFoundUnreliableJustAfterPlacement(reason?: string | null) {
+  return isAmbiguousOrderFailure(reason) || isKucoinOrderNotExist(reason)
+}
+
+/**
+ * Should a reconcile RETIRE an order the venue definitively reports as absent,
+ * rather than merely quarantine it? Only when the order never received an
+ * exchange id (the `-1` placeholder: the placement never landed) and it is
+ * past the quarantine age floor. Quarantine stops the lookups but leaves the
+ * order in memory as resting — for a never-placed take-profit that is a deal
+ * that believes it has an exit it does not have. Spec 109.
+ */
+export function isRetirableNeverPlacedOrder(
+  order: { orderId?: string | number; transactTime?: number; updateTime?: number },
+  now: number,
+  minAgeMs: number,
+) {
+  if (`${order.orderId ?? ''}` !== noExchangeOrderId) return false
+  const lastKnownAt = Math.max(order.transactTime ?? 0, order.updateTime ?? 0)
+  return !!lastKnownAt && now - lastKnownAt >= minAgeMs
 }
 
 /**
@@ -1118,6 +1159,18 @@ class MainBot<T extends IMainBot> {
     // both choices err towards leaving the order alone.
     const lastKnownAt = Math.max(order.transactTime ?? 0, order.updateTime ?? 0)
     if (!lastKnownAt || now - lastKnownAt < orderQuarantineMinAgeMs) return
+    // Never reached the venue and the venue confirms it: retire it, the same
+    // write-off the unknown-order ladder gives a `-1` order (bug #369), so the
+    // bot stops treating it as resting. Spec 109.
+    if (isRetirableNeverPlacedOrder(order, now, orderQuarantineMinAgeMs)) {
+      this.handleLog(
+        `Order ${order.clientOrderId} never reached the exchange and the exchange confirms it does not exist (${reason}) — retiring it as CANCELED`,
+      )
+      const retired = { ...order, status: 'CANCELED' as const }
+      this.deleteOrder(order.clientOrderId)
+      this.updateOrderOnDb(retired)
+      return
+    }
     const current = order.quarantine
     // Already quarantined, or already struck in this run: nothing new was learned.
     if (current?.since || (current && current.runId === runId)) return
@@ -4467,7 +4520,7 @@ class MainBot<T extends IMainBot> {
         // order and a take-profit saved 72 s before a restart were absent
         // from it, and the restart check placed both again. Merge in the open
         // rows Mongo holds for these deals. Scoped by `dealId` (indexed) to
-        // open statuses, so a mass restart reads no order history. Spec 108.
+        // open statuses, so a mass restart reads no order history. Spec 109.
         const restored = orders.map((o) => ({ ...o, _id: o._id }))
         const ids = [
           ...new Set([
@@ -5578,7 +5631,10 @@ class MainBot<T extends IMainBot> {
         // do have an answer and the ordinary write-off is the right one.
         if (
           isDefinitiveOrderNotFound(request) &&
-          !(justPlaced && isAmbiguousOrderFailure(request.reason)) &&
+          !(
+            justPlaced &&
+            isNotFoundUnreliableJustAfterPlacement(request.reason)
+          ) &&
           local?.orderId === noExchangeOrderId
         ) {
           this.canceledMap.set(origId, unknownOrderMaxAttempts)

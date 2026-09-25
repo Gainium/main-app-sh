@@ -97,10 +97,12 @@ import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
   isDefinitiveOrderNotFound,
+  isNotFoundUnreliableJustAfterPlacement,
   reconcileUnresolvedWarn,
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
 import { underfilledTpQty } from './dca/partialTp'
+import { isAmbiguousOrderFailure } from '../utils/exchange'
 import {
   limitOnlyEntryReplacedMessage,
   normalizeReason,
@@ -1866,7 +1868,7 @@ function createDCABotHelper<
         },
         false,
         // A cold restart that restores orders from Redis merges in these
-        // deals' open orders from Mongo (spec 108).
+        // deals' open orders from Mongo (Spec 109).
         keys,
       )
       orders
@@ -6733,7 +6735,14 @@ function createDCABotHelper<
         { clientOrderId: rejectedOrder.newClientOrderId } as Order,
         { symbol: symbol.pair, fromCache: false },
       )
-      if (!isDefinitiveOrderNotFound(lookup)) {
+      // KuCoin's orderNotExist seconds after an attempt whose outcome was
+      // ambiguous may be propagation lag, not absence (Spec 109) — the same
+      // rule the unknown-order ladder applies to a just-placed order.
+      if (
+        !isDefinitiveOrderNotFound(lookup) ||
+        (isAmbiguousOrderFailure(rejectionReason) &&
+          isNotFoundUnreliableJustAfterPlacement(lookup?.reason))
+      ) {
         this.handleDebug(
           `Fee-sizing fallback for deal ${dealId} aborted this tick: real-fee attempt ${
             rejectedOrder.newClientOrderId

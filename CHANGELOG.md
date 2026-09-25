@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.68.1] - 2026-09-25
+
+### Fixed
+
+- **An order that never reached the exchange no longer stays "open" forever.** When a placement was refused but its outcome looked uncertain, the bot kept the order as open and left it for the reconcile check to settle. On KuCoin that never happened: KuCoin's answer for a missing order was not recognised as "not found", so the order was asked about again on every check. Where an exchange's answer was recognised, the order was only set aside, still counted as resting, so a take-profit that was never placed could look like a live exit. Now an order that never received an exchange order id, is more than a day old, and that the exchange confirms does not exist is marked cancelled and dropped. An order placed seconds ago is never judged on that answer.
+
 ## [1.68.0] - 2026-09-25
 
 ### Added
