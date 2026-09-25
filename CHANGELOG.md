@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.66.4] - 2026-09-25
+
+### Fixed
+
+- **A restart no longer places a second copy of an order placed just before it.** On a service restart a DCA or Combo bot restores its orders from a Redis snapshot that is written on a delay, so orders placed in the last moments before the restart could be missing from it. The restart order check then found no order at that safety level and no take-profit, and placed both again next to the ones already resting. The restored snapshot now takes in the deals' open orders from the database before the check runs; when both hold the same order, the more advanced status is kept. If that read fails, the snapshot is used as before.
+
 ## [1.66.3] - 2026-09-25
 
 ### Fixed

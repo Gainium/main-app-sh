@@ -1806,56 +1806,62 @@ function createDCABotHelper<
       const keys = loadFromDb
         ? deals.map((d) => `${d._id}`)
         : [...this.deals.keys()]
-      const orders = await this._loadOrders({
-        $or: [
-          {
-            dealId: { $in: keys },
-            status: { $nin: ['CANCELED', 'EXPIRED'] },
-          },
-          {
-            // An entry order that partially filled and was THEN cancelled still
-            // holds the part the venue executed, and the running bot keeps it in
-            // the order map — `setOrder` overwrites the status in place, it does
-            // not drop the row. Excluding it here meant a restart silently threw
-            // that volume away, and every consumer written for exactly this case
-            // (`findBaseOrderByDeal`, the deal fee split, `updateUsage`'s filled
-            // base) went looking for a row that could no longer be there. The
-            // AIOZ base order — origQty 1790.1, executedQty 345.3, CANCELED —
-            // is the shape this restores.
-            //
-            // Scoped to the open deals, so it adds a handful of rows to a scan
-            // the `botId` index already drives: across all 11.5M orders on prod
-            // only 19,354 rows match at all, and only one belonged to an open
-            // deal. `$convert` rather than `$gt: '0'` because `executedQty` is a
-            // STRING — `'0.00000000' > '0'` is TRUE lexicographically — and
-            // rather than a bare `$toDouble`, which throws the whole query on a
-            // single unparseable value.
-            dealId: { $in: keys },
-            status: 'CANCELED',
-            typeOrder: {
-              $in: [TypeOrderEnum.dealStart, TypeOrderEnum.dealRegular],
+      const orders = await this._loadOrders(
+        {
+          $or: [
+            {
+              dealId: { $in: keys },
+              status: { $nin: ['CANCELED', 'EXPIRED'] },
             },
-            $expr: {
-              $gt: [
-                {
-                  $convert: {
-                    input: '$executedQty',
-                    to: 'double',
-                    onError: 0,
-                    onNull: 0,
+            {
+              // An entry order that partially filled and was THEN cancelled still
+              // holds the part the venue executed, and the running bot keeps it in
+              // the order map — `setOrder` overwrites the status in place, it does
+              // not drop the row. Excluding it here meant a restart silently threw
+              // that volume away, and every consumer written for exactly this case
+              // (`findBaseOrderByDeal`, the deal fee split, `updateUsage`'s filled
+              // base) went looking for a row that could no longer be there. The
+              // AIOZ base order — origQty 1790.1, executedQty 345.3, CANCELED —
+              // is the shape this restores.
+              //
+              // Scoped to the open deals, so it adds a handful of rows to a scan
+              // the `botId` index already drives: across all 11.5M orders on prod
+              // only 19,354 rows match at all, and only one belonged to an open
+              // deal. `$convert` rather than `$gt: '0'` because `executedQty` is a
+              // STRING — `'0.00000000' > '0'` is TRUE lexicographically — and
+              // rather than a bare `$toDouble`, which throws the whole query on a
+              // single unparseable value.
+              dealId: { $in: keys },
+              status: 'CANCELED',
+              typeOrder: {
+                $in: [TypeOrderEnum.dealStart, TypeOrderEnum.dealRegular],
+              },
+              $expr: {
+                $gt: [
+                  {
+                    $convert: {
+                      input: '$executedQty',
+                      to: 'double',
+                      onError: 0,
+                      onNull: 0,
+                    },
                   },
-                },
-                0,
-              ],
+                  0,
+                ],
+              },
             },
-          },
-          {
-            status: { $nin: ['CANCELED', 'EXPIRED', 'FILLED'] },
-          },
-        ],
-        botId: this.botId,
-        typeOrder: { $nin: [TypeOrderEnum.liquidation, TypeOrderEnum.br] },
-      })
+            {
+              status: { $nin: ['CANCELED', 'EXPIRED', 'FILLED'] },
+            },
+          ],
+          botId: this.botId,
+          typeOrder: { $nin: [TypeOrderEnum.liquidation, TypeOrderEnum.br] },
+        },
+        false,
+        // A cold restart that restores orders from Redis merges in these
+        // deals' open orders from Mongo (spec 108).
+        keys,
+      )
       orders
         .filter(
           (o) =>

@@ -101,6 +101,7 @@ import {
 } from './errorRulesCache'
 import QuantRulesGuard, { LEVEL2_VIOLATIONS } from './quantRulesGuard'
 import { poisonedSnapshotProfitField } from './redisSnapshotGuard'
+import { mergeOpenOrdersIntoSnapshot } from './orderSnapshotMerge'
 import QtyStepGuard, {
   decimalsToStep,
   deriveAcceptedDecimals,
@@ -4428,6 +4429,7 @@ class MainBot<T extends IMainBot> {
   async _loadOrders(
     query?: QueryFilter<ClearOrderSchema>,
     skipRedis = false,
+    dealIds: string[] = [],
   ): Promise<ClearOrderSchema[]> {
     const id = this.startMethod('loadOrders main')
     // The Redis order snapshot is a COLD-START shortcut only, hence the same
@@ -4460,8 +4462,51 @@ class MainBot<T extends IMainBot> {
       const orders = await this.getFromRedis<Order[]>('orders')
       if (orders && orders.length) {
         this.handleLog(`Found in redis ${orders.length} orders`)
+        // The snapshot misses whatever was placed after its last delayed
+        // write, and that write dies with the process: on 2026-09-25 a safety
+        // order and a take-profit saved 72 s before a restart were absent
+        // from it, and the restart check placed both again. Merge in the open
+        // rows Mongo holds for these deals. Scoped by `dealId` (indexed) to
+        // open statuses, so a mass restart reads no order history. Spec 108.
+        const restored = orders.map((o) => ({ ...o, _id: o._id }))
+        const ids = [
+          ...new Set([
+            ...dealIds,
+            ...restored.flatMap((o) => (o.dealId ? [`${o.dealId}`] : [])),
+          ]),
+        ]
+        if (!ids.length) {
+          this.endMethod(id)
+          return restored
+        }
+        const open = await this.ordersDb.readData(
+          {
+            botId: this.botId,
+            dealId: { $in: ids },
+            status: { $in: ['NEW', 'PARTIALLY_FILLED'] },
+            typeOrder: {
+              $nin: [TypeOrderEnum.liquidation, TypeOrderEnum.br],
+            },
+          },
+          undefined,
+          {},
+          true,
+        )
+        if (open.status === StatusEnum.notok) {
+          this.handleWarn(
+            `Cannot read open orders to merge into the redis snapshot: ${open.reason}`,
+          )
+          this.endMethod(id)
+          return restored
+        }
+        const merged = mergeOpenOrdersIntoSnapshot(restored, open.data.result)
+        if (merged.added) {
+          this.handleLog(
+            `Added ${merged.added} open orders from DB missing in redis`,
+          )
+        }
         this.endMethod(id)
-        return orders.map((o) => ({ ...o, _id: o._id }))
+        return merged.orders
       }
     }
     this.handleLog('Load orders start')
