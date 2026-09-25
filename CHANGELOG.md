@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.1] - 2026-09-25
+
+### Fixed
+
+- **A DCA deal that closes on its take profit while safety orders are still filling now sells all of them, not just the first.** When a price move fills the take profit and several safety orders at almost the same moment, the deal closes on the take profit and each safety-order fill that arrives afterwards is sold back at market. Only the first of those late fills was sold: the sale marked the deal as "remainder sold", and every later fill was skipped because of that mark, so its coin stayed in the account outside any deal. Each late safety-order fill is now sold once, on its own.
+
 ## [1.69.0] - 2026-09-25
 
 ### Added

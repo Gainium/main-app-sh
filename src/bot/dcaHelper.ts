@@ -8005,6 +8005,7 @@ function createDCABotHelper<
       findDeal?: FullDeal<ExcludeDoc<Deal>>,
       updateBalances = true,
       force = false,
+      lateEntryFill = false,
     ) {
       if (
         this.data?.settings.type === DCATypeEnum.terminal &&
@@ -8040,7 +8041,11 @@ function createDCABotHelper<
         dealData = realDeal.data.result
         dealData._id = `${dealData._id}`
       }
-      if (dealData.sellRemainder) {
+      // Spec `112`: the flag means the deal's OWN remainder was sold. A late
+      // entry-side fill is a separate quantity, already deduplicated per order
+      // by `updateDeal`'s `dealUpdateOrders`; checking the deal flag for it
+      // sold only the first late fill and left the others in the account.
+      if (dealData.sellRemainder && !lateEntryFill) {
         this.handleDebug(`Sell remainder | Deal ${dealId} already sold`)
         this.endMethod(_id)
         return
@@ -8894,6 +8899,9 @@ function createDCABotHelper<
           +order.price,
           false,
           findDeal,
+          undefined,
+          undefined,
+          order.typeOrder === TypeOrderEnum.dealRegular,
         )
       }
       this.endMethod(_id)
