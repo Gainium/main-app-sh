@@ -5996,7 +5996,7 @@ function createComboBotHelper<
       })
         .filter((o) => o.status === 'FILLED' || +o.executedQty > 0)
         .sort((a, b) => +b.updateTime - +a.updateTime)[0]
-      return await this.findDiffCombo(
+      const diff = await this.findDiffCombo(
         [
           ...deal.currentOrders.filter((g) => g.type !== TypeOrderEnum.dealTP),
           ...[...minigrids.flatMap((m) => m.currentOrders)],
@@ -6007,6 +6007,34 @@ function createComboBotHelper<
         deal,
         true,
       )
+      // `findDiff` pairs a ladder level with a resting order on price alone,
+      // and `checkOrders` places `new` while ignoring `cancel`. A reload
+      // rebuilds the ladder from the deal's start price, so a level priced a
+      // tick differently than the order already resting there (a rounding
+      // change since the deal opened) was placed a second time next to it.
+      // The resting order is that level's live order: keep it, place nothing.
+      // Spec 105.
+      const restingLevels = new Set(
+        activeRegularOrders
+          .filter(
+            (o) => o.typeOrder === TypeOrderEnum.dealRegular && o.dcaLevel,
+          )
+          .map(
+            (o) =>
+              `${o.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell}@${o.dcaLevel}`,
+          ),
+      )
+      return {
+        ...diff,
+        new: diff.new.filter(
+          (g) =>
+            !(
+              g.type === TypeOrderEnum.dealRegular &&
+              g.dcaLevel &&
+              restingLevels.has(`${g.side}@${g.dcaLevel}`)
+            ),
+        ),
+      }
     }
 
     @IdMute(

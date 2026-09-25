@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.66.2] - 2026-09-25
+
+### Fixed
+
+- **Reloading a Combo bot no longer puts a second safety order next to one already resting.** After a settings save, or a restart that reloads a deal from the database, the restart order check compared the deal's rebuilt safety ladder with the resting orders by exact price. A level priced one tick differently from its resting order, for example because the ladder rounding changed since the deal opened, was placed again, and the resting order was never cancelled. The check now pairs a rebuilt level with the resting order at the same level and keeps that order. A level with nothing resting is still placed.
+- **Reloading a DCA bot no longer puts a second safety order next to one already resting.** After a settings save, or a restart that reloads a deal from the database, the restart order check compared the deal's rebuilt safety ladder with the resting orders by exact price. A level priced one tick differently from its resting order, for example because the ladder rounding changed since the deal opened, was placed again, and the resting order was never cancelled. DCA orders carry no ladder level, so the check now pairs the unmatched rebuilt levels with the unmatched resting orders of the same side by rank, and keeps the resting orders when the two counts match. When they differ, a level is really missing and is placed as before.
+
 ## [1.66.1] - 2026-09-24
 
 ### Changed

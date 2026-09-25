@@ -11762,11 +11762,36 @@ function createDCABotHelper<
       deal: FullDeal<CleanDCADealsSchema>,
       activeRegularOrders: Order[],
     ) {
-      return this.findDiff(
+      const diff = this.findDiff(
         deal.currentOrders.filter((g) => g.type !== TypeOrderEnum.dealTP),
         activeRegularOrders.map((o) => this.mapOrderToGrid(o)),
         true,
       )
+      // `findDiff` pairs a ladder level with a resting order on price alone,
+      // and `checkOrders` places `new` while ignoring `cancel`. A reload
+      // rebuilds the ladder from the deal's start price, so a level priced a
+      // tick differently than the order already resting there (a rounding
+      // change since the deal opened) was placed a second time next to it.
+      // DCA orders carry no `dcaLevel` (Combo pairs on it, spec 105), so the
+      // leftovers are paired by ladder rank, per side: both are the same run of
+      // levels, so equal counts pair them one-to-one and the resting order is
+      // that level's live order. Unequal counts mean a level is really missing,
+      // and every leftover is placed as before. Spec 106.
+      const covered = new Set<Grid>()
+      for (const side of [OrderSideEnum.buy, OrderSideEnum.sell]) {
+        const unplaced = diff.new.filter(
+          (g) => g.type === TypeOrderEnum.dealRegular && g.side === side,
+        )
+        const resting = diff.cancel.filter(
+          (g) => g.type === TypeOrderEnum.dealRegular && g.side === side,
+        )
+        if (unplaced.length && unplaced.length === resting.length) {
+          unplaced.forEach((g) => covered.add(g))
+        }
+      }
+      return covered.size
+        ? { ...diff, new: diff.new.filter((g) => !covered.has(g)) }
+        : diff
     }
     /** Check orders after service restart */
     @IdMute(mutex, (botId: string) => `${botId}checkOrders`)
