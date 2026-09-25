@@ -526,6 +526,20 @@ export const trailingCloseFailed = 'Trailing take profit not executed'
  */
 export const limitOnlyEntryReplaced = 'Market entry replaced with limit'
 
+/**
+ * A DCA deal was not opened because the exchange minimum would have raised its
+ * base or safety orders past the configured size (`minOrderFloor.ts`). A
+ * property of one PAIR — its minimum — so it is reported per pair: keyed per
+ * bot, a 265-pair bot's single row kept the pair tag of the FIRST refusal while
+ * its text was rewritten by every later one, so the notification named one pair
+ * and tagged another.
+ *
+ * Raised by calling `processError` with this subType directly; deliberately
+ * NOT in `errorDict`, which matches on message text and would then also claim
+ * any unrelated message that happened to contain the same words.
+ */
+export const orderBelowExchangeMinSubType = 'Order below exchange minimum'
+
 export const errorDict = {
   'Leverage cannot exceed': futuresPosition,
   'was left open on the exchange': positionLeftOpen,

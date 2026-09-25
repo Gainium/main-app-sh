@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.68.3] - 2026-09-25
+
+### Fixed
+
+- **DCA bots created before the exchange-minimum default could refuse deals although "Allow increasing orders to exchange minimum" was on.** A restarted bot restores its settings from a cached snapshot, and a snapshot written before the setting existed did not carry it, so the bot treated it as off. The bot now reads the setting from its saved configuration when the cached copy does not have it.
+- **The exchange-minimum notification now shows the pair it is about.** Refusals on different pairs of one bot shared a single notification whose pair tag stayed on the first pair refused while the text named the latest. Each pair now gets its own notification.
+
 ## [1.68.2] - 2026-09-25
 
 ### Changed

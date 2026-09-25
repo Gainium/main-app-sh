@@ -29,7 +29,8 @@ import {
   OrderTypeEnum,
   StrategyEnum,
 } from '../../../types'
-import { errorDict } from '../utils'
+import { errorDict, orderBelowExchangeMinSubType } from '../utils'
+import { isPerSymbolSubType } from '../errorRulesCache'
 import { ConditionLatch } from '../conditionLatch'
 import {
   MIN_ORDER_FLOOR_TOLERANCE,
@@ -82,9 +83,43 @@ class FakeBase {
 const loadModule = createRequire(__filename)
 let Helper: any
 
-const buildBot = (overrides: Record<string, unknown> = {}) => {
+/**
+ * @param overrides the in-memory settings (what a restored Redis snapshot or a
+ *   Mongo load put on `this.data`).
+ * @param stored the bot's Mongo row — `'unreadable'` for a failed read.
+ */
+const buildBot = (
+  overrides: Record<string, unknown> = {},
+  stored: { allowRaiseToExchangeMin?: boolean } | 'unreadable' = {},
+) => {
   const reported: string[] = []
+  const reportedSymbols: string[] = []
+  const reportedSubTypes: string[] = []
   class TestBot extends Helper {
+    db = {
+      async readData() {
+        return stored === 'unreadable'
+          ? { status: 'NOTOK', reason: 'down' }
+          : { status: 'OK', data: { result: { settings: stored } } }
+      },
+    }
+    botEventDb = { createData() {} }
+    async processError(
+      _botId: string,
+      subType: string,
+      _terminal: boolean,
+      _setError: boolean,
+      _sendError: boolean,
+      message: string,
+      _time: number,
+      _messageToSet: string,
+      _force: boolean,
+      symbol: string,
+    ) {
+      reported.push(message)
+      reportedSymbols.push(symbol)
+      reportedSubTypes.push(subType)
+    }
     exchange = {} as any
     tpAr = false
     slAr = false
@@ -143,12 +178,10 @@ const buildBot = (overrides: Record<string, unknown> = {}) => {
     handleLog() {}
     handleDebug() {}
     handleWarn() {}
-    handleErrors(msg: string) {
-      reported.push(msg)
-    }
+    handleErrors() {}
   }
   const bot = new TestBot() as any
-  return { bot, reported }
+  return { bot, reported, reportedSymbols, reportedSubTypes }
 }
 
 describe('exchange minimum — refuse instead of inflating BO/SO', () => {
@@ -186,6 +219,41 @@ describe('exchange minimum — refuse instead of inflating BO/SO', () => {
   it('refuses when the setting is explicitly off', async () => {
     const { bot } = buildBot({ allowRaiseToExchangeMin: false })
     expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(true)
+  })
+
+  it('reads a setting missing in memory from Mongo — a stale Redis snapshot', async () => {
+    // Regression: a worker restart restored bots from pre-backfill snapshots
+    // with no `allowRaiseToExchangeMin`, and bots whose row said `true`
+    // refused deals.
+    const { bot, reported } = buildBot(
+      { allowRaiseToExchangeMin: undefined },
+      { allowRaiseToExchangeMin: true },
+    )
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(false)
+    expect(reported).to.deep.equal([])
+    expect(bot.data.settings.allowRaiseToExchangeMin).to.equal(true)
+  })
+
+  it('refuses when the setting is missing in memory AND in Mongo', async () => {
+    const { bot } = buildBot({ allowRaiseToExchangeMin: undefined }, {})
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(true)
+    expect(bot.data.settings.allowRaiseToExchangeMin).to.equal(false)
+  })
+
+  it('fails open when the bot row cannot be read', async () => {
+    const { bot } = buildBot(
+      { allowRaiseToExchangeMin: undefined },
+      'unreadable',
+    )
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(false)
+  })
+
+  it('reports under the per-pair subType, tagged with the refused pair', async () => {
+    const { bot, reportedSymbols, reportedSubTypes } = buildBot()
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(true)
+    expect(reportedSymbols).to.deep.equal([PAIR])
+    expect(reportedSubTypes).to.deep.equal([orderBelowExchangeMinSubType])
+    expect(isPerSymbolSubType(orderBelowExchangeMinSubType)).to.equal(true)
   })
 
   it('raises as before when allowRaiseToExchangeMin is on', async () => {

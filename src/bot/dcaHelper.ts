@@ -146,6 +146,7 @@ import {
   convertDCABot,
   convertComboBot,
   limitOnlyEntryReplaced,
+  orderBelowExchangeMinSubType,
   positionLeftOpen,
   trailingCloseFailed,
 } from './utils'
@@ -14967,9 +14968,9 @@ function createDCABotHelper<
     ): Promise<boolean> {
       const settings = await this.getAggregatedSettings()
       if (
-        settings.allowRaiseToExchangeMin ||
         settings.type === DCATypeEnum.terminal ||
-        this.data?.parentBotId
+        this.data?.parentBotId ||
+        (await this.allowsRaiseToExchangeMin(settings.allowRaiseToExchangeMin))
       ) {
         return false
       }
@@ -15020,7 +15021,8 @@ function createDCABotHelper<
       // settings, so nothing but an edit clears this. See the balance refusal
       // below and spec 008.
       if (this.standingConditionLatch.shouldReport(key, +new Date())) {
-        this.handleErrors(
+        await this.reportOrderBelowExchangeMin(
+          symbol,
           minOrderRefusalMessage({
             pair: `${ed.baseAsset.name}/${ed.quoteAsset.name}`,
             baseAsset: ed.baseAsset.name,
@@ -15029,16 +15031,82 @@ function createDCABotHelper<
             minQuote: this.coinm ? 0 : ed.quoteAsset.minAmount,
             violations,
           }),
-          'openNewDeal',
-          '',
-          false,
-          true,
-          true,
-          false,
-          symbol,
         )
       }
       return true
+    }
+
+    /**
+     * Whether this bot raises orders to the exchange minimum. The in-memory
+     * value wins when it is set. When it is MISSING it may only be stale: a
+     * worker restart restores `this.data` from the Redis `botData` snapshot,
+     * and a snapshot written before `allowRaiseToExchangeMin` existed does not
+     * carry it — so bots whose Mongo row says `true` refused deals until this
+     * read was added. Missing in memory therefore means "ask Mongo", and only
+     * missing in Mongo too means a bot created without it, which refuses. The
+     * answer is cached on `this.data.settings`, so this is one read per bot and
+     * the next snapshot carries it. Fail-open (raise, as before the default
+     * flipped) when the row cannot be read.
+     */
+    async allowsRaiseToExchangeMin(inMemory?: boolean): Promise<boolean> {
+      if (typeof inMemory === 'boolean') {
+        return inMemory
+      }
+      const read = await this.db?.readData(
+        { _id: this.botId } as any,
+        { 'settings.allowRaiseToExchangeMin': 1 } as any,
+        {},
+        false,
+        false,
+      )
+      if (!read || read.status !== StatusEnum.ok || !read.data?.result) {
+        return true
+      }
+      const allow =
+        (
+          read.data.result as {
+            settings?: { allowRaiseToExchangeMin?: boolean }
+          }
+        ).settings?.allowRaiseToExchangeMin === true
+      if (this.data?.settings) {
+        ;(
+          this.data.settings as { allowRaiseToExchangeMin?: boolean }
+        ).allowRaiseToExchangeMin = allow
+      }
+      return allow
+    }
+
+    /**
+     * Report a deal refused for the exchange minimum under its own per-pair
+     * subType, so the notification's pair tag is the pair in the text (see
+     * {@link orderBelowExchangeMinSubType}). `force` is true: the caller's
+     * per-pair {@link ConditionLatch} is the rate limit, and the per-(bot,
+     * subType) re-raise backoff would otherwise swallow the first report of
+     * every other pair. Same shape as {@link reportLimitOnlyEntryReplaced}.
+     */
+    async reportOrderBelowExchangeMin(symbol: string, message: string) {
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Bot warning',
+        botType: this.botType,
+        description: `Warning: ${message}`,
+        paperContext: !!this.data?.paperContext,
+        symbol,
+        type: MessageTypeEnum.warning,
+      })
+      await this.processError(
+        this.botId,
+        orderBelowExchangeMinSubType,
+        false,
+        false,
+        true,
+        message,
+        +new Date(),
+        message,
+        true,
+        symbol,
+      )
     }
 
     async openNewDeal(
