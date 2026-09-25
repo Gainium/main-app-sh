@@ -302,6 +302,22 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
     description: 'Number of losses before closing',
     example: '3',
   },
+  useCloseAfterXconsecutiveWin: {
+    description: 'Stop the bot after a run of consecutive winning deals',
+    example: false,
+  },
+  closeAfterXconsecutiveWin: {
+    description: 'Number of consecutive winning deals before stopping',
+    example: '3',
+  },
+  useCloseAfterXconsecutiveLoss: {
+    description: 'Stop the bot after a run of consecutive losing deals',
+    example: false,
+  },
+  closeAfterXconsecutiveLoss: {
+    description: 'Number of consecutive losing deals before stopping',
+    example: '3',
+  },
   useCloseAfterXprofit: {
     description: 'Close after reaching profit',
     example: false,

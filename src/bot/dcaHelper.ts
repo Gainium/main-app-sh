@@ -91,6 +91,7 @@ import {
 } from '../../types'
 import { observedFeeSplit } from './orderFee'
 import { ORDER_ID_MARKER, markOrderId } from './orderIdMarker'
+import { hasConsecutiveStreak } from './consecutiveStreak'
 import { observedFeeLegs, accrueFeeLedger, FeeLedgerEntry } from './feeLedger'
 import { MathHelper } from '../utils/math'
 import MainBot, {
@@ -3503,6 +3504,10 @@ function createDCABotHelper<
         closeAfterXloss,
         useCloseAfterXwin,
         closeAfterXwin,
+        useCloseAfterXconsecutiveWin,
+        closeAfterXconsecutiveWin,
+        useCloseAfterXconsecutiveLoss,
+        closeAfterXconsecutiveLoss,
         useCloseAfterXprofit,
         closeAfterXprofitCond,
         closeAfterXprofitValue,
@@ -3515,6 +3520,12 @@ function createDCABotHelper<
           (!useCloseAfterXwin ||
             !closeAfterXwin ||
             !checkNumber(closeAfterXwin)) &&
+          (!useCloseAfterXconsecutiveWin ||
+            !closeAfterXconsecutiveWin ||
+            !checkNumber(closeAfterXconsecutiveWin)) &&
+          (!useCloseAfterXconsecutiveLoss ||
+            !closeAfterXconsecutiveLoss ||
+            !checkNumber(closeAfterXconsecutiveLoss)) &&
           (!useCloseAfterXprofit ||
             !closeAfterXprofitValue ||
             !checkNumber(closeAfterXprofitValue) ||
@@ -3622,6 +3633,81 @@ function createDCABotHelper<
           await this.stop(CloseDCATypeEnum.leave)
         }
       }
+      const consecutiveWinTarget =
+        useCloseAfterXconsecutiveWin &&
+        closeAfterXconsecutiveWin &&
+        checkNumber(closeAfterXconsecutiveWin)
+          ? +closeAfterXconsecutiveWin
+          : 0
+      const consecutiveLossTarget =
+        useCloseAfterXconsecutiveLoss &&
+        closeAfterXconsecutiveLoss &&
+        checkNumber(closeAfterXconsecutiveLoss)
+          ? +closeAfterXconsecutiveLoss
+          : 0
+      if (
+        (consecutiveWinTarget || consecutiveLossTarget) &&
+        this.data.status !== BotStatusEnum.closed
+      ) {
+        const outcomes = await this.readLastClosedOutcomes(
+          Math.max(consecutiveWinTarget, consecutiveLossTarget),
+        )
+        if (!outcomes) {
+          return
+        }
+        if (hasConsecutiveStreak(outcomes, true, consecutiveWinTarget)) {
+          this.handleLog(
+            `Close deal after X consecutive wins trigger, trigger: ${consecutiveWinTarget}`,
+          )
+          await this.stop(CloseDCATypeEnum.leave)
+        } else if (
+          hasConsecutiveStreak(outcomes, false, consecutiveLossTarget)
+        ) {
+          this.handleLog(
+            `Close deal after X consecutive losses trigger, trigger: ${consecutiveLossTarget}`,
+          )
+          await this.stop(CloseDCATypeEnum.leave)
+        }
+      }
+    }
+
+    /**
+     * Outcome of the bot's most recently closed deals, newest first —
+     * `true` for a deal that closed in profit.
+     *
+     * The win/loss split is the same one the cumulative `closeAfterXwin` /
+     * `closeAfterXloss` counters use: `profit.totalUsd > 0` is a win, `<= 0`
+     * (breakeven included) is a loss. Keeping them identical means a bot with
+     * both a cumulative and a consecutive limit never disagrees with itself
+     * about whether a given deal was a win.
+     *
+     * Ordered by `closeTime`, NOT by insertion or `_id`: a bot running several
+     * pairs closes deals interleaved, so a streak is only meaningful in the
+     * order the deals actually finished. Returns `undefined` on a read error,
+     * which the caller must treat as "don't decide" rather than "no streak".
+     */
+    async readLastClosedOutcomes(limit: number) {
+      const deals = await this.dealsDb.readData(
+        {
+          botId: this.botId,
+          status: DCADealStatusEnum.closed,
+        } as any,
+        { profit: 1, closeTime: 1 },
+        { sort: { closeTime: -1 }, limit },
+        true,
+      )
+      if (deals.status === StatusEnum.notok) {
+        this.handleErrors(
+          `Error reading deals x consecutive ${deals.reason}`,
+          'checkClosedDeals',
+          undefined,
+          false,
+          false,
+          false,
+        )
+        return undefined
+      }
+      return deals.data.result.map((d) => (d.profit?.totalUsd ?? 0) > 0)
     }
 
     async afterDealClose(
@@ -20886,6 +20972,12 @@ function createDCABotHelper<
           (settingsCommon.useCloseAfterXwin &&
             settingsCommon.closeAfterXwin &&
             checkNumber(settingsCommon.closeAfterXwin)) ||
+          (settingsCommon.useCloseAfterXconsecutiveWin &&
+            settingsCommon.closeAfterXconsecutiveWin &&
+            checkNumber(settingsCommon.closeAfterXconsecutiveWin)) ||
+          (settingsCommon.useCloseAfterXconsecutiveLoss &&
+            settingsCommon.closeAfterXconsecutiveLoss &&
+            checkNumber(settingsCommon.closeAfterXconsecutiveLoss)) ||
           (settingsCommon.useCloseAfterXprofit &&
             settingsCommon.closeAfterXprofitCond &&
             settingsCommon.closeAfterXprofitValue &&

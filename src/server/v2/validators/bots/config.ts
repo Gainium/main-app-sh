@@ -1481,6 +1481,28 @@ export const dcaBotSchemaConfig: Record<
     ],
     min: 1,
   },
+  useCloseAfterXconsecutiveWin: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  closeAfterXconsecutiveWin: {
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.shouldBeValidNumber,
+      ValidatorsEnum.shouldBeInteger,
+      ValidatorsEnum.shouldBePositive,
+    ],
+    min: 1,
+  },
+  useCloseAfterXconsecutiveLoss: {
+    validators: [ValidatorsEnum.shouldBeBoolean],
+  },
+  closeAfterXconsecutiveLoss: {
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.shouldBeValidNumber,
+      ValidatorsEnum.shouldBeInteger,
+      ValidatorsEnum.shouldBePositive,
+    ],
+    min: 1,
+  },
   useMulti: { validators: [ValidatorsEnum.shouldBeBoolean] },
   maxDealsPerPair: {
     validators: [
@@ -2095,6 +2117,10 @@ export const TERMINAL_DEAL_EXCLUDED_FIELDS: (keyof typeof DCA_FORM_DEFAULTS)[] =
     'closeAfterXprofitValue',
     'useCloseAfterXwin',
     'closeAfterXwin',
+    'useCloseAfterXconsecutiveWin',
+    'closeAfterXconsecutiveWin',
+    'useCloseAfterXconsecutiveLoss',
+    'closeAfterXconsecutiveLoss',
     'useMulti',
     'maxDealsPerPair',
     'useCloseAfterXopen',

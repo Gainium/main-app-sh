@@ -821,6 +821,10 @@ export interface DCABotSettings extends BaseSettings {
   closeAfterXwin?: string
   useCloseAfterXloss?: boolean
   closeAfterXloss?: string
+  useCloseAfterXconsecutiveWin?: boolean
+  closeAfterXconsecutiveWin?: string
+  useCloseAfterXconsecutiveLoss?: boolean
+  closeAfterXconsecutiveLoss?: string
   useCloseAfterXprofit?: boolean
   closeAfterXprofitValue?: string
   closeAfterXprofitCond?: IndicatorStartConditionEnum

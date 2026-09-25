@@ -3193,6 +3193,10 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXwin: String
     useCloseAfterXloss: Boolean
     closeAfterXloss: String
+    useCloseAfterXconsecutiveWin: Boolean
+    closeAfterXconsecutiveWin: String
+    useCloseAfterXconsecutiveLoss: Boolean
+    closeAfterXconsecutiveLoss: String
     useCloseAfterXprofit: Boolean
     closeAfterXprofitValue: String
     closeAfterXprofitCond: String
@@ -3368,6 +3372,10 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXwin: String
     useCloseAfterXloss: Boolean
     closeAfterXloss: String
+    useCloseAfterXconsecutiveWin: Boolean
+    closeAfterXconsecutiveWin: String
+    useCloseAfterXconsecutiveLoss: Boolean
+    closeAfterXconsecutiveLoss: String
     useCloseAfterXprofit: Boolean
     closeAfterXprofitValue: String
     closeAfterXprofitCond: String
@@ -4915,6 +4923,10 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXwin: String
     useCloseAfterXloss: Boolean
     closeAfterXloss: String
+    useCloseAfterXconsecutiveWin: Boolean
+    closeAfterXconsecutiveWin: String
+    useCloseAfterXconsecutiveLoss: Boolean
+    closeAfterXconsecutiveLoss: String
     useCloseAfterXprofit: Boolean
     closeAfterXprofitValue: String
     closeAfterXprofitCond: String
@@ -5135,6 +5147,10 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXwin: String
     useCloseAfterXloss: Boolean
     closeAfterXloss: String
+    useCloseAfterXconsecutiveWin: Boolean
+    closeAfterXconsecutiveWin: String
+    useCloseAfterXconsecutiveLoss: Boolean
+    closeAfterXconsecutiveLoss: String
     useCloseAfterXprofit: Boolean
     closeAfterXprofitValue: String
     closeAfterXprofitCond: String
@@ -5327,6 +5343,10 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXwin: String
     useCloseAfterXloss: Boolean
     closeAfterXloss: String
+    useCloseAfterXconsecutiveWin: Boolean
+    closeAfterXconsecutiveWin: String
+    useCloseAfterXconsecutiveLoss: Boolean
+    closeAfterXconsecutiveLoss: String
     useCloseAfterXprofit: Boolean
     closeAfterXprofitValue: String
     closeAfterXprofitCond: String
@@ -5506,6 +5526,10 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXwin: String
     useCloseAfterXloss: Boolean
     closeAfterXloss: String
+    useCloseAfterXconsecutiveWin: Boolean
+    closeAfterXconsecutiveWin: String
+    useCloseAfterXconsecutiveLoss: Boolean
+    closeAfterXconsecutiveLoss: String
     useCloseAfterXprofit: Boolean
     closeAfterXprofitValue: String
     closeAfterXprofitCond: String

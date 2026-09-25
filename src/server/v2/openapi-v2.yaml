@@ -1647,6 +1647,22 @@ components:
               type: string
               description: Number of losses before closing
               example: "3"
+            useCloseAfterXconsecutiveWin:
+              type: boolean
+              description: Stop the bot after a run of consecutive winning deals
+              example: false
+            closeAfterXconsecutiveWin:
+              type: string
+              description: Number of consecutive winning deals before stopping
+              example: "3"
+            useCloseAfterXconsecutiveLoss:
+              type: boolean
+              description: Stop the bot after a run of consecutive losing deals
+              example: false
+            closeAfterXconsecutiveLoss:
+              type: string
+              description: Number of consecutive losing deals before stopping
+              example: "3"
             useCloseAfterXprofit:
               type: boolean
               description: Close after reaching profit

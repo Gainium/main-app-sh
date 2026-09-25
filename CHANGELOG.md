@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.67.0] - 2026-09-25
+
+### Added
+
+- **Stop a bot after X consecutive winning or losing deals.** Two new Bot Controller limits sit alongside the existing total win and total loss counts, and count a run rather than a total: the bot stops only when its most recently closed deals are that many wins, or that many losses, with nothing of the other kind in between. One opposite result clears the run and counting starts again. Deals are counted in the order they actually closed, so a bot trading several pairs is not misread because its deals finish interleaved, and a deal that closes at exactly breakeven counts as a loss — the same split the existing counts use. Both limits are off by default and change nothing for existing bots.
+
 ## [1.66.4] - 2026-09-25
 
 ### Fixed
