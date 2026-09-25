@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.69.0] - 2026-09-25
+
+### Added
+
+- **A LIMIT base order that only partly fills no longer drops the rest, on DCA bots that never enter at market.** A bot whose deals start with a LIMIT order and whose "Enter Market Timeout" is off still opens the deal on what filled, so its take profit and stop loss cover that part straight away. The unfilled rest now stays on the exchange as a LIMIT order and joins the deal's position when it fills, moving the average price and the take profit with it. If the price moves away, the rest is cancelled and placed again at the new price. At an unchanged price it is left alone. The bot still never buys at market on its own.
+- **Buy the rest of a part-filled base order at market, on request.** The new `buyDealBaseRemainder` mutation cancels the resting rest, books whatever it had filled, and buys what is still missing with a market order that joins the deal's position. Pending add-funds entries now expose `baseRemainder` and `baseTotal`, so a dashboard can show a deal's resting remainder as "filled of total".
+
 ## [1.68.4] - 2026-09-25
 
 ### Fixed

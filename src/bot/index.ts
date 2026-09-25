@@ -13175,6 +13175,79 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Buy a deal's resting base-order remainder at market, at the user's
+   * request. Spec `111` §4.6. Same route to the worker as
+   * `cancelPendingAddFundsDealOrder`; the bot is read under the caller's own
+   * user id, so a deal of another account is never reached.
+   */
+  public async buyDealBaseRemainder(
+    botId: string,
+    dealId: string,
+    userId: string,
+    paperContext: boolean,
+  ) {
+    if (!this.useBots) {
+      return await this.callExternalBotService<BaseReturn<string>>(
+        BotType.dca,
+        'buyDealBaseRemainder',
+        false,
+        botId,
+        dealId,
+        userId,
+        paperContext,
+      )
+    }
+    const bot = await this.getDCABotFromDb(
+      userId,
+      botId,
+      undefined,
+      paperContext,
+    )
+    if (bot.status === StatusEnum.notok) {
+      return bot
+    }
+    if (!bot.data) {
+      return this.entityNotFound('Bot')
+    }
+    const findLocal = this.dcaBots.find((d) => d.id === botId)
+    if (!findLocal) {
+      await this.createNewBot(
+        botId,
+        BotType.dca,
+        userId,
+        bot.data.exchange,
+        bot.data.uuid,
+        [botId, bot.data.exchange],
+        (worker) => {
+          worker.postMessage({
+            do: 'method',
+            botType: BotType.dca,
+            botId,
+            method: 'buyBaseEntryRemainder',
+            args: [botId, dealId],
+          })
+        },
+        paperContext,
+        bot.data.settings.type ?? DCATypeEnum.regular,
+      )
+    } else {
+      this.getWorkerById(findLocal.worker)?.postMessage({
+        do: 'method',
+        botType: BotType.dca,
+        botId,
+        method: 'buyBaseEntryRemainder',
+        args: [botId, dealId],
+      })
+    }
+
+    return {
+      status: StatusEnum.ok,
+      reason: null,
+      data: 'Buy remainder at market request scheduled',
+    }
+  }
+
   public async premanenetlyDeleteBots(skip = true) {
     const filter = {
       isDeleted: { $eq: true },

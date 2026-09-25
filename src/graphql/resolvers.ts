@@ -5256,6 +5256,33 @@ const resolvers = <
         paperContext,
       )
     },
+    buyDealBaseRemainder: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: {
+          dealId: string
+          botId: string
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const { botId, dealId } = input
+      return await Bot.buyDealBaseRemainder(
+        botId,
+        dealId,
+        user.data._id.toString(),
+        paperContext,
+      )
+    },
     resetShowError: async (
       _parent: any,
       { input: { data } }: { input: { data: { id: string; type: BotType }[] } },

@@ -1953,6 +1953,9 @@ const funds = [
     type: {
       type: String,
     },
+    // Spec 111: the resting rest of a part-filled base order.
+    baseRemainder: Boolean,
+    baseTotal: String,
   },
 ]
 

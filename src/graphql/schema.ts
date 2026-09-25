@@ -886,6 +886,9 @@ export const BotSchema = /* GraphQL */ `
     cancelPendingAddFundsDealOrder(
       input: cancelTerminalDealOrderInput!
     ): cancelTerminalDealOrderResponse
+    buyDealBaseRemainder(
+      input: buyDealBaseRemainderInput!
+    ): cancelTerminalDealOrderResponse
     createBot(input: createBotInput!): createBotResponse
     createDCABot(input: createDCABotInput!): createDCABotResponse
     createComboBot(input: createComboBotInput!): createComboBotResponse
@@ -1206,6 +1209,10 @@ export const BotSchema = /* GraphQL */ `
     dealId: String!
     botId: String!
     orderId: String!
+  }
+  input buyDealBaseRemainderInput {
+    dealId: String!
+    botId: String!
   }
   type addFundsResponse implements BasicResponse {
     status: Status
@@ -4333,6 +4340,8 @@ export const BotSchema = /* GraphQL */ `
     limitPrice: String
     asset: String
     id: String
+    baseRemainder: Boolean
+    baseTotal: String
   }
   type dealFunds {
     price: Float

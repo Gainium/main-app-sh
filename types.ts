@@ -1566,6 +1566,13 @@ export type AddFundsSettings = {
   limitPrice?: string
   asset: OrderSizeTypeEnum
   type?: AddFundsTypeEnum
+  /**
+   * The rest of a base order that opened its deal part-filled, resting as a
+   * LIMIT on a bot that may not enter at market. Spec `111`.
+   */
+  baseRemainder?: boolean
+  /** That base order's requested quantity, for "filled of total". */
+  baseTotal?: string
 }
 
 export interface ComboDealsSchema extends DCADealsSchema {

@@ -180,6 +180,10 @@ import {
   repositionTickDue,
 } from './dca/baseEntryReposition'
 import {
+  baseEntryRemainderQty,
+  remainderKeepsResting,
+} from './dca/baseEntryRemainder'
+import {
   canceledTpRestoreDelayMs,
   canceledTpRestoreMaxDeferrals,
   decideCanceledTpRestore,
@@ -708,6 +712,11 @@ function createDCABotHelper<
      * venue unfilled, one per deal. Cleared by `clearClassProperties`.
      */
     canceledBaseEntryTimers: Map<string, NodeJS.Timeout> = new Map()
+    /**
+     * Reposition ticks of a resting base-order remainder, one per deal
+     * (spec `111` §4.3). Cleared by `clearClassProperties`.
+     */
+    baseRemainderTimers: Map<string, NodeJS.Timeout> = new Map()
     /** Trailing guard mode as last read from Redis, and when. */
     trailingGuardModeRead: { mode: TrailingGuardMode; at: number } | null = null
     /** When each deal's trailing lag was last reported, to rate-limit it. */
@@ -7940,6 +7949,12 @@ function createDCABotHelper<
           this.findDiff(findDeal.currentOrders, []),
         )
         await this.checkOpenedDeals()
+        // The deal is open on what filled; put the rest of a short LIMIT
+        // entry back on the book. Spec 111 §3.2/§4.1. A terminal "simple"
+        // deal is already `closed` here and gets nothing.
+        if (findDeal.deal.status === DCADealStatusEnum.open) {
+          await this.restBaseEntryRemainder(orderBo)
+        }
         if (settings.terminalDealType === TerminalDealTypeEnum.simple) {
           await this.processDealClose(
             this.botId,
@@ -9368,9 +9383,7 @@ function createDCABotHelper<
           // A LIMIT-entry bot with the "Enter Market Timeout" switch off never
           // enters at market (spec 100), and a top-up is a market order.
           // Spec 103 §4.4.
-          marketEntryAllowed:
-            settings.startOrderType !== OrderTypeEnum.limit ||
-            this.enterMarketTimeout !== 0,
+          marketEntryAllowed: this.baseEntryMayEnterAtMarket(settings),
           executedQty: settled.executedQty,
           origQty: settled.origQty,
           updateTime: settled.updateTime,
@@ -9415,6 +9428,386 @@ function createDCABotHelper<
       this.setOrder(promoted)
       this.updateOrderOnDb(promoted, true)
       return promoted
+    }
+
+    /**
+     * Whether this bot may enter at market: a MARKET entry, or a LIMIT one
+     * with the "Enter Market Timeout" switch on (spec `100`). One question with
+     * two answers: a bot that may is topped up at market when its entry
+     * settles short (spec `057`, `103` §4.4), and a bot that may not rests the
+     * remainder as a LIMIT instead (spec `111` §4.1).
+     */
+    baseEntryMayEnterAtMarket(settings: { startOrderType?: string }) {
+      return (
+        settings.startOrderType !== OrderTypeEnum.limit ||
+        this.enterMarketTimeout !== 0
+      )
+    }
+
+    /**
+     * Put the rest of a base order that opened its deal short back on the
+     * book as a LIMIT, on a bot that may not enter at market.
+     *
+     * The deal has just opened on what filled, so its take profit and stop
+     * loss cover that part. Without this the rest of the base order the user
+     * configured is dropped, and the safety orders, sized for the full base,
+     * average into a fraction of it. Called from `startDeal`, so every path
+     * that opens such a deal short gets it: the reposition-tick and restore
+     * settles, a row the venue ended, a cancel that raced a partial fill.
+     *
+     * The remainder is a pending add-funds entry marked `baseRemainder`,
+     * because that lifecycle already covers everything a second resting entry
+     * row needs: usage while it rests, the re-send after a reload (spec
+     * `110`), cancellation with the deal's other orders, and a fill path that
+     * moves the average, the take profit and the fee ledger. Spec `111`
+     * §3.1/§4.1.
+     */
+    async restBaseEntryRemainder(orderBo: Order) {
+      const dealId = orderBo.dealId
+      if (this.combo || !dealId) {
+        return
+      }
+      const deal = this.getDeal(dealId)
+      if (!deal || deal.deal.status !== DCADealStatusEnum.open) {
+        return
+      }
+      const settings = await this.getAggregatedSettings(deal.deal)
+      const qty = baseEntryRemainderQty({
+        marketEntryAllowed: this.baseEntryMayEnterAtMarket(settings),
+        unitSafe: !this.coinm && !this.sizedInContracts,
+        executedQty: orderBo.executedQty,
+        origQty: orderBo.origQty,
+      })
+      if (qty <= 0) {
+        return
+      }
+      await this.placeBaseEntryRemainder(
+        dealId,
+        deal.deal.symbol.symbol,
+        qty,
+        orderBo.origQty,
+      )
+    }
+
+    /**
+     * Send a base-order remainder as a LIMIT add-funds order at the price a
+     * LIMIT entry would use now, and watch it with the reposition tick. Never
+     * a MARKET order. Spec `111` §4.1/§4.2.
+     */
+    async placeBaseEntryRemainder(
+      dealId: string,
+      symbol: string,
+      qty: number,
+      total: string,
+    ): Promise<boolean> {
+      const ed = await this.getExchangeInfo(symbol)
+      const price = ed
+        ? this.math.round(
+            await this.getLatestPrice(symbol),
+            ed.priceAssetPrecision,
+          )
+        : 0
+      if (!ed || !(price > 0)) {
+        this.handleWarn(
+          `Deal ${dealId} base order remainder ${qty} not placed: no price for ${symbol}`,
+        )
+        return false
+      }
+      // Both quantities sit on the pair's step; this only strips float noise.
+      const rounded = this.math.round(
+        qty,
+        await this.baseAssetPrecision(symbol),
+      )
+      if (
+        !(rounded > 0) ||
+        rounded < (ed.baseAsset.minAmount ?? 0) ||
+        rounded * price < (ed.quoteAsset.minAmount ?? 0)
+      ) {
+        this.handleLog(
+          `Deal ${dealId} base order remainder ${rounded} at ${price} is below the exchange minimum. Not placing it`,
+        )
+        return false
+      }
+      this.handleLog(
+        `Deal ${dealId} base order remainder: resting the other ${rounded} of ${total} as a LIMIT at ${price}`,
+      )
+      await this.addDealFunds(this.botId, dealId, {
+        qty: `${rounded}`,
+        asset: OrderSizeTypeEnum.base,
+        useLimitPrice: true,
+        limitPrice: `${price}`,
+        type: AddFundsTypeEnum.fixed,
+        baseRemainder: true,
+        baseTotal: total,
+      })
+      // Until a dashboard shows the badge, this says what the extra pending
+      // order on the deal is.
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: `${symbol} base order: the other ${rounded} of ${total} is waiting as a limit order at ${price} and joins the deal when it fills`,
+        paperContext: !!this.data?.paperContext,
+        deal: dealId,
+        symbol,
+        type: MessageTypeEnum.info,
+      })
+      this.armBaseRemainderTick(dealId, symbol)
+      return true
+    }
+
+    /**
+     * Arm (or re-arm) the reposition tick of a deal's resting base-order
+     * remainder, on the same cadence and switch as the base order's own
+     * reposition. Spec `111` §4.3.
+     */
+    armBaseRemainderTick(dealId: string, symbol: string) {
+      const timers = (this.baseRemainderTimers ??= new Map())
+      const armed = timers.get(dealId)
+      if (armed) {
+        clearTimeout(armed)
+        timers.delete(dealId)
+      }
+      if (
+        this.orderLimitRepositionTimeout === 0 ||
+        this.data?.settings.notUseLimitReposition
+      ) {
+        return
+      }
+      timers.set(
+        dealId,
+        setTimeout(
+          () => this.checkBaseEntryRemainder(this.botId, dealId, symbol),
+          this.orderLimitRepositionTimeout,
+        ),
+      )
+    }
+
+    /** Re-arm the tick for a restored deal with a resting remainder. §4.4. */
+    resumeBaseEntryRemainder(d: FullDeal<ExcludeDoc<Deal>>) {
+      if ((d.deal.pendingAddFunds ?? []).some((p) => p.baseRemainder)) {
+        this.armBaseRemainderTick(`${d.deal._id}`, d.deal.symbol.symbol)
+      }
+    }
+
+    /** The order resting for a deal's remainder entry, if any. */
+    findBaseRemainderOrder(dealId: string, addFundsId: string) {
+      return this.getOrdersByStatusAndDealId({
+        dealId,
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      }).find((o) => o.addFundsId === addFundsId)
+    }
+
+    /**
+     * Cancel a resting remainder and book what it filled into the deal
+     * through the add-funds fill path.
+     *
+     * Returns the quantity it executed, or `null` when the cancel got no
+     * terminal answer and the order may still rest, in which case nothing may
+     * be placed in its stead. A cancel response need not be a fill report
+     * (spec `059`), so a fill the engine had already seen is booked from the
+     * row it held when the answer omits it; otherwise the rest would be
+     * re-placed in full on top of it. Spec `111` §4.3.3/§4.3.4.
+     */
+    async settleBaseEntryRemainderOrder(order: Order): Promise<number | null> {
+      const observed = {
+        status: order.status,
+        executedQty: order.executedQty,
+        price: order.price,
+        updateTime: order.updateTime,
+      }
+      const settled = await this.cancelOrderOnExchange(order)
+      if (settled?.status === 'FILLED') {
+        await this.handleUnknownOrder(settled)
+        return +settled.executedQty || 0
+      }
+      if (
+        !settled ||
+        (settled.status !== 'CANCELED' && settled.status !== 'EXPIRED')
+      ) {
+        return null
+      }
+      const fill = settledBaseEntryFill(settled, observed)
+      if (fill && +fill.executedQty > 0) {
+        await this.handleUnknownOrder(
+          this.promoteEndedBaseEntry({ ...settled, ...fill }),
+        )
+        return +fill.executedQty
+      }
+      return 0
+    }
+
+    /**
+     * Take a remainder entry off the deal, unless its fill already did.
+     */
+    dropBaseRemainderEntry(deal: FullDeal<ExcludeDoc<Deal>>, id: string) {
+      const pending = deal.deal.pendingAddFunds ?? []
+      if (!pending.some((p) => p.id === id)) {
+        return
+      }
+      deal.deal.pendingAddFunds = pending.filter((p) => p.id !== id)
+      deal.deal.levels.all = Math.max(
+        deal.deal.levels.complete,
+        deal.deal.levels.all - 1,
+      )
+      this.saveDeal(deal, {
+        pendingAddFunds: deal.deal.pendingAddFunds,
+        levels: deal.deal.levels,
+      })
+    }
+
+    /**
+     * The reposition tick of a resting base-order remainder.
+     *
+     * The spec `103` rule, applied to the remainder: at an unchanged price it
+     * is left on the book (part-filled or not) and the tick re-armed; once the
+     * price has moved it is cancelled, whatever it filled is booked, and the
+     * unfilled rest is placed again as a LIMIT at the new price. There is no
+     * amend-order call, so moving it is cancel + re-place. The tick ends with
+     * the deal or the entry. Its mutex is not `addFunds…`, because it calls
+     * `addDealFunds`. Spec `111` §4.3.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `baseRemainder${botId}${dealId}`,
+    )
+    async checkBaseEntryRemainder(
+      _botId: string,
+      dealId: string,
+      symbol: string,
+    ) {
+      this.baseRemainderTimers?.delete(dealId)
+      const deal = this.getDeal(dealId)
+      const entry =
+        deal?.deal.status === DCADealStatusEnum.open
+          ? (deal.deal.pendingAddFunds ?? []).find((p) => p.baseRemainder)
+          : undefined
+      if (!deal || !entry) {
+        return
+      }
+      const order = this.findBaseRemainderOrder(dealId, entry.id)
+      if (!order) {
+        // Not on the book yet, or gone; the reload re-send owns a missing
+        // entry (spec 110). §4.3.5.
+        this.armBaseRemainderTick(dealId, symbol)
+        return
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      const repositionPrice = ed
+        ? this.math.round(
+            await this.getLatestPrice(symbol),
+            ed.priceAssetPrecision,
+          )
+        : 0
+      // `origPrice` is where it was sent; `price` may be a fill report's.
+      const restingPrice = order.origPrice || order.price
+      if (
+        // An unreadable price is no reason to take it off the book.
+        !(repositionPrice > 0) ||
+        remainderKeepsResting({
+          orderStatus: order.status,
+          orderType: order.type,
+          restingPrice,
+          repositionPrice,
+        })
+      ) {
+        this.armBaseRemainderTick(dealId, symbol)
+        return
+      }
+      this.handleLog(
+        `Deal ${dealId} base order remainder ${order.clientOrderId} rests at ${restingPrice}, price is now ${repositionPrice}. Re-placing it`,
+      )
+      const requested = +order.origQty
+      const executed = await this.settleBaseEntryRemainderOrder(order)
+      if (executed === null) {
+        this.handleWarn(
+          `Deal ${dealId} base order remainder ${order.clientOrderId} could not be cancelled. Leaving it`,
+        )
+        this.armBaseRemainderTick(dealId, symbol)
+        return
+      }
+      const live = this.getDeal(dealId) ?? deal
+      this.dropBaseRemainderEntry(live, entry.id)
+      if (requested > executed && live.deal.status === DCADealStatusEnum.open) {
+        await this.placeBaseEntryRemainder(
+          dealId,
+          symbol,
+          requested - executed,
+          entry.baseTotal ?? order.origQty,
+        )
+      }
+    }
+
+    /**
+     * Buy a deal's resting base-order remainder at market, at the user's
+     * request. This is the only way a bot that may not enter at market gets a
+     * MARKET entry order.
+     *
+     * The resting order is cancelled and whatever it filled is booked first,
+     * so the market order buys only what is still missing. That order is a
+     * plain MARKET add-funds order, whose fill path merges it into the
+     * position and recomputes the average price, the take profit and usage.
+     * Spec `111` §4.6.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `baseRemainder${botId}${dealId}`,
+    )
+    async buyBaseEntryRemainder(_botId: string, dealId: string) {
+      const _id = this.startMethod('buyBaseEntryRemainder')
+      const deal = this.getDeal(dealId)
+      const entry =
+        deal?.deal.status === DCADealStatusEnum.open
+          ? (deal.deal.pendingAddFunds ?? []).find((p) => p.baseRemainder)
+          : undefined
+      if (!deal || !entry) {
+        this.endMethod(_id)
+        return this.handleErrors(
+          `This deal has no base order remainder waiting to fill`,
+          'buyBaseEntryRemainder',
+          '',
+          false,
+        )
+      }
+      const symbol = deal.deal.symbol.symbol
+      const armed = this.baseRemainderTimers?.get(dealId)
+      if (armed) {
+        clearTimeout(armed)
+        this.baseRemainderTimers.delete(dealId)
+      }
+      const order = this.findBaseRemainderOrder(dealId, entry.id)
+      let rest = +entry.qty
+      if (order) {
+        const requested = +order.origQty
+        const executed = await this.settleBaseEntryRemainderOrder(order)
+        if (executed === null) {
+          this.armBaseRemainderTick(dealId, symbol)
+          this.endMethod(_id)
+          return this.handleErrors(
+            `Could not cancel the resting base order remainder, so nothing was bought. Please try again`,
+            'buyBaseEntryRemainder',
+            '',
+            false,
+          )
+        }
+        rest = requested - executed
+      }
+      const live = this.getDeal(dealId) ?? deal
+      this.dropBaseRemainderEntry(live, entry.id)
+      if (rest > 0 && live.deal.status === DCADealStatusEnum.open) {
+        const qty = this.math.round(rest, await this.baseAssetPrecision(symbol))
+        this.handleLog(
+          `Deal ${dealId} base order remainder: buying the other ${qty} at market on request`,
+        )
+        await this.addDealFunds(this.botId, dealId, {
+          qty: `${qty}`,
+          asset: OrderSizeTypeEnum.base,
+          useLimitPrice: false,
+          type: AddFundsTypeEnum.fixed,
+        })
+      }
+      this.endMethod(_id)
     }
 
     /**
@@ -12723,6 +13116,8 @@ function createDCABotHelper<
           // Spec 050 §6.2: a refused trailing take profit may have a retry
           // outstanding. Its deadline is on the deal; the timer is not.
           await this.resumeTrailingCloseRetry(d)
+          // Spec 111 §4.4: on both branches below, service restart included.
+          this.resumeBaseEntryRemainder(d)
           if (!serviceRestart) {
             this.updateDealBalances(d)
             const completeLevels =
@@ -23090,6 +23485,10 @@ function createDCABotHelper<
         clearTimeout(timer)
       }
       this.canceledBaseEntryTimers = new Map()
+      for (const timer of (this.baseRemainderTimers ?? new Map()).values()) {
+        clearTimeout(timer)
+      }
+      this.baseRemainderTimers = new Map()
       for (const [id, timer] of this.dealTimersMap.entries()) {
         if (timer.enterMarketTimer) {
           clearTimeout(timer.enterMarketTimer)
@@ -23493,6 +23892,9 @@ function createDCABotHelper<
      * re-sending those placed a second copy of each one. Spec `110`.
      */
     resendPendingFunds(d: FullDeal<ExcludeDoc<Deal>>) {
+      // Read before the re-send below takes the entry off the list and
+      // `addDealFunds` puts it back. Spec 111 §4.4.
+      this.resumeBaseEntryRemainder(d)
       const orders = this.getOrdersByStatusAndDealId({
         dealId: `${d.deal._id}`,
       })
