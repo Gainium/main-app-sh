@@ -234,7 +234,7 @@ describe('a Combo reload whose rebuilt ladder moved by a tick (spec 105)', () =>
     expect(bot.cancelled).to.deep.equal([])
   })
 
-  it('§4.2 a resting order without a level keeps the price match', async () => {
+  it('§4.2 a resting order without a level is still counted (spec 107)', async () => {
     const bot = buildBot({
       resting: RESTING.filter(([l]) => l === 3).map((r) => ({
         ...restingOrder(r),
@@ -243,6 +243,9 @@ describe('a Combo reload whose rebuilt ladder moved by a tick (spec 105)', () =>
       ladder: REBUILT.filter(([l]) => l === 3).map(ladderGrid),
     })
     await bot.checkOrders(BOT_ID)
-    expect(bot.placed.map((g: any) => g.price)).to.deep.equal([94.16])
+    // It cannot pair by level, so the price match leaves 94.16 unplaced —
+    // but one order already rests for a one-level ladder, and spec 107 does
+    // not let the reload put a second one beside it.
+    expect(bot.placed.map((g: any) => g.price)).to.deep.equal([])
   })
 })

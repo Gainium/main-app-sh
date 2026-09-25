@@ -49,7 +49,11 @@ const REBUILT: [number, number][] = [
 
 const flip = (side: 'BUY' | 'SELL') => (side === 'BUY' ? 'SELL' : 'BUY')
 
-const restingOrder = ([price, qty]: [string, string], i: number, side = 'BUY') =>
+const restingOrder = (
+  [price, qty]: [string, string],
+  i: number,
+  side = 'BUY',
+) =>
   ({
     symbol: SYMBOL,
     clientOrderId: `D-RO-00000000000${i}`,
@@ -202,26 +206,27 @@ describe('a DCA reload whose rebuilt ladder moved by a tick (spec 106)', () => {
       resting: RESTING.map((r, i) =>
         restingOrder(r, i, i === 5 ? flip('BUY') : 'BUY'),
       ),
-      ladder: REBUILT.filter((_g, i) => i !== 2 && i !== 3 && i !== 4).map(
-        (g, i) => ladderGrid(g, i),
-      ),
+      ladder: REBUILT.map((g, i) => ladderGrid(g, i)),
     })
     await bot.checkOrders(BOT_ID)
+    // Five BUYs rest for a six-level BUY ladder, so exactly one BUY may be
+    // placed — the level with no BUY resting near it. The resting SELL at
+    // 2018.9 neither pairs with 2019.1 nor counts against the BUY side.
     expect(bot.placed.map((g: any) => g.price)).to.deep.equal([2019.1])
   })
 
-  it('§1.1.2 a missing level is still placed (counts differ, no pairing)', async () => {
+  it('§1.1.2 a missing level is still placed, and only that level (spec 107)', async () => {
     const bot = buildBot({
-      // 2167's order is gone from the venue.
+      // 2167's order is gone from the venue. The counts differ, so the rank
+      // pairing stands down; before spec 107 all four shifted levels were
+      // placed, three of them next to their resting order.
       resting: RESTING.filter(([p]) => p !== '2167').map((r, i) =>
         restingOrder(r, i),
       ),
       ladder: REBUILT.map((g, i) => ladderGrid(g, i)),
     })
     await bot.checkOrders(BOT_ID)
-    expect(bot.placed.map((g: any) => g.price)).to.deep.equal([
-      2407.9, 2295.9, 2167.2, 2019.1,
-    ])
+    expect(bot.placed.map((g: any) => g.price)).to.deep.equal([2167.2])
   })
 
   it('§1.1.3 a ladder that matches by price is left untouched', async () => {

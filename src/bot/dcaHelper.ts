@@ -265,6 +265,7 @@ import {
 } from '@gainium/indicators'
 import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
 import { getSubTypeBehavior } from './errorRulesCache'
+import { capLadderPlacements } from './ladderPlacementCap'
 import {
   limitOnlyEntryFallback,
   notEnoughBalanceNewDeal,
@@ -11789,9 +11790,24 @@ function createDCABotHelper<
           unplaced.forEach((g) => covered.add(g))
         }
       }
-      return covered.size
-        ? { ...diff, new: diff.new.filter((g) => !covered.has(g)) }
-        : diff
+      const paired = covered.size
+        ? diff.new.filter((g) => !covered.has(g))
+        : diff.new
+      // Whatever the pairing decided, never rest more safety orders than the
+      // ladder holds. Spec 107.
+      const { place, dropped } = capLadderPlacements(
+        deal.currentOrders,
+        activeRegularOrders,
+        paired,
+      )
+      if (dropped.length) {
+        this.handleWarn(
+          `Deal ${deal.deal._id} reload: refused ${dropped.length} safety order(s) at ${dropped
+            .map((g) => g.price)
+            .join(', ')}: they would rest more orders than the ladder holds`,
+        )
+      }
+      return { ...diff, new: place }
     }
     /** Check orders after service restart */
     @IdMute(mutex, (botId: string) => `${botId}checkOrders`)

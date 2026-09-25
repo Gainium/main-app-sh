@@ -78,6 +78,7 @@ import {
   standingConditionKey,
 } from './conditionLatch'
 import { gridBudgetVerdict, gridBudgetRefusalMessage } from './gridBudgetGuard'
+import { capLadderPlacements } from './ladderPlacementCap'
 
 const mutex = new IdMutex()
 const mutexConcurrently = new IdMutex(300)
@@ -6024,17 +6025,29 @@ function createComboBotHelper<
               `${o.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell}@${o.dcaLevel}`,
           ),
       )
-      return {
-        ...diff,
-        new: diff.new.filter(
-          (g) =>
-            !(
-              g.type === TypeOrderEnum.dealRegular &&
-              g.dcaLevel &&
-              restingLevels.has(`${g.side}@${g.dcaLevel}`)
-            ),
-        ),
+      const paired = diff.new.filter(
+        (g) =>
+          !(
+            g.type === TypeOrderEnum.dealRegular &&
+            g.dcaLevel &&
+            restingLevels.has(`${g.side}@${g.dcaLevel}`)
+          ),
+      )
+      // Whatever the pairing decided, never rest more safety orders than the
+      // ladder holds. Spec 107.
+      const { place, dropped } = capLadderPlacements(
+        deal.currentOrders.filter((g) => !g.hide),
+        activeRegularOrders,
+        paired,
+      )
+      if (dropped.length) {
+        this.handleWarn(
+          `Deal ${deal.deal._id} reload: refused ${dropped.length} safety order(s) at ${dropped
+            .map((g) => g.price)
+            .join(', ')}: they would rest more orders than the ladder holds`,
+        )
       }
+      return { ...diff, new: place }
     }
 
     @IdMute(

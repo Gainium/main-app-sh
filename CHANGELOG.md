@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.66.3] - 2026-09-25
+
+### Fixed
+
+- **A reload never rests more safety orders than the deal's ladder holds.** Whatever the restart order check decides about which rebuilt levels are already resting, it no longer places a safety order that would leave more orders resting on a side than the ladder has levels there. Candidates beyond that are refused, starting with those priced closest to an order already resting, and the refusal is logged on the bot. This closes the cases the level pairing could not cover: a DCA deal whose ladder moved and is also missing an order, and a Combo order without a recorded level.
+
 ## [1.66.2] - 2026-09-25
 
 ### Fixed
