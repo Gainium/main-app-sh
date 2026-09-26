@@ -396,8 +396,13 @@ describe('orders the venue can only refuse (spec 084, issue #871)', () => {
         }),
       )
 
-      // round(0.001 x 1529.15, 5) — unchanged by the cap.
-      expect(bot.venueCalls[0].quantity).to.equal(1.52915)
+      // Still ZEC's own scale of 5 — unchanged by the cap. The amount is
+      // funded for 0.001 plus half a base step (spec `113`), so it is
+      // round(0.0015 x 1529.15, 5) rather than round(0.001 x 1529.15, 5).
+      expect(bot.venueCalls[0].quantity).to.equal(
+        new MathHelper().round((0.001 + 0.001 / 2) * 1529.15, 5),
+      )
+      expect(`${bot.venueCalls[0].quantity}`.split('.')[1].length).to.equal(5)
     })
   })
 

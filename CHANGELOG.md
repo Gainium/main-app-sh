@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.3] - 2026-09-26
+
+### Fixed
+
+- **A market buy on Bitget spot now fills the full quantity the bot asked for, and its top-up is no longer refused as size zero.** Bitget sizes a spot market buy in the quote coin and fills that amount divided by the ask, rounded down to the pair's quantity step. The bot funded the order at the last trade price, so whenever the ask was above the last trade the order came back one step short, and the one-step top-up that should cover the gap was converted to zero and refused. The amount is now funded for the quantity plus half a step, so the round-down lands on the requested quantity across a normal spread without buying more at the price the order was sized at.
+
 ## [1.69.2] - 2026-09-26
 
 ### Fixed

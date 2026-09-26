@@ -68,6 +68,7 @@ import {
   isKrakenUsdmUnderfilledReduceOnlyClose,
 } from './reduceOnlyRemainder'
 import { isVenueCanceledRemainderFill } from './remainderFill'
+import { bitgetSpotMarketBuyQty } from './bitgetMarketBuyAmount'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
@@ -8049,7 +8050,15 @@ class MainBot<T extends IMainBot> {
         requestData.type === 'MARKET'
       ) {
         requestData.quantity = this.math.round(
-          requestData.quantity * requestData.price,
+          // Spec `113`. Bitget fills `⌊amount ÷ ask⌋` on the base step, so an
+          // amount of exactly `qty × last` comes back one step short at any ask
+          // above the last trade, and a one-step top-up converts to zero.
+          (this.data.exchange === ExchangeEnum.bitget
+            ? bitgetSpotMarketBuyQty(
+                requestData.quantity,
+                ed?.baseAsset.step,
+              )
+            : requestData.quantity) * requestData.price,
           this.data.exchange === ExchangeEnum.bitget
             ? // Spec `084` §4.2 (#871). Bitget's own `quotePrecision` is NOT
               // the scale its order-entry validator enforces on the amount
