@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.6] - 2026-09-26
+
+### Fixed
+
+- **Changing a global variable no longer wipes the statistics of every DCA and Combo bot that uses it.** A variable change that does not restart the bot reset the bot's statistics whenever the bot had any, whatever the variable controlled — so a variable used as a price filter or a condition value cleared the Statistics tab of every bot bound to it. Only a variable bound to an order-sizing field (order size, base order size, number of orders, volume scale, max open deals) resets them now, the same rule as editing those fields in the bot settings, and the bot's equity chart is kept as it is there. The reset also now reaches the running bot, which previously wrote its old statistics back on the next deal close.
+
 ## [1.69.5] - 2026-09-26
 
 ### Fixed

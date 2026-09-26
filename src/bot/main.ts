@@ -29,7 +29,6 @@ import type {
   BaseReturn,
   PriceMessage,
   BybitHost,
-  BotSchema,
 } from '../../types'
 import {
   PositionSide,
@@ -69,6 +68,7 @@ import {
 } from './reduceOnlyRemainder'
 import { isVenueCanceledRemainderFill } from './remainderFill'
 import { bitgetSpotMarketBuyQty } from './bitgetMarketBuyAmount'
+import { statsAfterReset } from './dca/botStatsReset'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
@@ -2095,14 +2095,22 @@ class MainBot<T extends IMainBot> {
             findPath?.path.includes('ordersCount') ||
             findPath?.path.includes('volumeScale') ||
             findPath?.path.includes('maxNumberOfOpenDeals')
-          if (resetStats || (this.data as BotSchema | null)?.stats) {
+          const bot = this.data as ClearDCABotSchema | null
+          if (resetStats && bot?.stats) {
             this.handleLog(
               `Reset bot ${this.botId} stats after variable ${data._id} changed`,
             )
+            // Same scope as a sizing edit through the settings API. This path
+            // does not reload the bot, so the in-memory copy — what the next
+            // deal close folds into and what goes to Redis — is reset too.
+            const stats = statsAfterReset(bot.stats, 'keepChart')
+            bot.stats = stats ?? undefined
+            bot.symbolStats = undefined
+            bot.resetStatsAfter = +new Date()
             this.updateData({
-              stats: null,
+              stats,
               symbolStats: null,
-              resetStatsAfter: +new Date(),
+              resetStatsAfter: bot.resetStatsAfter,
             })
           }
         }
