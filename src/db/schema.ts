@@ -266,6 +266,30 @@ const quantRulesEventSchema: Schema<QuantRulesEventSchema> = new Schema(
 
 const userSchema: Schema<UserSchema> = new Schema({
   bigAccount: Boolean,
+  // Large account mode (main-app spec 019). V1 keeps reading `bigAccount`.
+  largeAccountOverride: {
+    type: String,
+    enum: ['auto', 'on', 'off'],
+    default: 'auto',
+  },
+  largeAccountOverrideBy: { type: String, enum: ['user', 'admin', null] },
+  largeAccountOverrideAt: Date,
+  largeAccountStats: {
+    live: {
+      activeBots: Number,
+      openDeals: Number,
+      terminalBots: Number,
+      autoActive: Boolean,
+      computedAt: Date,
+    },
+    paper: {
+      activeBots: Number,
+      openDeals: Number,
+      terminalBots: Number,
+      autoActive: Boolean,
+      computedAt: Date,
+    },
+  },
   username: {
     ...RequiredString,
     unique: true,
@@ -2150,6 +2174,10 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     unrealizedProfit: Number,
     usage: Number,
     maxUsage: Number,
+    unrealizedProfitNet: Number,
+    unrealizedPercentNet: Number,
+    valueUsd: Number,
+    updatedAt: Date,
   },
   tpSlTargetFilled: [String],
   tpFilledHistory: [{ qty: Number, price: Number, id: String }],
@@ -2326,6 +2354,10 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     unrealizedProfit: Number,
     usage: Number,
     maxUsage: Number,
+    unrealizedProfitNet: Number,
+    unrealizedPercentNet: Number,
+    valueUsd: Number,
+    updatedAt: Date,
   },
   lastFilledLevel: Number,
   totalAssetAmount: Number,

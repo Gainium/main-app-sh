@@ -1257,6 +1257,14 @@ export type ProfitLossStats = {
   unrealizedProfit: number
   usage: number
   maxUsage: number
+  /** Fee-inclusive uPnL in USD (main-app spec 019 §5). */
+  unrealizedProfitNet?: number
+  /** Fee-inclusive P&L in percent (9.8 = 9.8 %). */
+  unrealizedPercentNet?: number
+  /** usage in USD + fee-inclusive uPnL. */
+  valueUsd?: number
+  /** When the stats worker last persisted these stats. */
+  updatedAt?: Date
 }
 
 export type BlockOrder = { price: number; qty: number; side: OrderSideEnum }
@@ -1907,10 +1915,25 @@ export enum APIPermission {
   write = 'write',
 }
 
+export type LargeAccountContextStatsDoc = {
+  activeBots: number
+  openDeals: number
+  terminalBots: number
+  autoActive: boolean
+  computedAt: Date
+}
+
 export interface UserSchema extends SchemaI {
   username: string
   password: string
   bigAccount?: boolean
+  largeAccountOverride?: 'auto' | 'on' | 'off'
+  largeAccountOverrideBy?: 'user' | 'admin' | null
+  largeAccountOverrideAt?: Date
+  largeAccountStats?: {
+    live?: LargeAccountContextStatsDoc
+    paper?: LargeAccountContextStatsDoc
+  }
   tokens: UserToken[]
   exchanges: ExchangeInUser[]
   timezone: string

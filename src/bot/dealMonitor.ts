@@ -11,6 +11,16 @@ import {
   /* comboBotDb, */ comboDealsDb,
   /* dcaBotDb,  */ dcaDealsDb,
 } from '../db/dbInit'
+import { computeDealUnrealizedNet } from './dealUnrealizedPnl'
+
+/**
+ * The legacy `stats.unrealizedProfit` is persisted only when a window closes
+ * with a new drawdown/run-up or a profit/loss flip, so a quiet deal's stored
+ * value can be hours old. The fee-inclusive fields (main-app spec 019 §5) are
+ * what the dashboard ranks and sums on, so a change to them also forces a
+ * persist, at most this often per deal.
+ */
+export const NET_STATS_REFRESH_MS = 10 * 60 * 1000
 
 type DealStatsMap = {
   start: number
@@ -26,6 +36,14 @@ type DealStatsMap = {
   usage: number
   maxUsage: number
   botId: string
+  /** Fee-inclusive uPnL in USD (spec 019 §5); undefined when not computable. */
+  unrealizedProfitNet?: number
+  unrealizedPercentNet?: number
+  valueUsd?: number
+  /** Last time the fee-inclusive fields were persisted. */
+  netPersistedAt?: number
+  /** Value of `unrealizedProfitNet` at the last persist. */
+  netPersistedValue?: number
 }
 
 const mutex = new IdMutex()
@@ -196,8 +214,9 @@ export class DealMonitor {
       }
       newPercent =
         unrealizedPnL && price && usage ? (unrealizedPnL / usage) * 100 : 0
-      unrealizedProfit =
-        (unrealizedProfit ?? 0) * usdRate * (profitBase ? price : 1)
+      // `unrealizedPnL` already carries `usdRate` (it is built from the gross
+      // value above). Multiplying again here applied the quote→USD rate twice
+      // to every non-USD-quoted deal with a reduce-funds or partial-TP fill.
     }
     if (combo) {
       const qty = long
@@ -318,12 +337,46 @@ export class DealMonitor {
       stats.usage = usage ?? 0
       stats.maxUsage = maxUsage ?? 0
     }
+    this.updateNetStats(combo, deal, stats, price, usdRate, time, fee)
     this.stats.set(deal._id.toString(), stats)
+  }
+
+  /**
+   * Fee-inclusive uPnL, P&L % and value (spec 019 §5). Always kept current in
+   * memory; forces a persist when the value moved and the last persist of it
+   * is older than {@link NET_STATS_REFRESH_MS}.
+   */
+  private updateNetStats(
+    combo: boolean,
+    deal: InputDeal,
+    stats: DealStatsMap,
+    price: number,
+    usdRate: number,
+    time: number,
+    fee: number,
+  ) {
+    const net = computeDealUnrealizedNet(deal, price, usdRate, fee, combo)
+    if (!net) {
+      return
+    }
+    stats.unrealizedProfitNet = net.unrealizedUsd
+    stats.unrealizedPercentNet = net.percent
+    stats.valueUsd = net.valueUsd
+    if (
+      net.unrealizedUsd !== stats.netPersistedValue &&
+      time - (stats.netPersistedAt ?? 0) >= NET_STATS_REFRESH_MS
+    ) {
+      stats.wasChanged = true
+    }
   }
 
   private addNewDeal(deal: InputDeal, id: string, price: number, time: number) {
     const { avgPrice } = deal
     const long = deal.strategy === StrategyEnum.long
+    // A window that just closed wrote the fee-inclusive fields; the deal
+    // snapshot the bot hands us does not see that write, so carry the persist
+    // marker over from the previous window rather than re-reading it stale.
+    const previous = this.stats.get(id)
     this.stats.set(id, {
       start: time,
       drawdownPercent: deal.stats?.drawdownPercent ?? 0,
@@ -342,6 +395,11 @@ export class DealMonitor {
       botId: deal.botId,
       usage: deal.stats?.usage ?? 0,
       maxUsage: deal.stats?.maxUsage ?? 0,
+      netPersistedAt:
+        previous?.netPersistedAt ??
+        (deal.stats?.updatedAt ? +new Date(deal.stats.updatedAt) : 0),
+      netPersistedValue:
+        previous?.netPersistedValue ?? deal.stats?.unrealizedProfitNet,
     })
   }
 
@@ -380,9 +438,21 @@ export class DealMonitor {
           'stats.unrealizedProfit': stats.unrealizedProfit,
           'stats.usage': stats.usage,
           'stats.maxUsage': stats.maxUsage,
+          ...(typeof stats.unrealizedProfitNet === 'number'
+            ? {
+                'stats.unrealizedProfitNet': stats.unrealizedProfitNet,
+                'stats.unrealizedPercentNet': stats.unrealizedPercentNet,
+                'stats.valueUsd': stats.valueUsd,
+              }
+            : {}),
+          'stats.updatedAt': new Date(time),
         },
       },
     )
+    if (typeof stats.unrealizedProfitNet === 'number') {
+      stats.netPersistedAt = time
+      stats.netPersistedValue = stats.unrealizedProfitNet
+    }
     /*  if (stats.unrealizedProfit) {
       const db = (combo ? comboBotDb : dcaBotDb) as typeof dcaBotDb
       await db.updateData(

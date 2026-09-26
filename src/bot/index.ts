@@ -105,6 +105,7 @@ import {
 } from './pairStats'
 import { IdMute, IdMutex } from '../utils/mutex'
 import { mapDataGridOptionsToMongoOptions } from '../db/utils'
+import { LargeAccountService } from './largeAccount/largeAccountService'
 import RabbitClient from '../db/rabbit'
 import {
   botDb,
@@ -1830,23 +1831,42 @@ class Bot<T extends UserSchema = UserSchema> {
   public async getTradingTerminalBotsList(
     userId: string,
     paperContext: boolean,
+    dataGridInput?: DataGridFilterInput,
   ) {
+    const match: Record<string, unknown> = {
+      userId,
+      'settings.type': {
+        $eq: 'terminal',
+      },
+      paperContext: paperContext
+        ? {
+            $eq: true,
+          }
+        : {
+            $eq: false,
+          },
+    }
+    // Server paging (main-app spec 019 §3): without `dataGridInput` the list
+    // is every terminal bot, as before. With it, the page is cut BEFORE the
+    // per-bot deal lookup and `total` counts every match.
+    const paged = !!dataGridInput && Object.keys(dataGridInput).length > 0
+    const pageStages: PipelineStage[] = []
+    let search = match
+    if (paged) {
+      const { filter, sort, skip, limit } =
+        mapDataGridOptionsToMongoOptions(dataGridInput)
+      search = { ...filter, ...match }
+      pageStages.push(
+        { $sort: sort as Record<string, 1 | -1> },
+        { $skip: skip },
+        { $limit: Math.min(500, limit) },
+      )
+    }
     const agg: PipelineStage[] = [
       {
-        $match: {
-          userId,
-          'settings.type': {
-            $eq: 'terminal',
-          },
-          paperContext: paperContext
-            ? {
-                $eq: true,
-              }
-            : {
-                $eq: false,
-              },
-        },
+        $match: search,
       },
+      ...pageStages,
       /*{
         $lookup: {
           let: {
@@ -1897,6 +1917,11 @@ class Bot<T extends UserSchema = UserSchema> {
     ]
     const result = await this.dcaBotDb.aggregate(agg)
     if (result.status === StatusEnum.ok) {
+      let total = result.data.result.length
+      if (paged) {
+        const counted = await this.dcaBotDb.countData(search as never)
+        total = counted.status === StatusEnum.ok ? counted.data.result : total
+      }
       return {
         status: StatusEnum.ok,
         data: result.data.result.map((d) => ({
@@ -1906,6 +1931,7 @@ class Bot<T extends UserSchema = UserSchema> {
           deals: d.dcadeals,
         })),
         reason: null,
+        total,
       }
     }
     return result
@@ -2268,6 +2294,7 @@ class Bot<T extends UserSchema = UserSchema> {
             'stats.unrealizedProfit': {
               $ifNull: ['$stats.unrealizedProfit', 0],
             },
+            'stats.unrealizedProfitNet': 1,
           },
         },
         {
@@ -2323,6 +2350,17 @@ class Bot<T extends UserSchema = UserSchema> {
             unrealizedProfit: {
               $sum: '$stats.unrealizedProfit',
             },
+            // Fee-inclusive (main-app spec 019 §5). Deals written before it
+            // shipped lack the field; `unrealizedProfitNetDeals` says how many
+            // of `normal` it covers so the client can label a partial sum.
+            unrealizedProfitNet: {
+              $sum: '$stats.unrealizedProfitNet',
+            },
+            unrealizedProfitNetDeals: {
+              $sum: {
+                $cond: [{ $isNumber: '$stats.unrealizedProfitNet' }, 1, 0],
+              },
+            },
           },
         },
         {
@@ -2333,6 +2371,8 @@ class Bot<T extends UserSchema = UserSchema> {
             eighty: 1,
             max: 1,
             unrealizedProfit: 1,
+            unrealizedProfitNet: 1,
+            unrealizedProfitNetDeals: 1,
           },
         },
       ])
@@ -2375,6 +2415,7 @@ class Bot<T extends UserSchema = UserSchema> {
           },
           'stats.currentCount': 1,
           'stats.unrealizedProfit': { $ifNull: ['$stats.unrealizedProfit', 0] },
+          'stats.unrealizedProfitNet': 1,
           all: '$levels.all',
         },
       },
@@ -2431,6 +2472,15 @@ class Bot<T extends UserSchema = UserSchema> {
           unrealizedProfit: {
             $sum: '$stats.unrealizedProfit',
           },
+          // Fee-inclusive (main-app spec 019 §5); see the combo branch.
+          unrealizedProfitNet: {
+            $sum: '$stats.unrealizedProfitNet',
+          },
+          unrealizedProfitNetDeals: {
+            $sum: {
+              $cond: [{ $isNumber: '$stats.unrealizedProfitNet' }, 1, 0],
+            },
+          },
         },
       },
       {
@@ -2441,6 +2491,8 @@ class Bot<T extends UserSchema = UserSchema> {
           eighty: 1,
           max: 1,
           unrealizedProfit: 1,
+          unrealizedProfitNet: 1,
+          unrealizedProfitNetDeals: 1,
         },
       },
     ])
@@ -3293,6 +3345,8 @@ class Bot<T extends UserSchema = UserSchema> {
 
   @IdMute(mutex, (userId: string) => `${userId}checkBigAccount`)
   private async checkBigAccount(userId: string, action: 'add' | 'remove') {
+    // Large account mode (main-app spec 019) recounts on the next read.
+    LargeAccountService.getInstance().invalidate(userId)
     const user = await this.userDb.readData({ _id: userId })
     if (!user || !user.data?.result) {
       return
@@ -12378,6 +12432,17 @@ class Bot<T extends UserSchema = UserSchema> {
         sort = { status: -1 }
       }
     }
+    // Server paging (main-app spec 019 §3): an EXPLICIT pageSize below the
+    // floor is honoured, so hedge lists can be paged in small pages. Every
+    // request that never sends one below 500 — V1 included — is unchanged.
+    const explicitPageSize = dataGridInput.pageSize
+    if (
+      typeof explicitPageSize === 'number' &&
+      explicitPageSize > 0 &&
+      explicitPageSize < 500
+    ) {
+      _limit = explicitPageSize
+    }
     const search = { ...filter, isDeleted: { $ne: true } }
     const options = { sort, limit: _limit, skip, populate: 'bots' }
     const skipCount =
@@ -12477,6 +12542,17 @@ class Bot<T extends UserSchema = UserSchema> {
       if (typeof sort === 'undefined') {
         sort = { status: -1 }
       }
+    }
+    // Server paging (main-app spec 019 §3): an EXPLICIT pageSize below the
+    // floor is honoured, so hedge lists can be paged in small pages. Every
+    // request that never sends one below 500 — V1 included — is unchanged.
+    const explicitPageSize = dataGridInput.pageSize
+    if (
+      typeof explicitPageSize === 'number' &&
+      explicitPageSize > 0 &&
+      explicitPageSize < 500
+    ) {
+      _limit = explicitPageSize
     }
     const search = { ...filter, isDeleted: { $ne: true } }
     const options = { sort, limit: _limit, skip, populate: 'bots' }

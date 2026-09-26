@@ -171,6 +171,8 @@ import moment from 'moment-timezone'
 import { getBotsByGlobalVar } from '../bot/utils'
 import { JWT_SECRET } from '../config'
 import { DataResponse, ErrorResponse } from '../db/crud'
+import { LargeAccountService } from '../bot/largeAccount/largeAccountService'
+import { getInPositions } from './handlers/inPositions.handler'
 
 /**
  * The single reply every failed password login gets, whatever went wrong.
@@ -224,6 +226,55 @@ if (!JWT_SECRET) {
 }
 
 const rabbitClient = new Rabbit()
+
+/** Key under which `botDashboardStats` hands its arguments to the type resolvers. */
+const IN_POSITIONS_ARGS = '__inPositionsArgs'
+
+type InPositionsParent = {
+  [IN_POSITIONS_ARGS]?: {
+    userId: string
+    type: BotType
+    paperContext: boolean
+    terminal?: boolean
+  }
+  __inPositions?: ReturnType<typeof getInPositions>
+}
+
+/** One computation per `botDashboardStats` result, shared by its three fields. */
+const inPositionsOf = (parent: InPositionsParent) => {
+  const args = parent?.[IN_POSITIONS_ARGS]
+  if (!args) return Promise.resolve(null)
+  if (!parent.__inPositions) {
+    parent.__inPositions = getInPositions(
+      args.userId,
+      args.type,
+      args.paperContext,
+      args.terminal,
+    )
+  }
+  return parent.__inPositions
+}
+
+/**
+ * Field resolvers on object types. Exported so a host that assembles its own
+ * resolver map (main-app) can spread them next to `Query`/`Mutation`.
+ */
+export const typeResolvers = {
+  botDashboardStats: {
+    inPositionsUsd: async (parent: InPositionsParent) =>
+      (await inPositionsOf(parent))?.inPositionsUsd ?? null,
+    inPositionsCount: async (parent: InPositionsParent) =>
+      (await inPositionsOf(parent))?.inPositionsCount ?? null,
+    inPositionsUnpriced: async (parent: InPositionsParent) =>
+      (await inPositionsOf(parent))?.inPositionsUnpriced ?? null,
+  },
+  dcaDeal: {
+    updatedAt: (deal: { updated?: Date | null }) => deal?.updated ?? null,
+  },
+  comboDeal: {
+    updatedAt: (deal: { updated?: Date | null }) => deal?.updated ?? null,
+  },
+}
 
 const resolvers = <
   R extends UserSchema = UserSchema,
@@ -944,12 +995,54 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      return await Bot.botDashboardStats(
+      const result = await Bot.botDashboardStats(
         `${user.data._id}`,
         input.type,
         !!paperContext,
         input.terminal,
       )
+      if (result.status !== StatusEnum.ok || !result.data) {
+        return result
+      }
+      // Read by the `botDashboardStats` type resolvers below, only when a
+      // client selects an In positions field (main-app spec 019 §4).
+      return {
+        ...result,
+        data: {
+          ...result.data,
+          [IN_POSITIONS_ARGS]: {
+            userId: `${user.data._id}`,
+            type: input.type,
+            paperContext: !!paperContext,
+            terminal: input.terminal,
+          },
+        },
+      }
+    },
+    largeAccount: async (
+      _parent: any,
+      _args: any,
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const data = await LargeAccountService.getInstance().getLargeAccount(
+        `${user.data._id}`,
+        !!paperContext,
+      )
+      if (!data) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'User not found',
+          data: null,
+        }
+      }
+      return { status: StatusEnum.ok, reason: null, data }
     },
     dealDashboardStats: async (
       _parent: any,
@@ -2183,7 +2276,7 @@ const resolvers = <
     },
     getTradingTerminalBotsList: async (
       _parent: any,
-      {},
+      { input }: { input?: { dataGridInput?: DataGridFilterInput } },
       { token, req, paperContext }: InputRequest,
     ) => {
       if (token !== 'demo' && !req.user?.authorized) {
@@ -2196,6 +2289,7 @@ const resolvers = <
       return await Bot.getTradingTerminalBotsList(
         user.data._id.toString(),
         paperContext,
+        input?.dataGridInput,
       )
     },
     userFee: async (
@@ -4354,6 +4448,24 @@ const resolvers = <
     },
   }
   const Mutation = {
+    setLargeAccountMode: async (
+      _parent: any,
+      { input }: { input: { mode: string } },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return LargeAccountService.getInstance().setUserMode(
+        `${user.data._id}`,
+        input?.mode,
+        !!paperContext,
+      )
+    },
     resetAccount: async (
       _parents: any,
       { input }: { input: { type: ResetAccountTypeEnum } },
@@ -9444,6 +9556,7 @@ const resolvers = <
   return {
     Query,
     Mutation,
+    ...typeResolvers,
   }
 }
 

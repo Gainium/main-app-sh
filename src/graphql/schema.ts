@@ -750,6 +750,9 @@ export const UserSchema = /* GraphQL */ `
 
 export const BotSchema = /* GraphQL */ `
   type Query {
+    # Large account mode for the request's trading context (main-app spec 019).
+    # Its own root field so a client can probe for it on older backends.
+    largeAccount: largeAccountResponse
     searchByBotName(input: searchByBotNameInput!): searchByBotNameResponse
     getServerSideBacktestRequests(
       input: getServerSideBacktestRequestsInput
@@ -813,7 +816,9 @@ export const BotSchema = /* GraphQL */ `
     resetComboDealSettings(
       input: resetDealSettingsInput
     ): resetDealSettingsResponse
-    getTradingTerminalBotsList: getTradingTerminalBotsListResponse
+    getTradingTerminalBotsList(
+      input: getTradingTerminalBotsListInput
+    ): getTradingTerminalBotsListResponse
     restartBot(input: restartBotInput!): restartResponse
     getBacktests(input: DataGridFilterInput): getBacktestsResponse
     getComboBacktests(input: DataGridFilterInput): getComboBacktestsResponse
@@ -867,6 +872,7 @@ export const BotSchema = /* GraphQL */ `
     compareBalances(input: compareBalancesInput!): compareBalancesResponse
   }
   type Mutation {
+    setLargeAccountMode(input: setLargeAccountModeInput!): largeAccountResponse
     moveDealToTerminal(
       input: moveDealToTerminalInput!
     ): moveDealToTerminalResponse
@@ -1081,6 +1087,10 @@ export const BotSchema = /* GraphQL */ `
     eighty: Float
     max: Float
     unrealizedProfit: Float
+    # Sum of the fee-inclusive stats.unrealizedProfitNet (main-app spec 019 §5)
+    # and how many of the deals carry it yet.
+    unrealizedProfitNet: Float
+    unrealizedProfitNetDeals: Float
   }
   type dealDashboardStats {
     result: [dealDashboardStatsResult]
@@ -1100,6 +1110,49 @@ export const BotSchema = /* GraphQL */ `
   }
   type botDashboardStats {
     result: [botDashboardStatsResult]
+    # In positions, USD (main-app spec 019 §4). Computed only when selected.
+    inPositionsUsd: Float
+    inPositionsCount: Int
+    inPositionsUnpriced: Int
+  }
+  input setLargeAccountModeInput {
+    # 'on' | 'auto'. 'off' is refused for users.
+    mode: String!
+  }
+  type largeAccountCounts {
+    activeBots: Int!
+    openDeals: Int!
+    terminalBots: Int!
+  }
+  type largeAccountThreshold {
+    enter: Int!
+    leave: Int!
+  }
+  type largeAccountThresholds {
+    activeBots: largeAccountThreshold!
+    openDeals: largeAccountThreshold!
+    terminalBots: largeAccountThreshold!
+  }
+  type largeAccount {
+    active: Boolean!
+    source: String!
+    reason: String
+    override: String!
+    overrideBy: String
+    canUserEnable: Boolean!
+    canUserRevert: Boolean!
+    paperContext: Boolean!
+    counts: largeAccountCounts!
+    thresholds: largeAccountThresholds!
+    computedAt: Date
+  }
+  type largeAccountResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: largeAccount
+  }
+  input getTradingTerminalBotsListInput {
+    dataGridInput: DataGridFilterInput
   }
   type botDashboardStatsResponse implements BasicResponse {
     status: Status
@@ -4225,6 +4278,13 @@ export const BotSchema = /* GraphQL */ `
     timeCountStart: String
     currentCount: String
     unrealizedProfit: Float
+    usage: Float
+    maxUsage: Float
+    # Fee-inclusive (main-app spec 019 §5); USD, percent, USD.
+    unrealizedProfitNet: Float
+    unrealizedPercentNet: Float
+    valueUsd: Float
+    updatedAt: Date
   }
   type dynamicAr {
     value: Float
@@ -4270,6 +4330,8 @@ export const BotSchema = /* GraphQL */ `
     createTime: Date
     updateTime: Date
     closeTime: Date
+    # Last write to the deal (Mongo \`updated\`); null on deals that never had one.
+    updatedAt: Date
     levels: dcaLevels
     usage: Usage
     settings: dcaDealSettings
@@ -4376,6 +4438,8 @@ export const BotSchema = /* GraphQL */ `
     createTime: Date
     updateTime: Date
     closeTime: Date
+    # Last write to the deal (Mongo \`updated\`); null on deals that never had one.
+    updatedAt: Date
     levels: dcaLevels
     usage: Usage
     settings: comboDealSettings
@@ -4447,6 +4511,7 @@ export const BotSchema = /* GraphQL */ `
     status: Status
     reason: String
     data: [fullDCABot]
+    total: Float
   }
   type dcaLevels {
     all: Int
