@@ -3388,6 +3388,14 @@ export const registerIndexes = () => {
     { userId: 1, createTime: -1 },
     { partialFilterExpression: { status: 'open' } },
   )
+  // Deals list with a status filter — the closed tab and its date filters
+  // (find({userId, status:{$in:[...]}, ...}).sort({createTime:-1})). Without
+  // it the closed tab reads every deal the user has through {userId}.
+  // Already built on the cloud database under its default name
+  // `userId_1_status_1_createTime_-1`: keep the keys, their order and the
+  // absence of options exactly as they are, or `syncIndexes()` drops and
+  // rebuilds it on the next start.
+  dcaDealSchema.index({ userId: 1, status: 1, createTime: -1 })
 
   favoritePairsSchema.index({ userId: 1 })
 
