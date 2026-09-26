@@ -4582,6 +4582,37 @@ class Bot<T extends UserSchema = UserSchema> {
         initialPriceStartFrom: null,
       }
     }
+    // Range moved past the start price: the restart re-derives the initial
+    // balances (the value-change TP/SL baseline) from that price, so every
+    // level lands on one side and the bot appears to have gained or lost the
+    // whole move at once. Re-base on the current price instead.
+    const newLow = set.$set.settings?.lowPrice ?? oldSettings.settings.lowPrice
+    const newTop = set.$set.settings?.topPrice ?? oldSettings.settings.topPrice
+    if (
+      (set.$set.initialPrice === undefined ||
+        set.$set.initialPrice === oldSettings.initialPrice) &&
+      oldSettings.initialPrice &&
+      (`${newLow}` !== `${oldSettings.settings.lowPrice}` ||
+        `${newTop}` !== `${oldSettings.settings.topPrice}`) &&
+      (oldSettings.initialPrice < +newLow || oldSettings.initialPrice > +newTop)
+    ) {
+      const _ex = this.ec.chooseExchangeFactory(oldSettings.exchange)
+      const price = _ex
+        ? await _ex('', '').latestPrice(oldSettings.symbol.symbol)
+        : null
+      if (price && price.status === StatusEnum.ok && price.data > 0) {
+        set['$set'] = {
+          ...set['$set'],
+          initialPrice: price.data,
+          initialPriceFrom: InitialPriceFromEnum.start,
+          initialPriceStart: price.data,
+          initialPriceStartFrom: InitialPriceFromEnum.start,
+        }
+        changedString = `${changedString}${
+          changedString.length ? ', ' : ''
+        }Initial Price: ${oldSettings.initialPrice} -> ${price.data}`
+      }
+    }
     const saveBotRequest = await this.botDb.updateData(
       { _id: id, userId },
       set,

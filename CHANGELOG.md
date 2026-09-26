@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.5] - 2026-09-26
+
+### Fixed
+
+- **Moving a grid bot's range no longer fires a false take profit or places every level on one side.** After a range edit, the restarted bot anchored its new orders on the last order the old grid had filled and rebuilt its starting balances at the price the bot first started at. When the new range lay entirely away from those prices, every level became a sell (some below the market, refused for lack of balance), and the value-change take profit or stop loss compared the bot against a baseline that credited it with the whole price move at once, so an 8 % take profit could fire straight after saving. A last fill outside the new grid is no longer used as the anchor — orders are placed from the latest price — and when the new range no longer contains the start price, the start price is reset to the current price.
+
 ## [1.69.4] - 2026-09-26
 
 ### Fixed

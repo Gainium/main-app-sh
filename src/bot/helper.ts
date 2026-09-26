@@ -992,16 +992,28 @@ function createBotHelper<
             // Not a service restart — the user started or restarted this bot,
             // which is the manual escape hatch from order quarantine.
             await this.clearAllOrderQuarantine('bot started by user')
+            // A fill outside the current grid belongs to a range the user has
+            // since moved away from; anchoring on it would split the new grid
+            // around a stale price (e.g. every level a SELL, some below market).
+            const anchor =
+              this.restart &&
+              this.lastFilled &&
+              this.isPriceOnCurrentGrid(parseFloat(this.lastFilled.price))
+                ? this.lastFilled
+                : null
+            if (this.restart && this.lastFilled && !anchor) {
+              this.handleLog(
+                `Last filled price ${this.lastFilled.price} is outside the grid ${this.data.settings.lowPrice}-${this.data.settings.topPrice}, place orders from the latest price`,
+              )
+            }
             this.limitOrders(
               this.botId,
-              this.lastFilled
-                ? this.lastFilled.side === 'BUY'
+              anchor
+                ? anchor.side === 'BUY'
                   ? OrderSideEnum.buy
                   : OrderSideEnum.sell
                 : OrderSideEnum.buy,
-              this.restart && this.lastFilled
-                ? parseFloat(this.lastFilled.price)
-                : undefined,
+              anchor ? parseFloat(anchor.price) : undefined,
             ).then(async () => {
               this.loadingComplete = true
               await this.runAfterLoading()
@@ -1017,6 +1029,18 @@ function createBotHelper<
       }
       this.endMethod(_id)
       this.handleLog('Swap assets end')
+    }
+    /**
+     * Whether a price can be one of the current grid's order prices: inside
+     * low..top widened by the sell displacement, with a small rounding margin.
+     */
+    private isPriceOnCurrentGrid(price: number) {
+      if (!this.data || !price || isNaN(price)) {
+        return false
+      }
+      const { lowPrice, topPrice, sellDisplacement } = this.data.settings
+      const margin = (1 + (sellDisplacement || 0)) * 1.001
+      return price >= lowPrice / margin && price <= topPrice * margin
     }
     /**
      * Generate initial grids<br />
