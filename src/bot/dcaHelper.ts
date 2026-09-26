@@ -480,6 +480,13 @@ const maxTimeout = 2 ** 31 - 1
 const MAX_CLOSE_PRICE_DEVIATION = 10
 
 /**
+ * How long after a deal's orders last changed a zero holding still counts as a
+ * transition (see `getTPOrder`'s below-minimum refusal) rather than a stuck
+ * deal worth telling the user about.
+ */
+const ZERO_HELD_SETTLE_MS = 5 * 60 * 1000
+
+/**
  * Spec `037` §4.3 (#731). The `035` deviation test, extracted so the single
  * close order and both close-price LADDERS are judged by one rule instead of
  * three copies of it. Deliberately one-sided: a close priced away from the
@@ -17480,6 +17487,25 @@ function createDCABotHelper<
             if (!dealId) {
               this.handleDebug(line)
               return [] as Grid[]
+            }
+            // A zero holding right after the deal's own orders moved is a
+            // transition, not a standing condition: a base order cancelled
+            // part-filled before its remainder rests, an entry fill the size
+            // has not caught up with yet, or the TP fill that is closing the
+            // deal. Each clears within seconds, and every user-facing report
+            // of this line in production was one of them. Only a zero holding
+            // that outlives the window is the stuck deal `047` §4.4 is for.
+            if (heldQty <= 0) {
+              const lastActivity = Math.max(
+                +(heldDeal?.updateTime ?? 0) || 0,
+                ...this.getOrdersByStatusAndDealId({ dealId }).map(
+                  (o) => +(o.updateTime ?? 0) || 0,
+                ),
+              )
+              if (Date.now() - lastActivity < ZERO_HELD_SETTLE_MS) {
+                this.handleDebug(`${line} (deal orders just changed)`)
+                return [] as Grid[]
+              }
             }
             // Spec `047` §4.4. A holding at or below zero is this engine saying
             // its OWN ledger has nothing left to close — the deal has been

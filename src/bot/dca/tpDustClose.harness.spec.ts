@@ -592,6 +592,47 @@ describe('getTPOrder dust-close refusal (spec 043, issue #755)', () => {
     expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(2)
   })
 
+  it('a zero holding right after the deal orders changed is not reported', async () => {
+    // The TP fill that is closing the deal, a part-filled base order before
+    // its remainder rests, an entry fill the size has not caught up with:
+    // each reads as nothing held for a few seconds and then clears.
+    const now = Date.now()
+    const { bot } = await once(EDU_DEAL, EDU, EDU_CLOSE_PRICE, {
+      orders: EDU_ORDERS.map((o) => ({ ...o, updateTime: now - 1000 })),
+      fee: { maker: 0, taker: 0 },
+      balances: [{ asset: 'EDU', free: 68, locked: 0 }],
+    })
+    expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(0)
+    expect(bot.balanceCalls, 'probed the venue for a transition').to.equal(0)
+    expect(bot.closed).to.have.length(0)
+    expect(
+      bot.debugs.filter((l: string) => /below the exchange minimum/i.test(l)),
+    ).to.have.length(1)
+  })
+
+  it('a zero holding that outlives the settle window is still reported', async () => {
+    const stale = Date.now() - 10 * 60 * 1000
+    const { bot } = await once(EDU_DEAL, EDU, EDU_CLOSE_PRICE, {
+      orders: EDU_ORDERS.map((o) => ({ ...o, updateTime: stale })),
+      fee: { maker: 0, taker: 0 },
+      balances: [{ asset: 'EDU', free: 68, locked: 0 }],
+    })
+    expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(1)
+  })
+
+  it('real dust above zero is reported even right after a fill', async () => {
+    const { bot } = await once(AMP_DEAL, AMP, AMP_CLOSE_PRICE, {
+      orders: [
+        {
+          ...entryFor(AMP_DEAL.size, AMP_DEAL.avgPrice),
+          updateTime: Date.now(),
+        },
+      ],
+      fee: { maker: 0, taker: 0 },
+    })
+    expect(bot.reported.filter((r: Reported) => r.sendError)).to.have.length(1)
+  })
+
   it('047 §4.4 never settles a deal on a venue that did not answer', async () => {
     const { bot } = await once(EDU_DEAL, EDU, EDU_CLOSE_PRICE, {
       orders: EDU_ORDERS,

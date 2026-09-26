@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.4] - 2026-09-26
+
+### Fixed
+
+- **No more "Close order is below the exchange minimum ... qty 0" warning on a deal that is working normally.** For a few seconds at a time a deal can hold nothing the bot could close: while a part-filled base order is cancelled and its remainder placed again, just after an entry fills and before the deal's size catches up, and as the take profit fills and the deal closes. The close check treated that moment as a close the exchange would never accept and warned the user, although the take profit was placed or the deal closed moments later. A zero holding within five minutes of the deal's last order change is now only logged. A deal that stays at zero for longer is still reported, and real dust below the minimum is reported as before.
+
 ## [1.69.3] - 2026-09-26
 
 ### Fixed
