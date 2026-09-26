@@ -173,6 +173,7 @@ import { JWT_SECRET } from '../config'
 import { DataResponse, ErrorResponse } from '../db/crud'
 import { LargeAccountService } from '../bot/largeAccount/largeAccountService'
 import { getInPositions } from './handlers/inPositions.handler'
+import { DEAL_TOTALS_ARGS } from '../bot/dealListFilter'
 
 /**
  * The single reply every failed password login gets, whatever went wrong.
@@ -255,6 +256,17 @@ const inPositionsOf = (parent: InPositionsParent) => {
   return parent.__inPositions
 }
 
+type DealTotalsParent = {
+  [DEAL_TOTALS_ARGS]?: { combo: boolean; search: object }
+}
+
+/** Totals over the filtered deal set (main-app spec 020 §3), on demand only. */
+const dealTotalsOf = (parent: DealTotalsParent) => {
+  const args = parent?.[DEAL_TOTALS_ARGS]
+  if (!args) return null
+  return BotInstance.getInstance().getDealListTotals(args.combo, args.search)
+}
+
 /**
  * Field resolvers on object types. Exported so a host that assembles its own
  * resolver map (main-app) can spread them next to `Query`/`Mutation`.
@@ -270,6 +282,12 @@ export const typeResolvers = {
   },
   dcaDeal: {
     updatedAt: (deal: { updated?: Date | null }) => deal?.updated ?? null,
+  },
+  getDCADealsResponse: {
+    totals: (parent: DealTotalsParent) => dealTotalsOf(parent),
+  },
+  getComboDealsResponse: {
+    totals: (parent: DealTotalsParent) => dealTotalsOf(parent),
   },
   comboDeal: {
     updatedAt: (deal: { updated?: Date | null }) => deal?.updated ?? null,

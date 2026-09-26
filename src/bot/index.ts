@@ -106,6 +106,12 @@ import {
 import { IdMute, IdMutex } from '../utils/mutex'
 import { mapDataGridOptionsToMongoOptions } from '../db/utils'
 import { LargeAccountService } from './largeAccount/largeAccountService'
+import {
+  DEAL_TOTALS_ARGS,
+  EMPTY_DEAL_TOTALS,
+  buildDealListFilter,
+  dealListTotalsPipeline,
+} from './dealListFilter'
 import RabbitClient from '../db/rabbit'
 import {
   botDb,
@@ -1515,6 +1521,66 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Filter for the deal lists (main-app spec 020): the caller's fixed scope
+   * (user, context, type, parent) AND the DataGrid items, with the default
+   * open/error/start statuses unless an item targets `status`. Also returned
+   * so `totals` can aggregate over exactly the same set.
+   */
+  private async dealListSearch(
+    user: ExcludeDoc<UserSchema>,
+    combo: boolean,
+    scope: Record<string, unknown>,
+    dataGridFilter?: DataGridFilterInput,
+  ) {
+    const userId = user._id.toString()
+    const botDb = (
+      combo ? this.comboBotDb : this.dcaBotDb
+    ) as typeof this.dcaBotDb
+    const built = await buildDealListFilter(dataGridFilter, {
+      timezone: user.timezone,
+      botIdsByName: async (nameCond) => {
+        const bots = await botDb.readData(
+          { userId, ...nameCond } as never,
+          { _id: 1 },
+          {},
+          true,
+        )
+        return bots.status === StatusEnum.ok
+          ? bots.data.result.map((b) => `${b._id}`)
+          : []
+      },
+    })
+    const search: Record<string, unknown> = {
+      ...(built.statusFromItems
+        ? {}
+        : {
+            status: {
+              $in: [
+                DCADealStatusEnum.open,
+                DCADealStatusEnum.error,
+                DCADealStatusEnum.start,
+              ],
+            },
+          }),
+      userId,
+      ...scope,
+      ...built.filter,
+    }
+    return { search, built }
+  }
+
+  public async getDealListTotals(combo: boolean, search: object) {
+    const db = (
+      combo ? this.comboDealsDb : this.dcaDealsDb
+    ) as typeof this.dcaDealsDb
+    const res = await db.aggregate<typeof EMPTY_DEAL_TOTALS>(
+      dealListTotalsPipeline(search as Record<string, unknown>) as never,
+    )
+    if (res.status !== StatusEnum.ok) return null
+    return { ...EMPTY_DEAL_TOTALS, ...(res.data.result[0] ?? {}) }
+  }
+
   public async getDCADealListGraphQl(
     user: ExcludeDoc<UserSchema>,
     paperContext?: boolean,
@@ -1523,43 +1589,33 @@ class Bot<T extends UserSchema = UserSchema> {
     exchange?: string,
     terminal?: boolean,
   ) {
-    const userId = user._id.toString()
-
-    const { filter, sort, skip, limit } =
-      mapDataGridOptionsToMongoOptions(dataGridFilter)
-    let s: Record<string, unknown> = {
-      status: {
-        $in: [
-          DCADealStatusEnum.open,
-          DCADealStatusEnum.error,
-          DCADealStatusEnum.start,
-        ],
-      },
-      userId,
+    const scope: Record<string, unknown> = {
       paperContext: paperContext ? { $eq: true } : { $ne: true },
       type: terminal
         ? { $eq: DCATypeEnum.terminal }
         : { $nin: [DCATypeEnum.terminal] },
-    }
-
-    if (filter.$and?.length || filter.$or?.length) {
-      const f = filter.$and?.length
-        ? filter.$and.reduce((acc, v) => ({ ...acc, ...v }), {})
-        : filter.$or?.reduce((acc, v) => ({ ...acc, ...v }), {})
-      s = { ...s, ...f }
-    } else {
-      s = { ...s, ...filter }
+      parentBotId: { $exists: false },
     }
     if (botId) {
-      s.botId = botId
+      scope.botId = botId
     }
     if (exchange) {
-      s.exchangeUUID = exchange
+      scope.exchangeUUID = exchange
     }
+    const { search, built } = await this.dealListSearch(
+      user,
+      false,
+      scope,
+      dataGridFilter,
+    )
     const request = await this.dcaDealsDb.readData(
-      { ...s, parentBotId: { $exists: false } },
+      search as never,
       {},
-      { sort, skip, limit: Math.min(500, limit ?? 500) },
+      {
+        sort: built.sort as never,
+        skip: built.skip,
+        limit: Math.min(500, built.limit ?? 500),
+      },
       true,
       true,
     )
@@ -1591,6 +1647,7 @@ class Bot<T extends UserSchema = UserSchema> {
         }),
       },
       total: request.data.count,
+      [DEAL_TOTALS_ARGS]: { combo: false, search },
     }
   }
 
@@ -1601,43 +1658,31 @@ class Bot<T extends UserSchema = UserSchema> {
     botId?: string,
     exchange?: string,
   ) {
-    const userId = user._id.toString()
-
-    const { filter, sort, skip, limit } =
-      mapDataGridOptionsToMongoOptions(dataGridFilter)
-
-    let s: Record<string, unknown> = {
-      status: {
-        $in: [
-          DCADealStatusEnum.open,
-          DCADealStatusEnum.error,
-          DCADealStatusEnum.start,
-        ],
-      },
-      userId,
+    const scope: Record<string, unknown> = {
       paperContext: paperContext ? { $eq: true } : { $ne: true },
       type: { $ne: DCATypeEnum.terminal },
-      ...filter,
-    }
-    if (filter.$and?.length || filter.$or?.length) {
-      const f = filter.$and?.length
-        ? filter.$and.reduce((acc, v) => ({ ...acc, ...v }), {})
-        : filter.$or?.reduce((acc, v) => ({ ...acc, ...v }), {})
-      s = { ...s, ...f }
-    } else {
-      s = { ...s, ...filter }
+      parentBotId: { $exists: false },
     }
     if (botId) {
-      s.botId = botId
+      scope.botId = botId
     }
     if (exchange) {
-      s.exchangeUUID = exchange
+      scope.exchangeUUID = exchange
     }
-
+    const { search, built } = await this.dealListSearch(
+      user,
+      true,
+      scope,
+      dataGridFilter,
+    )
     const request = await this.comboDealsDb.readData(
-      { ...s, parentBotId: { $exists: false } },
+      search as never,
       {},
-      { sort, skip, limit: Math.min(500, limit ?? 500) },
+      {
+        sort: built.sort as never,
+        skip: built.skip,
+        limit: Math.min(500, built.limit ?? 500),
+      },
       true,
       true,
     )
@@ -1669,6 +1714,7 @@ class Bot<T extends UserSchema = UserSchema> {
         }),
       },
       total: request.data.count,
+      [DEAL_TOTALS_ARGS]: { combo: true, search },
     }
   }
 

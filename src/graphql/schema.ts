@@ -4500,12 +4500,26 @@ export const BotSchema = /* GraphQL */ `
     reason: String
     data: getDCADealsResult
     total: Float
+    # Over the FILTERED set, not the page (main-app spec 020). Only computed
+    # when selected, and only on dcaDealList / comboDealList.
+    totals: dealListTotals
   }
   type getComboDealsResponse implements BasicResponse {
     status: Status
     reason: String
     data: getComboDealsResult
     total: Float
+    totals: dealListTotals
+  }
+  type dealListTotals {
+    count: Int
+    # Sum of the Cost column in quote units, as-is across quote assets.
+    cost: Float
+    costUsd: Float
+    costUsdDeals: Int
+    realizedProfitUsd: Float
+    unrealizedProfitNet: Float
+    unrealizedProfitNetDeals: Int
   }
   type getTradingTerminalBotsListResponse implements BasicResponse {
     status: Status
