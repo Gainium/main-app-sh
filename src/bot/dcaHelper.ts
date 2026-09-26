@@ -11731,8 +11731,20 @@ function createDCABotHelper<
                 cd.setHours(cd.getHours() + +hodlDay, 0, 0, 0)
                 date = +cd
               } else {
-                date += day
+                while (date < currentDate) {
+                  date += day
+                }
               }
+            }
+            if (!hodlHourly) {
+              // findTimeDiff reads only the calendar date of hodlNextBuy and
+              // applies hodlAt in the user's timezone, so store the run's
+              // user-local date (at UTC noon), not the run instant itself —
+              // east of UTC the instant falls on the previous date.
+              const ymd = new Date(date).toLocaleDateString('en-CA', {
+                timeZone,
+              })
+              date = Date.parse(`${ymd}T12:00:00Z`)
             }
 
             add = date - hodlNextBuy

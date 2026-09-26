@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.2] - 2026-09-26
+
+### Fixed
+
+- **A daily time-based trigger set to a past date no longer opens a deal straight away, and no longer runs a day early or late outside UTC.** The bot keeps only the calendar date of the next run and opens it at the chosen time in the user's timezone. When the stored date was in the past, the bot moved the next run to the correct time, but it stored that time's own date. East of UTC that date is the previous day, so the run stayed in the past and a deal opened immediately. West of UTC the date could be a day later, so a day was skipped. The bot now stores the date of the next run as it falls in the user's timezone. The settings-change event also shows that date (`YYYY-MM-DD`, or the UTC time for hourly triggers) instead of a raw timestamp.
+
 ## [1.69.1] - 2026-09-25
 
 ### Fixed

@@ -439,10 +439,18 @@ export const getSettingsChangeDescription = (
       typeof oldSettings[key] !== 'undefined'
     ) {
       if (!Array.isArray(oldSettings[key])) {
+        // hodlNextBuy is a timestamp; daily timers only use its (UTC) date,
+        // with hodlAt applied in the user's timezone
+        const format = (value: unknown) =>
+          key === 'hodlNextBuy' && Number(value) > 0
+            ? (settings.hodlHourly ?? oldSettings.hodlHourly)
+              ? `${new Date(Number(value)).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+              : new Date(Number(value)).toISOString().slice(0, 10)
+            : value
         result.push(
           `${botSettingsKeyToPropertyName(
             key as keyof ClearDCABotSchema['settings'],
-          )}: ${oldSettings[key]} -> ${settings[key]}`,
+          )}: ${format(oldSettings[key])} -> ${format(settings[key])}`,
         )
       }
     }
