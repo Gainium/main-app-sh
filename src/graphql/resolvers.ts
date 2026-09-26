@@ -5600,7 +5600,8 @@ const resolvers = <
       { input }: { input: { username: string; password: string } },
       { userAgent, ip }: InputRequest,
     ) => {
-      const { username, password } = input
+      const { password } = input
+      let username = input.username.trim()
 
       const validRegex =
         /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$/
@@ -5613,14 +5614,27 @@ const resolvers = <
         }
       }
 
-      const findUser = await userDb.readData({
+      let findUser = await userDb.readData({
         username,
       })
+      // Sign-up stores emails lowercase, but a password manager can autofill
+      // the address with capitals. Exact match first so a legacy mixed-case
+      // account still resolves, then the lowercased form.
+      const lowered = username.toLowerCase()
+      if (
+        lowered !== username &&
+        findUser.status === StatusEnum.ok &&
+        findUser.data &&
+        !findUser.data.result
+      ) {
+        findUser = await userDb.readData({ username: lowered })
+      }
       if (
         findUser.status === StatusEnum.ok &&
         findUser.data &&
         findUser.data.result
       ) {
+        username = findUser.data.result.username
         const stored = findUser.data.result.password
         if (await verifyPasswordHash(password, stored)) {
           // Transparent migration: if the stored value is still legacy AES
