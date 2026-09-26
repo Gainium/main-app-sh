@@ -23,6 +23,7 @@ import { expect } from 'chai'
 import { createRequire } from 'module'
 import {
   baseEntryRemainderQty,
+  inverseContracts,
   remainderKeepsResting,
 } from './baseEntryRemainder'
 import { MathHelper } from '../../utils/math'
@@ -133,6 +134,8 @@ type Raised = {
   saved: any[]
   sentOrders: any[]
   events: any[]
+  warns: string[]
+  reads: any[]
 }
 
 const buildBot = (
@@ -147,6 +150,12 @@ const buildBot = (
     cancelAnswer?: (o: any) => any
     combo?: boolean
     coinm?: boolean
+    /** OKX / KuCoin futures: sized in contracts, `executedQty` in base. */
+    sizedInContracts?: boolean
+    /** The base row as `saveOrderToDb` stored it; `null` = unreadable. */
+    stored?: any
+    exchangeInfo?: any
+    basePrecision?: number
     /** Drive the real `addDealFunds`; the venue answers `sent`. */
     sent?: (o: any) => any
     terminalDealType?: string
@@ -162,6 +171,15 @@ const buildBot = (
     cancelAnswer = (o: any) => ({ ...o, status: 'CANCELED' }),
     combo = false,
     coinm = false,
+    sizedInContracts = false,
+    stored,
+    exchangeInfo = {
+      pair: SYMBOL,
+      priceAssetPrecision: 4,
+      baseAsset: { name: 'JUP', minAmount: 0.1 },
+      quoteAsset: { name: 'USDC', minAmount: 1 },
+    },
+    basePrecision = 1,
     sent,
     terminalDealType,
   } = opts
@@ -173,6 +191,8 @@ const buildBot = (
     saved: [],
     sentOrders: [],
     events: [],
+    warns: [],
+    reads: [],
   }
   const deal = {
     deal: {
@@ -197,6 +217,8 @@ const buildBot = (
     deal = deal
     combo = combo
     coinm = coinm
+    sizedInContracts = sizedInContracts
+    isBitget = false
     math = new MathHelper()
     orderLimitRepositionTimeout = 10_000
     enterMarketTimeout = enterMarketTimeout
@@ -207,6 +229,14 @@ const buildBot = (
       createData: async (e: any) => {
         raised.events.push(e)
         return { status: 'OK' }
+      },
+    }
+    ordersDb = {
+      readData: async (filter: any) => {
+        raised.reads.push(filter)
+        return stored === null
+          ? { status: 'NOTOK', reason: 'unreadable', data: null }
+          : { status: 'OK', data: { result: stored } }
       },
     }
     getOrderFromMap(id: string) {
@@ -229,15 +259,10 @@ const buildBot = (
       return latestPrice
     }
     async getExchangeInfo() {
-      return {
-        pair: SYMBOL,
-        priceAssetPrecision: 4,
-        baseAsset: { name: 'JUP', minAmount: 0.1 },
-        quoteAsset: { name: 'USDC', minAmount: 1 },
-      }
+      return exchangeInfo
     }
     async baseAssetPrecision() {
-      return 1
+      return basePrecision
     }
     async getAggregatedSettings() {
       return {
@@ -288,7 +313,9 @@ const buildBot = (
     }
     handleLog() {}
     handleDebug() {}
-    handleWarn() {}
+    handleWarn(msg: string) {
+      raised.warns.push(msg)
+    }
     startMethod() {
       return '1'
     }
@@ -317,7 +344,6 @@ describe('a part-filled LIMIT base entry rests its remainder (spec 111)', () => 
   describe('§4.1 the decision', () => {
     const live = {
       marketEntryAllowed: false,
-      unitSafe: true,
       executedQty: '4.1',
       origQty: '341.2',
     }
@@ -329,8 +355,16 @@ describe('a part-filled LIMIT base entry rests its remainder (spec 111)', () => 
         baseEntryRemainderQty({ ...live, marketEntryAllowed: true }),
       ).to.equal(0)
     })
-    it('§4.1 nothing where the two quantities may be in different units', () => {
-      expect(baseEntryRemainderQty({ ...live, unitSafe: false })).to.equal(0)
+    it('§4.1.1 inverse contracts: the production ETHUSD entry is 3075 of 5000', () => {
+      expect(inverseContracts(1.85947571, 2688.93, 1)).to.equal(5000)
+      expect(inverseContracts(1.14357755, 2688.93, 1)).to.equal(3075)
+      expect(inverseContracts(0.0001134, 79372.1, 100)).to.equal(0)
+      for (const bad of [NaN, Infinity]) {
+        expect(inverseContracts(bad, 2688.93, 1), `${bad}`).to.be.NaN
+        expect(inverseContracts(1, bad, 1), `${bad}`).to.be.NaN
+        expect(inverseContracts(1, 2688.93, bad), `${bad}`).to.be.NaN
+      }
+      expect(inverseContracts(1, 2688.93, 0)).to.be.NaN
     })
     it('§4.1 nothing for a whole entry, an empty one, or unreadable sizes', () => {
       expect(baseEntryRemainderQty({ ...live, executedQty: '341.2' })).to.equal(
@@ -405,19 +439,193 @@ describe('a part-filled LIMIT base entry rests its remainder (spec 111)', () => 
       expect((bot.raised as Raised).added).to.have.length(0)
     })
 
-    it('§4.1 nothing below the venue minimum, on combo, coin-m, or a deal not open', async () => {
+    it('§4.1 nothing below the venue minimum, on combo, or a deal not open', async () => {
       bot = buildBot({})
       await bot.restBaseEntryRemainder(baseRow({ executedQty: '338' }))
       expect((bot.raised as Raised).added, 'below min').to.have.length(0)
       bot = buildBot({ combo: true })
       await bot.restBaseEntryRemainder(baseRow())
       expect((bot.raised as Raised).added, 'combo').to.have.length(0)
-      bot = buildBot({ coinm: true })
-      await bot.restBaseEntryRemainder(baseRow())
-      expect((bot.raised as Raised).added, 'coinm').to.have.length(0)
       bot = buildBot({ status: DCADealStatusEnum.closed })
       await bot.restBaseEntryRemainder(baseRow())
       expect((bot.raised as Raised).added, 'closed').to.have.length(0)
+    })
+
+    describe('§4.1.1 coin-margined and contract-sized accounts', () => {
+      /** Production: an ETHUSD inverse entry, 3075 of 5000 contracts. */
+      const inverse = {
+        coinm: true,
+        latestPrice: 2700,
+        basePrecision: 8,
+        exchangeInfo: {
+          pair: SYMBOL,
+          priceAssetPrecision: 2,
+          baseAsset: { name: 'ETH', minAmount: 0 },
+          // On COIN-M this is the contract size: 1 USD per contract.
+          quoteAsset: { name: 'USD', minAmount: 1 },
+        },
+        stored: { origQty: '1.85947571', origPrice: '2688.93' },
+      }
+      const inverseRow = (over: Record<string, unknown> = {}) =>
+        baseRow({
+          price: '2688.93',
+          origPrice: '2688.93',
+          origQty: '1.85947571',
+          executedQty: '1.14357755',
+          ...over,
+        })
+      /** Production: an OKX USDT-margined swap entry, 25 of 243. */
+      const contracts = {
+        sizedInContracts: true,
+        latestPrice: 0.10273,
+        basePrecision: 0,
+        exchangeInfo: {
+          pair: SYMBOL,
+          priceAssetPrecision: 5,
+          baseAsset: { name: '1INCH', minAmount: 1 },
+          quoteAsset: { name: 'USDT', minAmount: 0 },
+        },
+        stored: { origQty: '243', origPrice: '0.10273' },
+      }
+      const contractRow = (over: Record<string, unknown> = {}) =>
+        baseRow({
+          price: '0.10273',
+          origPrice: '0.10273',
+          origQty: '243',
+          executedQty: '25',
+          ...over,
+        })
+      /**
+       * The real settle that opens these deals short: cancel the part-filled
+       * entry and book it. `restBaseEntryRemainder` then gets the booked row,
+       * as `startDeal` does.
+       */
+      const settle = async (row: any) => {
+        await bot.settlePartialBaseEntry(
+          { ...row, status: 'PARTIALLY_FILLED' },
+          DEAL_ID,
+        )
+        const raised = bot.raised as Raised
+        expect(raised.booked, 'settled and booked').to.have.length(1)
+        // Only what the remainder itself says; the settle reports on its own.
+        raised.warns.length = 0
+        raised.events.length = 0
+        await bot.restBaseEntryRemainder(raised.booked[0])
+      }
+
+      it('§4.1.1 coin-m: 3075 of 5000 contracts rests the other 1925 contracts', async () => {
+        bot = buildBot(inverse)
+        await settle(inverseRow())
+        const { added, warns } = bot.raised as Raised
+        expect(added, warns.join('; ')).to.have.length(1)
+        expect(added[0]).to.include({
+          asset: OrderSizeTypeEnum.base,
+          useLimitPrice: true,
+          limitPrice: '2700',
+          baseRemainder: true,
+          baseTotal: '1.85947571',
+        })
+        // What `sendOrderToExchange` turns that base size back into.
+        expect(inverseContracts(+added[0].qty, 2700, 1)).to.equal(1925)
+      })
+
+      it('§4.1.1 coin-m: a row whose origQty a reconcile replaced with contracts sizes from the stored row', async () => {
+        bot = buildBot(inverse)
+        await settle(inverseRow({ origQty: '5000' }))
+        const { added } = bot.raised as Raised
+        expect(added).to.have.length(1)
+        expect(inverseContracts(+added[0].qty, 2700, 1)).to.equal(1925)
+        expect(added[0].baseTotal).to.equal('1.85947571')
+      })
+
+      it('§4.1.1 coin-m: a whole fill whose base figures differ by rounding says nothing', async () => {
+        bot = buildBot({
+          ...inverse,
+          stored: { origQty: '0.00193534', origPrice: '2583.87' },
+        })
+        await settle(
+          inverseRow({
+            origQty: '0.00193534',
+            executedQty: '0.00193508',
+            price: '2583.87',
+            origPrice: '2583.87',
+          }),
+        )
+        const { added, warns, events } = bot.raised as Raised
+        expect(added).to.have.length(0)
+        expect(warns).to.have.length(0)
+        expect(events).to.have.length(0)
+      })
+
+      it('§4.1.1 contracts: 25 of 243 rests the other 218', async () => {
+        bot = buildBot(contracts)
+        await settle(contractRow())
+        const { added, warns } = bot.raised as Raised
+        expect(added, warns.join('; ')).to.have.length(1)
+        expect(added[0]).to.include({
+          qty: '218',
+          limitPrice: '0.10273',
+          baseRemainder: true,
+          baseTotal: '243',
+        })
+      })
+
+      it('§4.1.1 contracts: the requested size is the stored one, not a venue contract count', async () => {
+        bot = buildBot(contracts)
+        // What a reconcile leaves on the row at a contract value of 100.
+        await settle(contractRow({ origQty: '2.43' }))
+        const { added } = bot.raised as Raised
+        expect(added).to.have.length(1)
+        expect(added[0]).to.include({ qty: '218', baseTotal: '243' })
+      })
+
+      it('§4.1.1 a FILLED row the venue reported short is not trusted: warned and told on the deal', async () => {
+        for (const opts of [contracts, inverse]) {
+          bot = buildBot(opts)
+          const row = opts === contracts ? contractRow() : inverseRow()
+          await bot.restBaseEntryRemainder(row)
+          const { added, warns, events } = bot.raised as Raised
+          expect(added, 'nothing placed').to.have.length(0)
+          expect(warns, 'warned').to.have.length(1)
+          expect(events, 'the deal says so').to.have.length(1)
+          expect(events[0]).to.include({ event: 'Deal', deal: DEAL_ID })
+          expect(events[0].description).to.contain('not placed')
+        }
+      })
+
+      it('§4.1.1 a stored row that cannot be read: warned and told on the deal', async () => {
+        bot = buildBot({ ...contracts, stored: null })
+        await settle(contractRow())
+        const { added, warns, events } = bot.raised as Raised
+        expect(added).to.have.length(0)
+        expect(warns).to.have.length(1)
+        expect(events).to.have.length(1)
+        expect(events[0].description).to.contain('not placed')
+      })
+
+      it('§4.1.1/§4.8 a bot that may enter at market rests nothing and says nothing', async () => {
+        bot = buildBot({ ...contracts, enterMarketTimeout: 35_000 })
+        // The spec 057 top-up is not what this case is about.
+        bot.fillPartiallyFilledOrder = async (o: any) => o
+        await settle(contractRow())
+        const { added, warns, events } = bot.raised as Raised
+        expect(added).to.have.length(0)
+        expect(warns).to.have.length(0)
+        expect(events).to.have.length(0)
+      })
+
+      it('§4.1.1/§4.3 contracts: the tick re-places from the pending entry, not a venue contract count', async () => {
+        bot = buildBot({
+          ...contracts,
+          latestPrice: 0.1031,
+          pending: [remainderEntry({ qty: '218', baseTotal: '243' })],
+          orders: [remainderRow({ origQty: '2.18', price: '0.10273' })],
+        })
+        await bot.checkBaseEntryRemainder(BOT_ID, DEAL_ID, SYMBOL)
+        const { added } = bot.raised as Raised
+        expect(added).to.have.length(1)
+        expect(added[0]).to.include({ qty: '218', limitPrice: '0.1031' })
+      })
     })
 
     it('§4.3.2 an unchanged price keeps the remainder and re-arms', async () => {

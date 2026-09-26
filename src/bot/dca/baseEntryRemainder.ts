@@ -10,10 +10,10 @@ export type BaseEntryRemainderInputs = {
    */
   marketEntryAllowed: boolean
   /**
-   * `false` on coin-margined and contract-sized accounts, where `origQty` and
-   * `executedQty` are not guaranteed to be in one unit.
+   * Both in ONE unit: base, or contracts on a coin-margined account. The
+   * engine puts them there first (`dcaHelper.baseEntryRemainderUnits`). Spec
+   * `111` §4.1.1.
    */
-  unitSafe: boolean
   executedQty: string | number | null | undefined
   origQty: string | number | null | undefined
 }
@@ -28,7 +28,7 @@ export type BaseEntryRemainderInputs = {
  * not rounded; the caller rounds to the pair's step.
  */
 export function baseEntryRemainderQty(args: BaseEntryRemainderInputs): number {
-  if (args.marketEntryAllowed || !args.unitSafe) {
+  if (args.marketEntryAllowed) {
     return 0
   }
   if (
@@ -47,6 +47,28 @@ export function baseEntryRemainderQty(args: BaseEntryRemainderInputs): number {
     return 0
   }
   return requested > executed ? requested - executed : 0
+}
+
+/**
+ * A coin-margined (inverse) quantity in contracts of `contractSize` quote
+ * each: the conversion `sendOrderToExchange` applies on the way out and
+ * `convertOrderExecutedQty` undoes on the way back. `NaN` when it cannot be
+ * computed. Spec `111` §4.1.1.
+ */
+export function inverseContracts(
+  qty: number,
+  price: number,
+  contractSize: number,
+): number {
+  if (
+    !isFinite(qty) ||
+    !isFinite(price) ||
+    !isFinite(contractSize) ||
+    !(contractSize > 0)
+  ) {
+    return NaN
+  }
+  return Math.round((qty * price) / contractSize)
 }
 
 /** What the remainder's reposition tick compares. */

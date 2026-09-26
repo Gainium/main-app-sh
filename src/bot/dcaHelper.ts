@@ -181,6 +181,7 @@ import {
 } from './dca/baseEntryReposition'
 import {
   baseEntryRemainderQty,
+  inverseContracts,
   remainderKeepsResting,
 } from './dca/baseEntryRemainder'
 import {
@@ -724,6 +725,12 @@ function createDCABotHelper<
      * (spec `111` §4.3). Cleared by `clearClassProperties`.
      */
     baseRemainderTimers: Map<string, NodeJS.Timeout> = new Map()
+    /**
+     * Base rows `settlePartialBaseEntry` booked, by client order id, until
+     * `restBaseEntryRemainder` reads them. On coin-margined and contract-sized
+     * accounts only these rest a remainder (spec `111` §4.1.1).
+     */
+    settledBaseEntries: Set<string> = new Set()
     /** Trailing guard mode as last read from Redis, and when. */
     trailingGuardModeRead: { mode: TrailingGuardMode; at: number } | null = null
     /** When each deal's trailing lag was last reported, to rate-limit it. */
@@ -9306,8 +9313,17 @@ function createDCABotHelper<
         order.status === 'CANCELED' || order.status === 'EXPIRED'
           ? this.promoteEndedBaseEntry(order)
           : await this.cancelOrderOnExchange(order)
+      // A row the engine settled itself, whose fill did not shrink on the way:
+      // a venue answer read in the wrong unit fails that. Spec 111 §4.1.1.
+      const noteSettled = (row: Order) => {
+        if (+row.executedQty >= (+observed.executedQty || 0)) {
+          this.settledBaseEntries ??= new Set()
+          this.settledBaseEntries.add(row.clientOrderId)
+        }
+        return row
+      }
       if (settled?.status === 'FILLED') {
-        return await this.bookSettledBaseEntry(settled, dealId)
+        return await this.bookSettledBaseEntry(noteSettled(settled), dealId)
       }
       // The cancel ENDED the order. That is the settle done, not a failure —
       // the row is terminal, so there is nothing left to ask the venue about,
@@ -9316,7 +9332,7 @@ function createDCABotHelper<
       const fill = settledBaseEntryFill(settled, observed)
       if (settled && fill) {
         return await this.bookSettledBaseEntry(
-          this.promoteEndedBaseEntry({ ...settled, ...fill }),
+          noteSettled(this.promoteEndedBaseEntry({ ...settled, ...fill })),
           dealId,
         )
       }
@@ -9478,6 +9494,8 @@ function createDCABotHelper<
      * §3.1/§4.1.
      */
     async restBaseEntryRemainder(orderBo: Order) {
+      const settled =
+        this.settledBaseEntries?.delete(orderBo.clientOrderId) ?? false
       const dealId = orderBo.dealId
       if (this.combo || !dealId) {
         return
@@ -9487,21 +9505,136 @@ function createDCABotHelper<
         return
       }
       const settings = await this.getAggregatedSettings(deal.deal)
-      const qty = baseEntryRemainderQty({
-        marketEntryAllowed: this.baseEntryMayEnterAtMarket(settings),
-        unitSafe: !this.coinm && !this.sizedInContracts,
-        executedQty: orderBo.executedQty,
-        origQty: orderBo.origQty,
-      })
+      const marketEntryAllowed = this.baseEntryMayEnterAtMarket(settings)
+      const symbol = deal.deal.symbol.symbol
+      if (!this.coinm && !this.sizedInContracts) {
+        const qty = baseEntryRemainderQty({
+          marketEntryAllowed,
+          executedQty: orderBo.executedQty,
+          origQty: orderBo.origQty,
+        })
+        if (qty <= 0) {
+          return
+        }
+        await this.placeBaseEntryRemainder(dealId, symbol, qty, orderBo.origQty)
+        return
+      }
+      if (marketEntryAllowed) {
+        return
+      }
+      const units = await this.baseEntryRemainderUnits(orderBo)
+      if (!units) {
+        this.reportBaseRemainderNotPlaced(
+          dealId,
+          orderBo,
+          'its size could not be read in one unit',
+        )
+        return
+      }
+      const qty = baseEntryRemainderQty({ marketEntryAllowed, ...units })
       if (qty <= 0) {
+        return
+      }
+      if (!settled) {
+        this.reportBaseRemainderNotPlaced(
+          dealId,
+          orderBo,
+          'the exchange reported the order as filled',
+        )
         return
       }
       await this.placeBaseEntryRemainder(
         dealId,
-        deal.deal.symbol.symbol,
+        symbol,
         qty,
-        orderBo.origQty,
+        units.total,
+        units.contractSize,
       )
+    }
+
+    /**
+     * A base row's requested and filled size in one unit, on a coin-margined
+     * or contract-sized account, or `null` when that cannot be done.
+     *
+     * The requested size is the one `saveOrderToDb` stored, which
+     * `updateOrderOnDb` never overwrites: the row held in memory is rebuilt
+     * from the venue's answer on a reconcile, and that answer's `origQty` is a
+     * contract count. `executedQty` has been through
+     * `convertOrderExecutedQty` already, so it is base.
+     *
+     * Coin-margined (except Bitget, which is sized in base) comes back in
+     * contracts, the unit that is conserved on an inverse contract, with the
+     * contract size to convert the remainder back at its own price. Spec `111`
+     * §4.1.1.
+     */
+    async baseEntryRemainderUnits(orderBo: Order): Promise<{
+      origQty: number
+      executedQty: number
+      total: string
+      contractSize?: number
+    } | null> {
+      const stored = await this.ordersDb.readData<{
+        origQty: string
+        origPrice: string
+      }>(
+        { botId: this.botId, clientOrderId: orderBo.clientOrderId },
+        { origQty: 1, origPrice: 1 },
+      )
+      const total = stored.data?.result?.origQty
+      const requested = +(total ?? NaN)
+      const executed = +orderBo.executedQty
+      if (
+        stored.status === StatusEnum.notok ||
+        !total ||
+        !isFinite(requested) ||
+        !isFinite(executed)
+      ) {
+        return null
+      }
+      if (!this.coinm || this.isBitget) {
+        return { origQty: requested, executedQty: executed, total }
+      }
+      const ed = await this.getExchangeInfo(orderBo.symbol)
+      const contractSize = ed?.quoteAsset.minAmount ?? 1
+      // Mirrors `sendOrderToExchange` and `convertOrderExecutedQty`.
+      const sent = Math.max(
+        1,
+        inverseContracts(
+          requested,
+          +(stored.data?.result?.origPrice ?? NaN) || +orderBo.origPrice,
+          contractSize,
+        ),
+      )
+      const filled = inverseContracts(
+        executed,
+        +orderBo.price || +(orderBo.avgPrice ?? '0'),
+        contractSize,
+      )
+      if (!ed || !isFinite(sent) || !isFinite(filled)) {
+        return null
+      }
+      return { origQty: sent, executedQty: filled, total, contractSize }
+    }
+
+    /**
+     * Say, on the bot and on the deal, that the rest of a short base entry
+     * was not put back on the book. Spec `111` §4.1.1.
+     */
+    reportBaseRemainderNotPlaced(dealId: string, orderBo: Order, why: string) {
+      this.handleWarn(
+        `Deal ${dealId} base order ${orderBo.clientOrderId} filled ${orderBo.executedQty} of ${orderBo.origQty}. Remainder not placed: ${why}`,
+      )
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: `${orderBo.symbol} base order filled ${orderBo.executedQty} of ${orderBo.origQty}. The rest was not placed as a limit order: ${why}`,
+        paperContext: !!this.data?.paperContext,
+        deal: dealId,
+        symbol: orderBo.symbol,
+        type: MessageTypeEnum.info,
+      })
     }
 
     /**
@@ -9514,6 +9647,8 @@ function createDCABotHelper<
       symbol: string,
       qty: number,
       total: string,
+      /** Set when `qty` is coin-margined contracts of this size (§4.1.1). */
+      contractSize?: number,
     ): Promise<boolean> {
       const ed = await this.getExchangeInfo(symbol)
       const price = ed
@@ -9529,8 +9664,10 @@ function createDCABotHelper<
         return false
       }
       // Both quantities sit on the pair's step; this only strips float noise.
+      // Contracts go out as the base size `sendOrderToExchange` turns back
+      // into that many contracts at this price.
       const rounded = this.math.round(
-        qty,
+        contractSize ? (qty * contractSize) / price : qty,
         await this.baseAssetPrecision(symbol),
       )
       if (
@@ -9604,6 +9741,15 @@ function createDCABotHelper<
       if ((d.deal.pendingAddFunds ?? []).some((p) => p.baseRemainder)) {
         this.armBaseRemainderTick(`${d.deal._id}`, d.deal.symbol.symbol)
       }
+    }
+
+    /**
+     * What a resting remainder asked for. Its pending entry on coin-margined
+     * and contract-sized accounts, where a reconcile leaves the venue's
+     * contract count on the row. Spec `111` §4.1.1.
+     */
+    baseRemainderRequestedQty(order: Order, entry: { qty: string }) {
+      return this.coinm || this.sizedInContracts ? +entry.qty : +order.origQty
     }
 
     /** The order resting for a deal's remainder entry, if any. */
@@ -9733,7 +9879,7 @@ function createDCABotHelper<
       this.handleLog(
         `Deal ${dealId} base order remainder ${order.clientOrderId} rests at ${restingPrice}, price is now ${repositionPrice}. Re-placing it`,
       )
-      const requested = +order.origQty
+      const requested = this.baseRemainderRequestedQty(order, entry)
       const executed = await this.settleBaseEntryRemainderOrder(order)
       if (executed === null) {
         this.handleWarn(
@@ -9794,7 +9940,7 @@ function createDCABotHelper<
       const order = this.findBaseRemainderOrder(dealId, entry.id)
       let rest = +entry.qty
       if (order) {
-        const requested = +order.origQty
+        const requested = this.baseRemainderRequestedQty(order, entry)
         const executed = await this.settleBaseEntryRemainderOrder(order)
         if (executed === null) {
           this.armBaseRemainderTick(dealId, symbol)
