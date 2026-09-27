@@ -45,6 +45,26 @@ describe('shared wallet — grouping legs by key', () => {
     expect(groups).to.have.length(0)
   })
 
+  it('groups Hyperliquid legs by wallet address, whatever the agent or case', async () => {
+    const spot = leg('spot', ExchangeEnum.hyperliquid, '0xAbC')
+    const lin = {
+      ...leg('lin', ExchangeEnum.hyperliquidLinear, '0xabc'),
+      secret: encrypt('another-agent'),
+    }
+    const groups = await groupSharedKeyLegs([spot, lin])
+    expect(groups).to.have.length(1)
+    expect(groups[0].source.uuid).to.equal('spot')
+  })
+
+  it('keeps Bitget legs with different secrets apart', async () => {
+    const a = leg('a', ExchangeEnum.bitget, 'A')
+    const b = {
+      ...leg('b', ExchangeEnum.bitgetUsdm, 'A'),
+      secret: encrypt('x'),
+    }
+    expect(await groupSharedKeyLegs([a, b])).to.have.length(0)
+  })
+
   it('without a spot leg keeps the current link target as source', async () => {
     const groups = await groupSharedKeyLegs([
       leg('lin', ExchangeEnum.bitgetUsdm, 'A', 'inv'),

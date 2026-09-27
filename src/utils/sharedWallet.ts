@@ -48,9 +48,27 @@ export type SharedKeyGroup<T extends Leg> = {
 }
 
 /**
- * The user's legs of one family that hold the same key+secret, as groups of
- * two or more. Compares decrypted credentials, so it only unwraps legs of the
- * shared-wallet families.
+ * Whether two legs of one family are the same venue account. On Hyperliquid
+ * the key IS the wallet address and the secret is only an API agent, so legs
+ * added with different agents — or the address in a different case — are
+ * still one wallet. Elsewhere the API key identifies the account.
+ */
+const sameAccount = async (
+  provider: string,
+  leg: { key: string; secret: string },
+  other: Leg,
+) => {
+  if (provider.startsWith('hyperliquid')) {
+    const { key } = await resolveConnection(other)
+    return !!key && key.toLowerCase() === leg.key.toLowerCase()
+  }
+  return connectionMatches(other, leg)
+}
+
+/**
+ * The user's legs of one family on the same venue account (see
+ * `sameAccount`), as groups of two or more. Compares decrypted credentials,
+ * so it only unwraps legs of the shared-wallet families.
  */
 export const groupSharedKeyLegs = async <T extends Leg>(
   exchanges: readonly T[],
@@ -69,7 +87,7 @@ export const groupSharedKeyLegs = async <T extends Leg>(
     if (!candidates.length) continue
     const { key, secret } = await resolveConnection(leg)
     for (const other of candidates) {
-      if (await connectionMatches(other, { key, secret })) {
+      if (await sameAccount(leg.provider, { key, secret }, other)) {
         taken.add(other.uuid)
         members.push(other)
       }

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.8] - 2026-09-27
+
+### Fixed
+
+- Hyperliquid legs of one wallet were only linked when they held the same API agent; they are now matched on the wallet address (case-insensitive), which is what identifies the account.
+
 ## [1.69.7] - 2026-09-27
 
 ### Fixed
