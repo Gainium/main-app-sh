@@ -172,6 +172,11 @@ function createBotHelper<
      * sweep and `checkOrders`, which replay filled orders by design.
      */
     private positionBooked: Set<string> = new Set()
+    /** See `tpSlEntryPrice()` (spec 117). */
+    private tpSlEntry: (ClearBotSchema['position'] & { entry: number }) | null =
+      null
+    private tpSlEntryQueue: Promise<void> = Promise.resolve()
+    private tpSlEntryPending = 0
     private blockCheck = false
     protected startTimeoutTime = 0
     protected limitTimer: NodeJS.Timeout | null = null
@@ -2153,8 +2158,11 @@ function createBotHelper<
       const price = parseFloat(order.origPrice)
 
       if (order.typeOrder !== TypeOrderEnum.fee) {
-        this.createTransaction(order)
+        const booked = this.createTransaction(order)
         await this.calculatePosition(order)
+        // Spec 117: after the round trip is in the ledger, which is what
+        // decides the entry the TP/SL values the position against.
+        booked.then(() => this.refreshTpSlEntry(order))
       }
       if (
         !skipLimitOrders &&
@@ -2873,14 +2881,33 @@ function createBotHelper<
      */
     private async closeEntryPrice(closeOrderId: string): Promise<number> {
       const position = this.data?.position
-      if (
-        !this.data ||
-        !position ||
-        this.coinm ||
-        this.futuresStrategy !== FuturesStrategyEnum.neutral
-      ) {
+      if (!this.data || !position || !this.usesUnpairedEntry) {
         return position?.price ?? 0
       }
+      const read = await this.readUnpairedEntry(position, closeOrderId)
+      if ('fallback' in read) {
+        this.handleWarn(read.fallback)
+        return position.price
+      }
+      this.handleLog(
+        `Close entry: ${read.entry} from unpaired fills (position price ${position.price})`,
+      )
+      return read.entry
+    }
+    /** `closeEntryPrice()` departs from `position.price` only here (spec 099). */
+    private get usesUnpairedEntry() {
+      return !this.coinm && this.futuresStrategy === FuturesStrategyEnum.neutral
+    }
+    /**
+     * The unpaired-fills entry of `position`, or why it falls back to
+     * `position.price`. `fill` stands in for its own ledger row, which may not
+     * be written as FILLED yet when a fill triggers the read.
+     */
+    private async readUnpairedEntry(
+      position: ClearBotSchema['position'],
+      closeOrderId: string,
+      fill?: Order,
+    ): Promise<{ entry: number } | { fallback: string }> {
       try {
         const [orders, transactions] = await Promise.all([
           this.ordersDb.readData(
@@ -2923,6 +2950,14 @@ function createBotHelper<
               : (transactions as { reason: string }).reason,
           )
         }
+        const rows = fill
+          ? [
+              ...orders.data.result.filter(
+                (o) => o.clientOrderId !== fill.clientOrderId,
+              ),
+              fill,
+            ]
+          : orders.data.result
         const paired = new Set<string>()
         for (const t of transactions.data.result) {
           if (t.idBuy && t.idSell) {
@@ -2932,8 +2967,8 @@ function createBotHelper<
         }
         // Same slice `loadOrders` rebuilds the position from.
         const since = Math.max(
-          this.data.lastPositionChange ?? 0,
-          ...orders.data.result
+          this.data?.lastPositionChange ?? 0,
+          ...rows
             .filter(
               (o) =>
                 o.typeOrder === TypeOrderEnum.stop &&
@@ -2943,7 +2978,7 @@ function createBotHelper<
         )
         let netQty = 0
         let netQuote = 0
-        for (const o of orders.data.result) {
+        for (const o of rows) {
           if (
             o.typeOrder !== TypeOrderEnum.regular ||
             o.updateTime <= since ||
@@ -2967,21 +3002,75 @@ function createBotHelper<
           !(entry > 0) ||
           !isFinite(entry)
         ) {
-          this.handleWarn(
-            `Close entry: unpaired fills net ${netQty} against position ${signedPosition}, using position price ${position.price}`,
-          )
-          return position.price
+          return {
+            fallback: `Close entry: unpaired fills net ${netQty} against position ${signedPosition}, using position price ${position.price}`,
+          }
         }
-        this.handleLog(
-          `Close entry: ${entry} from unpaired fills (position price ${position.price})`,
-        )
-        return entry
+        return { entry }
       } catch (e) {
-        this.handleWarn(
-          `Close entry: cannot read the ledger (${(e as Error)?.message ?? e}), using position price ${position.price}`,
-        )
+        return {
+          fallback: `Close entry: cannot read the ledger (${(e as Error)?.message ?? e}), using position price ${position.price}`,
+        }
+      }
+    }
+    /**
+     * Entry the value-changed TP/SL values the open position against: the one
+     * `closeEntryPrice()` would book the close at (spec 117). `tpSl()` runs
+     * per price tick and stays synchronous, so it reads this cache, keyed to
+     * the position it was computed for; the ledger is read after each fill's
+     * transaction is booked, and once from the tick for a position no fill
+     * refreshed (restart, settings change).
+     */
+    private tpSlEntryPrice(position: ClearBotSchema['position']): number {
+      if (position.qty === 0 || !this.usesUnpairedEntry) {
         return position.price
       }
+      const cached = this.tpSlEntry
+      if (
+        cached &&
+        cached.side === position.side &&
+        cached.qty === position.qty &&
+        cached.price === position.price
+      ) {
+        return cached.entry
+      }
+      if (!this.tpSlEntryPending) {
+        this.refreshTpSlEntry()
+      }
+      return position.price
+    }
+    private refreshTpSlEntry(fill?: Order): Promise<void> {
+      const settings = this.data?.settings
+      if (
+        !settings ||
+        !this.futures ||
+        !this.usesUnpairedEntry ||
+        !(
+          (settings.tpSl && settings.tpSlCondition === 'valueChanged') ||
+          (settings.sl && settings.slCondition === 'valueChanged')
+        )
+      ) {
+        return this.tpSlEntryQueue
+      }
+      // Chained, so the last refresh to finish is the last one started.
+      this.tpSlEntryPending += 1
+      this.tpSlEntryQueue = this.tpSlEntryQueue.then(async () => {
+        try {
+          const position = this.data?.position
+          if (!position || position.qty === 0) {
+            return
+          }
+          const read = await this.readUnpairedEntry(position, '', fill)
+          const entry = 'entry' in read ? read.entry : position.price
+          this.tpSlEntry = { ...position, entry }
+          this.handleDebug(
+            `TP/SL entry: ${entry} for ${position.side} ${position.qty} (position price ${position.price})`,
+          )
+        } finally {
+          this.tpSlEntryPending -= 1
+        }
+      })
+      return this.tpSlEntryQueue
     }
     protected async profitAfterPositionClosed(result: Order) {
       if (!this.data || !this.futures || this.data.position.qty === 0) {
@@ -4496,12 +4585,15 @@ function createBotHelper<
             initialBalances.base * initialPrice + initialBalances.quote
           if (this.futures) {
             const current = this.data.position
+            // Spec 117: against the entry the close is booked at, not the
+            // whole-position average a neutral grid's close no longer uses.
+            const entry = this.tpSlEntryPrice(current)
             const diff =
               current.side === PositionSide.LONG
-                ? lastPrice - current.price
-                : current.price - lastPrice
+                ? lastPrice - entry
+                : entry - lastPrice
             // Spec 064 §4.1: the live value of a position of `qty` base units
-            // entered at `current.price` and marked at `lastPrice` is
+            // entered at `entry` and marked at `lastPrice` is
             // `qty * (lastPrice - entry)` — the same quantity
             // `profitAfterPositionClosed()` books when that position is closed
             // at `lastPrice`. Scaling it by `lastPrice / entry` understated a

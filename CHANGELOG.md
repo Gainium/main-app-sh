@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.11] - 2026-09-27
+
+### Fixed
+
+- A neutral futures grid's value-changed take-profit and stop-loss valued the open position against the whole-position average entry, while the close is booked against the entry of the fills not yet paired into round trips; the check now uses the same entry as the close, so a take-profit no longer fires before the bot reaches its target and a stop-loss no longer fires past it.
+
 ## [1.69.10] - 2026-09-27
 
 ### Changed
