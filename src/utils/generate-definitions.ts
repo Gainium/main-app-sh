@@ -1256,7 +1256,7 @@ const INDICATOR_META: Record<
   MA: {
     name: 'Moving Averages',
     description:
-      'Indicates the average price of a security over a set period, smoothing out price data to identify trends.',
+      'Indicates the average price of a security over a set period, smoothing out price data to identify trends. The rule reads <maType> <indicatorCondition> <maCrossingValue>: the moving average is compared to the reference, so price above EMA 100 is maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price (cu/cd work the same way: EMA crossing down price = price crossing up EMA).',
     typeSpecificFields: [
       'maType',
       'maCrossingValue',
@@ -1275,9 +1275,10 @@ const INDICATOR_META: Record<
       type: 'MA',
       indicatorLength: 20,
       indicatorValue: '0',
-      indicatorCondition: 'cd',
+      indicatorCondition: 'lt',
       indicatorInterval: '1h',
-      maType: 'EMA',
+      maType: 'ema',
+      maCrossingValue: 'price',
       indicatorAction: 'startDeal',
     },
   },

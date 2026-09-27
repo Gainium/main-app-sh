@@ -632,7 +632,11 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   // Indicator specific fields
   indicatorLength: { description: 'Indicator period length', example: 14 },
   indicatorValue: { description: 'Indicator value threshold', example: '70' },
-  indicatorCondition: { description: 'Comparison condition', example: 'gt' },
+  indicatorCondition: {
+    description:
+      'Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down. For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference.',
+    example: 'gt',
+  },
   indicatorInterval: { description: 'Chart timeframe', example: '1h' },
   groupId: { description: 'Indicator group ID', example: 'group-1' },
   uuid: {
@@ -652,8 +656,16 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   },
 
   // MA specific
-  maType: { description: 'Moving average type', example: 'ema' },
-  maCrossingValue: { description: 'MA crossing reference', example: 'sma' },
+  maType: {
+    description:
+      'Moving average being compared (left side of an MA rule: <maType> <indicatorCondition> <maCrossingValue>).',
+    example: 'ema',
+  },
+  maCrossingValue: {
+    description:
+      'What the moving average is compared to (right side of an MA rule): price = current price, or another MA. Example, price above EMA 100: maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price.',
+    example: 'price',
+  },
   maCrossingLength: { description: 'Crossing MA length', example: 50 },
   maCrossingInterval: { description: 'Crossing MA timeframe', example: '4h' },
   maUUID: { description: 'MA indicator UUID reference', example: '123e4567' },

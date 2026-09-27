@@ -3733,7 +3733,7 @@ components:
           example: "70"
         indicatorCondition:
           type: string
-          description: Comparison condition
+          description: "Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down. For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference."
           enum:
             - cd
             - cu
@@ -3788,7 +3788,7 @@ components:
           example: 1
         maType:
           type: string
-          description: Moving average type
+          description: "Moving average being compared (left side of an MA rule: <maType> <indicatorCondition> <maCrossingValue>)."
           enum:
             - ema
             - sma
@@ -3802,7 +3802,7 @@ components:
           example: ema
         maCrossingValue:
           type: string
-          description: MA crossing reference
+          description: "What the moving average is compared to (right side of an MA rule): price = current price, or another MA. Example, price above EMA 100: maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price."
           enum:
             - ema
             - sma

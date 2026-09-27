@@ -1816,15 +1816,15 @@ SettingsIndicators configuration
 | `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|BullBear|UO|IC|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
-| `indicatorCondition` | enum: `cd|cu|gt|lt` | No | Comparison condition |
+| `indicatorCondition` | enum: `cd|cu|gt|lt` | No | Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down. For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference. |
 | `indicatorInterval` | enum: `1m|3m|5m|15m|30m|1h|2h|4h|8h|1d|1w` | No | Chart timeframe |
 | `groupId` | string | No | Indicator group ID |
 | `uuid` | string | No | Unique identifier |
 | `signal` | enum: `strongBuy|strongSell|buy|sell|bothBuy|bothSell` | No | Trading signal type |
 | `condition` | enum: `every|entry` | No | Check condition timing |
 | `checkLevel` | number | No | Level to check indicator |
-| `maType` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | Moving average type |
-| `maCrossingValue` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | MA crossing reference |
+| `maType` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | Moving average being compared (left side of an MA rule: <maType> <indicatorCondition> <maCrossingValue>). |
+| `maCrossingValue` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | What the moving average is compared to (right side of an MA rule): price = current price, or another MA. Example, price above EMA 100: maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price. |
 | `maCrossingLength` | number | No | Crossing MA length |
 | `maCrossingInterval` | enum: `1m|3m|5m|15m|30m|1h|2h|4h|8h|1d|1w` | No | Crossing MA timeframe |
 | `maUUID` | string | No | MA indicator UUID reference |

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.10] - 2026-09-27
+
+### Changed
+
+- API docs and indicator definitions now state how a Moving Average rule reads: `<maType> <indicatorCondition> <maCrossingValue>`, i.e. the moving average compared to the reference. Price above EMA 100 is `maType: ema, indicatorLength: 100, indicatorCondition: lt, maCrossingValue: price`. The MA definition example now includes `maCrossingValue` and uses the lowercase `ema` enum value. No change to how rules are stored or evaluated.
+
 ## [1.69.9] - 2026-09-27
 
 ### Fixed
