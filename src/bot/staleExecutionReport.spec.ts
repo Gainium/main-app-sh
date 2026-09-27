@@ -14,7 +14,10 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import { executionReportRewindsOrder } from './staleExecutionReport'
+import {
+  executionReportRewindsOrder,
+  executionReportUnfillsOrder,
+} from './staleExecutionReport'
 
 const FILLED_AT = 1789907750866
 const ACK_AT = 1789907750864
@@ -111,5 +114,49 @@ describe('§4.1 a stale acknowledgement (spec 090)', () => {
   it('answers false rather than throwing on a missing side', () => {
     expect(executionReportRewindsOrder(null, acknowledgement)).to.equal(false)
     expect(executionReportRewindsOrder(partFilled, undefined)).to.equal(false)
+  })
+})
+
+describe('a part-fill report over a filled row (spec 114)', () => {
+  // Kraken spot, a combo grid BUY, 2026-09-26: FILLED then PARTIALLY_FILLED
+  // for the full quantity, both stamped 1790459402861.
+  const AT = 1790459402861
+  const filled = { status: 'FILLED', updateTime: AT }
+
+  it('is refused whatever its timestamp says', () => {
+    for (const status of ['NEW', 'PARTIALLY_FILLED']) {
+      for (const updateTime of [AT - 1, AT, AT + 1, -1, undefined]) {
+        expect(
+          executionReportUnfillsOrder(filled, { status, updateTime }),
+          `${status} @ ${updateTime}`,
+        ).to.equal(true)
+      }
+    }
+  })
+
+  it('leaves terminal and repeated reports to their own paths', () => {
+    for (const status of ['FILLED', 'CANCELED', 'EXPIRED']) {
+      expect(
+        executionReportUnfillsOrder(filled, { status, updateTime: AT }),
+        status,
+      ).to.equal(false)
+    }
+  })
+
+  it('only guards a row held FILLED', () => {
+    for (const status of ['NEW', 'PARTIALLY_FILLED', 'CANCELED', 'EXPIRED']) {
+      expect(
+        executionReportUnfillsOrder(
+          { status, updateTime: AT },
+          { status: 'PARTIALLY_FILLED', updateTime: AT },
+        ),
+        status,
+      ).to.equal(false)
+    }
+  })
+
+  it('answers false rather than throwing on a missing side', () => {
+    expect(executionReportUnfillsOrder(null, filled)).to.equal(false)
+    expect(executionReportUnfillsOrder(filled, undefined)).to.equal(false)
   })
 })

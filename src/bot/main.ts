@@ -61,7 +61,10 @@ import {
   streamFeeFields,
 } from './orderFee'
 import { isFillEvidenceFree, statesQuantity } from './fillEvidence'
-import { executionReportRewindsOrder } from './staleExecutionReport'
+import {
+  executionReportRewindsOrder,
+  executionReportUnfillsOrder,
+} from './staleExecutionReport'
 import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
@@ -6006,6 +6009,17 @@ class MainBot<T extends IMainBot> {
     if (process && executionReportRewindsOrder(held, order)) {
       this.handleLog(
         `Order ${orderId} report ${order.status} at ${order.updateTime} is older than the ${held.status} row held at ${held.updateTime}. Ignoring it`,
+      )
+      return null
+    }
+    // The same rewind with an equal timestamp, which the rule above lets
+    // through by design: a `PARTIALLY_FILLED` for the full quantity delivered
+    // just after the `FILLED`. `updateOrderOnDb` already refuses it; applied
+    // here it puts a filled order back in the live-status index, where a combo
+    // grid reads it as a resting level and never places its counter. Spec 114.
+    if (process && executionReportUnfillsOrder(held, order)) {
+      this.handleLog(
+        `Order ${orderId} report ${order.status} at ${order.updateTime} would reopen the FILLED row held at ${held.updateTime}. Ignoring it`,
       )
       return null
     }

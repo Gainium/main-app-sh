@@ -74,3 +74,29 @@ export function executionReportRewindsOrder(
   }
   return report?.status === 'NEW' && !!held?.status && held.status !== 'NEW'
 }
+
+/**
+ * Whether applying `report` to `held` would make a filled order live again.
+ *
+ * Spec `114`. The sibling of the rule above for the one shape it leaves open by
+ * design: a report carrying the SAME timestamp. Kraken delivers a
+ * `PARTIALLY_FILLED` for the full quantity a millisecond after the `FILLED`,
+ * both stamped with one order time. Applied, it puts the order back into the
+ * live-status index; on a combo grid that is a level `isOrderExistInDeal`
+ * reports as resting, so its counter order is never placed while the ladder
+ * believes it was.
+ *
+ * No timestamp condition: a venue never un-fills an order, so the status pair
+ * alone is stale by construction — and it is the write `updateOrderOnDb`
+ * already refuses to make in Mongo. `CANCELED`/`EXPIRED` over `FILLED` is a
+ * different question (specs `028`, `088`) and is left alone.
+ */
+export function executionReportUnfillsOrder(
+  held: DatedOrderState | null | undefined,
+  report: DatedOrderState | null | undefined,
+): boolean {
+  return (
+    held?.status === 'FILLED' &&
+    (report?.status === 'NEW' || report?.status === 'PARTIALLY_FILLED')
+  )
+}
