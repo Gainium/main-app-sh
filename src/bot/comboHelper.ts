@@ -72,6 +72,7 @@ import {
   comboSolveParts,
 } from './combo/tpSolve'
 import type { ComboTpSolveInput } from './combo/tpSolve'
+import { levelOf, reanchorLevelAfterFill } from './combo/reanchorAfterFill'
 import {
   baseGridBelowMinimumBudget,
   notEnoughBalanceNewDeal,
@@ -2720,52 +2721,100 @@ function createComboBotHelper<
           updateTime: deal.deal.updateTime,
         })
       }
-      let grids: Grid[] = (
-        (await this.generateGridsOnPrice(
-          {
-            pair,
-            initialGrids: minigrid.initialGrids,
-            lowPrice: minigrid.schema.settings.lowPrice,
-            topPrice: minigrid.schema.settings.topPrice,
-            levels: minigrid.schema.settings.levels,
-            updatedBudget: true,
-            _budget: minigrid.schema.settings.budget,
-            _lastPrice: +order.origPrice,
-            _initialPriceStart: minigrid.schema.initialPrice,
-            _side:
-              order.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell,
-            all: true,
-            profitCurrency: settings.futures
-              ? 'quote'
-              : (settings.profitCurrency ?? 'quote'),
-            orderFixedIn: settings.futures
-              ? settings.coinm
-                ? ('quote' as const)
-                : ('base' as const)
-              : settings.profitCurrency === 'quote'
-                ? ('base' as const)
-                : ('quote' as const),
-          },
-          !this.isLong,
-          this.data?.settings.newBalance,
-          this.feeOrder,
-          deal?.deal.tags?.includes('newSell'),
-        )) ?? []
-      ).map((g) => ({
-        ...g,
-        newClientOrderId: this.getOrderId(`CMB-GR`),
-        dealId,
-        type: TypeOrderEnum.dealGrid,
-        minigridId: minigrid.schema._id,
-      }))
+      const side = order.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell
+      const rebuildAt = async (lastPrice: number): Promise<Grid[]> =>
+        (
+          (await this.generateGridsOnPrice(
+            {
+              pair,
+              initialGrids: minigrid.initialGrids,
+              lowPrice: minigrid.schema.settings.lowPrice,
+              topPrice: minigrid.schema.settings.topPrice,
+              levels: minigrid.schema.settings.levels,
+              updatedBudget: true,
+              _budget: minigrid.schema.settings.budget,
+              _lastPrice: lastPrice,
+              _initialPriceStart: minigrid.schema.initialPrice,
+              _side: side,
+              all: true,
+              profitCurrency: settings.futures
+                ? 'quote'
+                : (settings.profitCurrency ?? 'quote'),
+              orderFixedIn: settings.futures
+                ? settings.coinm
+                  ? ('quote' as const)
+                  : ('base' as const)
+                : settings.profitCurrency === 'quote'
+                  ? ('base' as const)
+                  : ('quote' as const),
+            },
+            !this.isLong,
+            this.data?.settings.newBalance,
+            this.feeOrder,
+            deal?.deal.tags?.includes('newSell'),
+          )) ?? []
+        ).map((g) => ({
+          ...g,
+          newClientOrderId: this.getOrderId(`CMB-GR`),
+          dealId,
+          type: TypeOrderEnum.dealGrid,
+          minigridId: minigrid.schema._id,
+        }))
+      let grids: Grid[] = await rebuildAt(+order.origPrice)
+      /** Where the ladder's empty level is recorded as sitting after this fill. */
+      let anchorPrice = +order.origPrice
 
       let prev = minigrid.currentOrders
       const isLatest = this.isLastMinigridOrder(
         order.updateTime,
         +order.origPrice,
-        order.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell,
+        side,
         minigrid.schema._id,
       )
+      if (isLatest) {
+        // Spec `116`: orders placed after this fill were not on the book when
+        // its price traded, so the rebuild must not count them as filled.
+        const level = reanchorLevelAfterFill({
+          rebuilt: grids,
+          levels: minigrid.initialGrids,
+          resting: this.getOrdersByStatusAndDealId({
+            status: ['NEW', 'PARTIALLY_FILLED'],
+            dealId,
+          })
+            .filter(
+              (o) =>
+                o.minigridId === minigrid.schema._id &&
+                o.typeOrder === TypeOrderEnum.dealGrid &&
+                o.clientOrderId !== order.clientOrderId,
+            )
+            .map((o) => ({
+              side: o.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell,
+              price: +(o.origPrice || o.price),
+              placedAt: o.transactTime,
+            })),
+          side,
+          filledAt: order.updateTime,
+        })
+        const anchor = minigrid.initialGrids.find((l) => l.number === level)
+        if (anchor) {
+          anchorPrice =
+            side === OrderSideEnum.buy ? anchor.price.buy : anchor.price.sell
+          this.handleLog(
+            `Minigrid ${minigrid.schema._id} rebuilt at level ${anchor.number} (${anchorPrice}) after ${order.clientOrderId}: orders placed after the fill did not fill`,
+          )
+          grids = await rebuildAt(anchorPrice)
+          // The filled order's level is free again; let the diff re-place it.
+          const filled = levelOf(minigrid.initialGrids, side, +order.origPrice)
+          prev = prev.filter(
+            (g) => !(g.number === filled?.number && g.side === side),
+          )
+          this.lastMinigridOrder.set(minigrid.schema._id, {
+            time: order.updateTime,
+            price: anchorPrice,
+            side,
+          })
+        }
+      }
       if (!isLatest) {
         this.handleDebug(
           `Not latest order ${order.clientOrderId}, apply previous minigrid orders`,
@@ -2806,13 +2855,9 @@ function createComboBotHelper<
         minigrid.schema.avgPrice = avgPrice
         const prevPrice = minigrid.schema.lastPrice
         minigrid.schema.lastPrice = isLatest
-          ? +order.origPrice
+          ? anchorPrice
           : minigrid.schema.lastPrice
-        minigrid.schema.lastSide = isLatest
-          ? order.side === 'BUY'
-            ? OrderSideEnum.buy
-            : OrderSideEnum.sell
-          : minigrid.schema.lastSide
+        minigrid.schema.lastSide = isLatest ? side : minigrid.schema.lastSide
         if (settings.comboUseSmartGrids && settings.comboSmartGridsCount) {
           const count = +(settings.comboSmartGridsCount ?? '0')
           if (count && !isNaN(count)) {
