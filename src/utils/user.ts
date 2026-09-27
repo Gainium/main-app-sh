@@ -93,6 +93,11 @@ import {
   streamedFree,
 } from './balanceWrite'
 import { createHoldRefresh } from './holdRefresh'
+import {
+  groupSharedKeyLegs,
+  isSharedWalletProvider,
+  planSharedWalletLinks,
+} from './sharedWallet'
 
 /**
  * The venue's own spendable figure, as fields to merge into the balance write.
@@ -643,7 +648,7 @@ const setHyperliquidTimer = async (
     setInterval(
       () => (
         logger.debug(`Hyperliquid timer trigger for ${uuid}`),
-        updateUserBalance(user, uuid, undefined, ec)
+        refreshSharedWalletLeg(user._id.toString(), uuid, ec)
       ),
       hyperliquidTimeout,
     ),
@@ -666,11 +671,145 @@ const setBitgetTimer = async (
     setInterval(
       () => (
         logger.debug(`Bitget timer trigger for ${uuid}`),
-        updateUserBalance(user, uuid, undefined, ec)
+        refreshSharedWalletLeg(user._id.toString(), uuid, ec)
       ),
       bitgetTimeout,
     ),
   )
+}
+
+const stopBalanceTimer = (uuid: string) => {
+  for (const timers of [hyperliquidTimer, bitgetTimer]) {
+    const timer = timers.get(uuid)
+    if (timer) {
+      clearInterval(timer)
+      timers.delete(uuid)
+    }
+  }
+}
+
+/** When each user's legs were last checked against the venue. A mode switch
+ *  is rare, and the venue answer is cached connector-side anyway. */
+const sharedWalletChecked: Map<string, number> = new Map()
+
+const sharedWalletInterval = 60 * 60 * 1000
+
+/**
+ * Link a user's Hyperliquid / Bitget legs that share one wallet to their spot
+ * leg, and unlink them when the account is no longer unified (see
+ * `sharedWallet.ts`). A newly linked leg stops refreshing and loses its own
+ * `balances` rows — they were the same money as the source's, counted again.
+ * Returns the user as it stands afterwards, read fresh; `null` if unreadable.
+ */
+const reconcileSharedWalletLinks = async (
+  userId: string,
+  ec = ExchangeChooser,
+  force = false,
+): Promise<ClearUserSchema | null> => {
+  const read = async () => {
+    const user = await userDb.readData(userListFilter({ _id: userId }))
+    if (user.status === StatusEnum.notok) {
+      logger.warn(`Shared wallet | read user ${userId} failed: ${user.reason}`)
+      return null
+    }
+    return user.data.result ?? null
+  }
+  const user = await read()
+  if (!user) return null
+  const last = sharedWalletChecked.get(userId) ?? 0
+  if (!force && Date.now() - last < sharedWalletInterval) return user
+  const legs = user.exchanges.filter(
+    (e) =>
+      isSharedWalletProvider(e.provider) &&
+      !paperExchanges.includes(e.provider),
+  )
+  if (legs.length < 2) return user
+  sharedWalletChecked.set(userId, Date.now())
+  let changed = false
+  const unlinked: string[] = []
+  for (const group of await groupSharedKeyLegs(legs)) {
+    const { source } = group
+    const exchange = ec.chooseExchangeFactory(source.provider)
+    if (!exchange) continue
+    const shared = await exchange(
+      source.key,
+      source.secret,
+      source.passphrase,
+      undefined,
+      source.keysType,
+      source.okxSource,
+      source.bybitHost,
+    )
+      .getSharedWallet()
+      .catch(() => null)
+    const plan = planSharedWalletLinks(
+      group,
+      shared?.status === StatusEnum.ok ? shared.data : null,
+    )
+    for (const { uuid, to } of plan.link) {
+      const res = await userDb.updateData(
+        { _id: userId, 'exchanges.uuid': uuid },
+        { $set: { 'exchanges.$.linkedTo': to } },
+      )
+      if (res.status === StatusEnum.notok) {
+        logger.error(`Shared wallet | link ${uuid} → ${to}: ${res.reason}`)
+        continue
+      }
+      changed = true
+      stopBalanceTimer(uuid)
+      await balanceDb.deleteManyData({
+        userId,
+        exchangeUUID: uuid,
+        paperContext: { $ne: true },
+      })
+      logger.info(`Shared wallet | ${userId} linked ${uuid} → ${to}`)
+    }
+    for (const uuid of plan.unlink) {
+      const res = await userDb.updateData(
+        { _id: userId, 'exchanges.uuid': uuid },
+        { $set: { 'exchanges.$.linkedTo': null } },
+      )
+      if (res.status === StatusEnum.notok) {
+        logger.error(`Shared wallet | unlink ${uuid}: ${res.reason}`)
+        continue
+      }
+      changed = true
+      unlinked.push(uuid)
+      logger.info(`Shared wallet | ${userId} unlinked ${uuid}`)
+    }
+  }
+  if (!changed) return user
+  const fresh = await read()
+  if (!fresh) return null
+  // An unlinked leg is its own wallet again: give it back its refresher.
+  for (const uuid of unlinked) {
+    const leg = fresh.exchanges.find((e) => e.uuid === uuid)
+    if (!leg) continue
+    if (leg.provider.startsWith('hyperliquid')) {
+      setHyperliquidTimer(fresh, uuid, ec)
+    } else {
+      setBitgetTimer(fresh, uuid, ec)
+    }
+    await updateUserBalance(fresh, uuid, undefined, ec)
+  }
+  return fresh
+}
+
+/** Timer tick for a Hyperliquid / Bitget leg: re-check its link, then refresh
+ *  it unless it now reads through its source. */
+const refreshSharedWalletLeg = async (
+  userId: string,
+  uuid: string,
+  ec = ExchangeChooser,
+) => {
+  const user = await reconcileSharedWalletLinks(userId, ec)
+  if (!user) return
+  const leg = user.exchanges.find((e) => e.uuid === uuid)
+  if (!leg || leg.linkedTo) {
+    stopBalanceTimer(uuid)
+    return
+  }
+  await updateUserBalance(user, uuid, undefined, ec)
 }
 
 /**
@@ -722,12 +861,21 @@ const connectUserBalance = async (
     true,
   )
   if (users.status === 'OK' && users.data.count > 0) {
+    let list = users.data.result
     if (uuid || id) {
+      // A connection was just added or changed: settle its links first, so a
+      // unified wallet is never written under a leg that should read through.
+      list = await Promise.all(
+        list.map(
+          async (u) =>
+            (await reconcileSharedWalletLinks(u._id.toString(), ec, true)) ?? u,
+        ),
+      )
       await Promise.all(
-        users.data.result.map((u) => updateUserBalance(u, uuid, undefined, ec)),
+        list.map((u) => updateUserBalance(u, uuid, undefined, ec)),
       )
     }
-    for (const u of users.data.result) {
+    for (const u of list) {
       const userId = u._id.toString()
       for (const e of u.exchanges.filter((ue) => !ue.linkedTo)) {
         if (e.provider === ExchangeEnum.coinbase) {
@@ -1365,7 +1513,11 @@ const userSnapshots = async (
         logger.debug(
           `Snapshot | User ${u.username} found ${balances.data.result.length} balances`,
         )
-        const userExchanges = u.exchanges.map((e) => e.uuid)
+        // A linked leg reads its source's wallet; any row left under it is
+        // that same money again (unified accounts, `sharedWallet.ts`).
+        const userExchanges = u.exchanges
+          .filter((e) => !e.linkedTo)
+          .map((e) => e.uuid)
         for (const b of balances.data.result.filter((b) =>
           userExchanges.includes(b.exchangeUUID),
         )) {

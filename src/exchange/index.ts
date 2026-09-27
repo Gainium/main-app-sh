@@ -30,6 +30,7 @@ export interface Exchange {
   returnBad(): (e: Error) => ReturnBad
   getBalance(): Promise<BaseReturn<FreeAsset>>
   getMarginAvailableUsd(): Promise<BaseReturn<number | null>>
+  getSharedWallet(): Promise<BaseReturn<boolean | null>>
   openOrder(order: {
     symbol: string
     side: OrderTypes
@@ -345,6 +346,19 @@ abstract class AbsctractExchange implements Exchange {
    * `null` answer, since simulated accounts are already quote-denominated.
    */
   async getMarginAvailableUsd(): Promise<BaseReturn<number | null>> {
+    return {
+      status: StatusEnum.ok,
+      data: null,
+      reason: null,
+    }
+  }
+
+  /**
+   * Whether this key's spot and futures legs share one wallet (a unified
+   * account), `null` when unknown. Concrete call lives on the HTTP exchange;
+   * the paper simulator has no such accounts.
+   */
+  async getSharedWallet(): Promise<BaseReturn<boolean | null>> {
     return {
       status: StatusEnum.ok,
       data: null,

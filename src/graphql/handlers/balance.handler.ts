@@ -59,7 +59,11 @@ export const getBalances = async (
     }
   }
   let final: typeof balance.data.result = []
-  const userExchanges = user.exchanges.map((e) => e.uuid)
+  // Summed reads skip rows under linked legs: those are the source's wallet
+  // counted again. A single-leg read already resolved the link above.
+  const userExchanges = user.exchanges
+    .filter((e) => !!uuid || !e.linkedTo)
+    .map((e) => e.uuid)
   const rows = balance.data.result.filter((b) =>
     userExchanges.includes(b.exchangeUUID),
   )

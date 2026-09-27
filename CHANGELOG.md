@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.7] - 2026-09-27
+
+### Fixed
+
+- Hyperliquid unified / portfolio-margin and Bitget Unified Trading Account wallets were counted once per connected market leg in the portfolio. Legs that share one wallet are now linked to their spot leg (re-checked hourly, so switching account mode heals itself), the wallet is stored once, and summed balances and daily snapshots skip linked legs.
+
 ## [1.69.6] - 2026-09-26
 
 ### Fixed

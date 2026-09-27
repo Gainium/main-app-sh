@@ -400,6 +400,26 @@ class Exchange extends AbstractExchange {
   }
 
   /**
+   * Whether the key's spot and futures legs share one wallet (Hyperliquid
+   * unified / portfolio margin, Bitget UTA). `null` = undetermined, including
+   * a connector that predates the endpoint — callers keep what they had.
+   */
+  async getSharedWallet(
+    timeProfile = this.getEmptyTimeProfile('getSharedWallet'),
+  ): Promise<BaseReturn<boolean | null>> {
+    const result = await this.apiCall<boolean | null>(
+      {
+        endpoint: 'sharedWallet',
+        method: 'get',
+        isPrivate: true,
+      },
+      timeProfile,
+    ).catch(this.handleError(this.getSharedWallet, timeProfile))
+    this.saveTimeProfile(result.timeProfile)
+    return result.data
+  }
+
+  /**
    * Executions on the account, newest first — NOT the public tape
    * (`getTrades`). Read-only, for reconciling what the venue actually did
    * against what we recorded.
