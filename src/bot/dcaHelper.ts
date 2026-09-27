@@ -18883,7 +18883,13 @@ function createDCABotHelper<
               false,
             )
           }
-          if (long) {
+          // Spec `115`: every configured level has filled. Falling through to
+          // the "no count" branches below kept each rebuilt level on the far
+          // side of the price, so a settings edit re-sent a spent safety order.
+          const ladderSpent = dcaOrdersCount > 0 && left === 0
+          if (ladderSpent) {
+            currentOrders = []
+          } else if (long) {
             if (left && !isNaN(left)) {
               currentOrders = orders
                 .sort((a, b) => a.price - b.price)
@@ -18896,7 +18902,7 @@ function createDCABotHelper<
                 .sort((a, b) => b.price - a.price)
             }
           }
-          if (!long) {
+          if (!ladderSpent && !long) {
             if (left && !isNaN(left)) {
               currentOrders = orders
                 .sort((a, b) => b.price - a.price)
