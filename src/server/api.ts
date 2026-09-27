@@ -36,6 +36,7 @@ import {
 } from '../bot/utils'
 import { isCoinm, isFutures, isPaper } from '../utils'
 import { priceBalancesUsd } from '../utils/user'
+import { walletUuidOf } from '../utils/sharedWallet'
 
 type ChangeBotPairsInputType = {
   botId?: string
@@ -546,8 +547,15 @@ const allAPI = <R extends UserSchema = UserSchema>(
     const filter: Record<string, unknown> = {
       userId: `${user.id}`,
     }
+    // A linked leg's wallet is stored under its source connection.
+    const userExchanges = exchanges.data?.result?.exchanges
+    const walletUuid = exchangeId ? walletUuidOf(userExchanges, exchangeId) : ''
+    const requestedProvider = userExchanges?.find(
+      (e) => e.uuid === exchangeId,
+    )?.provider
+    const relinked = !!exchangeId && walletUuid !== exchangeId
     if (exchangeId) {
-      filter.exchangeUUID = exchangeId
+      filter.exchangeUUID = walletUuid
     }
     if (paperContext !== null && !exchangeId) {
       filter.paperContext = paperContext ? { $eq: true } : { $ne: true }
@@ -585,18 +593,20 @@ const allAPI = <R extends UserSchema = UserSchema>(
       const priced = withUsd
         ? usdMap.get(`${b.exchangeUUID ?? ''}:${b.asset}`)
         : undefined
+      // Rows read through a link are reported as the leg that was asked for.
+      const code = relinked ? (requestedProvider ?? b.exchange) : b.exchange
       return {
         asset: b.asset,
         free: b.free,
         locked: b.locked,
-        exchangeCode: b.exchange,
-        exchangeMarket: isFutures(b.exchange) ? 'futures' : 'spot',
-        exchangeType: isFutures(b.exchange)
-          ? isCoinm(b.exchange)
+        exchangeCode: code,
+        exchangeMarket: isFutures(code) ? 'futures' : 'spot',
+        exchangeType: isFutures(code)
+          ? isCoinm(code)
             ? 'inverse'
             : 'linear'
           : undefined,
-        exchangeId: b.exchangeUUID,
+        exchangeId: relinked ? exchangeId : b.exchangeUUID,
         ...(withUsd
           ? { price: priced?.price ?? 0, usdValue: priced?.usdValue ?? 0 }
           : {}),

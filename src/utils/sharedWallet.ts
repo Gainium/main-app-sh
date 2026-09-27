@@ -133,3 +133,16 @@ export const planSharedWalletLinks = (
   }
   return plan
 }
+
+/**
+ * The connection whose `balances` rows hold `uuid`'s wallet: its link source
+ * when it is a linked leg (the refresher never writes rows under a linked
+ * leg), else itself. Every per-connection balance read must go through this,
+ * or a linked leg reads as holding nothing.
+ */
+export const walletUuidOf = (
+  exchanges:
+    | ReadonlyArray<{ uuid: string; linkedTo?: string | null }>
+    | undefined,
+  uuid: string,
+) => exchanges?.find((e) => e.uuid === uuid)?.linkedTo || uuid

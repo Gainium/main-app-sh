@@ -8,7 +8,11 @@ import { describe, it } from 'mocha'
 import { expect } from 'chai'
 import { ExchangeEnum } from '../../types'
 import { encrypt } from './crypto'
-import { groupSharedKeyLegs, planSharedWalletLinks } from './sharedWallet'
+import {
+  groupSharedKeyLegs,
+  planSharedWalletLinks,
+  walletUuidOf,
+} from './sharedWallet'
 
 const leg = (
   uuid: string,
@@ -122,5 +126,21 @@ describe('shared wallet — link plan', () => {
       link: [],
       unlink: [],
     })
+  })
+})
+
+describe("shared wallet — where a leg's balances live", () => {
+  const exchanges = [
+    { uuid: 'spot' },
+    { uuid: 'lin', linkedTo: 'spot' },
+    { uuid: 'solo', linkedTo: null },
+  ]
+  it('a linked leg reads its source', () => {
+    expect(walletUuidOf(exchanges, 'lin')).to.equal('spot')
+  })
+  it('an unlinked or unknown leg reads itself', () => {
+    expect(walletUuidOf(exchanges, 'solo')).to.equal('solo')
+    expect(walletUuidOf(exchanges, 'spot')).to.equal('spot')
+    expect(walletUuidOf(undefined, 'x')).to.equal('x')
   })
 })

@@ -73,6 +73,7 @@ import { endpointForBotType } from './fieldConfig'
 import { fieldSelectionMiddlewares, paperContextMiddleware } from './middleware'
 import { isFutures, isCoinm, isPaper, isServiceUnreachable } from '../../utils'
 import { priceBalancesUsd } from '../../utils/user'
+import { walletUuidOf } from '../../utils/sharedWallet'
 import {
   DCA_FORM_DEFAULTS,
   COMBO_FORM_DEFAULTS,
@@ -860,9 +861,25 @@ const v2API = <R extends UserSchema = UserSchema>(
         userId: `${user.id}`,
       }
 
+      // A linked leg's wallet is stored under its source connection.
+      let walletUuid = exchangeId
+      let requestedProvider: string | undefined
       if (exchangeId) {
-        filter.exchangeUUID = exchangeId
+        const owner = await userDb.readData(
+          { _id: new Types.ObjectId(user.id) },
+          { exchanges: 1 },
+        )
+        const userExchanges =
+          owner.status === StatusEnum.ok
+            ? owner.data?.result?.exchanges
+            : undefined
+        walletUuid = walletUuidOf(userExchanges, exchangeId)
+        requestedProvider = userExchanges?.find(
+          (e) => e.uuid === exchangeId,
+        )?.provider
+        filter.exchangeUUID = walletUuid
       }
+      const relinked = !!exchangeId && walletUuid !== exchangeId
 
       if (!exchangeId) {
         filter.paperContext = paperContext ? { $eq: true } : { $ne: true }
@@ -904,6 +921,13 @@ const v2API = <R extends UserSchema = UserSchema>(
           const priced = withUsd
             ? usdMap.get(`${b.exchangeUUID ?? ''}:${b.asset}`)
             : undefined
+          // Rows read through a link are reported as the leg asked for.
+          if (relinked) {
+            if ('exchangeUUID' in b) b = { ...b, exchangeUUID: exchangeId }
+            if ('exchange' in b) {
+              b = { ...b, exchange: requestedProvider ?? b.exchange }
+            }
+          }
           return {
             ...b,
             exchangeMarket: isFutures(b.exchange) ? 'futures' : 'spot',

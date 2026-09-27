@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.9] - 2026-09-27
+
+### Fixed
+
+- Public API balances (`/api/balances`, `/api/v2/user/balances`) filtered by a futures connection that shares its wallet with a spot connection returned nothing; they now read the shared wallet and report it under the requested connection, as the dashboard does.
+
 ## [1.69.8] - 2026-09-27
 
 ### Fixed
