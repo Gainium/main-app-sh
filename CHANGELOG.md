@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.12] - 2026-09-28
+
+### Fixed
+
+- "Change DCA levels" on a deal whose safety orders are triggered by indicators or a custom list saved the new value but left the ladder unchanged, so the deal kept placing every level. The action now limits that deal's ladder to the chosen number of levels (up to one per indicator or custom row); deals it is not used on are unchanged. Raising the value again restores the remaining levels as the bot defines them, and resetting the deal to the bot settings removes the limit.
+
 ## [1.69.11] - 2026-09-27
 
 ### Fixed

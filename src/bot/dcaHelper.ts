@@ -18417,14 +18417,7 @@ function createDCABotHelper<
           const long = this.isLong
           let balanceUseQty = 0
 
-          const ordersCount =
-            settings.dcaCondition === DCAConditionEnum.indicators
-              ? (settings.indicators ?? []).filter(
-                  (i) => i.indicatorAction === IndicatorAction.startDca,
-                ).length
-              : settings.dcaCondition === DCAConditionEnum.custom
-                ? (settings.dcaCustom ?? []).length
-                : parseInt(`${settings.ordersCount}`)
+          const ordersCount = this.dcaLadderSize(settings)
           const useVolumeChange =
             settings.dcaVolumeBaseOn === DCAVolumeType.change &&
             settings.useTp &&
@@ -18831,7 +18824,7 @@ function createDCABotHelper<
           const useSmartOrders = settings.useSmartOrders
           const dcaOrdersCount =
             settings.dcaCondition === DCAConditionEnum.custom
-              ? (settings.dcaCustom?.length ?? 0)
+              ? this.dcaLadderSize(settings)
               : +(settings.ordersCount || '0')
           const useTp =
             settings.useTp &&
@@ -24055,6 +24048,9 @@ function createDCABotHelper<
               fixedTpPrice: findDeal.deal.settings.fixedTpPrice,
               useFixedSLPrices: findDeal.deal.settings.useFixedSLPrices,
               useFixedTPPrices: findDeal.deal.settings.useFixedTPPrices,
+              // Deal-only, so the bot has no value to restore: drop it, or
+              // the reset deal keeps a "Change DCA levels" limit (spec `118`).
+              dcaLevelsCap: undefined,
               useTp:
                 this.data.settings.dealCloseCondition ===
                   CloseConditionEnum.dynamicAr && this.data.settings.useTp
@@ -24180,6 +24176,32 @@ function createDCABotHelper<
       const keys = Object.keys(settings)
       if (keys.length > 0) {
         const findDeal = this.getDeal(dealId)
+        // "Change DCA levels" (both dashboards) sends exactly `ordersCount`,
+        // plus `useDca: true` when it switches DCA back on. An indicator /
+        // custom ladder is not sized by `ordersCount`, so on those deals the
+        // action's value is recorded as the deal's `dcaLevelsCap` instead
+        // (spec `118`). Any other patch that carries `ordersCount` — Edit Deal,
+        // mass edit, API — leaves the cap alone.
+        if (
+          findDeal &&
+          settings.ordersCount !== undefined &&
+          settings.ordersCount !== null &&
+          settings.useDca !== false &&
+          keys.every((k) => k === 'ordersCount' || k === 'useDca')
+        ) {
+          const { dcaCondition } = await this.getAggregatedSettings(
+            findDeal.deal,
+          )
+          const levels = parseInt(`${settings.ordersCount}`)
+          if (
+            (dcaCondition === DCAConditionEnum.indicators ||
+              dcaCondition === DCAConditionEnum.custom) &&
+            Number.isFinite(levels) &&
+            levels >= 0
+          ) {
+            settings = { ...settings, dcaLevelsCap: levels }
+          }
+        }
         if (
           findDeal &&
           (findDeal.deal.status === DCADealStatusEnum.open ||
@@ -25069,14 +25091,28 @@ function createDCABotHelper<
       indicators?: SettingsIndicators[]
       dcaCustom?: DCACustom[]
       ordersCount?: number | string
+      dcaLevelsCap?: number | null
     }) {
+      // An indicator / custom ladder is one level per `startDca` indicator or
+      // custom row. `dcaLevelsCap` is the only deal-scoped limit on it — set
+      // solely by the deal's "Change DCA levels" action — and `ordersCount`
+      // is never read here: existing bots hold values unrelated to the
+      // indicator count (spec `118`).
+      const cap = (count: number) =>
+        typeof settings.dcaLevelsCap === 'number' &&
+        Number.isFinite(settings.dcaLevelsCap) &&
+        settings.dcaLevelsCap >= 0
+          ? Math.min(count, settings.dcaLevelsCap)
+          : count
       if (settings.dcaCondition === DCAConditionEnum.indicators) {
-        return (settings.indicators ?? []).filter(
-          (i) => i.indicatorAction === IndicatorAction.startDca,
-        ).length
+        return cap(
+          (settings.indicators ?? []).filter(
+            (i) => i.indicatorAction === IndicatorAction.startDca,
+          ).length,
+        )
       }
       if (settings.dcaCondition === DCAConditionEnum.custom) {
-        return (settings.dcaCustom ?? []).length
+        return cap((settings.dcaCustom ?? []).length)
       }
       return parseInt(`${settings.ordersCount ?? 0}`) || 0
     }

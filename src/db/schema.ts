@@ -2083,6 +2083,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     closeByTimerUnits: { type: String, enum: CooldownUnits },
     dcaCustom: [{ uuid: String, step: String, size: String }],
     dcaIndicatorLevels: [{ orderSize: String, minPercFromLast: String }],
+    dcaLevelsCap: Number,
     ordersCount: Number,
     tpPerc: String,
     slPerc: String,

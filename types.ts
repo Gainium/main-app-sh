@@ -1233,6 +1233,11 @@ export type DCADealsSettings = Pick<
   avgPrice: number
   changed: boolean
   dcaIndicatorLevels?: DCAIndicatorLevel[]
+  /**
+   * Deal-only limit on an indicator / custom ladder, set by the deal's
+   * "Change DCA levels" action. Unset = the full ladder. Spec `118`.
+   */
+  dcaLevelsCap?: number
   orderSizePercQty?: number
   slChangedByUser?: boolean
   updatedComboAdjustments?: boolean
