@@ -75,8 +75,12 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
         const updateMap: Map<string, ClearPairsSchema> = new Map()
         const createMap: Omit<ClearPairsSchema, '_id'>[] = []
         const deleteSet: Set<string> = new Set()
+        // OKX Europe docs (`source: 'my'`) share this exchange id but are owned
+        // by reconcileEuPairs. The global feed doesn't list them, so reading
+        // them here deleted every EU pair each run until the EU refresher
+        // re-created it — leaving a window where bots saw their pairs missing.
         const allDbPairs = await pairDb.readData(
-          { exchange: provider },
+          { exchange: provider, source: { $ne: OKXSource.my } },
           undefined,
           {},
           true,

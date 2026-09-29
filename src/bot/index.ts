@@ -4772,6 +4772,27 @@ class Bot<T extends UserSchema = UserSchema> {
     return saveBotRequest
   }
 
+  /**
+   * A pair missing from the pairs collection (mid-refresh, or a venue list
+   * that dropped it) is not a pair the bot stopped trading: keep the entry the
+   * bot already had for it, so a save can never shrink `symbol` below
+   * `settings.pair` — or empty it, which leaves the bot unrenderable.
+   */
+  private keepStoredSymbols(
+    symbolsMap: Map<string, Symbols>,
+    pairs: string[],
+    stored?: Map<string, Symbols> | Record<string, Symbols> | null,
+  ) {
+    const storedMap =
+      stored instanceof Map ? stored : new Map(Object.entries(stored ?? {}))
+    for (const pair of pairs) {
+      const entry = storedMap.get(pair)
+      if (!symbolsMap.has(pair) && entry) {
+        symbolsMap.set(pair, entry)
+      }
+    }
+  }
+
   public async changeDCABot(
     input: Partial<DCABotSettings> & { id: string; vars?: BotVars | null },
     userId: string,
@@ -4886,7 +4907,10 @@ class Bot<T extends UserSchema = UserSchema> {
             quoteAsset: p.quoteAsset.name,
           })
         }
-        set.$set.symbol = symbolsMap
+        this.keepStoredSymbols(symbolsMap, settings.pair, oldSettings.symbol)
+        if (symbolsMap.size) {
+          set.$set.symbol = symbolsMap
+        }
       }
     }
 
@@ -5116,7 +5140,10 @@ class Bot<T extends UserSchema = UserSchema> {
             quoteAsset: p.quoteAsset.name,
           })
         }
-        set.$set.symbol = symbolsMap
+        this.keepStoredSymbols(symbolsMap, settings.pair, oldSettings.symbol)
+        if (symbolsMap.size) {
+          set.$set.symbol = symbolsMap
+        }
       }
     }
 

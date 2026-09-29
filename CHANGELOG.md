@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.13] - 2026-09-29
+
+### Fixed
+
+- Saving a multi-pair bot while some of its pairs were momentarily missing from the pair list could drop those pairs' metadata, or empty it entirely, leaving the bot unable to display. A save now keeps the metadata the bot already had for those pairs and never stores an empty set. The hourly exchange pair refresh also no longer removes OKX Europe pairs (EU spot and X-Perps), which the global instrument list does not include.
+
 ## [1.69.12] - 2026-09-28
 
 ### Fixed
