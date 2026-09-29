@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.15] - 2026-09-29
+
+### Fixed
+
+- Closing a Combo deal could make the bot place new grid buys and sells for that deal while the close was in progress. When the close cancels a grid order that was already partly filled, that fill is now recorded as before, but no grid orders are placed for the deal until the close finishes or is abandoned. Before, such a buy could land above the market and fill straight away, adding to the position being sold, and a sell could be refused for lack of balance because the close already held that base.
+
 ## [1.69.14] - 2026-09-29
 
 ### Fixed

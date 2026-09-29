@@ -133,6 +133,10 @@ function createComboBotHelper<
     transactionsDb = comboTransactionsDb
     private lastMinigridOrder: Map<string, LastMinigridOrdes> = new Map()
     private usedOrderId: Map<string, Set<string>> = new Map()
+    /** Spec `120`: `closeDealById` calls in progress, per deal. */
+    private closesRunning: Map<string, number> = new Map()
+    /** Spec `120`: deals a close was requested for that are still open. */
+    private closeRequested: Set<string> = new Set()
     private feeOrderReasons: Map<string, string[]> = new Map()
     private lastFilledOrderMap: Map<string, Order> = new Map()
 
@@ -3083,7 +3087,7 @@ function createComboBotHelper<
             this.stopList.add(o.newClientOrderId)
           }
           this.pendingOrdersList.delete(minigrid.schema._id)
-          if (!deal.closeBySl) {
+          if (!deal.closeBySl && !this.isDealClosing(dealId)) {
             await this.placeOrders(
               this.botId,
               pair,
@@ -3160,7 +3164,9 @@ function createComboBotHelper<
           )
         }
       }
-      if (!deal?.closeBySl) {
+      // Spec `120`: the fill is recorded above; while the deal is being
+      // closed nothing is placed for it.
+      if (!deal?.closeBySl && !this.isDealClosing(dealId)) {
         await this.placeOrders(this.botId, pair, dealId, toPlace)
         this.autoRebalancing(this.botId, dealId)
       } else {
@@ -3179,14 +3185,95 @@ function createComboBotHelper<
         this.serviceRestart && !this.secondRestart,
       )
       this.usedOrderId.delete(dealId)
+      this.closeRequested.delete(dealId)
       this.updateUsedOrderId()
       this.updateBotDealStats(dealId)
+    }
+    /**
+     * Spec `120`. Closing a deal cancels every resting grid order, and one
+     * that was partly filled comes back as a fill, which `updateMinigrid`
+     * processes after the close's own `allowToPlaceOrders` gate has already
+     * lifted. `closeBySl` is the only close signal it reads, and a manual
+     * close never sets it. So the fill rebuilt the ladder and placed grid
+     * BUYs and SELLs into a deal that was being sold. Track the close for
+     * as long as it runs and, afterwards, for as long as its closing order is
+     * live. Not tracked when the close leaves nothing resting, so a refused
+     * close does not freeze the grid.
+     */
+    override async closeDealById(
+      botId: string,
+      dealId: string,
+      closeType: CloseDCATypeEnum = CloseDCATypeEnum.leave,
+      reopen = true,
+      forceMarket = false,
+      slSource = false,
+      checkProfit = false,
+      price = '',
+      liquidationPrice?: number,
+      sl = false,
+      closeTrigger?: DCACloseTriggerEnum,
+      count = 0,
+    ) {
+      const args = [
+        botId,
+        dealId,
+        closeType,
+        reopen,
+        forceMarket,
+        slSource,
+        checkProfit,
+        price,
+        liquidationPrice,
+        sl,
+        closeTrigger,
+        count,
+      ] as const
+      const tracked =
+        (closeType === CloseDCATypeEnum.closeByMarket ||
+          closeType === CloseDCATypeEnum.closeByLimit) &&
+        this.getDeal(dealId)?.deal.status === DCADealStatusEnum.open
+      if (!tracked) {
+        return super.closeDealById(...args)
+      }
+      this.closesRunning.set(dealId, (this.closesRunning.get(dealId) ?? 0) + 1)
+      this.closeRequested.add(dealId)
+      try {
+        return await super.closeDealById(...args)
+      } finally {
+        const left = (this.closesRunning.get(dealId) ?? 1) - 1
+        if (left > 0) {
+          this.closesRunning.set(dealId, left)
+        } else {
+          this.closesRunning.delete(dealId)
+          if (!this.hasLiveCloseOrder(dealId)) {
+            this.closeRequested.delete(dealId)
+          }
+        }
+      }
+    }
+    private hasLiveCloseOrder(dealId: string) {
+      return (
+        this.getDeal(dealId)?.deal.status === DCADealStatusEnum.open &&
+        this.getOrdersByStatusAndDealId({
+          status: ['NEW', 'PARTIALLY_FILLED'],
+          dealId,
+        }).some((o) => o.typeOrder === TypeOrderEnum.dealTP)
+      )
+    }
+    /** Spec `120` §4.1/§4.2 — no grid order may be placed for this deal. */
+    private isDealClosing(dealId: string) {
+      return (
+        !!this.closesRunning.get(dealId) ||
+        (this.closeRequested.has(dealId) && this.hasLiveCloseOrder(dealId))
+      )
     }
     override clearClassProperties(clearRedis = false, start = false) {
       super.clearClassProperties(clearRedis, start)
       this.minigrids = new Map()
       this.lastMinigridOrder = new Map()
       this.usedOrderId = new Map()
+      this.closesRunning = new Map()
+      this.closeRequested = new Set()
     }
     override async afterBotStop() {
       // super handles stopPriceTimer / stopReconcileSweep /
