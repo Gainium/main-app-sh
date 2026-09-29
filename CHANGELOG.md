@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.14] - 2026-09-29
+
+### Fixed
+
+- A DCA bot whose deals opened at the same moment (for example a multi-pair bot on a timer) could show one open deal and one total deal fewer than it had. The two count updates could reach the database out of order, keeping the older value; they are now written one after the other.
+
 ## [1.69.13] - 2026-09-29
 
 ### Fixed

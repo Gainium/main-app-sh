@@ -11205,7 +11205,10 @@ function createDCABotHelper<
         if (this.data.deals.active < 0) {
           this.data.deals.active = 0
         }
-        this.updateData({ deals: this.data.deals })
+        // Awaited inside the mutex: each write is an absolute snapshot, and two
+        // deals opening together issue back-to-back writes that Mongo can apply
+        // out of order, leaving the older count in the database.
+        await this.updateData({ deals: this.data.deals })
         this.emit('bot settings update', { dealsInBot: this.data.deals })
       }
     }
