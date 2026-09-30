@@ -112,6 +112,7 @@ type Raised = {
   replaced: string[]
   started: any[]
   toppedUp: any[]
+  lookedUp: string[]
 }
 
 const buildBot = (opts: {
@@ -122,6 +123,10 @@ const buildBot = (opts: {
   startOrderType?: OrderTypeEnum
   /** `0` = the "Enter Market Timeout" switch is off (spec `100`). */
   enterMarketTimeout?: number
+  /** Extra aggregated settings, e.g. a Terminal deal's own limit price. */
+  settings?: Record<string, unknown>
+  /** What the venue answers for the order. `null` = the lookup failed. */
+  venue?: Record<string, unknown> | null
 }) => {
   const {
     order = restingOrder(),
@@ -129,12 +134,15 @@ const buildBot = (opts: {
     latestPrice = 0.0154261,
     startOrderType = OrderTypeEnum.limit,
     enterMarketTimeout = 0,
+    settings = {},
+    venue = {},
   } = opts
   const raised: Raised = {
     cancelled: [],
     replaced: [],
     started: [],
     toppedUp: [],
+    lookedUp: [],
   }
   const deal = {
     deal: {
@@ -186,7 +194,17 @@ const buildBot = (opts: {
         type: 'regular',
         startOrderType,
         startCondition: StartConditionEnum.asap,
+        ...settings,
       }
+    }
+    async getOrderForReconcile(o: any) {
+      raised.lookedUp.push(o.clientOrderId)
+      return venue
+        ? { status: 'OK', data: { ...o, ...venue } }
+        : { status: 'NOTOK', reason: 'timeout', data: null }
+    }
+    async mergeCommonOrderWithOrder(co: any, o: any) {
+      return { ...o, status: co.status, executedQty: co.executedQty }
     }
     async cancelOrderOnExchange(o: any) {
       raised.cancelled.push({ ...o })
@@ -338,6 +356,92 @@ describe('a LIMIT base entry is repositioned to the price it already rests at (s
       const raised = bot.raised as Raised
       expect(raised.cancelled).to.have.length(1)
       expect(raised.replaced).to.deep.equal([DEAL_ID])
+    })
+
+    describe('spec 122: the restore path keeps a Terminal limit entry', () => {
+      // Prod reference: a Terminal limit buy at 0.41, re-placed on each of six
+      // worker restarts. The market price has moved away from the user's limit.
+      const terminal = {
+        type: 'terminal',
+        useLimitPrice: true,
+        baseOrderPrice: '0.41',
+      }
+      const terminalOrder = () =>
+        restingOrder({ price: '0.41', origPrice: '0.41' })
+      const restore = (over: Record<string, unknown> = {}) =>
+        buildBot({
+          order: terminalOrder(),
+          timers: null,
+          latestPrice: 0.4437,
+          settings: terminal,
+          ...over,
+        })
+
+      it('§4.1 still resting at the user’s price: kept, venue asked, no timer', async () => {
+        const bot: any = restore()
+        await tick(bot)
+        const raised = bot.raised as Raised
+        expect(raised.cancelled, 'not cancelled').to.have.length(0)
+        expect(raised.replaced, 'not re-placed').to.have.length(0)
+        expect(raised.lookedUp, 'venue asked').to.deep.equal([CLIENT_ORDER_ID])
+        expect(bot.dealTimersMap.has(DEAL_ID), 'no timer armed').to.equal(false)
+      })
+
+      it('§4.2 the venue says it filled while down: cancel path settles it', async () => {
+        const bot: any = restore({
+          venue: { status: 'FILLED', executedQty: '1401.6336' },
+        })
+        await tick(bot)
+        const raised = bot.raised as Raised
+        expect(raised.cancelled).to.have.length(1)
+      })
+
+      it('§4.2 the venue cannot be read: behaviour as before', async () => {
+        const bot: any = restore({ venue: null })
+        await tick(bot)
+        const raised = bot.raised as Raised
+        expect(raised.cancelled).to.have.length(1)
+        expect(raised.replaced).to.deep.equal([DEAL_ID])
+      })
+
+      it('§4.2 the venue shows a part fill: behaviour as before', async () => {
+        const bot: any = restore({
+          venue: { status: 'PARTIALLY_FILLED', executedQty: '10' },
+        })
+        await tick(bot)
+        expect((bot.raised as Raised).cancelled).to.have.length(1)
+      })
+
+      it('§4.3 the user changed the limit price: re-placed', async () => {
+        const bot: any = restore({
+          settings: { ...terminal, baseOrderPrice: '0.40' },
+        })
+        await tick(bot)
+        const raised = bot.raised as Raised
+        expect(raised.cancelled).to.have.length(1)
+        expect(raised.replaced).to.deep.equal([DEAL_ID])
+      })
+
+      it('§4.4 a Terminal limit at market price (useLimitPrice off) is unchanged', async () => {
+        const bot: any = restore({
+          latestPrice: 0.41,
+          settings: { ...terminal, useLimitPrice: false },
+        })
+        await tick(bot)
+        expect((bot.raised as Raised).replaced).to.deep.equal([DEAL_ID])
+      })
+
+      it('§4.4 a regular bot on the restore path is still re-placed at the same price', async () => {
+        const bot: any = restore({
+          latestPrice: 0.41,
+          settings: { baseOrderPrice: '0.41', useLimitPrice: true },
+        })
+        await tick(bot)
+        const raised = bot.raised as Raised
+        expect(raised.cancelled).to.have.length(1)
+        expect(raised.replaced).to.deep.equal([DEAL_ID])
+        expect(raised.lookedUp, 'no extra venue call').to.have.length(0)
+      })
     })
 
     it('§4.2 a market-entry bot’s substituted LIMIT still re-places', async () => {
