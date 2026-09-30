@@ -1,4 +1,4 @@
-import { OrderStatusType, OrderTypeEnum } from '../../../types'
+import { DCATypeEnum, OrderStatusType, OrderTypeEnum } from '../../../types'
 
 /** What the "is this reposition a no-op" decision reads. */
 export type RestingBaseEntryInputs = {
@@ -50,6 +50,37 @@ export function repositionKeepsRestingBaseEntry(
     return false
   }
   return resting === next
+}
+
+/** What decides whether a deal's entry is priced by the user. */
+export type TerminalLimitEntryInputs = {
+  type?: DCATypeEnum | string | null
+  startOrderType?: OrderTypeEnum | string | null
+  useLimitPrice?: boolean | null
+  baseOrderPrice?: string | number | null
+}
+
+/**
+ * The price a Trading Terminal deal's own limit entry is placed at, or
+ * `undefined` when the entry is not priced by the user. This is the same rule
+ * as the `useLimit` branch of `getBaseOrder`, before it rounds to the pair's
+ * precision. A re-place of such an entry derives this price and never the
+ * latest price. Spec `122`.
+ */
+export function terminalLimitEntryPrice(
+  args: TerminalLimitEntryInputs,
+): number | undefined {
+  const price = +(args.baseOrderPrice ?? '0')
+  if (
+    args.type !== DCATypeEnum.terminal ||
+    args.startOrderType !== OrderTypeEnum.limit ||
+    !args.useLimitPrice ||
+    !price ||
+    isNaN(price)
+  ) {
+    return undefined
+  }
+  return price
 }
 
 /** What the reposition-timer window rule reads. */

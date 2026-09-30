@@ -8,6 +8,12 @@
 - Change trail: the settings entry points accept an optional per-call override of the recorded action and reason, so a change that restores earlier values is recorded as a `revert`.
 - Bot engine: a last-step approval hook for new deals, asked after all of a bot's own start checks have passed and before the deal is created. The default always approves; a refusal is recorded on the bot's events with its reason. Manual deal starts never ask it.
 
+## [1.69.17] - 2026-09-30
+
+### Fixed
+
+- When the trading engine restarted, a waiting limit order placed from the Trading Terminal was cancelled and placed again at the same price, so it lost its place in the exchange queue. The order is now left on the exchange if it is still waiting at your price. Limit entries of regular DCA bots are repositioned as before.
+
 ## [1.69.16] - 2026-09-30
 
 ### Fixed
