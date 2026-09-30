@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.17] - 2026-09-30
+
+### Fixed
+
+- When the trading engine restarted, a waiting limit order placed from the Trading Terminal was cancelled and placed again at the same price, so it lost its place in the exchange queue. The order is now left on the exchange if it is still waiting at your price. Limit entries of regular DCA bots are repositioned as before.
+
 ## [1.69.16] - 2026-09-30
 
 ### Fixed

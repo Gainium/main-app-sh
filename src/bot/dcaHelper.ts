@@ -177,6 +177,7 @@ import {
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
   repositionKeepsRestingBaseEntry,
+  terminalLimitEntryPrice,
   repositionTickDue,
 } from './dca/baseEntryReposition'
 import {
@@ -9213,6 +9214,12 @@ function createDCABotHelper<
      * state for the deal. The restore path after a bot start has armed
      * nothing, so it keeps re-placing and `placeBaseOrder` arms the timers
      * afresh. Spec 103 §4.1/§4.2.
+     *
+     * The one exception is a Terminal deal entering at the user's own limit
+     * price. `placeBaseOrder` arms no timers for it, so the restore path was
+     * the only thing that ever re-placed it, at that same price, on every
+     * worker restart. Its re-place price is the user's price, not the latest
+     * price. Spec 122.
      */
     async keepRestingBaseEntry(
       order: Order,
@@ -9224,18 +9231,21 @@ function createDCABotHelper<
       if (
         forceMarket ||
         !dealId ||
-        !dealTimer ||
         this.getDeal(dealId)?.deal.status !== DCADealStatusEnum.start
       ) {
         return false
       }
       const settings = await this.getAggregatedSettings()
+      const userPrice = terminalLimitEntryPrice(settings)
+      if (!dealTimer && userPrice === undefined) {
+        return false
+      }
       const ed = await this.getExchangeInfo(symbol)
       if (!ed) {
         return false
       }
       const repositionPrice = this.math.round(
-        await this.getLatestPrice(symbol),
+        userPrice ?? (await this.getLatestPrice(symbol)),
         ed.priceAssetPrecision,
       )
       if (
@@ -9248,6 +9258,25 @@ function createDCABotHelper<
         })
       ) {
         return false
+      }
+      if (!dealTimer) {
+        // The row predates the restart, and the restart reconcile in
+        // `checkOrders` does not look at `dealStart` rows. Until now the cancel
+        // below was what found an entry that filled while the worker was down.
+        // So ask the venue first. On anything but an untouched resting order,
+        // fall through to that cancel path as before. Spec 122 §4.2.
+        const venue = await this.getOrderForReconcile(order)
+        if (venue?.status !== StatusEnum.ok || !venue.data) {
+          return false
+        }
+        const current = await this.mergeCommonOrderWithOrder(venue.data, order)
+        if (current.status !== 'NEW' || +(current.executedQty || '0') > 0) {
+          return false
+        }
+        this.handleLog(
+          `${order.clientOrderId} still resting at the limit price ${order.price}. Keeping it`,
+        )
+        return true
       }
       this.handleDebug(
         `${order.clientOrderId} not filled, price unchanged at ${order.price}. Keeping it`,
