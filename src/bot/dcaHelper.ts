@@ -15748,6 +15748,21 @@ function createDCABotHelper<
       }
       const description = newDealSkippedDescription(ctx.refusalReason)
       this.handleLog(`${description} ${symbol}`)
+      if (
+        startCondition === StartConditionEnum.asap &&
+        typeof ctx.retryAfterMs === 'number' &&
+        Number.isFinite(ctx.retryAfterMs) &&
+        ctx.retryAfterMs > 0
+      ) {
+        const prev = this.openNewDealTimer.get(symbol)
+        if (prev) {
+          clearTimeout(prev)
+        }
+        this.openNewDealTimer.set(
+          symbol,
+          setTimeout(() => this.openDealAfterTimer(), ctx.retryAfterMs),
+        )
+      }
       this.botEventDb.createData({
         userId: this.userId,
         botId: this.botId,

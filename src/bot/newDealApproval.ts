@@ -40,6 +40,12 @@ export type NewDealApprovalContext = {
   time: number
   /** Set by a refusing hook; recorded on the bot's `Deal` event. */
   refusalReason?: string
+  /**
+   * Set by a refusing hook: ask again after this many ms. Only an ASAP bot
+   * uses it — nothing else re-attempts an ASAP entry until a deal closes or
+   * the bot restarts; other start conditions retry on their next signal.
+   */
+  retryAfterMs?: number
 }
 
 /**
