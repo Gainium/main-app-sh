@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.16] - 2026-09-30
+
+### Fixed
+
+- A limit order placed from the Trading Terminal was cancelled automatically about a day after it was placed if it had not filled yet. Terminal limit orders now stay open until they fill or are cancelled. Other deals whose first order has not filled within a day are still cancelled automatically, as before.
+
 ## [1.69.15] - 2026-09-29
 
 ### Fixed

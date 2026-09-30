@@ -93,6 +93,7 @@ import {
   updateRelatedBotsInVar,
 } from './utils'
 import { statsAfterReset } from './dca/botStatsReset'
+import { oldStartDcaDealsFilter } from './dca/oldStartDealsFilter'
 import {
   buildPairCapitalPipeline,
   buildPairStatsPipeline,
@@ -14400,13 +14401,7 @@ class Bot<T extends UserSchema = UserSchema> {
     const prefix = `Closing old start deals | `
     this.handleLog(`${prefix} start`)
     const startDcaDeals = await this.dcaDealsDb.readData(
-      {
-        status: DCADealStatusEnum.start,
-        $not: { type: 'terminal', 'settings.useLimitPrice': true },
-        createTime: {
-          $lt: +new Date() - 24 * 60 * 60 * 1000,
-        },
-      },
+      oldStartDcaDealsFilter(+new Date()),
       {},
       {},
       true,
