@@ -147,6 +147,42 @@ describe('change trail (spec 021 §9)', () => {
         })
       })
 
+      it('lets the caller override the action and set a reason (a revert)', async () => {
+        const bot = harness()
+        await bot[method](
+          USER_ID,
+          '',
+          DEAL_ID,
+          { tpPerc: '3' },
+          { type: 'user', decisionId: 'd-2' },
+          { action: 'revert', reason: 'Reverts change t-1' },
+        )
+        await flush()
+        expect(bot.seen.trail[0]).to.deep.include({
+          action: 'revert',
+          actor: { type: 'user', decisionId: 'd-2' },
+          reason: 'Reverts change t-1',
+        })
+      })
+
+      it('forwards the override to the bot service when bots run elsewhere', async () => {
+        const bot = harness()
+        bot.useBots = false
+        let payload: unknown[] = []
+        bot.callExternalBotService = async (
+          _t: unknown,
+          _m: unknown,
+          _i: unknown,
+          ...p: unknown[]
+        ) => {
+          payload = p
+          return { status: StatusEnum.ok, reason: null, data: '' }
+        }
+        const opts = { action: 'revert' as const }
+        await bot[method](USER_ID, '', DEAL_ID, {}, { type: 'ai' }, opts)
+        expect(payload[payload.length - 1]).to.equal(opts)
+      })
+
       for (const failure of ['reject', 'throw'] as const) {
         it(`a trail write that fails (${failure}) does not block the change`, async () => {
           const bot = harness(failure)

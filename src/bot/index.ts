@@ -30,6 +30,7 @@ import {
   ComboDealsSettings,
   ChangeTrailActor,
   ChangeTrailChange,
+  ChangeTrailOptions,
   ComboMinigridStatusEnum,
   AddFundsSettings,
   OrderSizeTypeEnum,
@@ -4813,6 +4814,7 @@ class Bot<T extends UserSchema = UserSchema> {
     // TP/SL — the hedge wrapper flipping externalTp/externalSl — pass true.
     replaceOrders = false,
     actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<typeof this.getBot>>(
@@ -4824,6 +4826,7 @@ class Bot<T extends UserSchema = UserSchema> {
         paperContext,
         replaceOrders,
         actor,
+        trail,
       )
     }
     const { id, vars, ...settings } = input
@@ -5010,12 +5013,13 @@ class Bot<T extends UserSchema = UserSchema> {
         botId: `${saveBotRequest.data._id}`,
         botType: BotType.dca,
         scope: 'bot',
-        action: 'update_settings',
+        action: trail?.action ?? 'update_settings',
         actor: resolveChangeTrailActor(actor),
         changes: settingsChanges(
           oldSettings.settings as unknown as Record<string, unknown>,
           settings as Record<string, unknown>,
         ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
         paperContext,
       })
       if (resetStats || (resetBaseAsset && oldSettings.stats)) {
@@ -5059,6 +5063,7 @@ class Bot<T extends UserSchema = UserSchema> {
     paperContext: boolean,
     forceRestart = false,
     actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<typeof this.getBot>>(
@@ -5070,6 +5075,7 @@ class Bot<T extends UserSchema = UserSchema> {
         paperContext,
         forceRestart,
         actor,
+        trail,
       )
     }
     const { id, vars, ...settings } = input
@@ -5264,12 +5270,13 @@ class Bot<T extends UserSchema = UserSchema> {
         botId: `${saveBotRequest.data._id}`,
         botType: BotType.combo,
         scope: 'bot',
-        action: 'update_settings',
+        action: trail?.action ?? 'update_settings',
         actor: resolveChangeTrailActor(actor),
         changes: settingsChanges(
           oldSettings.settings as unknown as Record<string, unknown>,
           settings as Record<string, unknown>,
         ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
         paperContext,
       })
       if (resetStats || (resetBaseAsset && oldSettings.stats)) {
@@ -9942,6 +9949,7 @@ class Bot<T extends UserSchema = UserSchema> {
     dealId: string,
     settings: Partial<DCADealsSettings>,
     actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9953,6 +9961,7 @@ class Bot<T extends UserSchema = UserSchema> {
         dealId,
         settings,
         actor,
+        trail,
       )
     }
     const findDeal = await this.dcaDealsDb.readData({
@@ -10006,12 +10015,13 @@ class Bot<T extends UserSchema = UserSchema> {
         botType: BotType.dca,
         dealId,
         scope: 'deal',
-        action: 'update_settings',
+        action: trail?.action ?? 'update_settings',
         actor: resolveChangeTrailActor(actor),
         changes: settingsChanges(
           findDeal.data.result.settings as unknown as Record<string, unknown>,
           settings as Record<string, unknown>,
         ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
         paperContext: !!findDeal.data.result.paperContext,
       })
     }
@@ -10076,6 +10086,7 @@ class Bot<T extends UserSchema = UserSchema> {
     dealId: string,
     settings: Partial<ComboDealsSettings>,
     actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -10087,6 +10098,7 @@ class Bot<T extends UserSchema = UserSchema> {
         dealId,
         settings,
         actor,
+        trail,
       )
     }
     const findDeal = await this.comboDealsDb.readData({
@@ -10140,12 +10152,13 @@ class Bot<T extends UserSchema = UserSchema> {
         botType: BotType.combo,
         dealId,
         scope: 'deal',
-        action: 'update_settings',
+        action: trail?.action ?? 'update_settings',
         actor: resolveChangeTrailActor(actor),
         changes: settingsChanges(
           findDeal.data.result.settings as unknown as Record<string, unknown>,
           settings as Record<string, unknown>,
         ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
         paperContext: !!findDeal.data.result.paperContext,
       })
     }

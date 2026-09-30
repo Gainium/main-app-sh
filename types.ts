@@ -2013,6 +2013,16 @@ export type ChangeTrailAction =
   | 'reduce_funds'
   | 'revert'
 
+/**
+ * Per-call overrides for the change-trail entry an API-layer entry point
+ * writes. `action` replaces the default (`update_settings`) — e.g. `revert`
+ * when the change restores earlier values; `reason` is stored as given.
+ */
+export type ChangeTrailOptions = {
+  action?: ChangeTrailAction
+  reason?: string
+}
+
 export type ChangeTrailChange = {
   path: string
   before?: unknown

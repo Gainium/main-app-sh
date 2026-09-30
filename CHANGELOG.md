@@ -5,6 +5,7 @@
 ### Added
 
 - Change trail: every change to a bot's or a deal's settings, a deal close, a reset and an add/reduce funds request is recorded with who made it (user, API, webhook or system) and the values before and after. Readable per bot or per deal through the new `changeTrail` query. Entries are kept for one year.
+- Change trail: the settings entry points accept an optional per-call override of the recorded action and reason, so a change that restores earlier values is recorded as a `revert`.
 - Bot engine: a last-step approval hook for new deals, asked after all of a bot's own start checks have passed and before the deal is created. The default always approves; a refusal is recorded on the bot's events with its reason. Manual deal starts never ask it.
 
 ## [1.69.16] - 2026-09-30
