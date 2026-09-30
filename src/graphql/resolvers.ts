@@ -84,6 +84,7 @@ import {
   balanceDb,
   botDb,
   botEventDb,
+  changeTrailDb,
   dcaBotDb,
   dcaDealsDb,
   favoritePairsDb,
@@ -1377,6 +1378,54 @@ const resolvers = <
         paperContext,
         input.shareId,
       )
+    },
+    /**
+     * The change trail of one bot (optionally one deal), newest first.
+     * Owner-scoped: only the caller's own entries are ever returned.
+     * `before` is a `created` cursor in ms for the next page.
+     */
+    changeTrail: async (
+      _parent: any,
+      {
+        botId,
+        dealId,
+        limit,
+        before,
+      }: { botId: string; dealId?: string; limit?: number; before?: number },
+      { token, req }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const size = Math.max(1, Math.min(100, Math.floor(limit ?? 50) || 50))
+      const search: Record<string, unknown> = {
+        userId: `${user.data._id}`,
+        botId,
+      }
+      if (dealId) {
+        search.dealId = dealId
+      }
+      if (before && isFinite(before)) {
+        search.created = { $lt: new Date(before) }
+      }
+      const result = await changeTrailDb.readData(
+        search,
+        {},
+        { sort: { created: -1 }, limit: size },
+        true,
+      )
+      if (result.status === StatusEnum.notok) {
+        return result
+      }
+      return {
+        status: StatusEnum.ok,
+        reason: null,
+        data: result.data.result,
+      }
     },
     getBotEvents: async (
       _parent: any,

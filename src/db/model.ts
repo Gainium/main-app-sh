@@ -5,6 +5,7 @@ import { collections } from './config'
 import {
   BalancesSchema,
   BotEventSchema,
+  ChangeTrailSchema,
   ReconcileSweepSchema,
   QuantRulesEventSchema,
   BotMessageSchema,
@@ -52,6 +53,10 @@ const models = {
   ),
   user: model<UserSchema>(`${collections.user}`, schema.user),
   botEvent: model<BotEventSchema>(`${collections.botEvent}`, schema.botEvent),
+  changeTrail: model<ChangeTrailSchema>(
+    `${collections.changeTrail}`,
+    schema.changeTrail,
+  ),
   reconcileSweep: model<ReconcileSweepSchema>(
     `${collections.reconcileSweep}`,
     schema.reconcileSweep,
@@ -186,6 +191,7 @@ const models = {
 export const syncIndexes = async (user = true) => {
   registerIndexes()
   await models.botEvent.syncIndexes()
+  await models.changeTrail.syncIndexes()
   await models.reconcileSweep.syncIndexes()
   await models.quantRulesEvent.syncIndexes()
   await models.balance.syncIndexes()

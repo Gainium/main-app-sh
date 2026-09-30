@@ -2,6 +2,7 @@ import { Schema } from 'mongoose'
 import type {
   BalancesSchema,
   BotEventSchema,
+  ChangeTrailSchema,
   ReconcileSweepSchema,
   QuantRulesEventSchema,
   BotMessageSchema,
@@ -215,6 +216,44 @@ const botEventSchema: Schema<BotEventSchema> = new Schema({
   symbol: String,
   ...CreatedUpdated,
 })
+
+// Change trail: every bot/deal settings change with its actor and
+// before/after values. Append-only; rows expire after 365 days (see
+// registerIndexes). The collection name is pinned so readers outside this
+// codebase do not depend on mongoose's pluralisation.
+const changeTrailSchema: Schema<ChangeTrailSchema> = new Schema(
+  {
+    userId: RequiredString,
+    botId: RequiredString,
+    botType: { ...RequiredString, enum: BotType },
+    dealId: String,
+    scope: { ...RequiredString, enum: ['bot', 'deal'] },
+    action: RequiredString,
+    // A sub-schema, not an inline object: a nested key literally named
+    // `type` would otherwise be read as the SchemaType of `actor` itself.
+    actor: new Schema(
+      {
+        type: { type: String, required: true },
+        runId: String,
+        messageId: String,
+        decisionId: String,
+      },
+      { _id: false },
+    ),
+    changes: [
+      {
+        _id: false,
+        path: RequiredString,
+        before: Schema.Types.Mixed,
+        after: Schema.Types.Mixed,
+      },
+    ],
+    reason: String,
+    paperContext: Boolean,
+    ...CreatedUpdated,
+  },
+  { collection: 'changeTrail' },
+)
 
 // Append-only record of reconciliation-sweep catches (a fill the user stream
 // dropped that the periodic sweep recovered). Powers the admin user-stream
@@ -3123,6 +3162,10 @@ export const registerIndexes = () => {
 
   botEventSchema.index({ botId: 1 })
 
+  changeTrailSchema.index({ botId: 1, created: -1 })
+  changeTrailSchema.index({ dealId: 1, created: -1 })
+  changeTrailSchema.index({ created: 1 }, { expireAfterSeconds: 31536000 }) // 365d
+
   // TTL indexes (created on prod 2026-07-03; replace the weekly cleanDb
   // age-deletes). Expiry now runs continuously instead of a weekly bulk delete.
   botEventSchema.index({ created: 1 }, { expireAfterSeconds: 2592000 }) // 30d
@@ -3517,6 +3560,7 @@ const schema = {
   globalVariables: globalVariablesSchema,
   user: userSchema,
   botEvent: botEventSchema,
+  changeTrail: changeTrailSchema,
   reconcileSweep: reconcileSweepSchema,
   quantRulesEvent: quantRulesEventSchema,
   favoritePairs: favoritePairsSchema,

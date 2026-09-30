@@ -862,6 +862,12 @@ export const BotSchema = /* GraphQL */ `
     ): getHedgeComboBotSettingsResponse
     getGridBotSettings(input: getBotSettingsInput!): getGridBotSettingsResponse
     getBotEvents(input: getBotEventsInput!): getBotEventsResponse
+    changeTrail(
+      botId: String!
+      dealId: String
+      limit: Float
+      before: Float
+    ): changeTrailResponse
     getAllOpenOrders(input: getAllOpenOrdersInput): getAllOpenOrdersResponse
     getAllOpenPositions(
       input: getAllOpenOrdersInput
@@ -1607,6 +1613,36 @@ export const BotSchema = /* GraphQL */ `
     recent: Float
     deals: Float
     alerts: Float
+  }
+  type changeTrailActor {
+    type: String!
+    runId: String
+    messageId: String
+    decisionId: String
+  }
+  type changeTrailChange {
+    path: String!
+    before: StringOrAny
+    after: StringOrAny
+  }
+  type changeTrailEntry {
+    _id: String
+    userId: String!
+    botId: String!
+    botType: String!
+    dealId: String
+    scope: String!
+    action: String!
+    actor: changeTrailActor!
+    changes: [changeTrailChange]
+    reason: String
+    paperContext: Boolean
+    created: Date
+  }
+  type changeTrailResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: [changeTrailEntry]
   }
   type getBotEventsResponse implements BasicResponse {
     status: Status

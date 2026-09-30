@@ -1,6 +1,7 @@
 export const collections = {
   user: 'users',
   botEvent: 'botEvent',
+  changeTrail: 'changeTrail',
   reconcileSweep: 'reconcilesweepcatches',
   quantRulesEvent: 'quantrulesevents',
   dealStats: 'dealStats',
