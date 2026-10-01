@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.18] - 2026-10-01
+
+### Fixed
+
+- When an added-funds order filled at the same moment as a safety order, the deal could keep the coins the addition bought but leave out what was paid for them. The deal's cost, average price and unrealized P&L then looked better than they were. This could happen to the rest of a part-filled limit base order, which is placed as an added-funds order. Both fills now count in full. The orders a deal places are unchanged.
+
 ## [1.69.17] - 2026-09-30
 
 ### Fixed
