@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.71.0] - 2026-10-02
+
+### Added
+
+- Bot engine: a last-step approval hook for signal-based take-profit closes (a close-deal indicator group, or a webhook close signal with the take-profit close condition set to webhook), asked per deal after the minimum-profit check. The default always approves, synchronously, so bots without an extension wait for nothing new. Several deals closing on one signal are asked together. A refusal keeps the deal open and is recorded on the bot's events with its reason; a failing extension closes as usual. Stop loss, manual and API closes, force closes, liquidation and take profit by orders never ask it.
+
 ## [1.70.4] - 2026-10-01
 
 ### Fixed

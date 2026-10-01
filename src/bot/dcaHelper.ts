@@ -99,6 +99,12 @@ import {
   type NewDealApprovalContext,
   type NewDealTrigger,
 } from './newDealApproval'
+import {
+  buildDealCloseSignal,
+  dealCloseHeldDescription,
+  resolveDealCloseTrigger,
+  type DealCloseApprovalContext,
+} from './dealCloseApproval'
 import { observedFeeLegs, accrueFeeLedger, FeeLedgerEntry } from './feeLedger'
 import { MathHelper } from '../utils/math'
 import MainBot, {
@@ -7796,7 +7802,14 @@ function createDCABotHelper<
         )
         return this.handleLog('Loading not complete yet')
       }
-      const active: FullDeal<ExcludeDoc<Deal>>[] = []
+      const active: {
+        f: FullDeal<ExcludeDoc<Deal>>
+        settings: {
+          useTp?: boolean
+          dealCloseCondition?: CloseConditionEnum
+          indicators?: SettingsIndicators[]
+        }
+      }[] = []
       for (const d of this.getOpenDeals(ignoreStart, symbol)) {
         const settings = await this.getAggregatedSettings(d.deal)
         if (
@@ -7810,10 +7823,30 @@ function createDCABotHelper<
               settings.dealCloseConditionSL,
             ))
         ) {
-          active.push(d)
+          active.push({ f: d, settings })
         }
       }
-      for (const f of active) {
+      const close = (f: FullDeal<ExcludeDoc<Deal>>) =>
+        this.closeDealById(
+          this.botId,
+          f.deal._id,
+          closeType,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          undefined,
+          liquidationPrice,
+          slSource,
+          closeTrigger,
+        )
+      // Deals whose close needs the extension's approval are asked together,
+      // so several deals wait for one deadline, not one each.
+      const asked: {
+        f: FullDeal<ExcludeDoc<Deal>>
+        approval: Promise<boolean>
+      }[] = []
+      for (const { f, settings } of active) {
         if (
           (checkProfit &&
             (await this.checkMinTp(
@@ -7823,21 +7856,127 @@ function createDCABotHelper<
             ))) ||
           !checkProfit
         ) {
-          await this.closeDealById(
-            this.botId,
-            f.deal._id,
-            closeType,
-            undefined,
-            undefined,
-            undefined,
-            false,
-            undefined,
-            liquidationPrice,
-            slSource,
+          const approval = this.requestDealCloseApproval(f, settings, {
             closeTrigger,
-          )
+            slSource,
+            force,
+          })
+          if (approval === true) {
+            await close(f)
+          } else {
+            asked.push({ f, approval })
+          }
         }
       }
+      if (!asked.length) {
+        return
+      }
+      const answers = await Promise.all(asked.map((a) => a.approval))
+      for (let i = 0; i < asked.length; i++) {
+        const { f } = asked[i]
+        // The deal may have closed by other means while the answer came.
+        if (answers[i] && this.getDeal(f.deal._id)) {
+          await close(f)
+        }
+      }
+    }
+
+    /**
+     * Last-step approval of a signal-based take-profit close (a close-deal
+     * indicator group, or a webhook `close` with the take-profit close
+     * condition set to webhook). The engine itself always approves, and does
+     * so synchronously; a deployment may override this to add its own filter.
+     * To refuse, return (or resolve) `false` and optionally set
+     * `ctx.refusalReason`, recorded on the bot's `Deal` event. Never asked for
+     * stop loss, manual / API / force closes or take profit by orders.
+     */
+    protected approveDealClose(
+      _ctx: DealCloseApprovalContext,
+    ): boolean | Promise<boolean> {
+      return true
+    }
+
+    /** The `Deal` event text for a close the hook refused. */
+    protected dealCloseHeldEventText(ctx: DealCloseApprovalContext): string {
+      return dealCloseHeldDescription(ctx.refusalReason)
+    }
+
+    /**
+     * Runs {@link approveDealClose} for one deal. `true` (synchronous) when
+     * the close is not a signal-based take profit or the hook approves at
+     * once; otherwise a promise. A hook that throws or rejects approves (a
+     * failing extension must not stop a close); a refusal writes the `Deal`
+     * event.
+     */
+    protected requestDealCloseApproval(
+      f: FullDeal<ExcludeDoc<Deal>>,
+      settings: {
+        useTp?: boolean
+        dealCloseCondition?: CloseConditionEnum
+        indicators?: SettingsIndicators[]
+      },
+      p: {
+        closeTrigger?: DCACloseTriggerEnum
+        slSource?: boolean
+        force?: boolean
+      },
+    ): true | Promise<boolean> {
+      const trigger = resolveDealCloseTrigger({
+        ...p,
+        useTp: settings.useTp,
+        dealCloseCondition: settings.dealCloseCondition,
+      })
+      if (!trigger) {
+        return true
+      }
+      const symbol = f.deal.symbol.symbol
+      const ctx: DealCloseApprovalContext = {
+        botId: this.botId,
+        dealId: `${f.deal._id}`,
+        symbol,
+        trigger,
+        signal:
+          trigger === 'indicator'
+            ? buildDealCloseSignal(settings.indicators)
+            : undefined,
+        time: +new Date(),
+      }
+      const failed = (e: unknown) => {
+        this.handleWarn(
+          `Close approval failed for deal ${ctx.dealId}, closing as usual: ${
+            (e as Error)?.message ?? e
+          }`,
+        )
+        return true as const
+      }
+      let answer: boolean | Promise<boolean>
+      try {
+        answer = this.approveDealClose(ctx)
+      } catch (e) {
+        return failed(e)
+      }
+      if (answer === true) {
+        return true
+      }
+      return Promise.resolve(answer).then((approved) => {
+        if (approved !== false) {
+          return true
+        }
+        const description = this.dealCloseHeldEventText(ctx)
+        this.handleLog(`${description} ${symbol} deal ${ctx.dealId}`)
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description,
+          paperContext: !!this.data?.paperContext,
+          symbol,
+          deal: ctx.dealId,
+          type: MessageTypeEnum.info,
+        })
+        return false
+      }, failed)
     }
 
     async sendDealOpenedAlert(_deal: ExcludeDoc<Deal>, _order: Order) {
