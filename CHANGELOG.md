@@ -8,6 +8,24 @@
 - Change trail: the settings entry points accept an optional per-call override of the recorded action and reason, so a change that restores earlier values is recorded as a `revert`.
 - Bot engine: a last-step approval hook for new deals, asked after all of a bot's own start checks have passed and before the deal is created. The default always approves; a refusal is recorded on the bot's events with its reason. Manual deal starts never ask it.
 
+## [1.69.20] - 2026-10-01
+
+### Removed
+
+- An unused bot visibility setting left over from the previous dashboard. Nothing you see changes.
+
+## [1.69.19] - 2026-10-01
+
+### Changed
+
+- Bots viewed by anyone other than their owner, through a share link or the demo, no longer include owner-only settings. The bot, its settings and its deals display as before.
+
+## [1.69.18] - 2026-10-01
+
+### Fixed
+
+- When an added-funds order filled at the same moment as a safety order, the deal could keep the coins the addition bought but leave out what was paid for them. The deal's cost, average price and unrealized P&L then looked better than they were. This could happen to the rest of a part-filled limit base order, which is placed as an added-funds order. Both fills now count in full. The orders a deal places are unchanged.
+
 ## [1.69.17] - 2026-09-30
 
 ### Fixed

@@ -8571,6 +8571,13 @@ function createDCABotHelper<
               findDeal.deal.currentBalances.quote +
               qty * price * (order.side === OrderSideEnum.buy ? 0 : 1),
           }
+          // Spec `122`: rebuild the ledger here, under this deal's update lock.
+          // Run from the save callback below, the rebuild landed while the
+          // next fill's `updateDeal` was between reading `currentBalances`
+          // and writing them back. That write kept this fill's coins and
+          // dropped what was paid for them, so cost and P&L left the addition
+          // out. Fills not booked yet are left to their own `updateDeal`.
+          await this.updateDealBalances(findDeal, true)
           findDeal.closeByTp = false
           await this.checkDealSlMethods(findDeal)
           this.checkDealsPriceExtremum()
@@ -8589,7 +8596,6 @@ function createDCABotHelper<
           }).then(() => {
             this.updateUsage(dealId)
             this.updateAssets(dealId, findDeal)
-            this.updateDealBalances(findDeal)
             this.updateDealLastPrices(this.botId)
           })
 
@@ -24041,9 +24047,15 @@ function createDCABotHelper<
 
     /**
      * Update deal balances
+     *
+     * @param {boolean} [skipUnbooked] Leave out fills whose `updateDeal` has
+     * not run yet; it adds them to `currentBalances` itself. Spec `122`.
      */
 
-    async updateDealBalances(findDeal: FullDeal<ExcludeDoc<Deal>>) {
+    async updateDealBalances(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      skipUnbooked = false,
+    ) {
       const orderBo = this.findBaseOrderByDeal(findDeal.deal._id)
       if (orderBo) {
         const long = this.isLong
@@ -24117,6 +24129,10 @@ function createDCABotHelper<
             findDeal.deal.parent
               ? o.typeOrder !== TypeOrderEnum.dealStart
               : true,
+          )
+          .filter(
+            (o) =>
+              !skipUnbooked || !this.ordersInBetweenUpdates.has(o.clientOrderId),
           )
         const filledBase =
           filled.reduce(
