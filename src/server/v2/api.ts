@@ -11,6 +11,7 @@
  */
 
 import type { Request, Response } from 'express'
+import type { ChangeTrailActor } from '../../../types'
 import { openSyncStream, syncStreamMode } from './syncStream'
 import { Types, isValidObjectId } from 'mongoose'
 import {
@@ -150,6 +151,9 @@ type APIMap = Map<
     ignoreMiddlewares?: any[]
   }
 >
+
+/** Change-trail actor for everything the public REST API changes. */
+const apiActor: ChangeTrailActor = { type: 'api' }
 
 const defaultPaginations = {
   bots: 10,
@@ -2776,6 +2780,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           symbol,
           fundsType,
           dealId,
+          apiActor,
         )
 
         return res.status(200).json(result)
@@ -2885,6 +2890,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           symbol,
           fundsType,
           dealId,
+          apiActor,
         )
 
         return res.status(200).json(result)
@@ -3016,6 +3022,8 @@ const v2API = <R extends UserSchema = UserSchema>(
                 },
                 user.id,
                 !!bot.data.result.paperContext,
+                undefined,
+                apiActor,
               )
             : await Bot.changeDCABot(
                 {
@@ -3026,6 +3034,8 @@ const v2API = <R extends UserSchema = UserSchema>(
                 },
                 user.id,
                 !!bot.data.result.paperContext,
+                undefined,
+                apiActor,
               )
 
         if (result && result.status === StatusEnum.notok) {
@@ -3909,8 +3919,20 @@ const v2API = <R extends UserSchema = UserSchema>(
         // Update deal settings
         const result =
           dealType === 'combo'
-            ? await Bot.updateComboDealSettings(user.id, '', dealId, settings)
-            : await Bot.updateDCADealSettings(user.id, '', dealId, settings)
+            ? await Bot.updateComboDealSettings(
+                user.id,
+                '',
+                dealId,
+                settings,
+                apiActor,
+              )
+            : await Bot.updateDCADealSettings(
+                user.id,
+                '',
+                dealId,
+                settings,
+                apiActor,
+              )
 
         return res.status(200).json(result)
       } catch (error) {
@@ -4080,6 +4102,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           symbol,
           fundsType,
           dealId,
+          apiActor,
         )
 
         return res.status(200).json(result)
@@ -4229,6 +4252,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           symbol,
           fundsType,
           dealId,
+          apiActor,
         )
 
         return res.status(200).json(result)
@@ -5468,6 +5492,7 @@ const v2API = <R extends UserSchema = UserSchema>(
                 undefined,
                 undefined,
                 DCACloseTriggerEnum.api,
+                apiActor,
               )
             : await Bot.closeDCADeal(
                 user.id,
@@ -5477,6 +5502,7 @@ const v2API = <R extends UserSchema = UserSchema>(
                 undefined,
                 undefined,
                 DCACloseTriggerEnum.api,
+                apiActor,
               )
 
         return res.status(200).json(result)

@@ -1906,6 +1906,8 @@ export const resetUser = async (
           CloseDCATypeEnum.cancel,
           undefined,
           d.paperContext,
+          undefined,
+          { type: 'system' },
         )
       }
       logger.debug(`${prefix} | DCA deals closed`)
@@ -1938,6 +1940,8 @@ export const resetUser = async (
           CloseDCATypeEnum.cancel,
           undefined,
           d.paperContext,
+          undefined,
+          { type: 'system' },
         )
       }
       logger.debug(`${prefix} | Combo deals closed`)

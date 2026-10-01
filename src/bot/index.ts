@@ -11,6 +11,11 @@ import utils from '../utils'
 import { CLOSE_SETTLE, awaitDealsClosed } from './closeSettle'
 import { buyDialogEventsFor } from './buyDialogEvent'
 import {
+  resolveChangeTrailActor,
+  settingsChanges,
+  type ChangeTrailEntry,
+} from './changeTrail'
+import {
   mustRedactBotCredentials,
   redactBotCredentials,
   redactBotListResult,
@@ -28,6 +33,9 @@ import {
   ComboBotSchema,
   ComboBotSettings,
   ComboDealsSettings,
+  ChangeTrailActor,
+  ChangeTrailChange,
+  ChangeTrailOptions,
   ComboMinigridStatusEnum,
   AddFundsSettings,
   OrderSizeTypeEnum,
@@ -123,6 +131,7 @@ import {
   botDb,
   botEventDb,
   botMessageDb,
+  changeTrailDb,
   comboBotDb,
   comboDealsDb,
   comboProfitDb,
@@ -378,6 +387,8 @@ class Bot<T extends UserSchema = UserSchema> {
   private orderDb = orderDb
 
   protected botEventDb = botEventDb
+
+  protected changeTrailDb = changeTrailDb
 
   private botMessageDb = botMessageDb
 
@@ -4817,6 +4828,8 @@ class Bot<T extends UserSchema = UserSchema> {
     // already running. Only callers that genuinely re-own a running deal's
     // TP/SL — the hedge wrapper flipping externalTp/externalSl — pass true.
     replaceOrders = false,
+    actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<typeof this.getBot>>(
@@ -4827,6 +4840,8 @@ class Bot<T extends UserSchema = UserSchema> {
         userId,
         paperContext,
         replaceOrders,
+        actor,
+        trail,
       )
     }
     const { id, vars, ...settings } = input
@@ -5008,6 +5023,20 @@ class Bot<T extends UserSchema = UserSchema> {
         ),
         paperContext,
       })
+      this.recordChangeTrail({
+        userId: saveBotRequest.data.userId,
+        botId: `${saveBotRequest.data._id}`,
+        botType: BotType.dca,
+        scope: 'bot',
+        action: trail?.action ?? 'update_settings',
+        actor: resolveChangeTrailActor(actor),
+        changes: settingsChanges(
+          oldSettings.settings as unknown as Record<string, unknown>,
+          settings as Record<string, unknown>,
+        ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
+        paperContext,
+      })
       if (resetStats || (resetBaseAsset && oldSettings.stats)) {
         await this.dcaBotDb
           .updateData(
@@ -5048,6 +5077,8 @@ class Bot<T extends UserSchema = UserSchema> {
     userId: string,
     paperContext: boolean,
     forceRestart = false,
+    actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<typeof this.getBot>>(
@@ -5058,6 +5089,8 @@ class Bot<T extends UserSchema = UserSchema> {
         userId,
         paperContext,
         forceRestart,
+        actor,
+        trail,
       )
     }
     const { id, vars, ...settings } = input
@@ -5245,6 +5278,20 @@ class Bot<T extends UserSchema = UserSchema> {
             { ...oldSettings.settings, ...settings },
           ),
         ),
+        paperContext,
+      })
+      this.recordChangeTrail({
+        userId: saveBotRequest.data.userId,
+        botId: `${saveBotRequest.data._id}`,
+        botType: BotType.combo,
+        scope: 'bot',
+        action: trail?.action ?? 'update_settings',
+        actor: resolveChangeTrailActor(actor),
+        changes: settingsChanges(
+          oldSettings.settings as unknown as Record<string, unknown>,
+          settings as Record<string, unknown>,
+        ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
         paperContext,
       })
       if (resetStats || (resetBaseAsset && oldSettings.stats)) {
@@ -8275,6 +8322,7 @@ class Bot<T extends UserSchema = UserSchema> {
     reopen = true,
     paperContext?: boolean,
     closeTrigger?: DCACloseTriggerEnum,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -8288,6 +8336,7 @@ class Bot<T extends UserSchema = UserSchema> {
         reopen,
         paperContext,
         closeTrigger,
+        actor,
       )
     }
     const findDeal = await this.dcaDealsDb.readData({
@@ -8308,6 +8357,26 @@ class Bot<T extends UserSchema = UserSchema> {
       )
     }
     const botId = findDeal.data.result.botId
+    // The close REQUEST is what the trail records; whether and how the
+    // engine then closes the deal is in the deal's own events.
+    this.recordChangeTrail({
+      userId,
+      botId,
+      botType: BotType.dca,
+      dealId,
+      scope: 'deal',
+      action: 'close_deal',
+      actor: resolveChangeTrailActor(actor),
+      changes: [
+        {
+          path: 'status',
+          before: findDeal.data.result.status,
+          after: 'close_requested',
+        },
+        ...(type ? [{ path: 'closeType', before: null, after: type }] : []),
+      ],
+      paperContext: !!findDeal.data.result.paperContext,
+    })
 
     const findLocal = this.dcaBots.find(
       (d) => d.id === botId && d.userId === userId,
@@ -8594,6 +8663,7 @@ class Bot<T extends UserSchema = UserSchema> {
     reopen = true,
     paperContext?: boolean,
     closeTrigger?: DCACloseTriggerEnum,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -8607,6 +8677,7 @@ class Bot<T extends UserSchema = UserSchema> {
         reopen,
         paperContext,
         closeTrigger,
+        actor,
       )
     }
     const findDeal = await this.comboDealsDb.readData({
@@ -8627,6 +8698,26 @@ class Bot<T extends UserSchema = UserSchema> {
       )
     }
     const botId = findDeal.data.result.botId
+    // The close REQUEST is what the trail records; whether and how the
+    // engine then closes the deal is in the deal's own events.
+    this.recordChangeTrail({
+      userId,
+      botId,
+      botType: BotType.combo,
+      dealId,
+      scope: 'deal',
+      action: 'close_deal',
+      actor: resolveChangeTrailActor(actor),
+      changes: [
+        {
+          path: 'status',
+          before: findDeal.data.result.status,
+          after: 'close_requested',
+        },
+        ...(type ? [{ path: 'closeType', before: null, after: type }] : []),
+      ],
+      paperContext: !!findDeal.data.result.paperContext,
+    })
 
     const findLocal = this.comboBots.find(
       (d) => d.id === botId && d.userId === userId,
@@ -9600,6 +9691,7 @@ class Bot<T extends UserSchema = UserSchema> {
     symbol?: string,
     type?: AddFundsTypeEnum,
     dealId?: string,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9613,6 +9705,7 @@ class Bot<T extends UserSchema = UserSchema> {
         symbol,
         type,
         dealId,
+        actor,
       )
     }
     let botIdToUse = botId
@@ -9662,6 +9755,26 @@ class Bot<T extends UserSchema = UserSchema> {
           dealId,
         ],
       })
+
+      if (botIdToUse) {
+        this.recordChangeTrail({
+          userId,
+          botId: botIdToUse,
+          botType: BotType.dca,
+          dealId,
+          scope: dealId ? 'deal' : 'bot',
+          action: 'add_funds',
+          actor: resolveChangeTrailActor(actor, { type: 'api' }),
+          changes: [
+            {
+              path: 'addFunds',
+              before: null,
+              after: { qty, asset, symbol, type },
+            },
+          ],
+          paperContext: !!findBot.paperContext,
+        })
+      }
 
       return {
         status: StatusEnum.ok,
@@ -9746,6 +9859,7 @@ class Bot<T extends UserSchema = UserSchema> {
     symbol?: string,
     type?: AddFundsTypeEnum,
     dealId?: string,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9759,6 +9873,7 @@ class Bot<T extends UserSchema = UserSchema> {
         symbol,
         type,
         dealId,
+        actor,
       )
     }
     let botIdToUse = botId
@@ -9809,6 +9924,26 @@ class Bot<T extends UserSchema = UserSchema> {
         ],
       })
 
+      if (botIdToUse) {
+        this.recordChangeTrail({
+          userId,
+          botId: botIdToUse,
+          botType: BotType.dca,
+          dealId,
+          scope: dealId ? 'deal' : 'bot',
+          action: 'reduce_funds',
+          actor: resolveChangeTrailActor(actor, { type: 'api' }),
+          changes: [
+            {
+              path: 'reduceFunds',
+              before: null,
+              after: { qty, asset, symbol, type },
+            },
+          ],
+          paperContext: !!findBot.paperContext,
+        })
+      }
+
       return {
         status: StatusEnum.ok,
         reason: null,
@@ -9828,6 +9963,8 @@ class Bot<T extends UserSchema = UserSchema> {
     _botId: string,
     dealId: string,
     settings: Partial<DCADealsSettings>,
+    actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9838,6 +9975,8 @@ class Bot<T extends UserSchema = UserSchema> {
         _botId,
         dealId,
         settings,
+        actor,
+        trail,
       )
     }
     const findDeal = await this.dcaDealsDb.readData({
@@ -9868,7 +10007,7 @@ class Bot<T extends UserSchema = UserSchema> {
           )}: ${oldValue} -> ${value}`
       }
     })
-    const updateDealSettingsEvent = () =>
+    const updateDealSettingsEvent = () => {
       this.botEventDb.createData({
         userId: userId,
         botId,
@@ -9885,6 +10024,22 @@ class Bot<T extends UserSchema = UserSchema> {
           ),
         ),
       })
+      this.recordChangeTrail({
+        userId,
+        botId,
+        botType: BotType.dca,
+        dealId,
+        scope: 'deal',
+        action: trail?.action ?? 'update_settings',
+        actor: resolveChangeTrailActor(actor),
+        changes: settingsChanges(
+          findDeal.data.result.settings as unknown as Record<string, unknown>,
+          settings as Record<string, unknown>,
+        ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
+        paperContext: !!findDeal.data.result.paperContext,
+      })
+    }
     if (findLocal) {
       this.getWorkerById(findLocal.worker)?.postMessage({
         do: 'method',
@@ -9945,6 +10100,8 @@ class Bot<T extends UserSchema = UserSchema> {
     _botId: string,
     dealId: string,
     settings: Partial<ComboDealsSettings>,
+    actor?: ChangeTrailActor,
+    trail?: ChangeTrailOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9955,6 +10112,8 @@ class Bot<T extends UserSchema = UserSchema> {
         _botId,
         dealId,
         settings,
+        actor,
+        trail,
       )
     }
     const findDeal = await this.comboDealsDb.readData({
@@ -9985,7 +10144,7 @@ class Bot<T extends UserSchema = UserSchema> {
           )}: ${oldValue} -> ${value}`
       }
     })
-    const updateDealSettingsEvent = () =>
+    const updateDealSettingsEvent = () => {
       this.botEventDb.createData({
         userId: userId,
         botId,
@@ -10002,6 +10161,22 @@ class Bot<T extends UserSchema = UserSchema> {
           ),
         ),
       })
+      this.recordChangeTrail({
+        userId,
+        botId,
+        botType: BotType.combo,
+        dealId,
+        scope: 'deal',
+        action: trail?.action ?? 'update_settings',
+        actor: resolveChangeTrailActor(actor),
+        changes: settingsChanges(
+          findDeal.data.result.settings as unknown as Record<string, unknown>,
+          settings as Record<string, unknown>,
+        ),
+        ...(trail?.reason ? { reason: trail.reason } : {}),
+        paperContext: !!findDeal.data.result.paperContext,
+      })
+    }
     if (findLocal) {
       this.getWorkerById(findLocal.worker)?.postMessage({
         do: 'method',
@@ -10056,11 +10231,81 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Append one change-trail entry. Best-effort by design: it is never awaited
+   * by the change it describes, and any failure — a refused write, a rejected
+   * promise or a synchronous throw — is logged and swallowed.
+   */
+  protected recordChangeTrail(entry: ChangeTrailEntry) {
+    const fail = (e: unknown) =>
+      logger.warn(
+        `${loggerPrefix} Change trail write failed for bot ${entry.botId}${
+          entry.dealId ? ` deal ${entry.dealId}` : ''
+        } (${entry.action}): ${(e as Error)?.message ?? e}`,
+      )
+    try {
+      if (!entry.changes.length) {
+        return
+      }
+      Promise.resolve(this.changeTrailDb.createData(entry))
+        .then((res) => {
+          if (res?.status === StatusEnum.notok) {
+            fail(res.reason)
+          }
+        })
+        .catch(fail)
+    } catch (e) {
+      fail(e)
+    }
+  }
+
+  /** Trail entry for a deal-settings reset: the deal's overrides before it. */
+  private recordDealResetTrail(
+    userId: string,
+    botId: string,
+    botType: BotType.dca | BotType.combo,
+    dealId: string,
+    paperContext: boolean,
+    actor: ChangeTrailActor,
+  ) {
+    const read =
+      botType === BotType.combo
+        ? this.comboDealsDb.readData({ _id: dealId, userId }, { settings: 1 })
+        : this.dcaDealsDb.readData({ _id: dealId, userId }, { settings: 1 })
+    Promise.resolve(read)
+      .then((res) => {
+        const before =
+          res?.status === StatusEnum.ok ? res.data.result?.settings : undefined
+        const changes: ChangeTrailChange[] = [
+          { path: 'settings', before: before ?? null, after: 'bot_defaults' },
+        ]
+        this.recordChangeTrail({
+          userId,
+          botId,
+          botType,
+          dealId,
+          scope: 'deal',
+          action: 'reset_settings',
+          actor,
+          changes,
+          paperContext,
+        })
+      })
+      .catch((e) =>
+        logger.warn(
+          `${loggerPrefix} Change trail read failed for deal ${dealId}: ${
+            (e as Error)?.message ?? e
+          }`,
+        ),
+      )
+  }
+
   public async resetDealSettings(
     userId: string,
     botId: string,
     dealId: string,
     paperContext: boolean,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -10071,6 +10316,7 @@ class Bot<T extends UserSchema = UserSchema> {
         botId,
         dealId,
         paperContext,
+        actor,
       )
     }
     this.botEventDb.createData({
@@ -10082,6 +10328,14 @@ class Bot<T extends UserSchema = UserSchema> {
       paperContext,
       deal: dealId,
     })
+    this.recordDealResetTrail(
+      userId,
+      botId,
+      BotType.dca,
+      dealId,
+      paperContext,
+      resolveChangeTrailActor(actor),
+    )
     const findLocal = this.dcaBots.find(
       (d) => d.id === botId && d.userId === userId,
     )
@@ -10108,6 +10362,7 @@ class Bot<T extends UserSchema = UserSchema> {
     botId: string,
     dealId: string,
     paperContext: boolean,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -10118,6 +10373,7 @@ class Bot<T extends UserSchema = UserSchema> {
         botId,
         dealId,
         paperContext,
+        actor,
       )
     }
     this.botEventDb.createData({
@@ -10129,6 +10385,14 @@ class Bot<T extends UserSchema = UserSchema> {
       paperContext,
       deal: dealId,
     })
+    this.recordDealResetTrail(
+      userId,
+      botId,
+      BotType.combo,
+      dealId,
+      paperContext,
+      resolveChangeTrailActor(actor),
+    )
     const findLocal = this.comboBots.find(
       (d) => d.id === botId && d.userId === userId,
     )
@@ -13025,6 +13289,7 @@ class Bot<T extends UserSchema = UserSchema> {
     paperContext: boolean,
     settings: AddFundsSettings,
     fromWebhook = false,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -13037,6 +13302,7 @@ class Bot<T extends UserSchema = UserSchema> {
         paperContext,
         settings,
         fromWebhook,
+        actor,
       )
     }
     const bot = await this.getDCABotFromDb(
@@ -13081,6 +13347,21 @@ class Bot<T extends UserSchema = UserSchema> {
         args: [botId, dealId, settings, fromWebhook],
       })
     }
+
+    this.recordChangeTrail({
+      userId,
+      botId,
+      botType: BotType.dca,
+      dealId,
+      scope: 'deal',
+      action: 'add_funds',
+      actor: resolveChangeTrailActor(
+        actor,
+        fromWebhook ? { type: 'webhook' } : undefined,
+      ),
+      changes: [{ path: 'addFunds', before: null, after: settings }],
+      paperContext,
+    })
 
     return {
       status: StatusEnum.ok,
@@ -13174,6 +13455,7 @@ class Bot<T extends UserSchema = UserSchema> {
     paperContext: boolean,
     settings: AddFundsSettings,
     fromWebhook = false,
+    actor?: ChangeTrailActor,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -13186,6 +13468,7 @@ class Bot<T extends UserSchema = UserSchema> {
         paperContext,
         settings,
         fromWebhook,
+        actor,
       )
     }
     const bot = await this.getDCABotFromDb(
@@ -13230,6 +13513,21 @@ class Bot<T extends UserSchema = UserSchema> {
         args: [botId, dealId, settings, fromWebhook],
       })
     }
+
+    this.recordChangeTrail({
+      userId,
+      botId,
+      botType: BotType.dca,
+      dealId,
+      scope: 'deal',
+      action: 'reduce_funds',
+      actor: resolveChangeTrailActor(
+        actor,
+        fromWebhook ? { type: 'webhook' } : undefined,
+      ),
+      changes: [{ path: 'reduceFunds', before: null, after: settings }],
+      paperContext,
+    })
 
     return {
       status: StatusEnum.ok,
@@ -14447,6 +14745,7 @@ class Bot<T extends UserSchema = UserSchema> {
           undefined,
           deal.paperContext,
           DCACloseTriggerEnum.auto,
+          { type: 'system' },
         )
       }
     }
@@ -14482,6 +14781,7 @@ class Bot<T extends UserSchema = UserSchema> {
           undefined,
           deal.paperContext,
           DCACloseTriggerEnum.auto,
+          { type: 'system' },
         )
       }
     }

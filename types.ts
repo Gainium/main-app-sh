@@ -1995,6 +1995,58 @@ export interface BotEventSchema extends SchemaI {
   symbol?: string
 }
 
+/** Who made a bot/deal settings change (change trail). */
+export type ChangeTrailActorType = 'user' | 'ai' | 'api' | 'webhook' | 'system'
+
+export type ChangeTrailActor = {
+  type: ChangeTrailActorType
+  runId?: string
+  messageId?: string
+  decisionId?: string
+}
+
+export type ChangeTrailAction =
+  | 'update_settings'
+  | 'reset_settings'
+  | 'close_deal'
+  | 'add_funds'
+  | 'reduce_funds'
+  | 'revert'
+
+/**
+ * Per-call overrides for the change-trail entry an API-layer entry point
+ * writes. `action` replaces the default (`update_settings`) — e.g. `revert`
+ * when the change restores earlier values; `reason` is stored as given.
+ */
+export type ChangeTrailOptions = {
+  action?: ChangeTrailAction
+  reason?: string
+}
+
+export type ChangeTrailChange = {
+  path: string
+  before?: unknown
+  after?: unknown
+}
+
+/**
+ * One bot or deal settings change, by any actor. Append-only audit record,
+ * kept 365 days (TTL). Written best-effort: a failed write never blocks the
+ * change it describes.
+ */
+export interface ChangeTrailSchema extends SchemaI {
+  userId: string
+  botId: string
+  botType: BotType
+  dealId?: string
+  scope: 'bot' | 'deal'
+  action: ChangeTrailAction
+  actor: ChangeTrailActor
+  changes: ChangeTrailChange[]
+  reason?: string
+  paperContext: boolean
+}
+
 export interface ReconcileSweepSchema extends SchemaI {
   botId: string
   botType: BotType

@@ -20,7 +20,12 @@ import crypto from 'crypto'
 import { resolveApiSecret } from '../utils/credentials'
 import logger from '../utils/logger'
 
-import { DCADealsSettings, OrderSizeTypeEnum, ExchangeEnum } from '../../types'
+import {
+  DCADealsSettings,
+  OrderSizeTypeEnum,
+  ExchangeEnum,
+  type ChangeTrailActor,
+} from '../../types'
 import {
   comboBotDb,
   comboDealsDb,
@@ -267,6 +272,9 @@ declare global {
     }
   }
 }
+
+/** Change-trail actor for everything the public REST API changes. */
+const apiActor: ChangeTrailActor = { type: 'api' }
 
 const prefix = '[API Service]'
 
@@ -857,7 +865,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       res.status(400).send(check)
       return
     }
-    Bot.updateDCADealSettings(user.id, '', dealId, settings).then((result) =>
+    Bot.updateDCADealSettings(user.id, '', dealId, settings, apiActor).then((result) =>
       res.send(result),
     )
   })
@@ -911,7 +919,13 @@ const allAPI = <R extends UserSchema = UserSchema>(
       res.status(400).send(check)
       return
     }
-    Bot.updateComboDealSettings(user.id, '', dealId, settings).then((result) =>
+    Bot.updateComboDealSettings(
+      user.id,
+      '',
+      dealId,
+      settings,
+      apiActor,
+    ).then((result) =>
       res.send(result),
     )
   })
@@ -1004,6 +1018,8 @@ const allAPI = <R extends UserSchema = UserSchema>(
       },
       user.id,
       !!bot.data.result.paperContext,
+      undefined,
+      apiActor,
     ).then((result) =>
       result && result.status === StatusEnum.notok
         ? res.send(result)
@@ -1074,6 +1090,8 @@ const allAPI = <R extends UserSchema = UserSchema>(
       { ...settings, id: botId, vars: bot.data.result.vars },
       user.id,
       !!bot.data.result.paperContext,
+      undefined,
+      apiActor,
     ).then((result) =>
       result && result.status === StatusEnum.notok
         ? res.send(result)
@@ -1225,6 +1243,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       symbol,
       type,
       dealId,
+      apiActor,
     ).then((result) => res.send(result))
   })
 
@@ -1284,6 +1303,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       symbol,
       type,
       dealId,
+      apiActor,
     ).then((result) => res.send(result))
   })
 
@@ -1463,6 +1483,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
           undefined,
           undefined,
           DCACloseTriggerEnum.api,
+          apiActor,
         ),
       )
     } else {
@@ -1475,6 +1496,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
           undefined,
           undefined,
           DCACloseTriggerEnum.api,
+          apiActor,
         ),
       )
     }
@@ -1502,8 +1524,26 @@ const allAPI = <R extends UserSchema = UserSchema>(
     }
     res.send(
       botType === BotType.combo
-        ? await Bot.closeComboDeal(user.id, '', dealId, CloseDCATypeEnum.cancel)
-        : await Bot.closeDCADeal(user.id, '', dealId, CloseDCATypeEnum.cancel),
+        ? await Bot.closeComboDeal(
+            user.id,
+            '',
+            dealId,
+            CloseDCATypeEnum.cancel,
+            undefined,
+            undefined,
+            undefined,
+            apiActor,
+          )
+        : await Bot.closeDCADeal(
+            user.id,
+            '',
+            dealId,
+            CloseDCATypeEnum.cancel,
+            undefined,
+            undefined,
+            undefined,
+            apiActor,
+          ),
     )
   })
 

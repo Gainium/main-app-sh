@@ -21,6 +21,7 @@ import type {
 } from '../../types'
 import type { InitialGrid } from './helper'
 import type { FullDeal } from './dcaHelper'
+import type { NewDealTrigger } from './newDealApproval'
 import { nextLadderLevel } from './dca/ladderLevels'
 import {
   pickRestoreBaseEntry,
@@ -5468,6 +5469,7 @@ function createComboBotHelper<
       dynamic = false,
       time = 0,
       cbIfNotOpened?: () => void,
+      trigger?: NewDealTrigger,
     ) {
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
@@ -5478,6 +5480,7 @@ function createComboBotHelper<
             dynamic,
             time,
             cbIfNotOpened,
+            trigger,
           ),
         )
         return this.handleDebug('Loading not complete yet')
@@ -5632,6 +5635,25 @@ function createComboBotHelper<
                 }
                 return
               }
+            }
+            // Last step before the deal exists: every gate above has passed.
+            // Same hook as the DCA path (inherited `approveNewDeal`).
+            if (
+              !(await this.checkNewDealApproval(
+                symbol,
+                skip,
+                dynamic,
+                trigger,
+                settings.startCondition,
+                settings.indicators,
+              ))
+            ) {
+              this.resetPending(this.botId, symbol)
+              this.endMethod(_id)
+              if (cbIfNotOpened) {
+                cbIfNotOpened()
+              }
+              return
             }
             this.updateDealLastTime(this.botId, 'opened', +new Date(), symbol)
             let sizes: Sizes | undefined | null

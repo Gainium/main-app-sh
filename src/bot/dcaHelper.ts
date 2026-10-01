@@ -92,6 +92,13 @@ import {
 import { observedFeeSplit } from './orderFee'
 import { ORDER_ID_MARKER, markOrderId } from './orderIdMarker'
 import { hasConsecutiveStreak } from './consecutiveStreak'
+import {
+  buildNewDealSignal,
+  newDealSkippedDescription,
+  resolveNewDealTrigger,
+  type NewDealApprovalContext,
+  type NewDealTrigger,
+} from './newDealApproval'
 import { observedFeeLegs, accrueFeeLedger, FeeLedgerEntry } from './feeLedger'
 import { MathHelper } from '../utils/math'
 import MainBot, {
@@ -5132,6 +5139,7 @@ function createDCABotHelper<
               undefined,
               undefined,
               cbIfNotOpened,
+              'indicator',
             )
           }
         }
@@ -11958,7 +11966,15 @@ function createDCABotHelper<
             clearTimeout(this.timer)
           }
           for (const symbol of await this.getSymbolsToOpenAsapDeals()) {
-            this.openNewDeal(this.botId, symbol)
+            this.openNewDeal(
+              this.botId,
+              symbol,
+              false,
+              false,
+              0,
+              undefined,
+              'timer',
+            )
           }
           this.timer =
             diff > maxTimeout
@@ -15699,6 +15715,102 @@ function createDCABotHelper<
       )
     }
 
+    /**
+     * Last-step approval of a new deal: asked after every built-in gate has
+     * passed, immediately before the deal is created. The engine itself always
+     * approves; a deployment may override this to add its own filter. To
+     * refuse, return `false` and optionally set `ctx.refusalReason`, which is
+     * recorded on the bot's `Deal` event. Never asked for a manual open.
+     */
+    protected async approveNewDeal(
+      _ctx: NewDealApprovalContext,
+    ): Promise<boolean> {
+      return true
+    }
+
+    /**
+     * Runs {@link approveNewDeal} for one attempt. `true` = go ahead. A hook
+     * that throws approves (a failing extension must not stop a plain bot);
+     * a refusal writes the `Deal` event. The caller performs the usual refusal
+     * cleanup (`resetPending`, `cbIfNotOpened`, `endMethod`).
+     */
+    protected async checkNewDealApproval(
+      symbol: string,
+      skip: boolean,
+      dynamic: boolean,
+      trigger: NewDealTrigger | undefined,
+      startCondition: StartConditionEnum | undefined,
+      indicators?: SettingsIndicators[],
+    ): Promise<boolean> {
+      const resolved = resolveNewDealTrigger(
+        skip,
+        dynamic,
+        startCondition,
+        trigger,
+      )
+      if (resolved === 'manual') {
+        return true
+      }
+      let price: number | undefined
+      try {
+        const latest = await this.getLatestPrice(symbol)
+        price = latest && isFinite(latest) ? latest : undefined
+      } catch {
+        price = undefined
+      }
+      const ctx: NewDealApprovalContext = {
+        botId: this.botId,
+        symbol,
+        trigger: resolved,
+        signal:
+          resolved === 'indicator' ? buildNewDealSignal(indicators) : undefined,
+        price,
+        time: +new Date(),
+      }
+      let approved = true
+      try {
+        approved = await this.approveNewDeal(ctx)
+      } catch (e) {
+        this.handleWarn(
+          `New deal approval failed for ${symbol}, opening as usual: ${
+            (e as Error)?.message ?? e
+          }`,
+        )
+        return true
+      }
+      if (approved !== false) {
+        return true
+      }
+      const description = newDealSkippedDescription(ctx.refusalReason)
+      this.handleLog(`${description} ${symbol}`)
+      if (
+        startCondition === StartConditionEnum.asap &&
+        typeof ctx.retryAfterMs === 'number' &&
+        Number.isFinite(ctx.retryAfterMs) &&
+        ctx.retryAfterMs > 0
+      ) {
+        const prev = this.openNewDealTimer.get(symbol)
+        if (prev) {
+          clearTimeout(prev)
+        }
+        this.openNewDealTimer.set(
+          symbol,
+          setTimeout(() => this.openDealAfterTimer(), ctx.retryAfterMs),
+        )
+      }
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description,
+        paperContext: !!this.data?.paperContext,
+        symbol,
+        type: MessageTypeEnum.info,
+      })
+      return false
+    }
+
     async openNewDeal(
       _botId: string,
       symbol: string,
@@ -15706,6 +15818,7 @@ function createDCABotHelper<
       dynamic = false,
       time = 0,
       cbIfNotOpened?: () => void,
+      trigger?: NewDealTrigger,
     ) {
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
@@ -15716,6 +15829,7 @@ function createDCABotHelper<
             dynamic,
             time,
             cbIfNotOpened,
+            trigger,
           ),
         )
         return this.handleLog('Loading not complete yet')
@@ -15970,6 +16084,24 @@ function createDCABotHelper<
               }
               return
             }
+            // Last step before the deal exists: every gate above has passed.
+            if (
+              !(await this.checkNewDealApproval(
+                symbol,
+                skip,
+                dynamic,
+                trigger,
+                settings.startCondition,
+                settings.indicators,
+              ))
+            ) {
+              this.resetPending(this.botId, symbol)
+              this.endMethod(_id)
+              if (cbIfNotOpened) {
+                cbIfNotOpened()
+              }
+              return
+            }
             if (reduce.ratio !== null) {
               const pct = this.math.round(reduce.ratio * 100, 1)
               const message = `Not enough balance for the full deal on ${symbol} (required: ${checkBalance.required}, available: ${checkBalance.available}). Opening it at ${pct}% of the configured size: base and safety orders are reduced by the same ratio`
@@ -16205,7 +16337,15 @@ function createDCABotHelper<
         ignoreSettings
       ) {
         for (const symbol of pairsToUse) {
-          await this.openNewDeal(this.botId, symbol)
+          await this.openNewDeal(
+            this.botId,
+            symbol,
+            false,
+            false,
+            0,
+            undefined,
+            'webhook',
+          )
         }
       } else {
         this.handleDebug(
