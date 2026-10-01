@@ -16570,6 +16570,46 @@ function createDCABotHelper<
         }
       }
       const settings = await this.getAggregatedSettings(deal?.deal)
+      // The same "deal is closed" verdict the block at the end of this method
+      // reaches — asked BEFORE anything is sent instead of only after. A caller
+      // that queued on this deal's lock while a close was running (a safety
+      // order cancelled with a part-fill during the close's cancel sweep goes
+      // through `updateDeal`, which holds a different lock) gets the lock only
+      // once the closing take-profit has already filled, with the deal still
+      // `open` until `closeDeal` finishes. Its ladder carries a fresh
+      // full-size TP, and placing it bought the position back a second time:
+      // a webhook-closed Kraken short filled its market close, then one second
+      // later a new limit TP crossing the book filled for the same size.
+      // `closeBySl`/`closeByTp` cannot catch it — a signal close never arms
+      // them, and `updateDeal` clears `closeByTp` itself.
+      if (
+        !opts?.afterTerminalCloseRefusal &&
+        this.dealClosedByFilledTp(dealId, settings)
+      ) {
+        // Still pull whatever ladder is resting, as the post-placement check
+        // would have — a closed position must not keep safety orders on the book.
+        const toCancel = this.getOrdersByStatusAndDealId({
+          dealId,
+          defaultStatuses: true,
+        }).filter((o) =>
+          [TypeOrderEnum.dealRegular, TypeOrderEnum.dealGrid].includes(
+            o.typeOrder,
+          ),
+        )
+        this.handleLog(
+          `Deal ${dealId} closed or its take-profit already filled. Skip place orders, cancel orders: ${toCancel.length}`,
+        )
+        await this.primeCancelBatch(toCancel)
+        try {
+          for (const order of toCancel) {
+            await this.cancelOrderOnExchange(order, false)
+          }
+        } finally {
+          this.clearCancelBatch()
+        }
+        this.endMethod(_id)
+        return
+      }
       if (this.data?.status === BotStatusEnum.error) {
         this.restoreFromRangeOrError()
       }
@@ -19365,6 +19405,36 @@ function createDCABotHelper<
      */
     protected underfilledTpQty(order: Order): number {
       return underfilledTpQty(order)
+    }
+
+    /**
+     * Whether `dealId` is closed, or its single take-profit has filled in full
+     * — the condition under which `placeOrders` must not put anything new on
+     * the book. Mirrors the post-placement check at the end of
+     * `placeOrdersHoldingDealLock` (multi-TP/SL and simple terminal deals
+     * excluded; an underfilled TP leaves a live position, so it does not count).
+     */
+    protected dealClosedByFilledTp(
+      dealId: string,
+      settings: { useMultiTp?: boolean; useMultiSl?: boolean },
+    ): boolean {
+      if (
+        this.data?.settings.type === DCATypeEnum.terminal &&
+        this.data.settings.terminalDealType === TerminalDealTypeEnum.simple
+      ) {
+        return false
+      }
+      if (this.getDeal(dealId)?.deal.status === DCADealStatusEnum.closed) {
+        return true
+      }
+      if (settings.useMultiTp || settings.useMultiSl) {
+        return false
+      }
+      const tp = this.getOrdersByStatusAndDealId({
+        dealId,
+        status: 'FILLED',
+      }).find((o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId)
+      return !!tp && this.underfilledTpQty(tp) === 0
     }
 
     /**

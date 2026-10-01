@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.70.4] - 2026-10-01
+
+### Fixed
+
+- DCA: a deal closed by a signal could be bought back (or sold) twice. If a safety order with a partial fill was cancelled while the close was running, the rebuilt ladder could still place a new take-profit after the closing order had already filled. Orders are no longer placed once the deal is closed or its take-profit has filled, and any safety orders still resting are cancelled.
+
 ## [1.70.3] - 2026-10-01
 
 ### Fixed
