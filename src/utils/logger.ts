@@ -1,5 +1,6 @@
 import { isMainThread } from 'worker_threads'
 import { LogLevel } from '../../types'
+import { redactLogArg } from './redactSecrets'
 
 const weight: Record<LogLevel, number> = {
   error: 3,
@@ -26,7 +27,10 @@ const log = (type: LogLevel, ...msg: any[]) => {
         : type === 'debug'
           ? console.debug
           : console.log
-  fn(`[${pid}] -`, time, separator, ...msg)
+  // Every line passes through the secret redactor: HTTP clients put bearer
+  // tokens in error messages, stacks and request configs, and call sites log
+  // those objects whole.
+  fn(`[${pid}] -`, time, separator, ...msg.map(redactLogArg))
 }
 
 const logger = {

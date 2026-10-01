@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.70.1] - 2026-10-01
+
+### Security
+
+- Log lines are scrubbed of bearer bot tokens before they are written. HTTP clients quote the request URL in their errors, and some messaging APIs carry the token in that URL; this now applies to every log line, including whole error objects and their nested causes.
+
 ## [1.70.0] - 2026-09-30
 
 ### Added
