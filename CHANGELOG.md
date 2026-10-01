@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.19] - 2026-10-01
+
+### Changed
+
+- Bots viewed by anyone other than their owner, through a share link or the demo, no longer include owner-only settings. The bot, its settings and its deals display as before.
+
 ## [1.69.18] - 2026-10-01
 
 ### Fixed

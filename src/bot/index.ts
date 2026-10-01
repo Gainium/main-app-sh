@@ -10,6 +10,11 @@ import { isPaper } from '../utils'
 import utils from '../utils'
 import { CLOSE_SETTLE, awaitDealsClosed } from './closeSettle'
 import { buyDialogEventsFor } from './buyDialogEvent'
+import {
+  mustRedactBotCredentials,
+  redactBotCredentials,
+  redactBotListResult,
+} from './redactBotCredentials'
 import { ProjectionFields, Types, type PipelineStage } from 'mongoose'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import {
@@ -2553,6 +2558,28 @@ class Bot<T extends UserSchema = UserSchema> {
     all?: boolean,
     dataGridInput: DataGridFilterInput = {},
   ) {
+    const result = await this.getBotListUnredacted(
+      type,
+      userId,
+      token,
+      status,
+      paperContext,
+      all,
+      dataGridInput,
+    )
+    // The demo session lists the demo account's public bots as that account.
+    return token === 'demo' ? redactBotListResult(result) : result
+  }
+
+  private async getBotListUnredacted(
+    type: BotType,
+    userId: string,
+    token: string,
+    status?: BotStatusEnum[],
+    paperContext?: boolean,
+    all?: boolean,
+    dataGridInput: DataGridFilterInput = {},
+  ) {
     if (type === BotType.grid) {
       return await this.getGridBotList(
         userId,
@@ -2642,7 +2669,7 @@ class Bot<T extends UserSchema = UserSchema> {
             ? data.updated
             : new Date(),
         vars:
-          shareId && `${data.userId}` !== `${userId}`
+          `${data.userId}` !== `${userId}`
             ? { list: [], paths: [] }
             : (data.vars ?? { list: [], paths: [] }),
       },
@@ -2690,7 +2717,7 @@ class Bot<T extends UserSchema = UserSchema> {
             ? data.updated
             : new Date(),
         vars:
-          shareId && `${data.userId}` !== `${userId}`
+          `${data.userId}` !== `${userId}`
             ? { list: [], paths: [] }
             : (data.vars ?? { list: [], paths: [] }),
       },
@@ -12067,11 +12094,13 @@ class Bot<T extends UserSchema = UserSchema> {
     if (findBotRequest.data && !findBotRequest.data.result) {
       return this.entityNotFound('Bot')
     }
-    const botData = { ...findBotRequest.data.result }
-    if (shareId && userId !== botData.userId) {
-      botData.uuid = ''
-      botData.vars = { list: [], paths: [] }
-    }
+    const botData = mustRedactBotCredentials(
+      userId,
+      findBotRequest.data.result.userId,
+      publicBot,
+    )
+      ? redactBotCredentials(findBotRequest.data.result)
+      : { ...findBotRequest.data.result }
     return {
       status: StatusEnum.ok,
       reason: null,
@@ -12118,9 +12147,16 @@ class Bot<T extends UserSchema = UserSchema> {
     if (findBotRequest.data && !findBotRequest.data.result) {
       return this.entityNotFound('Bot')
     }
-    if (shareId && userId !== findBotRequest.data.result.userId) {
-      findBotRequest.data.result.uuid = ''
-      findBotRequest.data.result.vars = { list: [], paths: [] }
+    if (
+      mustRedactBotCredentials(
+        userId,
+        findBotRequest.data.result.userId,
+        publicBot,
+      )
+    ) {
+      findBotRequest.data.result = redactBotCredentials(
+        findBotRequest.data.result,
+      )
     }
     return {
       status: StatusEnum.ok,
@@ -12169,9 +12205,16 @@ class Bot<T extends UserSchema = UserSchema> {
     if (findBotRequest.data && !findBotRequest.data.result) {
       return this.entityNotFound('Bot')
     }
-    if (shareId && userId !== findBotRequest.data.result.userId) {
-      findBotRequest.data.result.uuid = ''
-      findBotRequest.data.result.vars = { list: [], paths: [] }
+    if (
+      mustRedactBotCredentials(
+        userId,
+        findBotRequest.data.result.userId,
+        publicBot,
+      )
+    ) {
+      findBotRequest.data.result = redactBotCredentials(
+        findBotRequest.data.result,
+      )
     }
     return {
       status: StatusEnum.ok,
@@ -12219,8 +12262,15 @@ class Bot<T extends UserSchema = UserSchema> {
     if (findBotRequest.data && !findBotRequest.data.result) {
       return this.entityNotFound('Bot')
     }
-    if (shareId) {
-      findBotRequest.data.result.uuid = ''
+    const redact = mustRedactBotCredentials(
+      userId,
+      findBotRequest.data.result.userId,
+      publicBot,
+    )
+    if (redact) {
+      findBotRequest.data.result = redactBotCredentials(
+        findBotRequest.data.result,
+      )
     }
     const longBot = findBotRequest.data?.result.bots.find(
       (b) => b.settings.strategy === StrategyEnum.long,
@@ -12231,12 +12281,17 @@ class Bot<T extends UserSchema = UserSchema> {
     if (!longBot || !shortBot) {
       return this.entityNotFound('Bot')
     }
+    // Each leg is a bot of its own with its own webhook uuid.
     const long = {
-      ...convertComboBotToArray(longBot),
+      ...convertComboBotToArray(
+        redact ? redactBotCredentials(longBot) : longBot,
+      ),
       dealsInBot: longBot.deals,
     }
     const short = {
-      ...convertComboBotToArray(shortBot),
+      ...convertComboBotToArray(
+        redact ? redactBotCredentials(shortBot) : shortBot,
+      ),
       dealsInBot: shortBot.deals,
     }
     return {
@@ -12286,8 +12341,15 @@ class Bot<T extends UserSchema = UserSchema> {
     if (findBotRequest.data && !findBotRequest.data.result) {
       return this.entityNotFound('Bot')
     }
-    if (shareId) {
-      findBotRequest.data.result.uuid = ''
+    const redact = mustRedactBotCredentials(
+      userId,
+      findBotRequest.data.result.userId,
+      publicBot,
+    )
+    if (redact) {
+      findBotRequest.data.result = redactBotCredentials(
+        findBotRequest.data.result,
+      )
     }
     const longBot = findBotRequest.data?.result.bots.find(
       (b) => b.settings.strategy === StrategyEnum.long,
@@ -12298,12 +12360,17 @@ class Bot<T extends UserSchema = UserSchema> {
     if (!longBot || !shortBot) {
       return this.entityNotFound('Bot')
     }
+    // Each leg is a bot of its own with its own webhook uuid.
     const long = {
-      ...convertComboBotToArray(longBot),
+      ...convertComboBotToArray(
+        redact ? redactBotCredentials(longBot) : longBot,
+      ),
       dealsInBot: longBot.deals,
     }
     const short = {
-      ...convertComboBotToArray(shortBot),
+      ...convertComboBotToArray(
+        redact ? redactBotCredentials(shortBot) : shortBot,
+      ),
       dealsInBot: shortBot.deals,
     }
     return {
