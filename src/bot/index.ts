@@ -2561,20 +2561,18 @@ class Bot<T extends UserSchema = UserSchema> {
     const result = await this.getBotListUnredacted(
       type,
       userId,
-      token,
       status,
       paperContext,
       all,
       dataGridInput,
     )
-    // The demo session lists the demo account's public bots as that account.
+    // The demo session lists the demo account's bots as that account.
     return token === 'demo' ? redactBotListResult(result) : result
   }
 
   private async getBotListUnredacted(
     type: BotType,
     userId: string,
-    token: string,
     status?: BotStatusEnum[],
     paperContext?: boolean,
     all?: boolean,
@@ -2583,7 +2581,6 @@ class Bot<T extends UserSchema = UserSchema> {
     if (type === BotType.grid) {
       return await this.getGridBotList(
         userId,
-        token,
         status,
         paperContext,
         dataGridInput,
@@ -2592,7 +2589,6 @@ class Bot<T extends UserSchema = UserSchema> {
     if (type === BotType.combo) {
       return await this.getComboBotList(
         userId,
-        token,
         status,
         paperContext,
         all,
@@ -2602,7 +2598,6 @@ class Bot<T extends UserSchema = UserSchema> {
     if (type === BotType.hedgeCombo) {
       return await this.getHedgeComboBotList(
         userId,
-        token,
         status,
         paperContext,
         all,
@@ -2612,7 +2607,6 @@ class Bot<T extends UserSchema = UserSchema> {
     if (type === BotType.hedgeDca) {
       return await this.getHedgeDcaBotList(
         userId,
-        token,
         status,
         paperContext,
         all,
@@ -2621,7 +2615,6 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     return await this.getDCABotList(
       userId,
-      token,
       status,
       paperContext,
       all,
@@ -2639,7 +2632,6 @@ class Bot<T extends UserSchema = UserSchema> {
         {
           $or: [
             { userId },
-            { public: true },
             { shareId, share: { $eq: true } },
           ],
         },
@@ -2687,7 +2679,6 @@ class Bot<T extends UserSchema = UserSchema> {
         {
           $or: [
             { userId },
-            { public: true },
             { shareId, share: { $eq: true } },
           ],
         },
@@ -2736,7 +2727,6 @@ class Bot<T extends UserSchema = UserSchema> {
           {
             $or: [
               { userId },
-              { public: true },
               { shareId, share: { $eq: true } },
             ],
           },
@@ -2823,7 +2813,6 @@ class Bot<T extends UserSchema = UserSchema> {
           {
             $or: [
               { userId },
-              { public: true },
               { shareId, share: { $eq: true } },
             ],
           },
@@ -2907,7 +2896,6 @@ class Bot<T extends UserSchema = UserSchema> {
         {
           $or: [
             { userId },
-            { public: true },
             { shareId, share: { $eq: true } },
           ],
         },
@@ -12069,9 +12057,6 @@ class Bot<T extends UserSchema = UserSchema> {
       { userId },
       { share: { $eq: true }, shareId },
     ]
-    if (publicBot && !shareId) {
-      or.push({ public: true })
-    }
     const filter: Record<string, unknown> = {
       _id: id,
       $or: or,
@@ -12121,9 +12106,6 @@ class Bot<T extends UserSchema = UserSchema> {
       { userId },
       { share: { $eq: true }, shareId },
     ]
-    if (publicBot && !shareId) {
-      or.push({ public: true })
-    }
     const filter: Record<string, unknown> = {
       _id: id,
       $or: or,
@@ -12179,9 +12161,6 @@ class Bot<T extends UserSchema = UserSchema> {
       { userId },
       { share: { $eq: true }, shareId },
     ]
-    if (publicBot && !shareId) {
-      or.push({ public: true })
-    }
     const filter: Record<string, unknown> = {
       _id: id,
       $or: or,
@@ -12237,9 +12216,6 @@ class Bot<T extends UserSchema = UserSchema> {
       { userId },
       { share: { $eq: true }, shareId },
     ]
-    if (publicBot && !shareId) {
-      or.push({ public: true })
-    }
     const filter: Record<string, unknown> = {
       _id: id,
       $or: or,
@@ -12315,9 +12291,6 @@ class Bot<T extends UserSchema = UserSchema> {
       { userId },
       { share: { $eq: true }, shareId },
     ]
-    if (publicBot && !shareId) {
-      or.push({ public: true })
-    }
     const filter: Record<string, unknown> = {
       _id: id,
       $or: or,
@@ -12385,7 +12358,6 @@ class Bot<T extends UserSchema = UserSchema> {
 
   private async getGridBotList(
     userId: string,
-    token: string,
     status?: BotStatusEnum[],
     paperContext?: boolean,
     dataGridInput: DataGridFilterInput = {},
@@ -12394,9 +12366,6 @@ class Bot<T extends UserSchema = UserSchema> {
       [x: string]: unknown
     } = {
       userId: userId,
-    }
-    if (token === 'demo') {
-      filter.public = true
     }
     if (status) {
       filter.status = { $in: status }
@@ -12469,7 +12438,6 @@ class Bot<T extends UserSchema = UserSchema> {
 
   private async getComboBotList(
     userId: string,
-    token: string,
     status?: BotStatusEnum[],
     paperContext?: boolean,
     all = false,
@@ -12480,9 +12448,6 @@ class Bot<T extends UserSchema = UserSchema> {
     } = {
       userId,
       paperContext: paperContext ? { $eq: true } : { $ne: true },
-    }
-    if (token === 'demo') {
-      filter.public = true
     }
     if (status) {
       filter.status = { $in: status }
@@ -12557,7 +12522,6 @@ class Bot<T extends UserSchema = UserSchema> {
 
   private async getHedgeComboBotList(
     userId: string,
-    token: string,
     status?: BotStatusEnum[],
     paperContext?: boolean,
     all = false,
@@ -12568,9 +12532,6 @@ class Bot<T extends UserSchema = UserSchema> {
     } = {
       userId,
       paperContext: paperContext ? { $eq: true } : { $ne: true },
-    }
-    if (token === 'demo') {
-      filter.public = true
     }
     if (status) {
       filter.status = { $in: status }
@@ -12668,7 +12629,6 @@ class Bot<T extends UserSchema = UserSchema> {
 
   private async getHedgeDcaBotList(
     userId: string,
-    token: string,
     status?: BotStatusEnum[],
     paperContext?: boolean,
     all = false,
@@ -12679,9 +12639,6 @@ class Bot<T extends UserSchema = UserSchema> {
     } = {
       userId,
       paperContext: paperContext ? { $eq: true } : { $ne: true },
-    }
-    if (token === 'demo') {
-      filter.public = true
     }
     if (status) {
       filter.status = { $in: status }
@@ -12779,7 +12736,6 @@ class Bot<T extends UserSchema = UserSchema> {
 
   private async getDCABotList(
     userId: string,
-    token: string,
     status?: BotStatusEnum[],
     paperContext?: boolean,
     all = false,
@@ -12790,9 +12746,6 @@ class Bot<T extends UserSchema = UserSchema> {
     } = {
       userId,
       paperContext: paperContext ? { $eq: true } : { $ne: true },
-    }
-    if (token === 'demo') {
-      filter.public = true
     }
     if (status) {
       filter.status = { $in: status }

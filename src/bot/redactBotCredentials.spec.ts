@@ -3,7 +3,7 @@ process.env.NODE_ENV = 'testing'
 /**
  * Who may see a bot's webhook uuid and global variables. Only the owner — not
  * a share-link viewer and not the demo session, which reads the demo account's
- * public bots as that account. Everything else a shared bot shows must survive.
+ * bots as that account. Everything else a shared bot shows must survive.
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'

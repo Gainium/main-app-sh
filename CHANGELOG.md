@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.69.20] - 2026-10-01
+
+### Removed
+
+- An unused bot visibility setting left over from the previous dashboard. Nothing you see changes.
+
 ## [1.69.19] - 2026-10-01
 
 ### Changed

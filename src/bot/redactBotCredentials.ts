@@ -4,7 +4,7 @@
  *
  * Two kinds of viewer can read a bot they do not own:
  *  - anyone holding a share link (`shareId`), and
- *  - the `demo` session, which reads the demo account's public bots *as* that
+ *  - the `demo` session, which reads the demo account's bots *as* that
  *    account — so for demo the owner check alone is not enough.
  *
  * Every other field is left intact, so shared and demo bots (and their deals)
