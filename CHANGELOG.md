@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.70.2] - 2026-10-01
+
+### Changed
+
+- The broker code is now also sent on batch order placement (`orders/openBatch`), not only on single orders.
+
 ## [1.70.1] - 2026-10-01
 
 ### Security

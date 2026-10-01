@@ -1495,7 +1495,8 @@ class Exchange extends AbstractExchange {
       ? this.shouldCheckAffiliate
       : true
     if (
-      ((endpoint === 'order' && method === 'post') ||
+      (((endpoint === 'order' || endpoint === 'orders/openBatch') &&
+        method === 'post') ||
         (endpoint.startsWith('fees') && method === 'get')) &&
       shouldCheckExchange
     ) {
