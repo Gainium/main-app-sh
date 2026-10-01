@@ -1228,6 +1228,13 @@ class Exchange extends AbstractExchange {
                 this.exchange,
                 this.allPricesCachePeriod / 1000,
               )
+              // The last good table, kept past the minute above for
+              // `getAllPricesStaleOk`. No expiry on purpose.
+              await client.hSet(
+                'allPriceLast',
+                this.exchange,
+                JSON.stringify(fresh.data),
+              )
             }
           }
         } catch (e) {
@@ -1244,6 +1251,44 @@ class Exchange extends AbstractExchange {
     ).catch(this.handleError(this.getAllPrices, cache, timeProfile))
     this.saveTimeProfile(result.timeProfile)
     return result.data
+  }
+
+  /**
+   * `getAllPrices` for a reader that would rather have a slightly old table
+   * now than a current one later — dashboard USD valuation. When the venue's
+   * read budget is spent the connector parks the `prices` call until the next
+   * minute (sometimes two), and the dashboard request times out behind it.
+   *
+   * Answers from the last good table (`allPriceLast`) whenever one exists. If
+   * it is older than the cache period, a refresh starts in the background
+   * through `getAllPrices`, so it joins the single-flight connector call and
+   * the next read is current. Waits on a live fetch only when no table has
+   * ever been stored. Bot callers keep using `getAllPrices`.
+   */
+  override async getAllPricesStaleOk(): Promise<
+    BaseReturn<AllPricesResponse[]>
+  > {
+    try {
+      const client = await RedisClient.getInstance()
+      if (client.isReady) {
+        const last = await client.hGet('allPriceLast', this.exchange)
+        const parse = last
+          ? (JSON.parse(last) as BaseReturn<AllPricesResponse[]>)
+          : undefined
+        if (parse?.status === StatusEnum.ok && parse.data?.length) {
+          const endTime = parse.timeProfile?.exchangeRequestEndTime
+          if (!endTime || +new Date() - endTime > this.allPricesCachePeriod) {
+            this.getAllPrices().catch((e) =>
+              logger.error(`getAllPricesStaleOk | refresh failed: ${e}`),
+            )
+          }
+          return parse
+        }
+      }
+    } catch (e) {
+      logger.error(`Error in getAllPricesStaleOk redis cache: ${e}`)
+    }
+    return this.getAllPrices()
   }
 
   async changeLeverage(

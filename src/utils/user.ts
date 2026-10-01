@@ -1220,8 +1220,10 @@ const fiatRateEntries = (fiatRates: RateSchema['fiatRates']): Prices =>
  * covers Kraken xStocks (`PGx.T`), Bybit-spot xstocks (`AAPLX`), etc. uniformly.
  *
  * Returns a map keyed by `${exchangeUUID}:${asset}` → `{ price, usdValue }`.
- * `getAllPrices` is a Redis read on a warm cache, so this is cheap enough to call
- * per request. Kept standalone (not wired into the cron) to bound blast radius.
+ * The rate table comes from `getAllPricesStaleOk`, a Redis read whenever any
+ * good table has been stored, so this is cheap enough to call per request and
+ * never waits on a connector that has parked the venue's price read. Kept
+ * standalone (not wired into the cron) to bound blast radius.
  */
 export const priceBalancesUsd = async (
   balances: PricedBalanceInput[],
@@ -1239,7 +1241,7 @@ export const priceBalancesUsd = async (
     const factory = ec.chooseExchangeFactory(e as ExchangeEnum)
     if (!factory) continue
     try {
-      const prices = await factory('', '').getAllPrices()
+      const prices = await factory('', '').getAllPricesStaleOk()
       if (prices.status === StatusEnum.ok) {
         rates = [
           ...rates,

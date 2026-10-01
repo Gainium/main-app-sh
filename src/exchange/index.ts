@@ -518,6 +518,14 @@ abstract class AbsctractExchange implements Exchange {
   abstract getAllPrices(
     cache?: boolean,
   ): Promise<BaseReturn<AllPricesResponse[]>>
+  /**
+   * Price table for a reader that accepts a stale one (dashboard valuation):
+   * may answer from the last good table instead of waiting on the connector.
+   * Without a stored copy it is plain `getAllPrices()`.
+   */
+  getAllPricesStaleOk(): Promise<BaseReturn<AllPricesResponse[]>> {
+    return this.getAllPrices()
+  }
   abstract changeMargin(data: {
     symbol: string
     margin: MarginType

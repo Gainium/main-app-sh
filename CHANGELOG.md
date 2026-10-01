@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.70.3] - 2026-10-01
+
+### Fixed
+
+- Dashboard USD valuation (the "In positions" figure and balances with USD values) no longer waits on the exchange's price list when the venue's read limit is used up. It answers from the last good price list and refreshes it in the background; it waits on a live fetch only when no price list has been stored yet. Bot price reads are unchanged.
+
 ## [1.70.2] - 2026-10-01
 
 ### Changed
