@@ -127,6 +127,27 @@ export function shouldSettlePartialBaseEntry(
   return !hasPendingCheck
 }
 
+/**
+ * How often, and how far apart, a settle re-reads a base order whose cancel
+ * the venue accepted but still reports as live.
+ *
+ * Coinbase cancels asynchronously: its connector reads the order straight back
+ * after the cancel and the venue still lists it `OPEN` (mapped to
+ * `PARTIALLY_FILLED`). Production saw the venue's own `CANCELED` event ~330 ms
+ * after the cancel was sent, so a few seconds is ample; past that the settle
+ * warns as before and the venue's event or the restore path takes over.
+ * Spec 125 §4.1.
+ */
+export const baseEntryCancelSettleAttempts = 6
+export const baseEntryCancelSettleDelayMs = 500
+
+/** Whether a venue answer about a base order is one it will never move from. */
+export function isSettledBaseEntryAnswer(
+  status: OrderStatusType | string | null | undefined,
+): boolean {
+  return status === 'FILLED' || terminalStatuses.has(`${status}`)
+}
+
 /** How long after the cancel report the deal is looked at again. */
 export const canceledBaseEntryDelayMs = 15_000
 

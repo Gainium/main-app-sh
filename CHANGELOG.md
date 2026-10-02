@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.72.2] - 2026-10-02
+
+### Fixed
+
+- DCA bots: when a base order stopped part-filled and the bot cancelled the rest on an exchange that cancels asynchronously, the cancel answer still showed the order open and the deal was left waiting with no take profit or safety orders. The bot now waits for the exchange to finish the cancel and opens the deal on what was bought; the exchange's own cancel report and a bot restart can now also open such a deal.
+
 ## [1.72.1] - 2026-10-02
 
 ### Fixed

@@ -508,6 +508,20 @@ describe('a venue-cancelled base entry is never booked (spec 048)', () => {
       expect(raised.events, 'told once').to.have.length(1)
     })
 
+    it('spec 125 §4.4 restore settles it when the row is only in the DB', async () => {
+      // A bot start loads its order book from Mongo with CANCELED/EXPIRED
+      // excluded, so the cancelled entry `restoreWork` just picked is not in
+      // memory and `checkBaseOrder`, which reads memory, found nothing.
+      const row = canceledBaseOrder()
+      const bot: any = buildBot({ order: null, timers: null, dbRows: [row] })
+      await bot.restoreWork()
+      const raised = bot.raised as Raised
+      expect(raised.replaced, 'no second base order').to.have.length(0)
+      expect(raised.started, 'deal opened on what filled').to.have.length(1)
+      expect(raised.started[0].executedQty).to.equal('0.0389993')
+      expect(raised.started[0].status).to.equal('FILLED')
+    })
+
     it('restore still re-places an entry that never traded', async () => {
       const bot: any = buildBot({
         order: null,

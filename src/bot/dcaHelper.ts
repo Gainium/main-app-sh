@@ -176,12 +176,16 @@ import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
 import { executedFillQty } from './dca/executedFill'
 import {
+  baseEntryCancelSettleAttempts,
+  baseEntryCancelSettleDelayMs,
   canceledBaseEntryDelayMs,
+  isSettledBaseEntryAnswer,
   isUnattributedUnfilledBaseEntryCancel,
   pickRestoreBaseEntry,
   settledBaseEntryFill,
   shouldSettlePartialBaseEntry,
   shouldTopUpSettledBaseEntry,
+  terminalEntryHoldsAFill,
 } from './dca/partialBaseEntry'
 import {
   resolveLimitTimeouts,
@@ -745,6 +749,17 @@ function createDCABotHelper<
      * accounts only these rest a remainder (spec `111` §4.1.1).
      */
     settledBaseEntries: Set<string> = new Set()
+    /**
+     * Base rows a `settlePartialBaseEntry` is working on right now, so a
+     * second caller for the same order cannot book it twice. Spec 125 §4.3.
+     */
+    settlingBaseEntries: Set<string> = new Set()
+    /**
+     * Base rows whose settle gave up with the order still live on the venue.
+     * The venue's own later `CANCELED` event is then the settle's to act on,
+     * even while the deal still holds entry timers. Spec 125 §4.2.
+     */
+    unsettledBaseEntries: Set<string> = new Set()
     /** Trailing guard mode as last read from Redis, and when. */
     trailingGuardModeRead: { mode: TrailingGuardMode; at: number } | null = null
     /** When each deal's trailing lag was last reported, to rate-limit it. */
@@ -9478,6 +9493,22 @@ function createDCABotHelper<
      * Spec 048 §4.3.
      */
     async settlePartialBaseEntry(order: Order, dealId: string) {
+      const id = order.clientOrderId
+      this.settlingBaseEntries ??= new Set()
+      if (this.settlingBaseEntries.has(id)) {
+        this.handleDebug(`Deal ${dealId} base order ${id} already settling`)
+        return
+      }
+      this.settlingBaseEntries.add(id)
+      this.unsettledBaseEntries?.delete(id)
+      try {
+        return await this.settlePartialBaseEntryNow(order, dealId)
+      } finally {
+        this.settlingBaseEntries.delete(id)
+      }
+    }
+
+    async settlePartialBaseEntryNow(order: Order, dealId: string) {
       this.handleLog(
         `Deal ${dealId} base order ${order.clientOrderId} stopped at ${order.executedQty} of ${order.origQty} and nothing else will check it. Cancelling the remainder and opening the deal on what filled`,
       )
@@ -9491,10 +9522,16 @@ function createDCABotHelper<
         price: order.price,
         updateTime: order.updateTime,
       }
-      const settled =
+      let settled =
         order.status === 'CANCELED' || order.status === 'EXPIRED'
           ? this.promoteEndedBaseEntry(order)
           : await this.cancelOrderOnExchange(order)
+      // The venue ACCEPTED the cancel but still reports the order live — a
+      // venue that cancels asynchronously (Coinbase) answers this way every
+      // time. Wait for it to end rather than give up. Spec 125 §4.1.
+      if (settled && !isSettledBaseEntryAnswer(settled.status)) {
+        settled = (await this.awaitBaseEntryCancel(order)) ?? settled
+      }
       // A row the engine settled itself, whose fill did not shrink on the way:
       // a venue answer read in the wrong unit fails that. Spec 111 §4.1.1.
       const noteSettled = (row: Order) => {
@@ -9518,11 +9555,45 @@ function createDCABotHelper<
           dealId,
         )
       }
+      if (settled && !isSettledBaseEntryAnswer(settled.status)) {
+        this.unsettledBaseEntries ??= new Set()
+        this.unsettledBaseEntries.add(order.clientOrderId)
+      }
       this.handleWarn(
         `Deal ${dealId} base order ${order.clientOrderId} could not be settled (${
           settled?.status ?? 'no answer from exchange'
         }). Deal stays in start until the bot restarts`,
       )
+    }
+
+    /**
+     * Re-read a base order whose cancel the venue accepted but still reports
+     * live, until the venue ends it or the attempts run out.
+     *
+     * `getOrder` already converts the quantity and promotes a
+     * `CANCELED`-with-fills answer to `FILLED`; that row is written the way
+     * `promoteEndedBaseEntry` writes one, because the venue's own cancel event
+     * has usually reached the orders collection first and the default write
+     * filter refuses to go over it. A `CANCELED`/`EXPIRED` answer is returned
+     * as is for `settledBaseEntryFill` to reconcile. `null` = still live.
+     * Spec 125 §4.1.
+     */
+    async awaitBaseEntryCancel(order: Order): Promise<Order | null> {
+      for (let i = 0; i < baseEntryCancelSettleAttempts; i++) {
+        await sleep(baseEntryCancelSettleDelayMs)
+        const venue = await this.getOrderForReconcile(order)
+        if (venue?.status !== StatusEnum.ok || !venue.data) {
+          continue
+        }
+        const row = await this.mergeCommonOrderWithOrder(venue.data, order)
+        if (row.status === 'FILLED') {
+          return this.promoteEndedBaseEntry(row)
+        }
+        if (isSettledBaseEntryAnswer(row.status)) {
+          return row
+        }
+      }
+      return null
     }
 
     /**
@@ -13329,6 +13400,25 @@ function createDCABotHelper<
               ? pickRestoreBaseEntry(inDb.data.result)
               : undefined
           if (baseRow) {
+            if (
+              terminalEntryHoldsAFill(
+                baseRow.status,
+                baseRow.executedQty,
+                baseRow.updateTime,
+              ) &&
+              !this.getOrderFromMap(baseRow.clientOrderId)
+            ) {
+              // The order book is loaded without CANCELED/EXPIRED rows, so the
+              // cancelled entry just picked is not in memory, and
+              // `checkBaseOrder` — which reads memory — would find nothing to
+              // settle. Spec 125 §4.4.
+              const full = await this.ordersDb.readData({
+                clientOrderId: baseRow.clientOrderId,
+              })
+              if (full.data?.result) {
+                this.setOrder(full.data.result, false)
+              }
+            }
             if (baseRow.status !== 'FILLED') {
               await this.checkBaseOrder(
                 this.botId,
@@ -20014,7 +20104,12 @@ function createDCABotHelper<
             // deal that machinery owns the order and settles it itself. A market
             // entry holds none, which is the case this is here for. Same reading
             // as spec 038 §4.2/§4.3.
-            hasPendingCheck: this.dealTimersMap.has(order.dealId),
+            // ...unless that machinery has already tried and given up with
+            // the order still live; this event is then the only report of how
+            // it ended. Spec 125 §4.2.
+            hasPendingCheck:
+              this.dealTimersMap.has(order.dealId) &&
+              !this.unsettledBaseEntries?.has(order.clientOrderId),
           })
         ) {
           await this.settlePartialBaseEntry(order, order.dealId)
