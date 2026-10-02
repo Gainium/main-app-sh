@@ -2282,6 +2282,12 @@ export interface BotSchema extends MainBot<BotSettings> {
     required: Asset
   }
   position: PositionInBot
+  /**
+   * The entry a NEUTRAL futures grid's value-changed TP/SL values `position`
+   * against (spec 117), keyed to the position it was computed for. Valid only
+   * while side, qty and price still match `position` (spec 124 §4.2).
+   */
+  closeEntry?: GridCloseEntry
   /** Signed-position breakpoints {time, qty}, newest last (funding rewind). */
   positionHistory?: { time: number; qty: number }[]
   stats: ProfitLossStats
@@ -2289,6 +2295,8 @@ export interface BotSchema extends MainBot<BotSettings> {
   lastPriceRangeAlert?: number
   liveStats?: GridLiveStats
 }
+
+export type GridCloseEntry = PositionInBot & { entry: number }
 
 export type GridLiveStats = {
   budget: number
@@ -5206,6 +5214,7 @@ export type InputGrid = {
     profitCurrency: ClearBotSchema['settings']['profitCurrency']
   }
   position: ClearBotSchema['position']
+  closeEntry?: ClearBotSchema['closeEntry']
   profit: {
     total: ClearBotSchema['profit']['total']
   }

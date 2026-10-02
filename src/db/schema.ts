@@ -735,6 +735,14 @@ const botSchema: Schema<BotSchema> = new Schema({
     qty: Number,
     price: Number,
   },
+  // Spec 124: the close entry the value-changed TP/SL values `position`
+  // against, keyed to the position it was computed for.
+  closeEntry: {
+    side: { type: String, enum: PositionSide },
+    qty: Number,
+    price: Number,
+    entry: Number,
+  },
   // Last few signed-position breakpoints {time, qty}, newest last. Lets the
   // funding processor rewind the position to a past settlement without reading
   // orders (grid drops filled orders from RAM once transacted).

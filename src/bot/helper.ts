@@ -3066,6 +3066,14 @@ function createBotHelper<
           this.handleDebug(
             `TP/SL entry: ${entry} for ${position.side} ${position.qty} (position price ${position.price})`,
           )
+          // Spec 124: the run-up/drawdown, live stats and the dashboard value
+          // the position against this same entry.
+          if (this.data) {
+            const closeEntry = { ...this.tpSlEntry }
+            this.data.closeEntry = closeEntry
+            this.updateData({ closeEntry })
+            this.emit('bot settings update', { closeEntry })
+          }
         } finally {
           this.tpSlEntryPending -= 1
         }
@@ -4791,6 +4799,7 @@ function createBotHelper<
           profitCurrency: this.data.settings.profitCurrency,
         },
         position: this.data.position,
+        closeEntry: this.data.closeEntry,
         profit: {
           total: this.data.profit.total,
         },
@@ -5577,6 +5586,7 @@ function createBotHelper<
           profit: this.data.profit,
           status: this.data.status,
           position: this.data.position,
+          closeEntry: this.data.closeEntry,
           currentBalances: this.data.currentBalances,
           lastPrice: this.data.lastPrice,
           lastUsdRate: this.data.lastUsdRate,

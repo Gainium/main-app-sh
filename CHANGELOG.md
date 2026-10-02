@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.72.1] - 2026-10-02
+
+### Fixed
+
+- Grid bots: on a neutral futures grid, the run-up, drawdown and live value statistics valued the open position against the average of every fill, while the percentage take-profit and stop-loss value it against the fills the close actually books. They now use the same entry, so a run-up above the take-profit no longer appears while the take-profit has correctly not fired. The bot exposes that entry as `closeEntry` (an additive field) for the dashboards. When and how the take-profit and stop-loss fire is unchanged.
+
 ## [1.72.0] - 2026-10-02
 
 ### Changed

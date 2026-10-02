@@ -8,6 +8,7 @@ import {
 } from '../../types'
 import { isFutures } from '../utils/index'
 import { botDb } from '../db/dbInit'
+import { gridPositionEntry } from './gridCloseEntry'
 
 type GridStatsMap = {
   start: number
@@ -87,10 +88,10 @@ export class GridMonitor {
           ? (bot.settings.leverage ?? 1)
           : 1
       const current = bot.position
+      // Spec 124: against the entry the value-changed TP/SL uses (spec 117).
+      const entry = gridPositionEntry(current, bot.closeEntry)
       const diff =
-        current.side === PositionSide.LONG
-          ? price - current.price
-          : current.price - price
+        current.side === PositionSide.LONG ? price - entry : entry - price
       // Spec 064: see the note in `helper.ts` `tpSl()` — the drawdown/run-up
       // is tracked against the same value the TP/SL triggers on, so it carries
       // the same correction.
@@ -143,11 +144,10 @@ export class GridMonitor {
     let valueChange = 0
     if (futures) {
       const current = bot.position
+      const entry = gridPositionEntry(current, bot.closeEntry)
       const diff =
-        current.side === PositionSide.LONG
-          ? price - current.price
-          : current.price - price
-      // Spec 064.
+        current.side === PositionSide.LONG ? price - entry : entry - price
+      // Spec 064, 124.
       const val = current.qty * diff
       valueChange = val + bot.profit.total
     } else {

@@ -3058,6 +3058,7 @@ export const BotSchema = /* GraphQL */ `
     shareId: String
     workingTimeTotal: Float
     position: BotPosition
+    closeEntry: BotCloseEntry
     exchangeUnassigned: Boolean
     vars: botVars
     stats: profitLossStats
@@ -3073,6 +3074,12 @@ export const BotSchema = /* GraphQL */ `
     side: String
     qty: Float
     price: Float
+  }
+  type BotCloseEntry {
+    side: String
+    qty: Float
+    price: Float
+    entry: Float
   }
   type indicatorGroupsType {
     id: String
