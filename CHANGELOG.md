@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.72.0] - 2026-10-02
+
+### Changed
+
+- Backtest engine 1.8.0: optional synchronous hooks and per-deal settings a server-side backtest runner can use; without hooks every backtest runs exactly as before.
+
 ## [1.71.0] - 2026-10-02
 
 ### Added
