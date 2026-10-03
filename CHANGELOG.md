@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.74.2] - 2026-10-03
+
+### Fixed
+
+- DCA: an open deal whose average entry price was written before 1.74.1 left out a base order that filled only partly and then ended cancelled, so its take profit was priced from the lower safety-order average and its size over-stated the position until the next safety order filled. The bot now recomputes that average, the deal size and the planned take profit when it restores the deal. The restore itself places and cancels no order; the corrected take profit is used the next time the bot places one.
+
 ## [1.74.1] - 2026-10-03
 
 ### Fixed

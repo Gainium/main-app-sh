@@ -13336,6 +13336,89 @@ function createDCABotHelper<
         await this.openIndicators(this.botId, serviceRestart)
       }
     }
+
+    /**
+     * Bring an open deal's stored average back in line with a base order that
+     * ended CANCELED with a fill. Spec 129.
+     *
+     * `getAvgPrice` counts such a row since spec 128 §4.2, but it only runs on
+     * a fill. A deal averaged before that keeps the safety-only average in
+     * the DB, so its take profit is priced too low and `deal.size` is
+     * overstated until its next safety fill, which may never come. This writes
+     * the deal and rebuilds `currentOrders`. It sends and cancels nothing, so
+     * a resting take profit keeps its price until something re-places it
+     * (§4.4).
+     */
+    private async restoreSettledBaseEntryAverage(
+      d: FullDeal<ExcludeDoc<Deal>>,
+    ) {
+      if (d.deal.parent) {
+        return
+      }
+      const dealId = `${d.deal._id}`
+      const baseRows = () =>
+        this.getOrdersByStatusAndDealId({
+          status: ['FILLED', 'CANCELED'],
+          dealId,
+        }).filter((o) => o.typeOrder === TypeOrderEnum.dealStart)
+      const isSettled = (o: { status: string; executedQty: string }) =>
+        o.status === 'CANCELED' && +o.executedQty > 0
+      if (!baseRows().some((o) => o.status === 'FILLED' || isSettled(o))) {
+        // The Redis order snapshot carries only what the writing process
+        // still held. Read the row as spec 125 §4.4 does for a deal in start.
+        // §4.2.
+        const inDb = await this.ordersDb.readData(
+          {
+            botId: this.botId,
+            dealId,
+            typeOrder: TypeOrderEnum.dealStart,
+            status: 'CANCELED',
+          },
+          undefined,
+          {},
+          true,
+        )
+        if (inDb.status === StatusEnum.ok) {
+          for (const o of inDb.data.result.filter(isSettled)) {
+            this.setOrder(o, false)
+          }
+        }
+      }
+      if (!baseRows().some(isSettled)) {
+        return
+      }
+      const { avg, display } = await this.getAvgPrice(dealId)
+      if (!(avg > 0) || !isFinite(avg)) {
+        return
+      }
+      if (avg === d.deal.avgPrice && avg === d.deal.settings.avgPrice) {
+        return
+      }
+      this.handleLog(
+        `Deal ${dealId} average ${d.deal.settings.avgPrice || d.deal.avgPrice} left out its settled base order, set ${avg}`,
+      )
+      d.deal.avgPrice = avg
+      d.deal.displayAvg = display
+      d.deal.settings.avgPrice = avg
+      this.saveDeal(d, {
+        avgPrice: avg,
+        displayAvg: display,
+        'settings.avgPrice': avg,
+      })
+      await this.updateUsage(dealId, false, false, false)
+      d.currentOrders = await this.createCurrentDealOrders(
+        d.deal.symbol.symbol,
+        d.deal.lastPrice,
+        d.initialOrders,
+        avg,
+        d.deal.initialPrice,
+        dealId,
+        false,
+        d.deal,
+        false,
+      )
+    }
+
     /**
      * Restore work
      */
@@ -13592,6 +13675,8 @@ function createDCABotHelper<
           await this.resumeTrailingCloseRetry(d)
           // Spec 111 §4.4: on both branches below, service restart included.
           this.resumeBaseEntryRemainder(d)
+          // Spec 129: before anything below places from `currentOrders`.
+          await this.restoreSettledBaseEntryAverage(d)
           if (!serviceRestart) {
             this.updateDealBalances(d)
             const completeLevels =
