@@ -108,5 +108,5 @@
   "overrides": {
     "@types/express-serve-static-core": "5.0.6"
   },
-  "version": "1.72.2"
+  "version": "1.73.0"
 }

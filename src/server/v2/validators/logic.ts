@@ -5,6 +5,7 @@ import {
   CreateComboBotInput,
   CreateDCABotInput,
   CreateGridBotInput,
+  DCABotSettings,
   DCAConditionEnum,
   IndicatorAction,
   IndicatorEnum,
@@ -23,14 +24,14 @@ import { Types } from 'mongoose'
 import { findPairBySymbol } from '../../../bot/utils'
 
 const indicatorsCheck: {
-  condition: (input: CreateDCABotInput) => boolean
-  verify: (input: CreateDCABotInput) => boolean
+  condition: (input: DCABotSettings) => boolean
+  verify: (input: DCABotSettings) => boolean
   errorMessage: string
 }[] = [
   {
-    condition: (input: CreateDCABotInput) =>
+    condition: (input: DCABotSettings) =>
       input.startCondition === StartConditionEnum.ti,
-    verify: (input: CreateDCABotInput) => {
+    verify: (input: DCABotSettings) => {
       const findIndicators = input.indicators?.filter(
         (indicator) => indicator.indicatorAction === IndicatorAction.startDeal,
       )
@@ -40,10 +41,10 @@ const indicatorsCheck: {
       'At least one indicator with action "startDeal" is required when startCondition is "ti"',
   },
   {
-    condition: (input: CreateDCABotInput) =>
+    condition: (input: DCABotSettings) =>
       input.dealCloseCondition === CloseConditionEnum.techInd ||
       input.dealCloseCondition === CloseConditionEnum.dynamicAr,
-    verify: (input: CreateDCABotInput) => {
+    verify: (input: DCABotSettings) => {
       const findIndicators = input.indicators?.filter(
         (indicator) =>
           (input.dealCloseCondition === CloseConditionEnum.dynamicAr
@@ -59,10 +60,10 @@ const indicatorsCheck: {
       'At least one indicator with action "closeDeal" is required when dealCloseCondition is "techInd"',
   },
   {
-    condition: (input: CreateDCABotInput) =>
+    condition: (input: DCABotSettings) =>
       input.dealCloseConditionSL === CloseConditionEnum.techInd ||
       input.dealCloseConditionSL === CloseConditionEnum.dynamicAr,
-    verify: (input: CreateDCABotInput) => {
+    verify: (input: DCABotSettings) => {
       const findIndicators = input.indicators?.filter(
         (indicator) =>
           (input.dealCloseConditionSL === CloseConditionEnum.dynamicAr
@@ -78,11 +79,11 @@ const indicatorsCheck: {
       'At least one indicator with action "closeDeal" and section "sl" is required when dealCloseConditionSL is "techInd"',
   },
   {
-    condition: (input: CreateDCABotInput) =>
+    condition: (input: DCABotSettings) =>
       input.dcaCondition === DCAConditionEnum.indicators ||
       input.scaleDcaType === ScaleDcaTypeEnum.adr ||
       input.scaleDcaType === ScaleDcaTypeEnum.atr,
-    verify: (input: CreateDCABotInput) => {
+    verify: (input: DCABotSettings) => {
       const findIndicators = input.indicators?.filter(
         (indicator) =>
           (input.scaleDcaType === ScaleDcaTypeEnum.adr
@@ -99,9 +100,9 @@ const indicatorsCheck: {
       'At least one indicator with action "startDca" and section "dca" is required when dcaCondition is "indicators"',
   },
   {
-    condition: (input: CreateDCABotInput) =>
+    condition: (input: DCABotSettings) =>
       input.botStart === BotStartTypeEnum.indicators,
-    verify: (input: CreateDCABotInput) => {
+    verify: (input: DCABotSettings) => {
       const findIndicators = input.indicators?.filter(
         (indicator) => indicator.indicatorAction === IndicatorAction.stopBot,
       )
@@ -111,9 +112,9 @@ const indicatorsCheck: {
       'At least one indicator with action "stopBot" is required when botStart is "indicators"',
   },
   {
-    condition: (input: CreateDCABotInput) =>
+    condition: (input: DCABotSettings) =>
       input.botActualStart === BotStartTypeEnum.indicators,
-    verify: (input: CreateDCABotInput) => {
+    verify: (input: DCABotSettings) => {
       const findIndicators = input.indicators?.filter(
         (indicator) => indicator.indicatorAction === IndicatorAction.startBot,
       )
@@ -123,9 +124,9 @@ const indicatorsCheck: {
       'At least one indicator with action "startBot" is required when botActualStart is "indicators"',
   },
   {
-    condition: (input: CreateDCABotInput) =>
+    condition: (input: DCABotSettings) =>
       !!input.useRiskReward && input.rrSlType !== RRSlTypeEnum.fixed,
-    verify: (input: CreateDCABotInput) => {
+    verify: (input: DCABotSettings) => {
       const findIndicators = input.indicators?.filter(
         (indicator) => indicator.indicatorAction === IndicatorAction.riskReward,
       )
@@ -135,6 +136,107 @@ const indicatorsCheck: {
       'At least one indicator with action "riskReward" is required when useRiskReward is true',
   },
 ]
+
+/**
+ * Each condition the settings use that is driven by an indicator (a `ti`
+ * start, indicator safety orders, …) has at least one indicator for it.
+ */
+export const requiredIndicatorErrors = (
+  input: DCABotSettings,
+): [string, string][] =>
+  indicatorsCheck
+    .filter((check) => check.condition(input) && !check.verify(input))
+    .map((check) => ['indicators', check.errorMessage])
+
+/**
+ * Cross-field indicator rules shared by bot creation and by bot updates that
+ * replace `indicators` / `indicatorGroups`. `input` is the complete settings
+ * object the bot will run with — for an update, the stored settings merged
+ * with the request — because each rule pairs an indicator with a condition
+ * that may live on either side of the merge.
+ */
+export const indicatorConsistencyErrors = (
+  input: DCABotSettings,
+): [string, string][] => {
+  const errors: [string, string][] = []
+  const indicators = input.indicators ?? []
+  const indicatorGroups = input.indicatorGroups ?? []
+  if (indicators.length > 20) {
+    errors.push([
+      'indicators',
+      `A maximum of 20 indicators is allowed. Currently provided: ${indicators.length}`,
+    ])
+  }
+  errors.push(...requiredIndicatorErrors(input))
+
+  if (
+    indicatorsCheck.every((check) => !check.condition(input)) &&
+    indicators.length > 0
+  ) {
+    errors.push([
+      'indicators',
+      `Indicators are provided but none of the conditions for using indicators are met. Please review your configuration.`,
+    ])
+  }
+
+  const indicatorGroupIds = indicatorGroups.map((group) => group.id)
+  const duplicateGroupIds = indicatorGroupIds.filter(
+    (id, index) => indicatorGroupIds.indexOf(id) !== index,
+  )
+  if (duplicateGroupIds.length > 0) {
+    errors.push([
+      'indicatorGroups',
+      `Duplicate indicator group IDs found: ${[...new Set(duplicateGroupIds)].join(', ')}`,
+    ])
+  }
+  const indicatorIds = indicators.map((indicator) => indicator.uuid)
+  const duplicateIndicatorIds = indicatorIds.filter(
+    (id, index) => indicatorIds.indexOf(id) !== index,
+  )
+  if (duplicateIndicatorIds.length > 0) {
+    errors.push([
+      'indicators',
+      `Duplicate indicator IDs found: ${[...new Set(duplicateIndicatorIds)].join(', ')}`,
+    ])
+  }
+  const indicatorsWithoutGroup = indicators.filter(
+    (indicator) =>
+      indicator.groupId &&
+      !indicatorGroups.find(
+        (group) =>
+          group.id === indicator.groupId &&
+          group.action === indicator.indicatorAction &&
+          group.section === indicator.section,
+      ),
+  )
+  if (indicatorsWithoutGroup.length > 0) {
+    errors.push([
+      'indicators',
+      `The following indicators reference non-existent groups: ${indicatorsWithoutGroup
+        .map((indicator) => indicator.uuid)
+        .join(', ')}`,
+    ])
+  }
+  const groupsWithoutIndicators = indicatorGroups.filter(
+    (group) =>
+      !indicators.find(
+        (indicator) =>
+          indicator.groupId === group.id &&
+          indicator.indicatorAction === group.action &&
+          indicator.section === group.section,
+      ),
+  )
+  if (groupsWithoutIndicators.length > 0) {
+    errors.push([
+      'indicatorGroups',
+      `The following groups have no indicators referencing them: ${groupsWithoutIndicators
+        .map((group) => group.id)
+        .join(', ')}`,
+    ])
+  }
+
+  return errors
+}
 
 export const validateCreateDCABotInputLogic = async <
   T extends CreateDCABotInput,
@@ -180,8 +282,7 @@ export const validateCreateDCABotInputLogic = async <
       (p) =>
         !foundPairs.find(
           (fp) =>
-            fp.pair === p ||
-            `${fp.baseAsset.name}_${fp.quoteAsset.name}` === p,
+            fp.pair === p || `${fp.baseAsset.name}_${fp.quoteAsset.name}` === p,
         ),
     )
     response.errors.push([
@@ -225,89 +326,13 @@ export const validateCreateDCABotInputLogic = async <
       `Indicator or price-based bot start conditions are not supported when useMulti is enabled. Please choose a different bot start condition or disable useMulti.`,
     ])
   }
-  if (input.indicators.length > 20) {
-    response.errors.push([
-      'indicators',
-      `A maximum of 20 indicators is allowed. Currently provided: ${input.indicators.length}`,
-    ])
-  }
   if (response.data.pair.length > 500) {
     response.errors.push([
       'pair',
       `A maximum of 500 pairs is allowed. Currently provided: ${response.data.pair.length}`,
     ])
   }
-  indicatorsCheck.forEach((check) => {
-    if (check.condition(input) && !check.verify(input)) {
-      response.errors.push(['indicators', check.errorMessage])
-    }
-  })
-
-  if (
-    indicatorsCheck.every((check) => !check.condition(input)) &&
-    input.indicators.length > 0
-  ) {
-    response.errors.push([
-      'indicators',
-      `Indicators are provided but none of the conditions for using indicators are met. Please review your configuration.`,
-    ])
-  }
-
-  const indicatorGroupIds = input.indicatorGroups.map((group) => group.id)
-  const duplicateGroupIds = indicatorGroupIds.filter(
-    (id, index) => indicatorGroupIds.indexOf(id) !== index,
-  )
-  if (duplicateGroupIds.length > 0) {
-    response.errors.push([
-      'indicatorGroups',
-      `Duplicate indicator group IDs found: ${[...new Set(duplicateGroupIds)].join(', ')}`,
-    ])
-  }
-  const indicatorIds = input.indicators.map((indicator) => indicator.uuid)
-  const duplicateIndicatorIds = indicatorIds.filter(
-    (id, index) => indicatorIds.indexOf(id) !== index,
-  )
-  if (duplicateIndicatorIds.length > 0) {
-    response.errors.push([
-      'indicators',
-      `Duplicate indicator IDs found: ${[...new Set(duplicateIndicatorIds)].join(', ')}`,
-    ])
-  }
-  const indicatorsWithoutGroup = input.indicators.filter(
-    (indicator) =>
-      indicator.groupId &&
-      !input.indicatorGroups.find(
-        (group) =>
-          group.id === indicator.groupId &&
-          group.action === indicator.indicatorAction &&
-          group.section === indicator.section,
-      ),
-  )
-  if (indicatorsWithoutGroup.length > 0) {
-    response.errors.push([
-      'indicators',
-      `The following indicators reference non-existent groups: ${indicatorsWithoutGroup
-        .map((indicator) => indicator.uuid)
-        .join(', ')}`,
-    ])
-  }
-  const groupsWithoutIndicators = input.indicatorGroups.filter(
-    (group) =>
-      !input.indicators.find(
-        (indicator) =>
-          indicator.groupId === group.id &&
-          indicator.indicatorAction === group.action &&
-          indicator.section === group.section,
-      ),
-  )
-  if (groupsWithoutIndicators.length > 0) {
-    response.errors.push([
-      'indicatorGroups',
-      `The following groups have no indicators referencing them: ${groupsWithoutIndicators
-        .map((group) => group.id)
-        .join(', ')}`,
-    ])
-  }
+  response.errors.push(...indicatorConsistencyErrors(input))
 
   if (input.useMultiTp && !input.multiTp?.length) {
     response.errors.push([

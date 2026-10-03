@@ -4430,10 +4430,11 @@ components:
           description: Skip balance check
         startCondition:
           type: string
-          description: Start deal condition
+          description: Start deal condition. TechnicalIndicators requires at least one `startDeal` indicator (send it in `indicators` in the same request if the bot has none).
           enum:
             - ASAP
             - Manual
+            - TechnicalIndicators
         maxNumberOfOpenDeals:
           type: string
           description: Max number of open deals
@@ -4541,6 +4542,17 @@ components:
           enum:
             - full
             - filled
+        indicators:
+          type: array
+          description: |
+            Technical indicators. **Replaces the bot's whole indicator list** — there is no merge by `uuid`. To keep an existing indicator, send it back with its `uuid`; send `[]` to remove them all; omit the field to leave them unchanged. Items follow the same rules as on bot creation (per-type defaults are filled in; a stored `_id` is ignored), including safety-order indicators (`indicatorAction: startDca`, `section: dca`) and their `minPercFromLast`. The result is validated against the bot's other settings — e.g. a `TechnicalIndicators` start still needs a `startDeal` indicator. Bot variables linked to a removed indicator are unlinked.
+          items:
+            $ref: "#/components/schemas/SettingsIndicators"
+        indicatorGroups:
+          type: array
+          description: Groups of indicator conditions. Replaces the bot's whole group list, like `indicators`. Every group must be referenced by at least one indicator and every indicator `groupId` must resolve to a group with the same action and section.
+          items:
+            $ref: "#/components/schemas/SettingsIndicatorGroup"
     UpdateComboDealsInput:
       type: object
       properties:
@@ -4775,10 +4787,11 @@ components:
           description: Skip balance check
         startCondition:
           type: string
-          description: Start deal condition
+          description: Start deal condition. TechnicalIndicators requires at least one `startDeal` indicator (send it in `indicators` in the same request if the bot has none).
           enum:
             - ASAP
             - Manual
+            - TechnicalIndicators
         maxNumberOfOpenDeals:
           type: string
           description: Max number of open deals
@@ -4963,10 +4976,11 @@ components:
           example: 5
         dcaCondition:
           type: string
-          description: DCA Type. For deal available options - percentage, custom. Custom required dcaCustom array.
+          description: DCA Type - percentage, custom or indicators. Custom requires the dcaCustom array; indicators requires at least one `startDca` indicator in section `dca` (send it in `indicators` in the same request if the bot has none).
           enum:
             - percentage
             - custom
+            - indicators
         dcaCustom:
           type: array
           description: DCA custom objects.
@@ -4985,6 +4999,17 @@ components:
               uuid:
                 type: string
                 description: Unique Id of the level
+        indicators:
+          type: array
+          description: |
+            Technical indicators. **Replaces the bot's whole indicator list** — there is no merge by `uuid`. To keep an existing indicator, send it back with its `uuid`; send `[]` to remove them all; omit the field to leave them unchanged. Items follow the same rules as on bot creation (per-type defaults are filled in; a stored `_id` is ignored), including safety-order indicators (`indicatorAction: startDca`, `section: dca`) and their `minPercFromLast`. The result is validated against the bot's other settings — e.g. a `TechnicalIndicators` start still needs a `startDeal` indicator. Bot variables linked to a removed indicator are unlinked.
+          items:
+            $ref: "#/components/schemas/SettingsIndicators"
+        indicatorGroups:
+          type: array
+          description: Groups of indicator conditions. Replaces the bot's whole group list, like `indicators`. Every group must be referenced by at least one indicator and every indicator `groupId` must resolve to a group with the same action and section.
+          items:
+            $ref: "#/components/schemas/SettingsIndicatorGroup"
     UpdateDCADealsInput:
       type: object
       properties:
@@ -9559,6 +9584,8 @@ paths:
       description: |
         Update an existing Combo bot's settings.
 
+        `indicators` and `indicatorGroups` are full replacements: send the complete list you want the bot to have (keep an indicator by sending it back with its `uuid`).
+
         Requires write permission of API keys.
       tags:
         - Bots - Combo
@@ -9752,6 +9779,8 @@ paths:
       summary: Update DCA Bot
       description: |
         Update an existing DCA bot's settings.
+
+        `indicators` and `indicatorGroups` are full replacements: send the complete list you want the bot to have (keep an indicator by sending it back with its `uuid`).
 
         Requires write permission of API keys.
       tags:

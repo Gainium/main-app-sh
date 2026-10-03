@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.73.0] - 2026-10-03
+
+### Added
+
+- REST API: updating or cloning a DCA or Combo bot (v2 `PUT /api/v2/bots/{dca|combo}/{botId}` and `/clone`, and the v1 update/clone calls) now accepts `indicators` and `indicatorGroups`, including safety-order indicators and their `minPercFromLast`. Each list replaces the bot's current one; send an indicator back with its `uuid` to keep it. Items are checked with the same rules as bot creation and against the bot's other settings, and an indicator read back from the API can be sent again unchanged. A bot update can also switch `startCondition` to `TechnicalIndicators` and `dcaCondition` to `indicators`, as long as the bot has the matching indicator.
+
+### Fixed
+
+- REST API: the `LW` indicator's documented `lwCondition` field was rejected as unexpected when creating a bot.
+
 ## [1.72.2] - 2026-10-02
 
 ### Fixed

@@ -88,6 +88,7 @@ import {
   validateCreateTerminalDealInput,
   validateCreateGridBotInput,
 } from './validators/bots'
+import { applyIndicatorSettingsUpdate } from './validators/indicatorUpdate'
 import {
   validateBotCreationContext,
   findConflictingFuturesPosition,
@@ -2987,7 +2988,16 @@ const v2API = <R extends UserSchema = UserSchema>(
           return res.status(400).json(check)
         }
 
-        const { pair, ...rest } = settings
+        const indicatorUpdate = applyIndicatorSettingsUpdate(
+          bot.data.result.settings,
+          settings,
+          bot.data.result.vars,
+        )
+        if (indicatorUpdate.status === StatusEnum.notok) {
+          return res.status(400).json(indicatorUpdate)
+        }
+
+        const { pair, ...rest } = indicatorUpdate.settings
         let pairToUse = pair
 
         if (pair?.length) {
@@ -3018,7 +3028,7 @@ const v2API = <R extends UserSchema = UserSchema>(
                   ...rest,
                   pair: pairToUse,
                   id: botId,
-                  vars: bot.data.result.vars,
+                  vars: indicatorUpdate.vars,
                 },
                 user.id,
                 !!bot.data.result.paperContext,
@@ -3030,7 +3040,7 @@ const v2API = <R extends UserSchema = UserSchema>(
                   ...rest,
                   pair: pairToUse,
                   id: botId,
-                  vars: bot.data.result.vars,
+                  vars: indicatorUpdate.vars,
                 },
                 user.id,
                 !!bot.data.result.paperContext,
@@ -3667,8 +3677,9 @@ const v2API = <R extends UserSchema = UserSchema>(
           })
         }
 
-        const { pair: _pair, ...rest } = settingsOverrides ?? {}
+        const { pair: _pair, ...overrides } = settingsOverrides ?? {}
         let pair = _pair
+        let rest = overrides
 
         // Validate pair if provided (skip for grid bots as they have different settings type)
         const check =
@@ -3682,6 +3693,19 @@ const v2API = <R extends UserSchema = UserSchema>(
 
         if (check.status === StatusEnum.notok) {
           return res.status(400).json(check)
+        }
+
+        if (botType !== 'grid') {
+          const indicatorUpdate = applyIndicatorSettingsUpdate(
+            sourceBot.settings as DCABotSettings,
+            rest,
+            sourceBot.vars,
+          )
+          if (indicatorUpdate.status === StatusEnum.notok) {
+            return res.status(400).json(indicatorUpdate)
+          }
+          rest = indicatorUpdate.settings
+          sourceBot.vars = indicatorUpdate.vars
         }
 
         if (pair?.length) {
@@ -3701,7 +3725,7 @@ const v2API = <R extends UserSchema = UserSchema>(
         // Combine settings: source bot + overrides
         const combinedSettings = {
           ...sourceBot.settings,
-          ...(settingsOverrides ?? {}),
+          ...(rest ?? {}),
           pair: clonedBotPair(sourceBot.settings.pair, pair),
         }
 

@@ -967,6 +967,10 @@ export const checkDCADealSettings = (
   allowedKeys = allowedSettingsKeys,
   onlyDcaKeys = onlyDcaSettingsKeys,
   onlyComboKeys = onlyComboSettingsKeys,
+  dcaConditions: string[] = [
+    DCAConditionEnum.percentage,
+    DCAConditionEnum.custom,
+  ],
 ): { status: StatusEnum.ok } | { status: StatusEnum.notok; reason: string } => {
   const keys = Object.keys(settings)
   if (keys.length === 0) {
@@ -1036,10 +1040,7 @@ export const checkDCADealSettings = (
     checkArray(settings.multiTp) &&
     checkBoolean(settings.trailingTp) &&
     checkStringAsNumber(settings.trailingTpPerc, true) &&
-    checkStringAsEnum(settings.dcaCondition, [
-      DCAConditionEnum.percentage,
-      DCAConditionEnum.custom,
-    ]) &&
+    checkStringAsEnum(settings.dcaCondition, dcaConditions) &&
     checkArray(settings.dcaCustom)
   if (!checkTypes) {
     return { status: StatusEnum.notok, reason: 'Wrong settings' }
@@ -1268,6 +1269,9 @@ export const checkDCABotSettings = (
     'comboActiveMinigrids',
     'comboUseSmartGrids',
     'comboSmartGridsCount',
+    // Full-array replacements, validated by applyIndicatorSettingsUpdate.
+    'indicators',
+    'indicatorGroups',
   ]
   const onlyDcaKeys = [...onlyDcaSettingsKeys].filter((v) => v !== 'orderSize')
 
@@ -1289,6 +1293,13 @@ export const checkDCABotSettings = (
     allowedKeys,
     onlyDcaKeys,
     onlyComboKeys,
+    // A bot (not a running deal) may move onto indicator-driven safety
+    // orders; applyIndicatorSettingsUpdate checks it has a startDca indicator.
+    [
+      DCAConditionEnum.percentage,
+      DCAConditionEnum.custom,
+      DCAConditionEnum.indicators,
+    ],
   )
   if (basic.status === StatusEnum.notok) {
     return basic
@@ -1320,6 +1331,8 @@ export const checkDCABotSettings = (
     checkStringAsEnum(settings.startCondition, [
       StartConditionEnum.asap,
       StartConditionEnum.manual,
+      // Needs a startDeal indicator; applyIndicatorSettingsUpdate checks it.
+      StartConditionEnum.ti,
     ]) &&
     checkStringAsNumber(settings.maxNumberOfOpenDeals, true) &&
     checkBoolean(settings.useStaticPriceFilter) &&

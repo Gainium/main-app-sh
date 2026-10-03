@@ -42,6 +42,7 @@ import {
 import { isCoinm, isFutures, isPaper } from '../utils'
 import { priceBalancesUsd } from '../utils/user'
 import { walletUuidOf } from '../utils/sharedWallet'
+import { applyIndicatorSettingsUpdate } from './v2/validators/indicatorUpdate'
 
 type ChangeBotPairsInputType = {
   botId?: string
@@ -986,7 +987,16 @@ const allAPI = <R extends UserSchema = UserSchema>(
       res.status(400).send(check)
       return
     }
-    const { pair, ...rest } = settings
+    const indicatorUpdate = applyIndicatorSettingsUpdate(
+      bot.data.result.settings,
+      settings,
+      bot.data.result.vars,
+    )
+    if (indicatorUpdate.status === StatusEnum.notok) {
+      res.status(400).send(indicatorUpdate)
+      return
+    }
+    const { pair, ...rest } = indicatorUpdate.settings
     let pairToUse = pair
     if (pair?.length) {
       const updatePairs = await Bot.changeDCABotPairs(
@@ -1014,7 +1024,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
         ...rest,
         pair: pairToUse,
         id: botId,
-        vars: bot.data.result.vars,
+        vars: indicatorUpdate.vars,
       },
       user.id,
       !!bot.data.result.paperContext,
@@ -1086,8 +1096,21 @@ const allAPI = <R extends UserSchema = UserSchema>(
       res.status(400).send(check)
       return
     }
+    const indicatorUpdate = applyIndicatorSettingsUpdate(
+      bot.data.result.settings,
+      settings,
+      bot.data.result.vars,
+    )
+    if (indicatorUpdate.status === StatusEnum.notok) {
+      res.status(400).send(indicatorUpdate)
+      return
+    }
     Bot.changeComboBot(
-      { ...settings, id: botId, vars: bot.data.result.vars },
+      {
+        ...indicatorUpdate.settings,
+        id: botId,
+        vars: indicatorUpdate.vars,
+      },
       user.id,
       !!bot.data.result.paperContext,
       undefined,
@@ -1604,6 +1627,14 @@ const allAPI = <R extends UserSchema = UserSchema>(
       if (check.status === StatusEnum.notok) {
         return res.status(400).send(check)
       }
+      const indicatorUpdate = applyIndicatorSettingsUpdate(
+        bot.data.result.settings,
+        rest,
+        bot.data.result.vars,
+      )
+      if (indicatorUpdate.status === StatusEnum.notok) {
+        return res.status(400).send(indicatorUpdate)
+      }
       if (pair?.length) {
         pair =
           (await Bot.checkPairs(bot.data.result.exchange, pair))?.data?.map(
@@ -1612,14 +1643,14 @@ const allAPI = <R extends UserSchema = UserSchema>(
       }
       const combinedSettings = {
         ...bot.data.result.settings,
-        ...(settings ?? {}),
+        ...indicatorUpdate.settings,
         pair: pair?.length ? pair : bot.data.result.settings.pair,
       }
       if (bot.data.result.settings.name && !settings?.name) {
         combinedSettings.name = `${bot.data.result.settings.name} (clone)`
       }
 
-      const vars = bot.data.result.vars
+      const vars = indicatorUpdate.vars
       if (rest && vars) {
         vars.paths = vars.paths.filter((p) => !(p.path in rest))
         const v = vars.paths.map((p) => p.variable)
@@ -1724,6 +1755,14 @@ const allAPI = <R extends UserSchema = UserSchema>(
       if (check.status === StatusEnum.notok) {
         return res.status(400).send(check)
       }
+      const indicatorUpdate = applyIndicatorSettingsUpdate(
+        bot.data.result.settings,
+        rest,
+        bot.data.result.vars,
+      )
+      if (indicatorUpdate.status === StatusEnum.notok) {
+        return res.status(400).send(indicatorUpdate)
+      }
       if (pair?.length) {
         pair =
           (await Bot.checkPairs(bot.data.result.exchange, pair))?.data?.map(
@@ -1732,13 +1771,13 @@ const allAPI = <R extends UserSchema = UserSchema>(
       }
       const combinedSettings = {
         ...bot.data.result.settings,
-        ...(rest ?? {}),
+        ...indicatorUpdate.settings,
         pair: pair?.length ? pair : bot.data.result.settings.pair,
       }
       if (bot.data.result.settings.name && !rest?.name) {
         combinedSettings.name = `${bot.data.result.settings.name} (clone)`
       }
-      const vars = bot.data.result.vars
+      const vars = indicatorUpdate.vars
       if (rest && vars) {
         vars.paths = vars.paths.filter((p) => !(p.path in rest))
         const v = vars.paths.map((p) => p.variable)

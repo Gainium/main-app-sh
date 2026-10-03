@@ -2052,7 +2052,7 @@ Input schema for updating Combo bot settings
 | `useReinvest` | boolean | No | Use reinvest profit. Requires reinvestValue value |
 | `reinvestValue` | string | No | Reinvest profit value in % |
 | `skipBalanceCheck` | boolean | No | Skip balance check |
-| `startCondition` | enum: `ASAP|Manual` | No | Start deal condition |
+| `startCondition` | enum: `ASAP|Manual|TechnicalIndicators` | No | Start deal condition. TechnicalIndicators requires a `startDeal` indicator |
 | `maxNumberOfOpenDeals` | string | No | Max number of open deals |
 | `useStaticPriceFilter` | boolean | No | Use static price filter. Require minOpenDeal or maxOpenDeal |
 | `minOpenDeal` | string | No | Minimum price for open deal |
@@ -2140,6 +2140,9 @@ Input schema for updating Combo bot settings
 
 
 ---
+| `indicators` | Array<[SettingsIndicators](#settingsindicators)> | No | Replaces the bot's whole indicator list (no merge by `uuid`; send an indicator back with its `uuid` to keep it, `[]` removes all). Same item rules as bot creation, safety-order (`startDca`/`dca`) indicators included. Validated against the bot's other settings; variables linked to a removed indicator are unlinked. |
+| `indicatorGroups` | Array<[SettingsIndicatorGroup](#settingsindicatorgroup)> | No | Replaces the bot's whole group list, like `indicators`. |
+
 
 ## UpdateComboDealsInput
 
@@ -2264,7 +2267,7 @@ Input schema for updating DCA bot settings
 | `useReinvest` | boolean | No | Use reinvest profit. Requires reinvestValue value |
 | `reinvestValue` | string | No | Reinvest profit value in % |
 | `skipBalanceCheck` | boolean | No | Skip balance check |
-| `startCondition` | enum: `ASAP|Manual` | No | Start deal condition |
+| `startCondition` | enum: `ASAP|Manual|TechnicalIndicators` | No | Start deal condition. TechnicalIndicators requires a `startDeal` indicator |
 | `maxNumberOfOpenDeals` | string | No | Max number of open deals |
 | `useStaticPriceFilter` | boolean | No | Use static price filter. Require minOpenDeal or maxOpenDeal |
 | `minOpenDeal` | string | No | Minimum price for open deal |
@@ -2305,7 +2308,7 @@ Input schema for updating DCA bot settings
 | `multiTp` | Array<object> | No | Multiple TP targets. |
 | `trailingTp` | boolean | No | Use trailing TP. Cannot be checked with active multiTp. Require trailingTpPerc. |
 | `trailingTpPerc` | string | No | Trailing take profit deviation on %. |
-| `dcaCondition` | enum: `percentage|custom` | No | DCA Type. For deal available options - percentage, custom. Custom required dcaCustom array. |
+| `dcaCondition` | enum: `percentage|custom|indicators` | No | DCA Type. Custom requires the dcaCustom array; indicators requires a `startDca` indicator in section `dca`. |
 | `dcaCustom` | Array<object> | No | DCA custom objects. |
 
 ### Example
@@ -2396,6 +2399,9 @@ Input schema for updating DCA bot settings
 
 
 ---
+| `indicators` | Array<[SettingsIndicators](#settingsindicators)> | No | Replaces the bot's whole indicator list (no merge by `uuid`; send an indicator back with its `uuid` to keep it, `[]` removes all). Same item rules as bot creation, safety-order (`startDca`/`dca`) indicators included. Validated against the bot's other settings; variables linked to a removed indicator are unlinked. |
+| `indicatorGroups` | Array<[SettingsIndicatorGroup](#settingsindicatorgroup)> | No | Replaces the bot's whole group list, like `indicators`. |
+
 
 ## UpdateDCADealsInput
 

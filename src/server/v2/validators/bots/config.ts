@@ -3,6 +3,7 @@ import {
   BotMarginTypeEnum,
   BotStartTypeEnum,
   BotStatusEnum,
+  LWConditionEnum,
   CloseConditionEnum,
   CloseDCATypeEnum,
   ComboTpBase,
@@ -830,6 +831,11 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: ['top', 'bottom', 'any'],
+  },
+  lwCondition: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(LWConditionEnum),
   },
   percentile: {
     required: false,
