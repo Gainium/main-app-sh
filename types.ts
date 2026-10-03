@@ -4382,8 +4382,24 @@ export interface SSBCreditSchema extends SchemaI {
   multiply: number
 }
 
+/**
+ * The process that produced a stored backtest result, when it is not a plain
+ * backtest (e.g. a run that compares variants of the bot). `id` refers to the
+ * producer's own record; `status` / `progress` follow it while it runs, and
+ * the result fields stay empty until it completes.
+ */
+export type BacktestResultSource = {
+  kind: string
+  id: string
+  variant?: string | null
+  status?: string | null
+  /** 0 … 100 */
+  progress?: number | null
+}
+
 export interface DCABacktestingResult extends SchemaI {
   serverSide?: boolean
+  source?: BacktestResultSource
   noData?: boolean
   maxLeverage?: number
   financial: {
@@ -4519,6 +4535,7 @@ export type PeriodicStats = {
   }
 }
 export interface ComboBacktestingResult extends SchemaI {
+  source?: BacktestResultSource
   serverSide: boolean
   noData?: boolean
   maxLeverage?: number

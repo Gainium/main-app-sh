@@ -2125,8 +2125,18 @@ export const BotSchema = /* GraphQL */ `
     maxDealDuration: SplitTime
     avgDealDuration: SplitTime
   }
+  "The process that produced a stored backtest result, when it is not a plain backtest"
+  type backtestResultSource {
+    kind: String
+    id: String
+    variant: String
+    status: String
+    "0 … 100"
+    progress: Float
+  }
   type backtest {
     serverSide: Boolean
+    source: backtestResultSource
     noData: Boolean
     maxLeverage: Float
     _id: String
@@ -2168,6 +2178,7 @@ export const BotSchema = /* GraphQL */ `
     deals: SymbolStatsDeals
   }
   type comboBacktest {
+    source: backtestResultSource
     serverSide: Boolean
     noData: Boolean
     maxLeverage: Float
