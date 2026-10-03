@@ -198,6 +198,63 @@ describe('baseOrderQty', () => {
     })
   })
 
+  describe('resolveBaseOrderQty — deal.size above what the deal holds (spec 128)', () => {
+    // KTA-USDC on Coinbase, 2026-10-03: base order 1405.4 (CANCELED part-fill),
+    // safety fills 3277.2, `currentBalances.base` 4682.6, but `deal.size`
+    // 4736.119249056785 because the stored average left the base order out.
+    it('the position is capped at the base ledger, so the row wins', () => {
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 1405.4,
+          filledQty: 3277.2,
+          dealSize: 4736.119249056785,
+          grossEntry: 4736.119249056785,
+          heldEntry: 4682.6,
+          floor: floor1,
+        }),
+      ).to.deep.equal({ qty: 1405.4, source: 'order' })
+    })
+
+    it('#702 is unchanged when the ledger agrees with deal.size', () => {
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 250,
+          filledQty: 0,
+          dealSize: 510,
+          grossEntry: 510,
+          heldEntry: 510,
+          floor: Math.floor,
+        }),
+      ).to.deep.equal({ qty: 510, source: 'position' })
+    })
+
+    it('a partial cap still raises above the row, never past the ledger', () => {
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 250,
+          filledQty: 0,
+          dealSize: 510,
+          grossEntry: 510,
+          heldEntry: 400,
+          floor: Math.floor,
+        }),
+      ).to.deep.equal({ qty: 400, source: 'position' })
+    })
+
+    it('an unreadable ledger is ignored', () => {
+      expect(
+        resolveBaseOrderQty({
+          boFromOrder: 250,
+          filledQty: 0,
+          dealSize: 510,
+          grossEntry: 510,
+          heldEntry: NaN,
+          floor: Math.floor,
+        }),
+      ).to.deep.equal({ qty: 510, source: 'position' })
+    })
+  })
+
   describe('resolveBaseOrderQty — the fallback that must survive', () => {
     it('a deal whose opening order has not landed still gets the nominal', () => {
       // qty 0 with source 'nominal' — the caller fills in the settings-derived

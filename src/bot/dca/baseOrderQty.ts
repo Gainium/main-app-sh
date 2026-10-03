@@ -87,6 +87,7 @@ export function resolveBaseOrderQty({
   filledQty,
   dealSize,
   grossEntry,
+  heldEntry,
   floor = (n: number) => n,
 }: {
   /** `executedQty` (else `origQty`) of the base order row, or 0 if there is none. */
@@ -97,6 +98,14 @@ export function resolveBaseOrderQty({
   dealSize: number
   /** Result of {@link grossEntryVolume}. */
   grossEntry: number
+  /**
+   * Gross entry volume as the deal's BASE ledger records it
+   * (`currentBalances.base` plus what it has already closed), when the
+   * caller can state it. Caps the `position` branch: `deal.size` is derived
+   * through the average price on a spot long, and an average that leaves an
+   * entry row out over-states it. Spec `128` §4.3.
+   */
+  heldEntry?: number
   /** Round DOWN to the pair's base precision, so a sub-step residue reads as 0. */
   floor?: (n: number) => number
 }): { qty: number; source: BaseOrderQtySource } {
@@ -125,8 +134,18 @@ export function resolveBaseOrderQty({
     // failure this module was written for — and across 8,740 live deals holding
     // a resting take-profit `deal.size` and the entry rows agree within 0.5% on
     // 8,704, so on a complete order map this branch is inert.
-    if (fromDeal > floor(boFromOrder)) {
-      return { qty: fromDeal, source: 'position' }
+    //
+    // Never above what the deal's base ledger says it entered, though: a
+    // `deal.size` computed through an average that left the settled base
+    // order out claimed 4736.1 against 4682.6 held, and the venue rejected the
+    // close for balance. Spec `128` §4.3. Still one-way — the cap cannot take
+    // the result below the row.
+    const fromPosition =
+      heldEntry !== undefined && isFinite(heldEntry)
+        ? Math.min(fromDeal, floor(Math.max(0, heldEntry - filledQty)))
+        : fromDeal
+    if (fromPosition > floor(boFromOrder)) {
+      return { qty: fromPosition, source: 'position' }
     }
     return { qty: boFromOrder, source: 'order' }
   }

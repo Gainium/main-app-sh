@@ -170,6 +170,8 @@ const buildBot = (opts: {
       }
       return { ...o, status: 'FILLED' }
     }
+    /** Persistence is spec `128`'s concern, tested there. */
+    updateOrderOnDb() {}
     /** The end of the chain — reached only if the deal actually opens. */
     async startDeal(o: any) {
       raised.started.push({ ...o })

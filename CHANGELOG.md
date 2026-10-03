@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.74.1] - 2026-10-03
+
+### Fixed
+
+- DCA/Combo: when a base order filled only partly and the bot cancelled the rest, the base order could be stored as cancelled and was then left out of the deal's average entry price. The deal then over-stated how many coins it held, so its take profit asked for more than the deal bought — rejected by the exchange for insufficient balance, or selling coins the user held outside the deal — and was priced off the lower average. The settled base order is now stored as filled, the average counts a cancelled base order's fills, and a take profit is never sized above what the deal's own balance records.
+
 ## [1.74.0] - 2026-10-03
 
 ### Added

@@ -8505,11 +8505,24 @@ function createDCABotHelper<
     private async getAvgPrice(
       dealId: string,
     ): Promise<{ avg: number; display: number }> {
+      // A base order that ended CANCELED with a fill is the deal's entry
+      // all the same: `findBaseOrderByDeal`, `updateUsage` and
+      // `updateDealBalances` count it, and `updateUsage` divides the quote it
+      // spent by this average to get `deal.size`. Left out here, the size
+      // over-states the position and the take profit asks for coins the deal
+      // does not hold. Spec 128 §4.2.
+      const entryRows = this.getOrdersByStatusAndDealId({
+        status: ['FILLED', 'CANCELED'],
+        dealId,
+      }).filter(
+        (o) =>
+          o.status === 'FILLED' ||
+          (o.typeOrder === TypeOrderEnum.dealStart && +o.executedQty > 0),
+      )
       if (this.futures) {
-        let filledDealOrder = this.getOrdersByStatusAndDealId({
-          status: 'FILLED',
-          dealId,
-        }).filter((o) => o.typeOrder !== TypeOrderEnum.br)
+        let filledDealOrder = entryRows.filter(
+          (o) => o.typeOrder !== TypeOrderEnum.br,
+        )
         filledDealOrder = [...filledDealOrder].sort(
           (a, b) => a.updateTime - b.updateTime,
         )
@@ -8531,10 +8544,7 @@ function createDCABotHelper<
         }
         return { avg: pos.price, display: pos.price }
       }
-      const filledDealOrder = this.getOrdersByStatusAndDealId({
-        status: 'FILLED',
-        dealId,
-      }).filter(
+      const filledDealOrder = entryRows.filter(
         (o) =>
           o.side === (this.isLong ? 'BUY' : 'SELL') &&
           o.typeOrder !== TypeOrderEnum.br,
@@ -9522,10 +9532,18 @@ function createDCABotHelper<
         price: order.price,
         updateTime: order.updateTime,
       }
-      let settled =
-        order.status === 'CANCELED' || order.status === 'EXPIRED'
-          ? this.promoteEndedBaseEntry(order)
-          : await this.cancelOrderOnExchange(order)
+      const ended = order.status === 'CANCELED' || order.status === 'EXPIRED'
+      let settled = ended
+        ? this.promoteEndedBaseEntry(order)
+        : await this.cancelOrderOnExchange(order)
+      // `cancelOrderOnExchange` writes a FILLED answer with the default
+      // filter, which the venue's own CANCELED event has usually beaten to the
+      // row. Left CANCELED there, the base order drops out of the average at
+      // the next reload and `deal.size` over-states the position. Forced, as
+      // `promoteEndedBaseEntry` is. Spec 128 §4.1.
+      if (!ended && settled?.status === 'FILLED') {
+        this.updateOrderOnDb(settled, true)
+      }
       // The venue ACCEPTED the cancel but still reports the order live — a
       // venue that cancels asynchronously (Coinbase) answers this way every
       // time. Wait for it to end rather than give up. Spec 125 §4.1.
@@ -17521,6 +17539,17 @@ function createDCABotHelper<
           // of them (spec `026`), and a PENDING reduce-funds is still in the
           // position.
           grossEntry: grossEntryVolume(dealSize, reduceFundsBase),
+          // Spot long only: there `deal.size` is the quote spent divided by
+          // the average (`updateUsage`), while `currentBalances.base` is
+          // booked fill by fill. `-add` is everything already closed or
+          // withdrawn, less the pending reduce-funds still held. Spec `128`
+          // §4.3.
+          heldEntry:
+            !this.futures && long && findDeal?.deal.currentBalances
+              ? +findDeal.deal.currentBalances.base -
+                add -
+                pendingReduceFunds.base
+              : undefined,
           floor: (n) => this.math.round(n, precision, !this.futures),
         })
         let boQty = resolvedBo.qty

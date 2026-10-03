@@ -522,13 +522,22 @@ describe('a base entry cut short is never topped back up (spec 057)', () => {
         return start(o)
       }
       await bot.checkBaseOrder(BOT_ID, SYMBOL, undefined, DEAL_ID)
-      expect(seen).to.deep.equal(['persist', 'open'])
+      // Spec 128 §4.1 adds the settler's own forced write of the FILLED
+      // answer ahead of the top-up's; both land before the deal is opened.
+      expect(seen).to.deep.equal(['persist', 'persist', 'open'])
+      const last = bot.raised.persisted[bot.raised.persisted.length - 1]
+      expect(last.executedQty, 'the merged row').to.equal('539.65')
+      expect(last.force).to.equal(true)
     })
 
     it('058 §4.3 a top-up that recovered nothing writes nothing', async () => {
       const bot: any = buildBot({})
       await bot.checkBaseOrder(BOT_ID, SYMBOL, undefined, DEAL_ID)
-      expect(bot.raised.persisted, 'no forced rewrite').to.have.length(0)
+      // The top-up writes nothing. The one write is the settler's forced
+      // FILLED promotion at what executed (spec 128 §4.1), not a rewrite.
+      expect(bot.raised.persisted, 'no top-up rewrite').to.have.length(1)
+      expect(bot.raised.persisted[0].status).to.equal('FILLED')
+      expect(bot.raised.persisted[0].executedQty).to.equal('14.62')
       expect(bot.raised.started[0].executedQty, 'still opened').to.equal(
         '14.62',
       )

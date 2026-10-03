@@ -300,6 +300,77 @@ describe('getTPOrder sizing (spec 017, issue #702)', () => {
     expect(tps?.[0]?.qty).to.equal(0.727)
   })
 
+  it('spec 128 §4.3 a deal.size above the base ledger does not over-size the close', async () => {
+    // KTA-USDC on Coinbase, 2026-10-03: the base order settled CANCELED at
+    // 1405.4 of 1407.8, six safety orders filled 3277.2, the deal holds
+    // 4682.6 — but `size` reads 4736.119249056785 because the stored average
+    // left the base order out. Production asked the venue for 4731.3 and was
+    // refused for balance; before that restart it had rested 4677.9.
+    const KTA_ID = '000000000000000000000d28'
+    const rows = [
+      {
+        ...BASE_ORDER,
+        dealId: KTA_ID,
+        clientOrderId: 'D-BO-0000000000000000000000000128',
+        status: 'CANCELED',
+        origQty: '1407.8',
+        executedQty: '1405.4',
+        price: '0.0711',
+      },
+      ...[
+        ['468.8', '0.0704'],
+        ['497.1', '0.0697'],
+        ['527.3', '0.069'],
+        ['559.3', '0.0683'],
+        ['594.2', '0.0675'],
+        ['630.5', '0.0668'],
+      ].map(([q, p], i) => ({
+        ...SAFETY_ORDER,
+        dealId: KTA_ID,
+        clientOrderId: `D-RO-00000000000000000000000000${i}`,
+        origQty: q,
+        executedQty: q,
+        price: p,
+        updateTime: 2 + i,
+      })),
+    ]
+    const bot: any = buildBot(rows)
+    bot.zeroFee = false
+    bot.getUserFee = async () => ({ maker: 0.001, taker: 0.001 })
+    bot.baseAssetPrecision = async () => 1
+    bot.getExchangeInfo = async () => ({
+      baseAsset: { minAmount: 0.1, step: 0.1, asset: 'KTA' },
+      quoteAsset: { minAmount: 1, step: 0.0001, asset: 'USDC' },
+      priceAssetPrecision: 4,
+    })
+    const deal = {
+      ...DEAL,
+      _id: KTA_ID,
+      symbol: { symbol: 'KTA-USDC' },
+      size: 4736.119249056785,
+      avgPrice: 0.06849175515684121,
+      lastPrice: 0.0668,
+      initialPrice: 0.0711,
+      settings: { avgPrice: 0.06849175515684121 },
+      currentBalances: { base: 4682.6, quote: 1968.01801 },
+      initialBalances: { base: 0, quote: 2292.40313 },
+    }
+    bot.getDeal = (id: string) =>
+      id === deal._id
+        ? { deal, initialOrders: [], currentOrders: [] }
+        : undefined
+    const tps = await bot.getTPOrder(
+      'KTA-USDC',
+      deal.lastPrice,
+      [],
+      deal.avgPrice,
+      deal.initialPrice,
+      deal._id,
+      deal,
+    )
+    expect(tps?.[0]?.qty).to.equal(4677.9)
+  })
+
   it('§3.2 with BOTH entry rows absent the position still supplies 510', async () => {
     // Pre-existing behaviour (`source: 'deal'`, shipped 2026-08-26) — pinned
     // here so the new branch cannot regress it.
