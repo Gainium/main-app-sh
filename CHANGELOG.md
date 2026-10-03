@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.73.1] - 2026-10-03
+
+### Changed
+
+- API docs: the v1 swagger and the AI API guide describe replacing a bot's indicators on update/clone, including safety-order indicators.
+
 ## [1.73.0] - 2026-10-03
 
 ### Added

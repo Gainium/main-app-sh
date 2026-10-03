@@ -190,6 +190,26 @@ response = requests.post(
 )
 ```
 
+### Replace a Bot's Indicators
+`indicators` and `indicatorGroups` are **full replacements** on update and clone: send the complete list the bot should have. Keep an existing indicator by sending it back with its `uuid` (a read-modify-write of the bot's current list works as-is); `[]` removes all. The result must stay consistent with the bot's settings — e.g. `startCondition: "TechnicalIndicators"` needs a `startDeal` indicator, `dcaCondition: "indicators"` needs a `startDca` indicator in section `dca` — otherwise the call returns 400 with an `errors` list.
+```python
+response = requests.put(
+    "https://api.gainium.io/api/v2/bots/dca/550e8400-e29b-41d4-a716-446655440000",
+    json={
+        "dcaCondition": "indicators",
+        "indicators": [
+            {"type": "RSI", "uuid": "so-rsi", "groupId": "so",
+             "indicatorAction": "startDca", "section": "dca",
+             "indicatorValue": "30", "minPercFromLast": "1.5"}
+        ],
+        "indicatorGroups": [
+            {"id": "so", "logic": "and", "action": "startDca", "section": "dca"}
+        ],
+    },
+    headers=headers,
+)
+```
+
 ## API Endpoints
 
 All endpoints support field selection via `?fields=minimal|standard|extended|full` parameter.

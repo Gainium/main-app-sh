@@ -115,7 +115,8 @@
             "description": "Start deal condition",
             "enum": [
               "ASAP",
-              "Manual"
+              "Manual",
+              "TechnicalIndicators"
             ]
           },
           "maxNumberOfOpenDeals": {
@@ -363,7 +364,8 @@
             "description": "DCA Type. For deal available options - percentage, custom. Custom required dcaCustom array.",
             "enum": [
               "percentage",
-              "custom"
+              "custom",
+              "indicators"
             ]
           },
           "dcaCustom": {
@@ -388,6 +390,20 @@
                   "description": "Unique Id of the level"
                 }
               }
+            }
+          },
+          "indicators": {
+            "type": "array",
+            "description": "Technical indicators, including safety-order indicators (indicatorAction startDca, section dca) and their minPercFromLast. Replaces the bot's whole indicator list - send an indicator back with its uuid to keep it, [] removes all, omit to leave unchanged. Items use the same fields and rules as on bot creation; the result is validated against the bot's other settings. Field reference: SettingsIndicators in the v2 API docs.",
+            "items": {
+              "type": "object"
+            }
+          },
+          "indicatorGroups": {
+            "type": "array",
+            "description": "Groups of indicator conditions ({id, logic, action, section}). Replaces the bot's whole group list, like indicators.",
+            "items": {
+              "type": "object"
             }
           }
         }
@@ -487,7 +503,8 @@
             "description": "Start deal condition",
             "enum": [
               "ASAP",
-              "Manual"
+              "Manual",
+              "TechnicalIndicators"
             ]
           },
           "maxNumberOfOpenDeals": {
@@ -630,6 +647,20 @@
               "full",
               "filled"
             ]
+          },
+          "indicators": {
+            "type": "array",
+            "description": "Technical indicators, including safety-order indicators (indicatorAction startDca, section dca) and their minPercFromLast. Replaces the bot's whole indicator list - send an indicator back with its uuid to keep it, [] removes all, omit to leave unchanged. Items use the same fields and rules as on bot creation; the result is validated against the bot's other settings. Field reference: SettingsIndicators in the v2 API docs.",
+            "items": {
+              "type": "object"
+            }
+          },
+          "indicatorGroups": {
+            "type": "array",
+            "description": "Groups of indicator conditions ({id, logic, action, section}). Replaces the bot's whole group list, like indicators.",
+            "items": {
+              "type": "object"
+            }
           }
         }
       }
