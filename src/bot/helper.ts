@@ -5002,7 +5002,9 @@ function createBotHelper<
                     : PositionSide.BOTH
                 : PositionSide.BOTH,
             }
-          } else if (!this.futures) {
+          } else if (this.futures) {
+            this.handleLog('Position already closed. Executing stop method')
+          } else {
             const qty = await this.sellBaseAmount()
             if (qty * msg.price < ed.quoteAsset.minAmount) {
               this.handleLog(
@@ -5225,8 +5227,10 @@ function createBotHelper<
               this.emit('bot settings update', data)
               this.updateData({ ...data })
             }
-            this.stop(true)
           }
+          // Spec 127: also when there was nothing to close — the grid is
+          // already cancelled and blocked, so not stopping leaves it bare.
+          this.stop(true)
         }
       } else {
         this.lockTpSlCheck = false

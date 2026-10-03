@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.73.2] - 2026-10-03
+
+### Fixed
+
+- Grid bots: a futures grid whose take profit or stop loss ("stop and sell") fired while its position was already closed cancelled every grid order but never stopped, leaving the bot running with no orders. It now stops.
+
 ## [1.73.1] - 2026-10-03
 
 ### Changed
