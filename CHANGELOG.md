@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.74.0] - 2026-10-03
+
+### Added
+
+- Backtests: a stored DCA or Combo backtest result can carry an optional `source` (`kind`, `id`, `variant`, `status`, `progress`) naming the process that produced it, so a runner that stores its results next to the user's backtests can create the row when it starts and report its status and progress there. Plain backtests leave it unset.
+
+### Fixed
+
+- Backtest lists (DCA, Combo, Grid, Hedge): a request sorted descending was sorted ascending, so asking for the newest backtests first returned the oldest page, and anyone with more stored backtests than one page did not see their latest ones. The requested direction is now honoured, with ties broken consistently so pages neither repeat nor skip rows. A sort on `created` keeps its previous direction for the clients that rely on it. Other lists are unchanged.
+
 ## [1.73.2] - 2026-10-03
 
 ### Fixed

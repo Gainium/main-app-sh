@@ -146,7 +146,10 @@ import {
 } from '../utils/password'
 import { createOrUpdateUser, findUser as _findUser } from './handlers/user'
 import { resetUser } from '../utils/user'
-import { mapDataGridOptionsToMongoOptions } from '../db/utils'
+import {
+  mapBacktestListOptions,
+  mapDataGridOptionsToMongoOptions,
+} from '../db/utils'
 import Exchange from '../exchange/exchange'
 import ExchangeChooser from '../exchange/exchangeChooser'
 import { updateOkxEuPairs } from '../utils/cron/exchange'
@@ -4084,7 +4087,7 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { filter, ...rest } = mapDataGridOptionsToMongoOptions(input)
+      const { filter, ...rest } = mapBacktestListOptions(input)
       const result = await backtestDb.readData(
         { userId: user.data._id.toString(), ...filter },
         undefined,
@@ -4111,7 +4114,7 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { filter, ...rest } = mapDataGridOptionsToMongoOptions(input)
+      const { filter, ...rest } = mapBacktestListOptions(input)
       const result = await comboBacktestDb.readData(
         { userId: user.data._id.toString(), ...filter },
         undefined,
@@ -4138,7 +4141,7 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { filter, ...rest } = mapDataGridOptionsToMongoOptions(input)
+      const { filter, ...rest } = mapBacktestListOptions(input)
       const result = await hedgeComboBacktestDb.readData(
         { userId: user.data._id.toString(), ...filter },
         undefined,
@@ -4165,7 +4168,7 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { filter, ...rest } = mapDataGridOptionsToMongoOptions(input)
+      const { filter, ...rest } = mapBacktestListOptions(input)
       const result = await hedgeDcaBacktestDb.readData(
         { userId: user.data._id.toString(), ...filter },
         undefined,
@@ -4344,7 +4347,7 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { filter, ...rest } = mapDataGridOptionsToMongoOptions(input)
+      const { filter, ...rest } = mapBacktestListOptions(input)
       const result = await gridBacktestDb.readData(
         { userId: user.data._id.toString(), ...filter },
         undefined,

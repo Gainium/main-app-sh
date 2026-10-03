@@ -174,3 +174,41 @@ export const mapDataGridOptionsToMongoOptions = (input?: {
     limit: pageSize,
   }
 }
+
+/**
+ * Fields a backtest-list client already sorts on with the generic mapping's
+ * reversed direction: a sort on `created` 'asc' is sent to mean newest first.
+ * Kept as they are so that request keeps returning what it shows.
+ */
+export const BACKTEST_LIST_LEGACY_DIRECTION_FIELDS: readonly string[] = [
+  'created',
+]
+
+/**
+ * The backtest lists (DCA, Combo, Grid, Hedge) — `mapDataGridOptionsToMongoOptions`
+ * with the requested sort direction honoured: 'desc' sorts descending (newest,
+ * largest first), 'asc' ascending, a missing direction descending. The generic
+ * mapping sorts 'desc' ascending; its other callers are unchanged.
+ * Ties are broken by `_id` in the same direction, so pages neither repeat nor
+ * skip rows that share a sort value. A sort on a field of
+ * BACKTEST_LIST_LEGACY_DIRECTION_FIELDS keeps the generic direction.
+ */
+export const mapBacktestListOptions = (
+  input?: Parameters<typeof mapDataGridOptionsToMongoOptions>[0],
+) => {
+  const mapped = mapDataGridOptionsToMongoOptions(input)
+  const requested = input?.sortModel?.[0]
+  if (
+    !requested ||
+    BACKTEST_LIST_LEGACY_DIRECTION_FIELDS.includes(`${requested.field}`)
+  ) {
+    return mapped
+  }
+  const key = Object.keys(mapped.sort)[0]
+  const dir = requested.sort === 'asc' ? 1 : -1
+  const sort: { [x: string]: number } = { [key]: dir }
+  if (key !== '_id') {
+    sort._id = dir
+  }
+  return { ...mapped, sort }
+}
