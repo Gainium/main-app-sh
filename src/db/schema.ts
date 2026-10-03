@@ -2633,9 +2633,19 @@ const backtestRatios = {
   cwr: Number,
 }
 
+/** See `BacktestResultSource`. */
+const backtestResultSource = {
+  kind: String,
+  id: String,
+  variant: String,
+  status: String,
+  progress: Number,
+}
+
 const backtestCommon = {
   noData: Boolean,
   serverSide: Boolean,
+  source: backtestResultSource,
   maxLeverage: Number,
   financial: backtestFinancial,
   duration: backtestDuration,
