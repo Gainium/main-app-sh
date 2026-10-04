@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.74.3] - 2026-10-04
+
+### Fixed
+
+- Combo with Smart Grids: grid orders the bot cancelled itself to keep only the nearest levels on the book were also removed from their mini grid's ladder, so they were never placed again when the price came back, and a deal could hold a position with no sell order until its settings were saved. Orders the bot cancels itself now stay on the ladder; an order cancelled by the exchange or the account owner is still removed and its funds released.
+
 ## [1.74.2] - 2026-10-03
 
 ### Fixed

@@ -491,6 +491,66 @@ describe('a cancelled grid order keeps its reservation (spec 077)', () => {
     })
   })
 
+  describe('spec 130: a level the bot cancelled itself stays on the ladder', () => {
+    it('keeps a level the bot cancelled itself (Smart Grids trim)', async () => {
+      // Smart Grids keeps only the N levels nearest the price on the book and
+      // cancels the rest itself, re-placing them from `currentOrders` when the
+      // price returns. Pruning them erased them for the life of the minigrid.
+      // Recorded through the real `noteOwnCancel`, as `cancelOrderOnExchange`
+      // does before the venue round trip. Spec 130 §1.1.
+      const { bot, minigrid, deal, savedMinigrid } = buildBot({})
+      const quoteBefore = deal.deal.assets.used.quote
+      for (const price of CANCELED_BUY_PRICES) {
+        const order = canceledGridOrder(price)
+        bot.noteOwnCancel(order.clientOrderId)
+        await bot.processCanceledOrder(order, 1790023332404, false)
+      }
+      expect(minigrid.schema.grids.buy).to.equal(9)
+      expect(minigrid.currentOrders).to.have.length(
+        LIVE_BUY_PRICES.length +
+          CANCELED_BUY_PRICES.length +
+          LIVE_SELL_PRICES.length,
+      )
+      expect(deal.deal.assets.used.quote).to.equal(quoteBefore)
+      expect(savedMinigrid).to.have.length(0)
+    })
+
+    it('keeps trimmed SELL levels on a long bot', async () => {
+      // The reporter's shape: the sells of an upper minigrid trimmed when a
+      // lower one opened. Spec 130 §1.1. The trimmed sells are off the book,
+      // so the live-order index holds only the BUYs.
+      const { bot, minigrid } = buildBot({
+        live: LIVE_BUY_PRICES.map((p) => liveOrder(p, OrderSideEnum.buy)),
+      })
+      for (const price of LIVE_SELL_PRICES) {
+        const order = canceledGridOrder(price, OrderSideEnum.sell)
+        bot.noteOwnCancel(order.clientOrderId)
+        await bot.processCanceledOrder(order, 1790023332404, false)
+      }
+      expect(minigrid.schema.grids.sell).to.equal(4)
+    })
+
+    it('still prunes a venue cancel next to an own cancel', async () => {
+      // Spec 077 is unchanged for a cancel this bot did not issue. Spec 130 §4.
+      const { bot, minigrid } = buildBot({})
+      const own = canceledGridOrder(20.545)
+      bot.noteOwnCancel(own.clientOrderId)
+      await bot.processCanceledOrder(own, 1790023332404, false)
+      await bot.processCanceledOrder(
+        canceledGridOrder(20.48),
+        1790023332404,
+        false,
+      )
+      expect(minigrid.schema.grids.buy).to.equal(8)
+      expect(minigrid.currentOrders.some((g: any) => g.price === 20.545)).to.equal(
+        true,
+      )
+      expect(minigrid.currentOrders.some((g: any) => g.price === 20.48)).to.equal(
+        false,
+      )
+    })
+  })
+
   describe('a base order cancelled off the venue before it traded', () => {
     const unfilledBase = (over: Record<string, unknown> = {}) =>
       ({

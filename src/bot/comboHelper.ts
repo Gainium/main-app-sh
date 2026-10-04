@@ -2481,6 +2481,16 @@ function createComboBotHelper<
       if (order.typeOrder !== TypeOrderEnum.dealGrid) {
         return
       }
+      // A cancel this bot issued is not a hole in the ladder. Smart Grids
+      // cancels the levels furthest from the price on purpose and re-places
+      // them from `currentOrders` when the price comes back; pruning them here
+      // erased them for the life of the minigrid, and a position whose sells
+      // were trimmed while a lower minigrid traded was left with no sell order
+      // at all. Every other cancel the bot issues (re-placement, minigrid or
+      // deal close) rebuilds or removes the ladder itself. Spec 130.
+      if (this.isOwnCancel(order.clientOrderId)) {
+        return
+      }
       // `CANCELED` and `EXPIRED` are the same fact — the level is off the book
       // — and the side it sat on does not change that. Until spec 077 this ran
       // only for `EXPIRED`, and then only for the side that closes the
