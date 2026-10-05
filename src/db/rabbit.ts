@@ -229,6 +229,17 @@ class ChannelPool {
     return channel
   }
 
+  /**
+   * Forget every channel without closing it: after the connection dropped,
+   * amqplib has already closed them all, and closing one again only throws
+   * `IllegalOperationError: Channel closed` (one log line per channel).
+   */
+  discard(): void {
+    this.connection = null
+    this.channels = []
+    this.dedicatedChannels = []
+  }
+
   close(): void {
     this.channels.forEach((channel) => {
       try {
@@ -254,17 +265,6 @@ class Client {
   static channelPool: ChannelPool | null = null
   static channel: Channel | null = null // Keep for backward compatibility
 
-  static async reconnect() {
-    logger.info(`${prefix} Reconnect RabbitMQ`)
-    if (Client.channelPool) {
-      Client.channelPool.close()
-      Client.channelPool = null
-    }
-    Client.client = null
-    Client.channel = null
-    Client.connect()
-  }
-
   @IdMute(mutex, () => 'rabbitconnect')
   static async connect() {
     logger.info(`${prefix} Connect RabbitMQ`)
@@ -276,30 +276,39 @@ class Client {
       amqplib.connect(
         `amqp://${RABBIT_USER}:${RABBIT_PASSWORD}@${RABBIT_HOST}`,
         async (err, conn) => {
-          conn?.on('error', async (_err) => {
+          // amqplib emits 'error' (when there is one) and then always 'close'
+          // for the same drop: log the error, recover once, on 'close'.
+          conn?.on('error', (_err) => {
             logger.error(`${prefix} RabbitMQ Client Error: ${_err}`)
-            await sleep(retryTimeout)
-            await Client.reconnect()
           })
           conn?.on('close', async (_err) => {
             logger.error(`${prefix} RabbitMQ Client Closed: ${_err}`)
+            Client.dropped(conn)
             await sleep(retryTimeout)
-            await Client.reconnect()
+            await Client.connect()
           })
           if (err) {
             logger.error(`${prefix} RabbitMQ Client Connection Error: ${err}`)
             await sleep(retryTimeout)
             Client.connect()
             resolve([])
+            return
           }
           Client.client = Client.client ?? conn ?? null
 
           if (Client.client && !Client.channelPool) {
-            Client.channelPool = new ChannelPool(Client.client)
-            await Client.channelPool.initialize()
+            try {
+              Client.channelPool = new ChannelPool(Client.client)
+              await Client.channelPool.initialize()
 
-            if (!Client.channel && Client.channelPool) {
-              Client.channel = Client.channelPool.getChannel()
+              if (!Client.channel && Client.channelPool) {
+                Client.channel = Client.channelPool.getChannel()
+              }
+            } catch (e) {
+              // the connection dropped while its channels were opening: its
+              // 'close' handler reconnects. Thrown from this callback it would
+              // be an unhandled rejection (fatal in a worker thread).
+              logger.error(`${prefix} RabbitMQ channel pool setup failed: ${e}`)
             }
           }
 
@@ -307,6 +316,19 @@ class Client {
         },
       )
     })
+  }
+
+  /**
+   * The connection `conn` is gone: stop handing out it and its channels at
+   * once, so the next caller connects afresh instead of failing on a dead
+   * channel until the delayed reconnect runs.
+   */
+  static dropped(conn: Connection | undefined) {
+    if (!conn || Client.client !== conn) return
+    Client.channelPool?.discard()
+    Client.channelPool = null
+    Client.client = null
+    Client.channel = null
   }
 
   @IdMute(mutex, () => 'rabbitgetclient')
@@ -430,22 +452,30 @@ class Rabbit {
         })
       }
 
-      return new Promise<{ response: R | null } | null>(
-        async (resolve, reject) => {
-          let time: NodeJS.Timeout | null = null
-          if (timeout) {
-            time = setTimeout(async () => {
-              logger.error(
-                `${prefix} Timeout for ${queue} in sendWithCallback ${JSON.stringify(
-                  payload,
-                )} ${correlationId}`,
-              )
-              recordRpcTimeout(queue)
-              await cleanUp()
-              reject(null)
-            }, timeout)
-          }
+      return new Promise<{ response: R | null } | null>((resolve, reject) => {
+        let time: NodeJS.Timeout | null = null
+        if (timeout) {
+          time = setTimeout(async () => {
+            logger.error(
+              `${prefix} Timeout for ${queue} in sendWithCallback ${JSON.stringify(
+                payload,
+              )} ${correlationId}`,
+            )
+            recordRpcTimeout(queue)
+            await cleanUp()
+            reject(null)
+          }, timeout)
+        }
 
+        const onClosedChannel = (e: unknown) => {
+          // the connection dropped since this channel was handed out
+          if (time) clearTimeout(time)
+          logger.error(
+            `${prefix} Error in sendWithCallback consume for ${queue}: ${e}`,
+          )
+          resolve(null)
+        }
+        try {
           dedicatedChannel.consume(
             replyQueue.queue,
             async (msg) => {
@@ -484,8 +514,10 @@ class Rabbit {
               tag = ok
             },
           )
-        },
-      ).catch(() => {
+        } catch (e) {
+          onClosedChannel(e)
+        }
+      }).catch(() => {
         return null
       })
     } catch (e) {

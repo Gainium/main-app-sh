@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.75.2] - 2026-10-05
+
+### Fixed
+
+- RabbitMQ client: a dropped connection is recovered once (on `close`) instead of twice (on `error` and `close`); its channels are forgotten instead of closed again, which logged an `IllegalOperationError: Channel closed` line per channel; the dead connection is no longer handed out until the delayed reconnect, so the next caller connects afresh; and a connection that drops while its channels are opening, or a reply consumer started on a channel that just closed, no longer raises an unhandled rejection (fatal in a worker thread).
+
 ## [1.75.1] - 2026-10-05
 
 ### Fixed
