@@ -206,6 +206,7 @@ import {
   type SignedFill,
   type FundingComputeResult,
 } from './fundingProcessor'
+import { zeroFeeApplies } from './zeroFee'
 import Bot from '.'
 import { SKIP_REDIS } from '../config'
 
@@ -2238,6 +2239,12 @@ class MainBot<T extends IMainBot> {
         )
         return
       }
+      // Spec 131: the Ignore Fees switch arrives through this same notice.
+      const zeroFee = zeroFeeApplies(exchange, this.data?.paperContext)
+      if (zeroFee !== this.zeroFee) {
+        this.handleLog(`Zero fee exchange ${zeroFee ? 'on' : 'off'}`)
+        this.zeroFee = zeroFee
+      }
       await this.setExchangeCredentials(
         uuid,
         exchange.key,
@@ -4021,18 +4028,7 @@ class MainBot<T extends IMainBot> {
           this.endMethod(id)
           return true
         }
-        if (
-          keys.zeroFee &&
-          !this.data.paperContext &&
-          ![
-            ExchangeEnum.okx,
-            ExchangeEnum.okxInverse,
-            ExchangeEnum.okxLinear,
-            ExchangeEnum.bybit,
-            ExchangeEnum.bybitCoinm,
-            ExchangeEnum.bybitUsdm,
-          ].includes(keys.provider)
-        ) {
+        if (zeroFeeApplies(keys, this.data.paperContext)) {
           this.handleLog(`Zero fee exchange`)
           this.zeroFee = true
         }

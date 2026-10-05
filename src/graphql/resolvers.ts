@@ -5659,6 +5659,13 @@ const resolvers = <
       if (update.status === StatusEnum.notok) {
         return update
       }
+      // Spec 131: running bots read the switch from their user cache, which
+      // only this notice refreshes; they re-derive `zeroFee` on it.
+      const redis = await RedisClient.getInstance()
+      redis?.publish(
+        'updateuserStore',
+        JSON.stringify({ userId: `${user.data._id}`, uuid }),
+      )
       return {
         status: StatusEnum.ok,
         reason: null,

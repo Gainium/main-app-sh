@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.74.4] - 2026-10-05
+
+### Fixed
+
+- Ignore Exchange Fees: turning the switch on or off for a connection only reached bots started after the change; bots already running kept the old setting until they were restarted, so they kept leaving fee dust on new deals. Running bots on that connection now pick the change up immediately, in both directions. A deal that re-places its closing order after the change also uses the new setting, as it already did after a restart.
+
 ## [1.74.3] - 2026-10-04
 
 ### Fixed
