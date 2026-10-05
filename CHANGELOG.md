@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.75.1] - 2026-10-05
+
+### Fixed
+
+- GraphQL `dealSizes` exposes `multiplier` and `multiplierScope`, so DCA and Combo deal queries can read the size a deal was scaled to (stored since 1.75.0).
+
 ## [1.75.0] - 2026-10-05
 
 ### Added

@@ -4349,6 +4349,8 @@ export const BotSchema = /* GraphQL */ `
     dca: [Float]
     origBase: Float
     origDca: [Float]
+    multiplier: Float
+    multiplierScope: String
   }
   type filledHistory {
     id: String
