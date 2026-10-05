@@ -89,6 +89,8 @@ type Seen = {
   started: number
   ended: number
   events: any[]
+  sizes?: any
+  sizeReport?: any
 }
 
 const loadModule = createRequire(__filename)
@@ -99,6 +101,7 @@ const buildBot = (
   Helper: any,
   answer: boolean | 'throw',
   refusalReason?: string,
+  onAsk?: (ctx: NewDealApprovalContext) => void,
 ) => {
   const seen: Seen = {
     asked: [],
@@ -128,6 +131,7 @@ const buildBot = (
       if (!answer) {
         ctx.refusalReason = refusalReason
       }
+      onAsk?.(ctx)
       return answer
     }
     async getAggregatedSettings() {
@@ -168,8 +172,20 @@ const buildBot = (
     }
     updateDealLastTime() {}
     releaseReduceToAvailableClaim() {}
-    async placeBaseOrder() {
+    async placeBaseOrder(...args: any[]) {
       seen.placedBase++
+      seen.sizes = args[10]
+    }
+    async scaleDealSizes(_s: string, m: number) {
+      return { base: m - 1, dca: [], origBase: 1, origDca: [] }
+    }
+    getOpenDeals() {
+      return [
+        { deal: { _id: 'deal-new', symbol: { symbol: PAIR }, createTime: 5 } },
+      ]
+    }
+    async onNewDealSize(c: any, outcome: any, dealId: any) {
+      seen.sizeReport = { c, outcome, dealId }
     }
     async handleErrors() {}
     startMethod() {
@@ -339,6 +355,48 @@ describe('new-deal approval hook (spec 021 §5.1)', () => {
         const bot = buildBot(get(), true)
         await open(bot, { skip: true, dynamic: true })
         expect(bot.seen.asked.map((a) => a.trigger)).to.deep.equal(['dynamic'])
+      })
+
+      it('an approval with a size multiplier opens the scaled deal and reports it', async () => {
+        const bot = buildBot(get(), true, undefined, (c) => {
+          c.sizeMultiplier = 2
+        })
+        bot.data.settings.orderSizeType = 'quote'
+        await open(bot)
+        expect(bot.seen.placedBase).to.equal(1)
+        expect(bot.seen.sizes.multiplier).to.equal(2)
+        expect(bot.seen.sizeReport.outcome).to.deep.equal({
+          requested: 2,
+          applied: 2,
+          scope: 'whole',
+        })
+        expect(bot.seen.sizeReport.dealId).to.equal('deal-new')
+        const ev = bot.seen.events.find((e: any) =>
+          /configured size/.test(e.description),
+        )
+        expect(ev.description).to.equal(
+          'Deal opened at 2× the configured size (requested by extension)',
+        )
+        expect(ev.deal).to.equal('deal-new')
+      })
+
+      it('a refusal with retryOpen re-attempts any start condition with its trigger', async () => {
+        const bot = buildBot(get(), false, 'wait', (c) => {
+          c.retryAfterMs = 60_000
+          c.retryOpen = true
+        })
+        bot.data.settings.startCondition = StartConditionEnum.ti
+        await open(bot, { trigger: 'indicator' })
+        const t = bot.openNewDealTimer.get(PAIR)
+        expect(t, 'a re-attempt is scheduled').to.not.equal(undefined)
+        clearTimeout(t)
+        // without retryOpen an indicator bot waits for its next signal
+        const plain = buildBot(get(), false, 'no', (c) => {
+          c.retryAfterMs = 60_000
+        })
+        plain.data.settings.startCondition = StartConditionEnum.ti
+        await open(plain, { trigger: 'indicator' })
+        expect(plain.openNewDealTimer.get(PAIR)).to.equal(undefined)
       })
 
       it('a hook that throws does not block the deal', async () => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.75.0] - 2026-10-05
+
+### Added
+
+- New-deal approval hooks can ask for a different deal size: an approving `approveNewDeal` may set `sizeMultiplier` (0.1–3) and `sizeScope` (`base` = the base order only, `whole` = the base order and every DCA order). The engine scales the deal on top of compound / risk-reduction sizes, then checks the balance and the exchange minimums again at the scaled size; anything that does not hold opens the deal at the configured size, with the reason in a `Deal` event. Base, quote and USD order sizes, DCA and Combo; not for terminal deals, hedge legs, risk/reward sizing or % of balance sizes. The deal stores `sizes.multiplier` / `sizes.multiplierScope`; `onNewDealSize` reports the outcome to a deployment.
+- A refusing hook may set `retryOpen` with `retryAfterMs` to re-attempt the entry later for any start condition (not only ASAP), with every engine gate run again.
+- Combo `getBaseOrder` / `createInitialDealOrders` fill the minimum-order collectors like DCA, so a Combo deal can be scaled.
+- Change trail action `open_deal`.
+
 ## [1.74.4] - 2026-10-05
 
 ### Fixed

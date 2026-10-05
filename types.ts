@@ -1285,6 +1285,13 @@ export type Sizes = {
    * other reduced deal: the available balance goes to one deal, not split.
    */
   reducedToAvailable?: boolean
+  /**
+   * The size multiplier an approval extension applied when the deal opened
+   * (absent = 1). `base` / `dca` already hold the scaled deltas.
+   */
+  multiplier?: number
+  /** what `multiplier` scaled: the base order only, or the whole deal */
+  multiplierScope?: 'base' | 'whole'
 }
 
 export enum DCADealFlags {
@@ -2012,6 +2019,8 @@ export type ChangeTrailAction =
   | 'add_funds'
   | 'reduce_funds'
   | 'revert'
+  /** a deal opened with a size multiple set by an extension */
+  | 'open_deal'
 
 /**
  * Per-call overrides for the change-trail entry an API-layer entry point

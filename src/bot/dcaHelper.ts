@@ -94,9 +94,13 @@ import { ORDER_ID_MARKER, markOrderId } from './orderIdMarker'
 import { hasConsecutiveStreak } from './consecutiveStreak'
 import {
   buildNewDealSignal,
+  newDealSizeDescription,
   newDealSkippedDescription,
+  NEW_DEAL_SIZE_MAX,
+  NEW_DEAL_SIZE_MIN,
   resolveNewDealTrigger,
   type NewDealApprovalContext,
+  type NewDealSizeOutcome,
   type NewDealTrigger,
 } from './newDealApproval'
 import {
@@ -15099,7 +15103,13 @@ function createDCABotHelper<
       return 0
     }
 
-    async checkBalance(symbol: string): Promise<{
+    async checkBalance(
+      symbol: string,
+      /** the deal's size multiple of the configured size (1 = as configured) */
+      sizeMultiplier = 1,
+      /** what the multiple scales: the base order only, or the whole deal */
+      sizeScope: 'base' | 'whole' = 'whole',
+    ): Promise<{
       status: boolean
       required: number
       available: number
@@ -15252,19 +15262,28 @@ function createDCABotHelper<
           additionalValue = profit * (+(settings.reinvestValue ?? '50') / 100)
         }
       }
-      const requiredAmount = this.futures
+      // the base order's and the DCA orders' parts, so a size multiplier can
+      // scale the base order only (scope `base`) or the whole deal
+      const baseAmount = this.futures
         ? this.coinm
-          ? allGrids.reduce((acc, g) => acc + g.qty, 0) +
-            +base.origQty +
-            additionalValue
-          : allGrids.reduce((acc, g) => acc + g.qty * g.price, 0) +
-            (+base.origQty + additionalValue) * +base.price
+          ? +base.origQty + additionalValue
+          : (+base.origQty + additionalValue) * +base.price
         : this.isLong
-          ? (+base.origQty + additionalValue) * +base.price +
-            usedGrids.reduce((acc, g) => acc + g.price * g.qty, 0)
-          : +base.origQty +
-            usedGrids.reduce((acc, g) => acc + g.qty, 0) +
-            additionalValue
+          ? (+base.origQty + additionalValue) * +base.price
+          : +base.origQty + additionalValue
+      const gridAmount = this.futures
+        ? this.coinm
+          ? allGrids.reduce((acc, g) => acc + g.qty, 0)
+          : allGrids.reduce((acc, g) => acc + g.qty * g.price, 0)
+        : this.isLong
+          ? usedGrids.reduce((acc, g) => acc + g.price * g.qty, 0)
+          : usedGrids.reduce((acc, g) => acc + g.qty, 0)
+      const m =
+        Number.isFinite(sizeMultiplier) && sizeMultiplier > 0
+          ? sizeMultiplier
+          : 1
+      const requiredAmount =
+        baseAmount * m + gridAmount * (sizeScope === 'base' ? 1 : m)
       let available =
         (this.futures
           ? this.coinm
@@ -15823,6 +15842,8 @@ function createDCABotHelper<
       symbol: string,
       ratio: number,
       sizes?: Sizes | null,
+      /** `reduced: false` — a size multiplier, not a reduction to the balance */
+      opts: { reduced?: boolean } = {},
     ): Promise<Sizes | null> {
       const settings = await this.getAggregatedSettings()
       const price = await this.getLatestPrice(symbol)
@@ -15869,7 +15890,7 @@ function createDCABotHelper<
         dca: origDca.map((q, i) => (q + (sizes?.dca?.[i] ?? 0)) * ratio - q),
         origBase,
         origDca,
-        reducedToAvailable: true,
+        ...(opts.reduced === false ? {} : { reducedToAvailable: true }),
       }
     }
     /**
@@ -15903,6 +15924,11 @@ function createDCABotHelper<
       symbol: string,
       fixSize = 0,
       sizes?: Sizes | null,
+      /**
+       * `quiet`: only answer (no log, no report, no latch change) and size
+       * the safety orders with `sizes` too — the check of a scaled deal.
+       */
+      opts: { quiet?: boolean } = {},
     ): Promise<boolean> {
       const settings = await this.getAggregatedSettings()
       if (
@@ -15941,11 +15967,14 @@ function createDCABotHelper<
           symbol,
           price,
           '',
-          undefined,
+          opts.quiet && sizes ? ({ sizes } as ExcludeDoc<Deal>) : undefined,
           undefined,
           levels,
         )
         violations.push(...levels.filter(raisedPastConfigured))
+      }
+      if (opts.quiet) {
+        return violations.length > 0
       }
       if (!violations.length) {
         // The condition cleared — re-arm so a return of it is reported.
@@ -16065,6 +16094,9 @@ function createDCABotHelper<
      * that throws approves (a failing extension must not stop a plain bot);
      * a refusal writes the `Deal` event. The caller performs the usual refusal
      * cleanup (`resetPending`, `cbIfNotOpened`, `endMethod`).
+     *
+     * @returns the approved context (it may carry a `sizeMultiplier`), or
+     * null when the hook refused
      */
     protected async checkNewDealApproval(
       symbol: string,
@@ -16073,7 +16105,7 @@ function createDCABotHelper<
       trigger: NewDealTrigger | undefined,
       startCondition: StartConditionEnum | undefined,
       indicators?: SettingsIndicators[],
-    ): Promise<boolean> {
+    ): Promise<NewDealApprovalContext | null> {
       const resolved = resolveNewDealTrigger(
         skip,
         dynamic,
@@ -16081,7 +16113,12 @@ function createDCABotHelper<
         trigger,
       )
       if (resolved === 'manual') {
-        return true
+        return {
+          botId: this.botId,
+          symbol,
+          trigger: 'manual',
+          time: +new Date(),
+        }
       }
       let price: number | undefined
       try {
@@ -16108,18 +16145,47 @@ function createDCABotHelper<
             (e as Error)?.message ?? e
           }`,
         )
-        return true
+        delete ctx.sizeMultiplier
+        return ctx
       }
       if (approved !== false) {
-        return true
+        return ctx
       }
       const description = newDealSkippedDescription(ctx.refusalReason)
       this.handleLog(`${description} ${symbol}`)
-      if (
-        startCondition === StartConditionEnum.asap &&
+      const retryMs =
         typeof ctx.retryAfterMs === 'number' &&
         Number.isFinite(ctx.retryAfterMs) &&
         ctx.retryAfterMs > 0
+          ? ctx.retryAfterMs
+          : null
+      if (retryMs !== null && ctx.retryOpen) {
+        // Re-attempt this entry whatever the start condition, with the same
+        // trigger; every gate runs again. A fresh attempt for the pair
+        // (`openNewDeal` clears the timer) replaces it.
+        const prev = this.openNewDealTimer.get(symbol)
+        if (prev) {
+          clearTimeout(prev)
+        }
+        const again = resolved
+        this.openNewDealTimer.set(
+          symbol,
+          setTimeout(() => {
+            this.openNewDealTimer.delete(symbol)
+            void this.openNewDeal(
+              this.botId,
+              symbol,
+              false,
+              again === 'dynamic',
+              0,
+              undefined,
+              again,
+            )
+          }, retryMs),
+        )
+      } else if (
+        startCondition === StartConditionEnum.asap &&
+        retryMs !== null
       ) {
         const prev = this.openNewDealTimer.get(symbol)
         if (prev) {
@@ -16127,7 +16193,7 @@ function createDCABotHelper<
         }
         this.openNewDealTimer.set(
           symbol,
-          setTimeout(() => this.openDealAfterTimer(), ctx.retryAfterMs),
+          setTimeout(() => this.openDealAfterTimer(), retryMs),
         )
       }
       this.botEventDb.createData({
@@ -16140,7 +16206,146 @@ function createDCABotHelper<
         symbol,
         type: MessageTypeEnum.info,
       })
-      return false
+      return null
+    }
+
+    /**
+     * Applies an approving hook's `sizeMultiplier` to a new deal: base order
+     * and every safety order scaled together (on top of compound /
+     * risk-reduction `sizes`), then the balance and the exchange minimums are
+     * checked again AT the scaled size. Anything that does not hold opens the
+     * deal at the configured size, with the reason in the outcome. Never
+     * skips a deal because of its size.
+     */
+    async applyNewDealSize(
+      symbol: string,
+      ctx: NewDealApprovalContext | null,
+      sizes: Sizes | null | undefined,
+      opts: { reduced: boolean; fixSize: number },
+    ): Promise<{
+      sizes: Sizes | null | undefined
+      outcome: NewDealSizeOutcome | null
+    }> {
+      const requested = Number(ctx?.sizeMultiplier)
+      if (!ctx || !Number.isFinite(requested) || requested === 1) {
+        return { sizes, outcome: null }
+      }
+      const keep = (
+        reason: NewDealSizeOutcome['reason'],
+      ): { sizes: Sizes | null | undefined; outcome: NewDealSizeOutcome } => ({
+        sizes,
+        outcome: { requested, applied: 1, reason },
+      })
+      const settings = await this.getAggregatedSettings()
+      if (
+        settings.type === DCATypeEnum.terminal ||
+        this.data?.parentBotId ||
+        ctx.trigger === 'manual'
+      ) {
+        return keep('not_supported')
+      }
+      if (settings.useRiskReward || opts.fixSize > 0) {
+        return keep('risk_reward')
+      }
+      if (
+        ![
+          OrderSizeTypeEnum.base,
+          OrderSizeTypeEnum.quote,
+          OrderSizeTypeEnum.usd,
+        ].includes(settings.orderSizeType ?? OrderSizeTypeEnum.percFree)
+      ) {
+        return keep('size_type')
+      }
+      if (opts.reduced) {
+        return keep('reduced_to_available')
+      }
+      if (!(requested >= NEW_DEAL_SIZE_MIN && requested <= NEW_DEAL_SIZE_MAX)) {
+        return keep('out_of_bounds')
+      }
+      const scope = ctx.sizeScope === 'base' ? 'base' : 'whole'
+      const all = await this.scaleDealSizes(symbol, requested, sizes, {
+        reduced: false,
+      })
+      if (!all) {
+        return keep('unsizeable')
+      }
+      // scope `base`: the DCA orders keep their (compound) deltas
+      const scaled: Sizes =
+        scope === 'base'
+          ? {
+              ...all,
+              dca: all.origDca.map((_q, i) => sizes?.dca?.[i] ?? 0),
+            }
+          : all
+      if (requested > 1) {
+        const check = await this.checkBalance(symbol, requested, scope)
+        if (!check.status || check.unknown) {
+          return keep('insufficient_balance')
+        }
+      }
+      // Combo deals always raise an order to the exchange minimum (they have
+      // no refusal); a DCA bot refuses unless it allows the raise.
+      if (
+        !this.combo &&
+        (await this.refuseDealBelowExchangeMin(symbol, opts.fixSize, scaled, {
+          quiet: true,
+        }))
+      ) {
+        return keep('below_exchange_min')
+      }
+      return {
+        sizes: { ...scaled, multiplier: requested, multiplierScope: scope },
+        outcome: { requested, applied: requested, scope },
+      }
+    }
+
+    /**
+     * After a deal opened with a requested size multiplier (applied or not).
+     * The engine only writes the `Deal` event; a deployment may override this
+     * to record the outcome. `dealId` is null when the new deal could not be
+     * found right after placing its base order.
+     */
+    protected async onNewDealSize(
+      _ctx: NewDealApprovalContext,
+      _outcome: NewDealSizeOutcome,
+      _dealId: string | null,
+    ): Promise<void> {
+      return
+    }
+
+    /** The `Deal` event and the {@link onNewDealSize} hook of a sized deal. */
+    protected async reportNewDealSize(
+      symbol: string,
+      ctx: NewDealApprovalContext | null,
+      outcome: NewDealSizeOutcome | null,
+    ) {
+      if (!ctx || !outcome) {
+        return
+      }
+      const description = newDealSizeDescription(outcome)
+      this.handleLog(`${description} ${symbol}`)
+      const deal = this.getOpenDeals()
+        .filter((d) => d.deal.symbol?.symbol === symbol)
+        .sort((a, b) => (b.deal.createTime ?? 0) - (a.deal.createTime ?? 0))[0]
+      const dealId = deal ? `${deal.deal._id}` : null
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description,
+        paperContext: !!this.data?.paperContext,
+        symbol,
+        ...(dealId ? { deal: dealId } : {}),
+        type: MessageTypeEnum.info,
+      })
+      try {
+        await this.onNewDealSize(ctx, outcome, dealId)
+      } catch (e) {
+        this.handleWarn(
+          `New deal size report failed for ${symbol}: ${(e as Error)?.message ?? e}`,
+        )
+      }
     }
 
     async openNewDeal(
@@ -16417,16 +16622,15 @@ function createDCABotHelper<
               return
             }
             // Last step before the deal exists: every gate above has passed.
-            if (
-              !(await this.checkNewDealApproval(
-                symbol,
-                skip,
-                dynamic,
-                trigger,
-                settings.startCondition,
-                settings.indicators,
-              ))
-            ) {
+            const approval = await this.checkNewDealApproval(
+              symbol,
+              skip,
+              dynamic,
+              trigger,
+              settings.startCondition,
+              settings.indicators,
+            )
+            if (!approval) {
               this.resetPending(this.botId, symbol)
               this.endMethod(_id)
               if (cbIfNotOpened) {
@@ -16434,6 +16638,13 @@ function createDCABotHelper<
               }
               return
             }
+            // A size multiplier from the approval: checked again at the
+            // scaled size; anything that fails opens the configured size.
+            const sized = await this.applyNewDealSize(symbol, approval, sizes, {
+              reduced: reduce.ratio !== null,
+              fixSize,
+            })
+            sizes = sized.sizes
             if (reduce.ratio !== null) {
               const pct = this.math.round(reduce.ratio * 100, 1)
               const message = `Not enough balance for the full deal on ${symbol} (required: ${checkBalance.required}, available: ${checkBalance.available}). Opening it at ${pct}% of the configured size: base and safety orders are reduced by the same ratio`
@@ -16464,6 +16675,7 @@ function createDCABotHelper<
               sizes,
             )
             this.releaseReduceToAvailableClaim(symbol)
+            await this.reportNewDealSize(symbol, approval, sized.outcome)
           } else {
             const asset = this.futures
               ? this.coinm

@@ -81,6 +81,7 @@ import {
 } from './conditionLatch'
 import { gridBudgetVerdict, gridBudgetRefusalMessage } from './gridBudgetGuard'
 import { capLadderPlacements } from './ladderPlacementCap'
+import type { MinOrderFloor, MinOrderViolation } from './minOrderFloor'
 
 const mutex = new IdMutex()
 const mutexConcurrently = new IdMutex(300)
@@ -3883,6 +3884,9 @@ function createComboBotHelper<
       price: number,
       dealId: string,
       deal?: ExcludeDoc<ComboDealsSchema>,
+      _price?: number,
+      /** per DCA level: the configured quantity and after the minimum raises */
+      floors?: MinOrderViolation[],
     ): Promise<Grid[]> {
       this.handleDebug('Generate initial deal orders')
       const ed = await this.getExchangeInfo(_symbol)
@@ -4013,6 +4017,12 @@ function createComboBotHelper<
                     )
                   : this.math.round(balanceUseQty * volumeVal, precision)
             }
+            const floor: MinOrderViolation = {
+              level: i,
+              configuredQty: qty,
+              raisedQty: qty,
+              price,
+            }
             if (qty < symbol.baseAsset.minAmount) {
               qty = symbol.baseAsset.minAmount
             }
@@ -4024,6 +4034,8 @@ function createComboBotHelper<
                 true,
               )
             }
+            floor.raisedQty = qty
+            floors?.push(floor)
             if (settings.coinm && !this.isBitget) {
               const cont = (price * qty) / symbol.quoteAsset.minAmount
               if (cont < 1) {
@@ -4300,7 +4312,12 @@ function createComboBotHelper<
       }
       return []
     }
-    override async checkBalance(symbol: string): Promise<{
+    override async checkBalance(
+      symbol: string,
+      sizeMultiplier = 1,
+      /** the base order only, or the whole deal (combo: a whole-deal bound) */
+      _sizeScope: 'base' | 'whole' = 'whole',
+    ): Promise<{
       status: boolean
       required: number
       available: number
@@ -4455,6 +4472,11 @@ function createComboBotHelper<
                     this.data?.settings.gridLevel ||
                     '1'
                   ))
+      const scaledAmount =
+        requiredAmount *
+        (Number.isFinite(sizeMultiplier) && sizeMultiplier > 0
+          ? sizeMultiplier
+          : 1)
 
       let available =
         (this.futures
@@ -4464,17 +4486,17 @@ function createComboBotHelper<
           : this.isLong
             ? (balance?.get(ed.quoteAsset.name)?.free ?? 0)
             : balance?.get(ed.baseAsset.name)?.free) ?? 0
-      if (requiredAmount / leverage > available) {
+      if (scaledAmount / leverage > available) {
         available = await this.pooledMarginOrKeep(
           ed.quoteAsset.name,
           available,
           latestPrice,
         )
       }
-      if (requiredAmount / leverage > available) {
+      if (scaledAmount / leverage > available) {
         return {
           status: false,
-          required: requiredAmount / leverage,
+          required: scaledAmount / leverage,
           available,
           price: latestPrice,
         }
@@ -4616,6 +4638,10 @@ function createComboBotHelper<
       count = 0,
       _fixSize = 0,
       sizes?: Sizes | null,
+      _override_orderSizeType?: OrderSizeTypeEnum,
+      _forceLimit = false,
+      /** the quantity the configured size produced and after the minimum raises */
+      floor?: MinOrderFloor,
     ) {
       const fee = await this.getUserFee(symbol)
       const ed = await this.getExchangeInfo(symbol)
@@ -4738,6 +4764,10 @@ function createComboBotHelper<
             )
           }
         }
+        if (floor) {
+          floor.configuredQty = qty
+          floor.price = price
+        }
         if (qty < ed.baseAsset.minAmount) {
           qty = this.math.round(
             ed.baseAsset.minAmount * feeFactor,
@@ -4794,6 +4824,9 @@ function createComboBotHelper<
         }
         const baseId = this.getOrderId(`CMB-BO`)
         qty = this.math.round(qty, precision)
+        if (floor) {
+          floor.raisedQty = qty
+        }
         const baseOrder: Order = {
           clientOrderId: baseId,
           status: 'NEW',
@@ -5648,16 +5681,15 @@ function createComboBotHelper<
             }
             // Last step before the deal exists: every gate above has passed.
             // Same hook as the DCA path (inherited `approveNewDeal`).
-            if (
-              !(await this.checkNewDealApproval(
-                symbol,
-                skip,
-                dynamic,
-                trigger,
-                settings.startCondition,
-                settings.indicators,
-              ))
-            ) {
+            const approval = await this.checkNewDealApproval(
+              symbol,
+              skip,
+              dynamic,
+              trigger,
+              settings.startCondition,
+              settings.indicators,
+            )
+            if (!approval) {
               this.resetPending(this.botId, symbol)
               this.endMethod(_id)
               if (cbIfNotOpened) {
@@ -5665,11 +5697,17 @@ function createComboBotHelper<
               }
               return
             }
-            this.updateDealLastTime(this.botId, 'opened', +new Date(), symbol)
             let sizes: Sizes | undefined | null
             if (this.useCompountReduce) {
               sizes = await this.calculateCompoundReduce(symbol)
             }
+            // A size multiplier from the approval (checked at the scaled size).
+            const sized = await this.applyNewDealSize(symbol, approval, sizes, {
+              reduced: false,
+              fixSize: 0,
+            })
+            sizes = sized.sizes
+            this.updateDealLastTime(this.botId, 'opened', +new Date(), symbol)
             await this.placeBaseOrder(
               this.botId,
               symbol,
@@ -5683,6 +5721,7 @@ function createComboBotHelper<
               undefined,
               sizes,
             )
+            await this.reportNewDealSize(symbol, approval, sized.outcome)
           } else {
             const asset = this.futures
               ? this.coinm
