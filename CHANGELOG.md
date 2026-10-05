@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.75.3] - 2026-10-05
+
+### Fixed
+
+- Deal Returns chart: the series returned only the newest 500 closed deals, so on a bot with more closed deals the older part of the chart, which shares its time axis with the Performance chart, was empty. It now returns every closed deal.
+
 ## [1.75.2] - 2026-10-05
 
 ### Fixed

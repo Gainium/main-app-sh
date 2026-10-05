@@ -162,7 +162,11 @@ import {
   placeOrderOnExchange,
 } from './handlers/orders.handler'
 import { isCoinm, isServiceUnreachable, isValidTimezone } from '../utils'
-import { dealReturnPercentage, type DealReturnDeal } from '../utils/dealReturn'
+import {
+  dealReturnPercentage,
+  dealReturnsPipeline,
+  type DealReturnDeal,
+} from '../utils/dealReturn'
 import {
   BACKTEST_SERVICE_TARGET,
   sendServerSideRequest,
@@ -395,45 +399,7 @@ const resolvers = <
       const dealsDb = combo ? comboDealsDb : dcaDealsDb
       const result = await dealsDb.aggregate<
         DealReturnDeal & { closeTime?: number; updateTime?: number }
-      >([
-        {
-          $match: {
-            userId: `${user.data._id}`,
-            botId: input.id,
-            // Same set the deals table calls "closed" (Bot.getBotDeals), so
-            // the chart and the table below it describe the same deals.
-            status: {
-              $in: [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],
-            },
-          },
-        },
-        // Project BEFORE the sort: only these fields have to be held in memory
-        // to order a long-lived bot's whole deal history.
-        {
-          $project: {
-            _id: 0,
-            'profit.total': 1,
-            'usage.max.base': 1,
-            'usage.max.quote': 1,
-            'usage.current.base': 1,
-            'usage.current.quote': 1,
-            avgPrice: 1,
-            strategy: 1,
-            closeTime: 1,
-            updateTime: 1,
-            'settings.futures': 1,
-            'settings.coinm': 1,
-            'settings.profitCurrency': 1,
-            'settings.comboTpBase': 1,
-            'settings.useTp': 1,
-            'settings.useSl': 1,
-          },
-        },
-        { $sort: { closeTime: -1 } },
-        // Unchanged cap — the consumers (both dashboards' Deal Returns panel)
-        // have always plotted at most the newest 500 deals.
-        { $limit: 500 },
-      ])
+      >(dealReturnsPipeline(`${user.data._id}`, input.id))
       if (result.status !== StatusEnum.ok) {
         return {
           status: result.status,

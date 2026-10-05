@@ -1,4 +1,5 @@
-import { ComboTpBase, StrategyEnum } from '../../types'
+import type { PipelineStage } from 'mongoose'
+import { ComboTpBase, DCADealStatusEnum, StrategyEnum } from '../../types'
 
 /**
  * The per-deal realized return (as a FRACTION, not a percentage) that the
@@ -107,5 +108,55 @@ export const dealReturnPercentage = (
   const perc = profit / (usage * multiplyUsage)
   return isFinite(perc) ? perc : null
 }
+
+/**
+ * The aggregation `getBotProfitChartData` runs over the bot's deals collection
+ * (`dcadeals` or `combodeals`) to build the Deal Returns series: every closed
+ * deal of the bot, newest close first.
+ */
+export const dealReturnsPipeline = (
+  userId: string,
+  botId: string,
+): PipelineStage[] => [
+  {
+    $match: {
+      userId,
+      botId,
+      // Same set the deals table calls "closed" (Bot.getBotDeals), so
+      // the chart and the table below it describe the same deals.
+      status: {
+        $in: [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],
+      },
+    },
+  },
+  // Project BEFORE the sort: only these fields have to be held in memory
+  // to order a long-lived bot's whole deal history.
+  {
+    $project: {
+      _id: 0,
+      'profit.total': 1,
+      'usage.max.base': 1,
+      'usage.max.quote': 1,
+      'usage.current.base': 1,
+      'usage.current.quote': 1,
+      avgPrice: 1,
+      strategy: 1,
+      closeTime: 1,
+      updateTime: 1,
+      'settings.futures': 1,
+      'settings.coinm': 1,
+      'settings.profitCurrency': 1,
+      'settings.comboTpBase': 1,
+      'settings.useTp': 1,
+      'settings.useSl': 1,
+    },
+  },
+  // Deliberately NO `$limit`. The series used to stop at the newest 500
+  // deals, and the current dashboard plots it on the bot's whole-life time
+  // axis, so every older deal left that stretch of the chart empty. The
+  // output is one `{ value, time }` pair per deal — about 2 MB for the
+  // largest bots' tens of thousands of deals.
+  { $sort: { closeTime: -1 } },
+]
 
 export default dealReturnPercentage
