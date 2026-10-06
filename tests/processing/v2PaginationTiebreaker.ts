@@ -30,7 +30,8 @@ import models from '../../src/db/model'
 import { registerIndexes } from '../../src/db/schema'
 import v2API from '../../src/server/v2/api'
 
-const USER = 'v2-pagination-tiebreaker-user'
+/** A valid ObjectId: the connection-scoped path looks the owner up by `_id`. */
+const USER = '65a000000000000000000065'
 /**
  * 13 connections x 60 assets = 780 rows, every asset tied 13-deep. The page
  * size is fixed at `defaultPaginations.balances` (100), so tie groups straddle
