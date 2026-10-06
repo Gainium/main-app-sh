@@ -2097,8 +2097,7 @@ class MainBot<T extends IMainBot> {
             findPath?.path.includes('orderSize') ||
             findPath?.path.includes('baseOrderSize') ||
             findPath?.path.includes('ordersCount') ||
-            findPath?.path.includes('volumeScale') ||
-            findPath?.path.includes('maxNumberOfOpenDeals')
+            findPath?.path.includes('volumeScale')
           const bot = this.data as ClearDCABotSchema | null
           if (resetStats && bot?.stats) {
             this.handleLog(

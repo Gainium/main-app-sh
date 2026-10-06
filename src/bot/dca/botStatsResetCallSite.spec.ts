@@ -184,4 +184,17 @@ describe('§1.2 changeDCABot routes its stats reset through statsAfterReset', ()
 
     expect(resetWrite(writes)).to.be.undefined
   })
+
+  it('changing max active deals does not reset the stats', async () => {
+    // It changes how many deals run at once, not the size of any one deal, so
+    // win rate, profit factor and the per-deal aggregates stay comparable.
+    const { bot, writes } = harness(doc)
+    await bot.changeDCABot(
+      { id: BOT_ID, maxNumberOfOpenDeals: '8' },
+      USER_ID,
+      false,
+    )
+
+    expect(resetWrite(writes)).to.be.undefined
+  })
 })

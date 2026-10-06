@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.77.0] - 2026-10-06
+
+### Added
+
+- `getBotWindowStats` (GraphQL): a DCA / Combo bot's performance over its whole life and since its stats were last reset, derived from its deals. Lifetime figures survive a sizing or profit-currency change; money is USD and return / drawdown are measured against the peak capital the bot had committed at once. A deal opened before a reset and closed after it counts in the "since" window.
+
+### Changed
+
+- Changing a bot's max active deals no longer resets its statistics. It changes how many deals run at once, not the size of any one deal.
+
 ## [1.76.3] - 2026-10-06
 
 ### Added

@@ -2020,6 +2020,32 @@ const resolvers = <
         { from: input.from, to: input.to },
       )
     },
+    getBotWindowStats: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: { id: string; type: BotType; shareId?: string }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      // Same rule as getBotPairStats: a share link's id is its credential.
+      if (user.status === StatusEnum.notok && !input.shareId) {
+        return user
+      }
+      return await Bot.getBotWindowStats(
+        user.data?._id.toString() ?? '',
+        input.type,
+        input.id,
+        input.shareId,
+        token === 'demo',
+        paperContext,
+      )
+    },
     getComboBotDealsStats: async (
       _parent: any,
       {

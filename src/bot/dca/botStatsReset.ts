@@ -121,8 +121,8 @@ export const emptyBotStats = (): BotStats => {
  * - `all` — a `profitCurrency` change. It re-denominates everything, including
  *   the series, so there is nothing worth carrying.
  * - `keepChart` — an order-sizing change (`orderSize`, `baseOrderSize`,
- *   `ordersCount`, `volumeScale`, `orderSizeType`, `maxNumberOfOpenDeals`,
- *   `useDca`). Every aggregate accumulated over deals is incomparable
+ *   `ordersCount`, `volumeScale`, `orderSizeType`, `useDca`).
+ *   `maxNumberOfOpenDeals` no longer resets: it does not size any one deal. Every aggregate accumulated over deals is incomparable
  *   afterwards and restarts, but `chart` is the bot's daily equity /
  *   realized-profit / benchmark series over the last 90 days — changing the
  *   size of *future* orders does not change what already happened, so the

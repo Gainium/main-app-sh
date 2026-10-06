@@ -69,7 +69,7 @@ export type PairStatsGroup = Omit<
 }
 
 /** The deals both pair-stats aggregations fold: closed in the window, plus open. */
-const pairStatsMatch = (
+export const pairStatsMatch = (
   botIds: string[],
   range: PairStatsRange,
 ): PipelineStage.Match => {
