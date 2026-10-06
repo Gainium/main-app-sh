@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.79.0] - 2026-10-06
+
+### Added
+
+- `restartDeal` covers hedge DCA and hedge Combo deals. The request is routed to the bot that owns the deal (a hedge bot's long or short side), read from the deal itself, so it works whichever bot id the client sends.
+
 ## [1.78.1] - 2026-10-06
 
 ### Fixed

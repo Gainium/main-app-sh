@@ -13529,7 +13529,9 @@ class Bot<T extends UserSchema = UserSchema> {
    * https://community.gainium.io/t/restart-option-for-individual-deals/5302
    *
    * Routing only, like `executeNextDcaLevel`; a refusal (deal not open)
-   * surfaces as a bot message from the worker's `restartDeal`.
+   * surfaces as a bot message from the worker's `restartDeal`. Covers hedge
+   * DCA / Combo deals too: `combo` picks the deal collection and the owning
+   * child bot is read from the deal.
    */
   public async restartDeal(
     botId: string,
@@ -13551,6 +13553,25 @@ class Bot<T extends UserSchema = UserSchema> {
         combo,
       )
     }
+    // Route by the bot that OWNS the deal, not the id the client sent. A
+    // hedge bot's deals belong to its long or short child, which runs as an
+    // ordinary DCA / Combo bot; the dashboard may hand us the hedge parent.
+    const deal = await (
+      (combo ? this.comboDealsDb : this.dcaDealsDb) as typeof this.dcaDealsDb
+    ).readData({ _id: dealId, userId }, { botId: 1 })
+    if (deal.status === StatusEnum.notok) {
+      return deal
+    }
+    const ownerId = deal.data.result?.botId
+    if (!ownerId) {
+      return this.entityNotFound('Deal')
+    }
+    if (ownerId !== botId) {
+      this.handleDebug(
+        `${loggerPrefix} restartDeal | deal ${dealId} belongs to ${ownerId}, requested via ${botId}`,
+      )
+    }
+    botId = ownerId
     const findLocal = (combo ? this.comboBots : this.dcaBots).find(
       (d) => d.id === botId && d.userId === userId,
     )
