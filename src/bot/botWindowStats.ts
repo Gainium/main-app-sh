@@ -33,7 +33,7 @@ export type BotWindowStats = {
   closedDeals: number
   wins: number
   losses: number
-  /** wins / closedDeals, as a fraction. */
+  /** wins / (wins + losses), as a fraction — break-even deals are neither. */
   winRate: number
   realizedProfitUsd: number
   grossProfitUsd: number
@@ -193,7 +193,7 @@ export const foldBotWindowStats = (
     closedDeals: closed.length,
     wins,
     losses,
-    winRate: closed.length ? wins / closed.length : 0,
+    winRate: wins + losses ? wins / (wins + losses) : 0,
     realizedProfitUsd: realized,
     grossProfitUsd: grossProfit,
     grossLossUsd: grossLoss,

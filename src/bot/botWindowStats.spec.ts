@@ -28,7 +28,8 @@ describe('botWindowStats', () => {
     expect(s.closedDeals).to.equal(4)
     expect(s.wins).to.equal(2)
     expect(s.losses).to.equal(1)
-    expect(s.winRate).to.equal(0.5)
+    // Over decided deals: the break-even deal is neither win nor loss.
+    expect(s.winRate).to.equal(2 / 3)
     expect(s.realizedProfitUsd).to.equal(25)
     expect(s.grossProfitUsd).to.equal(30)
     expect(s.grossLossUsd).to.equal(-5)
