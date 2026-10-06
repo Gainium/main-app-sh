@@ -1193,6 +1193,7 @@ const indicatorsSettings = new Schema({
   },
   indicatorLength: Number,
   indicatorValue: String,
+  indicatorValue2: String,
   indicatorCondition: {
     type: String,
     enum: IndicatorStartConditionEnum,

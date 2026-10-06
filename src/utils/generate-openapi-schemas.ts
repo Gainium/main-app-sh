@@ -51,7 +51,12 @@ const typeMapping: Record<string, string> = {
 }
 
 // Field metadata: descriptions and examples
-const fieldMetadata: Record<string, { description: string; example?: any }> = {
+// `excludeEnum` drops values the API validator rejects for that field although
+// the shared TS enum has them (e.g. `bw` on single-value price conditions).
+const fieldMetadata: Record<
+  string,
+  { description: string; example?: any; excludeEnum?: string[] }
+> = {
   // Bot identification
   pair: { description: 'Trading pair symbol', example: 'BTC/USDT' },
 
@@ -329,6 +334,7 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   closeAfterXprofitCond: {
     description: 'Condition for profit close',
     example: 'gt',
+    excludeEnum: ['bw'],
   },
   useCloseAfterXopen: {
     description: 'Close after X open deals',
@@ -451,6 +457,7 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   startBotPriceCondition: {
     description: 'Price condition to start bot',
     example: 'gt',
+    excludeEnum: ['bw'],
   },
   startBotPriceValue: {
     description: 'Price value for bot start',
@@ -459,6 +466,7 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   stopBotPriceCondition: {
     description: 'Price condition to stop bot',
     example: 'lt',
+    excludeEnum: ['bw'],
   },
   stopBotPriceValue: {
     description: 'Price value for bot stop',
@@ -632,9 +640,14 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
   // Indicator specific fields
   indicatorLength: { description: 'Indicator period length', example: 14 },
   indicatorValue: { description: 'Indicator value threshold', example: '70' },
+  indicatorValue2: {
+    description:
+      'Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile.',
+    example: '60',
+  },
   indicatorCondition: {
     description:
-      'Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down. For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference.',
+      'Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down, bw = strictly between indicatorValue and indicatorValue2 (value-type indicators only). For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference.',
     example: 'gt',
   },
   indicatorInterval: { description: 'Chart timeframe', example: '1h' },
@@ -859,7 +872,11 @@ const fieldMetadata: Record<string, { description: string; example?: any }> = {
 
   // Unrealized PnL
   unpnlValue: { description: 'Unrealized PnL threshold', example: 100 },
-  unpnlCondition: { description: 'Unrealized PnL condition', example: 'gt' },
+  unpnlCondition: {
+    description: 'Unrealized PnL condition',
+    example: 'gt',
+    excludeEnum: ['bw'],
+  },
 
   // Donchian Channel
   dcValue: { description: 'Donchian Channel line', example: 'upper' },
@@ -1375,7 +1392,9 @@ class SchemaGenerator {
     }
 
     if (prop.enum) {
-      schema.enum = prop.enum
+      schema.enum = metadata?.excludeEnum
+        ? prop.enum.filter((v) => !metadata.excludeEnum!.includes(v))
+        : prop.enum
     }
 
     if (prop.items) {

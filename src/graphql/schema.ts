@@ -3164,6 +3164,7 @@ export const BotSchema = /* GraphQL */ `
   type indicatorSettingsType {
     indicatorLength: Int
     indicatorValue: String
+    indicatorValue2: String
     indicatorCondition: String
     groupId: String
     indicatorInterval: String
@@ -4662,6 +4663,7 @@ export const BotSchema = /* GraphQL */ `
     cu
     gt
     lt
+    bw
   }
   enum rsiValueEnum {
     k
@@ -4922,6 +4924,7 @@ export const BotSchema = /* GraphQL */ `
   input indicatorSettings {
     indicatorLength: Int
     indicatorValue: String
+    indicatorValue2: String
     indicatorCondition: String
     groupId: String
     indicatorInterval: String

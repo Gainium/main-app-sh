@@ -1816,7 +1816,8 @@ SettingsIndicators configuration
 | `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|BullBear|UO|IC|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
-| `indicatorCondition` | enum: `cd|cu|gt|lt` | No | Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down. For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference. |
+| `indicatorValue2` | string | No | Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile. |
+| `indicatorCondition` | enum: `cd|cu|gt|lt|bw` | No | Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down, bw = strictly between indicatorValue and indicatorValue2 (value-type indicators only). For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference. |
 | `indicatorInterval` | enum: `1m|3m|5m|15m|30m|1h|2h|4h|8h|1d|1w` | No | Chart timeframe |
 | `groupId` | string | No | Indicator group ID |
 | `uuid` | string | No | Unique identifier |

@@ -10,6 +10,7 @@ import {
   IndicatorAction,
   IndicatorEnum,
   IndicatorSection,
+  IndicatorStartConditionEnum,
   RRSlTypeEnum,
   ScaleDcaTypeEnum,
   StartConditionEnum,
@@ -148,6 +149,64 @@ export const requiredIndicatorErrors = (
     .filter((check) => check.condition(input) && !check.verify(input))
     .map((check) => ['indicators', check.errorMessage])
 
+/** Indicators whose condition compares one numeric value with the threshold. */
+const BETWEEN_CAPABLE_INDICATORS: IndicatorEnum[] = [
+  IndicatorEnum.rsi,
+  IndicatorEnum.ao,
+  IndicatorEnum.cci,
+  IndicatorEnum.uo,
+  IndicatorEnum.mom,
+  IndicatorEnum.wr,
+  IndicatorEnum.mfi,
+  IndicatorEnum.adx,
+  IndicatorEnum.bbw,
+  IndicatorEnum.bbpb,
+  IndicatorEnum.kcpb,
+  IndicatorEnum.vo,
+  IndicatorEnum.mar,
+  IndicatorEnum.atr,
+  IndicatorEnum.adr,
+  IndicatorEnum.ath,
+  IndicatorEnum.bbwp,
+]
+
+/** `bw` (between) needs a value-type indicator and two numeric bounds. */
+const betweenConditionErrors = (
+  indicators: DCABotSettings['indicators'],
+): [string, string][] =>
+  indicators
+    .filter((i) => i.indicatorCondition === IndicatorStartConditionEnum.bw)
+    .flatMap((i): [string, string][] => {
+      if (!BETWEEN_CAPABLE_INDICATORS.includes(i.type)) {
+        return [
+          [
+            'indicators',
+            `Condition "bw" (between) is not supported for indicator "${i.type}"`,
+          ],
+        ]
+      }
+      if (i.percentile) {
+        return [
+          [
+            'indicators',
+            'Condition "bw" (between) cannot be combined with percentile',
+          ],
+        ]
+      }
+      if (
+        isNaN(parseFloat(i.indicatorValue)) ||
+        isNaN(parseFloat(i.indicatorValue2 ?? ''))
+      ) {
+        return [
+          [
+            'indicators',
+            'Condition "bw" (between) requires numeric indicatorValue (lower bound) and indicatorValue2 (upper bound)',
+          ],
+        ]
+      }
+      return []
+    })
+
 /**
  * Cross-field indicator rules shared by bot creation and by bot updates that
  * replace `indicators` / `indicatorGroups`. `input` is the complete settings
@@ -168,6 +227,7 @@ export const indicatorConsistencyErrors = (
     ])
   }
   errors.push(...requiredIndicatorErrors(input))
+  errors.push(...betweenConditionErrors(indicators))
 
   if (
     indicatorsCheck.every((check) => !check.condition(input)) &&

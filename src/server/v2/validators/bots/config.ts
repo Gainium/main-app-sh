@@ -61,6 +61,11 @@ import {
   GRID_FORM_DEFAULTS,
 } from '../../botDefaults'
 
+/** Conditions that compare against one value — `bw` needs two. */
+const SINGLE_VALUE_CONDITIONS = Object.values(
+  IndicatorStartConditionEnum,
+).filter((c) => c !== IndicatorStartConditionEnum.bw)
+
 export type ValidationResult<T> = {
   valid: boolean
   errors: [string, string][]
@@ -211,6 +216,10 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     required: true,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(IndicatorStartConditionEnum),
+  },
+  indicatorValue2: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeString],
   },
   indicatorInterval: {
     required: true,
@@ -786,7 +795,7 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
   unpnlCondition: {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(IndicatorStartConditionEnum),
+    enum: SINGLE_VALUE_CONDITIONS,
   },
   dcValue: {
     required: false,
@@ -1467,7 +1476,7 @@ export const dcaBotSchemaConfig: Record<
   useCloseAfterXprofit: { validators: [ValidatorsEnum.shouldBeBoolean] },
   closeAfterXprofitCond: {
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(IndicatorStartConditionEnum),
+    enum: SINGLE_VALUE_CONDITIONS,
   },
   closeAfterXprofitValue: {
     validators: [
@@ -1767,11 +1776,11 @@ export const dcaBotSchemaConfig: Record<
   useReinvest: { validators: [ValidatorsEnum.shouldBeBoolean] },
   startBotPriceCondition: {
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(IndicatorStartConditionEnum),
+    enum: SINGLE_VALUE_CONDITIONS,
   },
   stopBotPriceCondition: {
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(IndicatorStartConditionEnum),
+    enum: SINGLE_VALUE_CONDITIONS,
   },
   type: {
     validators: [ValidatorsEnum.shouldBeValidEnumValue],

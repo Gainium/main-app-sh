@@ -5350,6 +5350,7 @@ function createDCABotHelper<
           if (find) {
             const {
               indicatorValue,
+              indicatorValue2,
               indicatorCondition,
               type,
               checkLevel,
@@ -6197,6 +6198,19 @@ function createDCABotHelper<
                   !skipAction
                 ) {
                   action = lt(last, value)
+                }
+                if (
+                  indicatorCondition === IndicatorStartConditionEnum.bw &&
+                  !skipAction
+                ) {
+                  const upper =
+                    indicatorValue2 !== undefined && indicatorValue2 !== ''
+                      ? +indicatorValue2
+                      : NaN
+                  action =
+                    !isNaN(upper) &&
+                    gt(last, Math.min(value, upper)) &&
+                    lt(last, Math.max(value, upper))
                 }
 
                 if (

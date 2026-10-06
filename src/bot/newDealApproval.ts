@@ -166,6 +166,7 @@ export const buildNewDealSignal = (
     | 'indicatorAction'
     | 'indicatorCondition'
     | 'indicatorValue'
+    | 'indicatorValue2'
     | 'indicatorInterval'
     | 'indicatorLength'
   >[],
@@ -190,7 +191,9 @@ export const buildNewDealSignal = (
     conditions: start.map((i) =>
       `${i.type}(${i.indicatorLength ?? ''}) ${i.indicatorCondition ?? ''} ${
         i.indicatorValue ?? ''
-      } @${i.indicatorInterval}`.replace(/\s+/g, ' '),
+      }${i.indicatorCondition === 'bw' ? `..${i.indicatorValue2 ?? ''}` : ''} @${
+        i.indicatorInterval
+      }`.replace(/\s+/g, ' '),
     ),
   }
 }

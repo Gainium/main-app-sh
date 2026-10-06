@@ -3731,14 +3731,19 @@ components:
           type: string
           description: Indicator value threshold
           example: "70"
+        indicatorValue2:
+          type: string
+          description: Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile.
+          example: "60"
         indicatorCondition:
           type: string
-          description: "Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down. For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference."
+          description: "Comparison condition: gt = greater than, lt = lower than, cu = crossing up, cd = crossing down, bw = strictly between indicatorValue and indicatorValue2 (value-type indicators only). For MA the rule reads <maType> <indicatorCondition> <maCrossingValue>, i.e. the moving average is compared to the reference."
           enum:
             - cd
             - cu
             - gt
             - lt
+            - bw
           example: gt
         indicatorInterval:
           type: string
@@ -3813,7 +3818,7 @@ components:
             - vwma
             - hma
             - rma
-          example: sma
+          example: price
         maCrossingLength:
           type: number
           description: Crossing MA length

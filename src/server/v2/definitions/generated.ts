@@ -184,7 +184,7 @@ export const indicatorCoreFieldDefinitions: FieldDefinition[] = [
     type: 'enum',
     required: true,
     validators: ['mustBeOneOfEnum'],
-    enum: ['cd', 'cu', 'gt', 'lt'],
+    enum: ['cd', 'cu', 'gt', 'lt', 'bw'],
   },
   {
     name: 'indicatorInterval',
@@ -230,6 +230,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       'Measures recent price changes to evaluate overbought or oversold conditions in the price of an asset.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'percentile',
         type: 'boolean',
@@ -294,6 +300,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'percentile',
         type: 'boolean',
         required: false,
@@ -356,6 +368,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       'Quantifies the gap between the Bollinger Bands. Wider bands indicate higher volatility, and narrower bands indicate lower volatility.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'bbwMult',
         type: 'number',
@@ -731,6 +749,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'percentile',
         type: 'boolean',
         required: false,
@@ -793,6 +817,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       "Calculates the difference of a 34 Period and 5 Period Simple Moving Averages. AO's zero-line crossovers can signal momentum.",
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'percentile',
         type: 'boolean',
@@ -934,6 +964,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'percentile',
         type: 'boolean',
         required: false,
@@ -1059,6 +1095,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       "Combines short, intermediate, and long-term market trends' momentum into one value to detect diverse buying pressures.",
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'uoFast',
         type: 'number',
@@ -1369,9 +1411,10 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       type: 'MA',
       indicatorLength: 20,
       indicatorValue: '0',
-      indicatorCondition: 'cd',
+      indicatorCondition: 'lt',
       indicatorInterval: '1h',
-      maType: 'EMA',
+      maType: 'ema',
+      maCrossingValue: 'price',
       indicatorAction: 'startDeal',
       groupId: '<group-uuid>',
       uuid: '<indicator-uuid>',
@@ -1519,6 +1562,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'percentile',
         type: 'boolean',
         required: false,
@@ -1648,6 +1697,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'voShort',
         type: 'number',
         required: false,
@@ -1725,6 +1780,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'momSource',
         type: 'string',
         required: false,
@@ -1793,6 +1854,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       'Positions the current BBW in the context of its range over a specific period, showing volatility extremes.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'bbwpLookback',
         type: 'number',
@@ -2010,6 +2077,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'mar1length',
         type: 'number',
         required: false,
@@ -2147,6 +2220,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       'Measures where the last price is in relation to the BB bands, indicating overbought or oversold conditions.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'bbwMult',
         type: 'number',
@@ -2449,6 +2528,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'section',
         type: 'enum',
         required: false,
@@ -2615,6 +2700,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
+      {
         name: 'section',
         type: 'enum',
         required: false,
@@ -2659,6 +2750,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       "Calculates the percentage decline from an asset's highest price in a lookback period to its current price, measuring the extent of a potential downturn.",
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'athLookback',
         type: 'number',
@@ -2792,6 +2889,12 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       'Measures the location of the current price in relation to the Keltner Channels, showing overbought or oversold conditions.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
+      {
+        name: 'indicatorValue2',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString'],
+      },
       {
         name: 'kcMa',
         type: 'enum',
@@ -4590,8 +4693,8 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           type: 'number',
           required: true,
           validators: ['mustBeNumber', 'mustBePositive'],
-          default: 1775509200000,
-          example: 1775509200000,
+          default: 1791302400000,
+          example: 1791302400000,
         },
         {
           name: 'hodlHourly',

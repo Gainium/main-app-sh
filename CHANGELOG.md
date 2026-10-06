@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.80.0] - 2026-10-06
+
+### Added
+
+- Indicator condition `bw` ("between") for value-type indicators (RSI, CCI, MFI, Williams %R, ADX, AO, UO, MOM, VO, BBW, BBWP, %B, Keltner %B, MA ratio, ATR, ADR, ATH): the condition holds while the value is strictly between `indicatorValue` and the new `indicatorValue2` — one indicator instead of a "greater than" + "lower than" pair. Live bots and backtests (`@gainium/backtester` 1.11.0) evaluate it the same way. The v2 API accepts it only on those indicators, with two numeric bounds and without percentile; price, profit and uPnL conditions keep their single-value set.
+
 ## [1.79.0] - 2026-10-06
 
 ### Added

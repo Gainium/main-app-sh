@@ -893,6 +893,7 @@ const INDICATOR_META: Record<
     description:
       'Measures recent price changes to evaluate overbought or oversold conditions in the price of an asset.',
     typeSpecificFields: [
+      'indicatorValue2',
       'percentile',
       'percentileLookback',
       'percentilePercentage',
@@ -918,6 +919,7 @@ const INDICATOR_META: Record<
     description:
       'Measures the strength of a trend without regard to direction, with higher values indicating a stronger trend.',
     typeSpecificFields: [
+      'indicatorValue2',
       'percentile',
       'percentileLookback',
       'percentilePercentage',
@@ -965,6 +967,7 @@ const INDICATOR_META: Record<
     description:
       'Quantifies the gap between the Bollinger Bands. Wider bands indicate higher volatility, and narrower bands indicate lower volatility.',
     typeSpecificFields: [
+      'indicatorValue2',
       'bbwMult',
       'bbwMa',
       'bbwMaLength',
@@ -1053,6 +1056,7 @@ const INDICATOR_META: Record<
     description:
       "Assesses the variation of a security's price from its statistical mean. High values show strength; low values indicate weakness.",
     typeSpecificFields: [
+      'indicatorValue2',
       'percentile',
       'percentileLookback',
       'percentilePercentage',
@@ -1078,6 +1082,7 @@ const INDICATOR_META: Record<
     description:
       "Calculates the difference of a 34 Period and 5 Period Simple Moving Averages. AO's zero-line crossovers can signal momentum.",
     typeSpecificFields: [
+      'indicatorValue2',
       'percentile',
       'percentileLookback',
       'percentilePercentage',
@@ -1130,6 +1135,7 @@ const INDICATOR_META: Record<
     description:
       "A momentum indicator that compares an asset's closing price to the high-low range over a specific period, often identifying reversals.",
     typeSpecificFields: [
+      'indicatorValue2',
       'percentile',
       'percentileLookback',
       'percentilePercentage',
@@ -1180,6 +1186,7 @@ const INDICATOR_META: Record<
     description:
       "Combines short, intermediate, and long-term market trends' momentum into one value to detect diverse buying pressures.",
     typeSpecificFields: [
+      'indicatorValue2',
       'uoFast',
       'uoMiddle',
       'uoSlow',
@@ -1330,6 +1337,7 @@ const INDICATOR_META: Record<
     description:
       'Analyzes both price and volume to measure trading pressure - buying or selling. Similar to RSI but includes volume.',
     typeSpecificFields: [
+      'indicatorValue2',
       'percentile',
       'percentileLookback',
       'percentilePercentage',
@@ -1379,6 +1387,7 @@ const INDICATOR_META: Record<
     description:
       'Shows the difference between two volume moving averages, highlighting trends in volume relative to price.',
     typeSpecificFields: [
+      'indicatorValue2',
       'voShort',
       'voLong',
       'percentile',
@@ -1408,6 +1417,7 @@ const INDICATOR_META: Record<
     description:
       'Measures the rate of rise or fall in asset prices, indicating the strength of price trends at a given moment.',
     typeSpecificFields: [
+      'indicatorValue2',
       'momSource',
       'percentile',
       'percentileLookback',
@@ -1433,7 +1443,7 @@ const INDICATOR_META: Record<
     name: 'BBW Percentile',
     description:
       'Positions the current BBW in the context of its range over a specific period, showing volatility extremes.',
-    typeSpecificFields: ['bbwpLookback', 'momSource'],
+    typeSpecificFields: ['indicatorValue2', 'bbwpLookback', 'momSource'],
     supportedActions: [
       'startDeal',
       'closeDeal',
@@ -1509,6 +1519,7 @@ const INDICATOR_META: Record<
     description:
       "Compares two moving averages or a moving average and the current price to indicate the trend's direction and strength.",
     typeSpecificFields: [
+      'indicatorValue2',
       'mar1length',
       'mar1type',
       'mar2length',
@@ -1546,6 +1557,7 @@ const INDICATOR_META: Record<
     description:
       'Measures where the last price is in relation to the BB bands, indicating overbought or oversold conditions.',
     typeSpecificFields: [
+      'indicatorValue2',
       'bbwMult',
       'bbwMa',
       'bbwMaLength',
@@ -1639,7 +1651,7 @@ const INDICATOR_META: Record<
     name: 'Average True Range (ATR)',
     description:
       "Calculates the market's volatility by measuring the range of price movements, using the average of true ranges over a period.",
-    typeSpecificFields: [],
+    typeSpecificFields: ['indicatorValue2'],
     supportedActions: [
       'startDeal',
       'closeDeal',
@@ -1690,7 +1702,7 @@ const INDICATOR_META: Record<
     name: 'Average Daily Range (ADR)',
     description:
       'Measures the average range between the high and low prices over a given number of past days, indicating daily price volatility.',
-    typeSpecificFields: [],
+    typeSpecificFields: ['indicatorValue2'],
     supportedActions: [
       'startDeal',
       'closeDeal',
@@ -1711,7 +1723,7 @@ const INDICATOR_META: Record<
     name: 'ATH Drawdown',
     description:
       "Calculates the percentage decline from an asset's highest price in a lookback period to its current price, measuring the extent of a potential downturn.",
-    typeSpecificFields: ['athLookback'],
+    typeSpecificFields: ['indicatorValue2', 'athLookback'],
     supportedActions: [
       'startDeal',
       'closeDeal',
@@ -1755,6 +1767,7 @@ const INDICATOR_META: Record<
     description:
       'Measures the location of the current price in relation to the Keltner Channels, showing overbought or oversold conditions.',
     typeSpecificFields: [
+      'indicatorValue2',
       'kcMa',
       'kcRange',
       'kcRangeLength',
