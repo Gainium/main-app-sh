@@ -296,6 +296,17 @@ const unknownOrderMessages = [
   'EOrder:Cannot cancel order',
 ]
 
+/**
+ * The venue refused the request for RATE, not for anything about the order —
+ * the same request can succeed later. Bybit: `Too many visits. Exceeded the API
+ * Rate Limit.`
+ */
+const rateLimitMessages = ['too many visits', 'rate limit', 'too many requests']
+const isRateLimitReason = (reason: string | undefined) => {
+  const r = `${reason ?? ''}`.toLowerCase()
+  return rateLimitMessages.some((m) => r.indexOf(m) !== -1)
+}
+
 const mutex = new IdMutex()
 
 const mutexEmit = new IdMutex(30)
@@ -9336,6 +9347,21 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Back-off before each re-send of a teardown cancel the venue refused for
+   * rate (spec `134`). Jittered so the bots of one mass deletion, all refused
+   * in the same second, do not come back in the same second either.
+   */
+  protected teardownCancelRetryDelays(): number[] {
+    return [5_000, 15_000, 45_000].map((d) =>
+      Math.round(d * (1 + Math.random() * 0.5)),
+    )
+  }
+
+  protected sleepBeforeCancelRetry(ms: number) {
+    return sleep(ms)
+  }
+
+  /**
    * Cancel order on exchange
    *
    * @param promotePartialToFilled When the venue reports the cancelled order
@@ -9409,17 +9435,44 @@ class MainBot<T extends IMainBot> {
       if (primed) {
         this.cancelBatch?.delete(`${order.orderId}`)
       }
-      const request =
+      const sendCancel = () =>
+        this.exchange!.cancelOrder({
+          symbol: order.symbol,
+          newClientOrderId: byExchangeId
+            ? `${order.orderId}`
+            : order.clientOrderId,
+        })
+      let request =
         byExchangeId && order.orderId === noExchangeOrderId
           ? this.exchange.returnBad()(new Error(orderNeverReachedExchange))
           : primed
             ? this.exchange.returnGood<CommonOrder>()(primed)
-            : await this.exchange.cancelOrder({
-                symbol: order.symbol,
-                newClientOrderId: byExchangeId
-                  ? `${order.orderId}`
-                  : order.clientOrderId,
-              })
+            : await sendCancel()
+      // A cancel refused for RATE while the bot is being stopped is re-sent
+      // after a back-off. Teardown is the one caller with no second chance:
+      // `stop()` closes the user stream right after this loop, so the venue's
+      // own later `Cancelled` event reaches nobody and the row stays `NEW` on a
+      // stopped (often deleted) bot for good. A mass deletion on one Bybit key
+      // exhausts the connector's 1s retry ladder for exactly these calls. The
+      // re-sent cancel addresses the same order; whatever it answers — done, or
+      // "does not exist" because it is already gone — goes through the routing
+      // below, so the row ends up recording the venue's state. A running bot is
+      // untouched (`blockPriceCheck` is set only inside `stop()`). Spec `134`.
+      if (this.blockPriceCheck && !primed) {
+        for (const delay of this.teardownCancelRetryDelays()) {
+          if (
+            request.status !== StatusEnum.notok ||
+            !isRateLimitReason(request.reason)
+          ) {
+            break
+          }
+          this.handleLog(
+            `Send cancel request ${order.clientOrderId} refused for rate during stop. Retry in ${delay}ms`,
+          )
+          await this.sleepBeforeCancelRetry(delay)
+          request = await sendCancel()
+        }
+      }
       if (request.status === StatusEnum.notok) {
         for (const m of unknownOrderMessages) {
           if (request.reason.toLowerCase().indexOf(m.toLowerCase()) !== -1) {

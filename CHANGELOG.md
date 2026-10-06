@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.80.1] - 2026-10-06
+
+### Fixed
+
+- Stopping or deleting a bot while the exchange refuses its cancel requests for rate now re-sends each refused cancel after a back-off, so the order is recorded as cancelled (or reconciled with the exchange) instead of staying open in the bot's records after the bot's order stream has closed.
+
 ## [1.80.0] - 2026-10-06
 
 ### Added
