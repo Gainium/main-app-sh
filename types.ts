@@ -2031,6 +2031,8 @@ export type ChangeTrailAction =
   /** a bot start / stop request */
   | 'start_bot'
   | 'stop_bot'
+  /** a bot reload (the dashboard's Restart) */
+  | 'restart_bot'
 
 /**
  * Per-call overrides for the change-trail entry an API-layer entry point

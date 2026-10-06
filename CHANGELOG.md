@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.76.1] - 2026-10-06
+
+### Added
+
+- Change trail: the action `restart_bot` (a bot reload request).
+
 ## [1.76.0] - 2026-10-06
 
 ### Added
