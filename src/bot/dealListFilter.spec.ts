@@ -86,6 +86,46 @@ describe('deal-list filter builder (spec 020 §2)', () => {
     expect(r.filter).to.deep.equal({ $and: [{ botId: { $in: ['b1', 'b2'] } }] })
   })
 
+  it('botName isNoneOf / notContains exclude the matching bots’ ids', async () => {
+    const asked: any[] = []
+    const run = (operator: string, value: unknown) =>
+      buildDealListFilter(
+        {
+          filterModel: {
+            items: [{ field: 'botName', operator, value }] as never,
+          },
+        },
+        {
+          botIdsByName: async (c) => {
+            asked.push(c)
+            return ['b1']
+          },
+        },
+      )
+    const none = await run('isNoneOf', 'Alpha,Beta 2')
+    expect(asked[0]).to.deep.equal({
+      'settings.name': { $in: ['Alpha', 'Beta 2'] },
+    })
+    expect(none.filter).to.deep.equal({ $and: [{ botId: { $nin: ['b1'] } }] })
+    const not = await run('notContains', 'co')
+    expect(asked[1]['settings.name'].$regex.source).to.equal('co')
+    expect(not.filter).to.deep.equal({ $and: [{ botId: { $nin: ['b1'] } }] })
+  })
+
+  it('pair isNoneOf / notContains negate the symbol condition', async () => {
+    const none = await build([
+      { field: 'pair', operator: 'isNoneOf', value: 'BTCUSDT,ETHUSDT' },
+    ])
+    expect(none.filter).to.deep.equal({
+      $and: [{ 'symbol.symbol': { $not: { $in: ['BTCUSDT', 'ETHUSDT'] } } }],
+    })
+    const not = await build([
+      { field: 'pair', operator: 'notContains', value: 'usd' },
+    ])
+    const c = (not.filter.$and as any[])[0]['symbol.symbol'].$not
+    expect(c.$regex.source).to.equal('usd')
+  })
+
   it('cost filters the computed Cost column; equals honours the typed precision', async () => {
     const r = await build([{ field: 'cost', operator: '=', value: '150' }])
     const expr = (r.filter.$and as any[])[0].$expr.$and

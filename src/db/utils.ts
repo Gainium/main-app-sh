@@ -51,17 +51,24 @@ export const mapDataGridOptionsToMongoOptions = (input?: {
         return
       }
       let filterItem
+      // The text operators compare the value as typed. `item.value` is
+      // URI-encoded above, so matching on it never found a name holding a
+      // space or any other encoded character ("My bot" became `My%20bot`).
+      const text = decodeURIComponent(item.value)
       if (item.operator === 'contains') {
-        filterItem = { $regex: new RegExp(escapeRegExp(item.value), 'i') }
+        filterItem = { $regex: new RegExp(escapeRegExp(text), 'i') }
+      }
+      if (item.operator === 'notContains') {
+        filterItem = { $not: new RegExp(escapeRegExp(text), 'i') }
       }
       if (item.operator === 'equals') {
-        filterItem = { $eq: item.value }
+        filterItem = { $eq: text }
       }
       if (item.operator === 'startsWith') {
-        filterItem = { $regex: new RegExp(`^${escapeRegExp(item.value)}`, 'i') }
+        filterItem = { $regex: new RegExp(`^${escapeRegExp(text)}`, 'i') }
       }
       if (item.operator === 'endsWith') {
-        filterItem = { $regex: new RegExp(`${escapeRegExp(item.value)}$`, 'i') }
+        filterItem = { $regex: new RegExp(`${escapeRegExp(text)}$`, 'i') }
       }
       if (item.operator === 'isEmpty') {
         filterItem = { $eq: '' }
@@ -77,10 +84,11 @@ export const mapDataGridOptionsToMongoOptions = (input?: {
       if (item.operator === 'isNotEmpty') {
         filterItem = { $ne: '' }
       }
-      if (item.operator === 'isAnyOf') {
-        filterItem = {
-          $in: item.value.split('%2C').map((v) => v.replace('%20', ' ')),
-        }
+      if (item.operator === 'isAnyOf' || item.operator === 'isNoneOf') {
+        // Split on the encoded comma, so a list value is decoded one by one.
+        const list = item.value.split('%2C').map((v) => decodeURIComponent(v))
+        filterItem =
+          item.operator === 'isAnyOf' ? { $in: list } : { $nin: list }
       }
       if (checkNumber(item.value)) {
         if (item.operator === '=') {

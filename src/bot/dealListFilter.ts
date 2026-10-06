@@ -88,6 +88,16 @@ const textCond = (operator: string, value: unknown): Cond | undefined => {
   return undefined
 }
 
+/**
+ * Text operators that match the rows their positive counterpart does not.
+ * They are built as that positive condition, then negated where it is
+ * applied (a bot-id `$nin`, a `$not` on the field).
+ */
+const NEGATED_TEXT_OPS: Record<string, string> = {
+  isNoneOf: 'isAnyOf',
+  notContains: 'contains',
+}
+
 const numberOf = (v: string): number | undefined => {
   if (v === '' || v === undefined || v === null) return undefined
   const n = Number(v)
@@ -316,18 +326,20 @@ export const buildDealListFilter = async (
       }
       continue
     } else if (field === 'botName') {
-      const nameCond = textCond(operator, value)
+      const negated = NEGATED_TEXT_OPS[operator]
+      const nameCond = textCond(negated ?? operator, value)
       if (nameCond) {
         const ids = await opts.botIdsByName({ 'settings.name': nameCond })
-        cond = { botId: { $in: ids } }
+        cond = { botId: negated ? { $nin: ids } : { $in: ids } }
       }
     } else if (field === 'cost') {
       cond = numericExprCond(DEAL_COST_EXPR, operator, value)
     } else if (DATE_FIELDS.has(field)) {
       cond = dateCond(field, operator, value, timezone)
     } else if (TEXT_ALIASES[field]) {
-      const c = textCond(operator, value)
-      if (c) cond = { [TEXT_ALIASES[field]]: c }
+      const negated = NEGATED_TEXT_OPS[operator]
+      const c = textCond(negated ?? operator, value)
+      if (c) cond = { [TEXT_ALIASES[field]]: negated ? { $not: c } : c }
     } else if (operator === 'between') {
       cond = numericFieldCond(field, operator, value)
     } else {

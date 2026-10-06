@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.76.3] - 2026-10-06
+
+### Added
+
+- Deal lists: `isNoneOf` and `notContains` on `botName` and `pair`. A bot-name negation excludes the matching bots' deals by bot id.
+- Generic list filters (bot lists, global variables, …): `isNoneOf` and `notContains`.
+
+### Fixed
+
+- Generic list filters compared text operators against the URI-encoded value, so `contains` / `equals` / `startsWith` / `endsWith` never matched a value holding a space or another encoded character, and `isAnyOf` decoded only the first space of each listed value. Values are now decoded before matching.
+
 ## [1.76.2] - 2026-10-06
 
 ### Fixed
