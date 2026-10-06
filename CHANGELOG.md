@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.76.0] - 2026-10-06
+
+### Added
+
+- Change trail: actor type `telegram` (the owner acting from a linked Telegram chat) and the actions `start_bot` / `stop_bot`.
+
 ## [1.75.3] - 2026-10-05
 
 ### Fixed

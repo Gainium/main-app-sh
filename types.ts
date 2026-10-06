@@ -2003,7 +2003,14 @@ export interface BotEventSchema extends SchemaI {
 }
 
 /** Who made a bot/deal settings change (change trail). */
-export type ChangeTrailActorType = 'user' | 'ai' | 'api' | 'webhook' | 'system'
+export type ChangeTrailActorType =
+  | 'user'
+  | 'ai'
+  | 'api'
+  | 'webhook'
+  | 'system'
+  /** the owner, from a linked Telegram chat */
+  | 'telegram'
 
 export type ChangeTrailActor = {
   type: ChangeTrailActorType
@@ -2021,6 +2028,9 @@ export type ChangeTrailAction =
   | 'revert'
   /** a deal opened with a size multiple set by an extension */
   | 'open_deal'
+  /** a bot start / stop request */
+  | 'start_bot'
+  | 'stop_bot'
 
 /**
  * Per-call overrides for the change-trail entry an API-layer entry point
