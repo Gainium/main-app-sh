@@ -5311,6 +5311,34 @@ const resolvers = <
         rest,
       )
     },
+    restartDeal: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: {
+          dealId: string
+          botId: string
+          combo?: boolean
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return await Bot.restartDeal(
+        input.botId,
+        input.dealId,
+        user.data._id.toString(),
+        paperContext,
+        !!input.combo,
+      )
+    },
     executeNextDca: async (
       _parent: any,
       {

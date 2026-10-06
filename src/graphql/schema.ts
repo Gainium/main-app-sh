@@ -893,6 +893,7 @@ export const BotSchema = /* GraphQL */ `
     addDealFunds(input: addDealFundsInput!): addFundsResponse
     reduceDealFunds(input: addDealFundsInput!): addFundsResponse
     executeNextDca(input: executeNextDcaInput!): addFundsResponse
+    restartDeal(input: restartDealInput!): addFundsResponse
     cancelTerminalDealOrder(
       input: cancelTerminalDealOrderInput!
     ): cancelTerminalDealOrderResponse
@@ -1264,6 +1265,15 @@ export const BotSchema = /* GraphQL */ `
     dealId: String!
     botId: String!
     expectedLevel: Int
+  }
+  """
+  Cancel and re-place one deal's orders (safety orders and take profit)
+  without restarting the bot. Combo deals pass combo: true.
+  """
+  input restartDealInput {
+    dealId: String!
+    botId: String!
+    combo: Boolean
   }
   input cancelTerminalDealOrderInput {
     dealId: String!

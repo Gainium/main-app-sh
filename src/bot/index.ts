@@ -13523,6 +13523,63 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Restart one deal: cancel and re-place its orders without reloading the
+   * whole bot. Feature request:
+   * https://community.gainium.io/t/restart-option-for-individual-deals/5302
+   *
+   * Routing only, like `executeNextDcaLevel`; a refusal (deal not open)
+   * surfaces as a bot message from the worker's `restartDeal`.
+   */
+  public async restartDeal(
+    botId: string,
+    dealId: string,
+    userId: string,
+    paperContext: boolean,
+    combo = false,
+  ) {
+    const botType = combo ? BotType.combo : BotType.dca
+    if (!this.useBots) {
+      return await this.callExternalBotService<BaseReturn<string>>(
+        botType,
+        'restartDeal',
+        false,
+        botId,
+        dealId,
+        userId,
+        paperContext,
+        combo,
+      )
+    }
+    const findLocal = (combo ? this.comboBots : this.dcaBots).find(
+      (d) => d.id === botId && d.userId === userId,
+    )
+    if (!findLocal) {
+      return this.entityNotFound('Bot')
+    }
+    this.botEventDb.createData({
+      userId,
+      botId,
+      botType,
+      event: 'Restart deal',
+      metadata: { dealId },
+      paperContext,
+      deal: dealId,
+    })
+    this.getWorkerById(findLocal.worker)?.postMessage({
+      do: 'method',
+      botType,
+      botId,
+      method: 'restartDeal',
+      args: [botId, dealId],
+    })
+    return {
+      status: StatusEnum.ok,
+      reason: null,
+      data: 'Deal restart scheduled',
+    }
+  }
+
   public async reduceDealFunds(
     botId: string,
     dealId: string,

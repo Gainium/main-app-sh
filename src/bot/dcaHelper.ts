@@ -25219,124 +25219,172 @@ function createDCABotHelper<
             changed: reset ? false : keysToCheck.filter((k) => !k).length !== 0,
             slChangedByUser: reset ? false : currentSlPerc !== settings.slPerc,
           }
-          await this.cancelAllOrder(findDeal.deal.lastPrice, dealId, true)
-          if (findDeal.deal.status !== DCADealStatusEnum.start) {
-            findDeal.initialOrders = await this.createInitialDealOrders(
-              findDeal.deal.symbol.symbol,
-              findDeal.deal.initialPrice,
-              dealId,
-              findDeal.deal,
-            )
-            findDeal.currentOrders = await this.createCurrentDealOrders(
-              findDeal.deal.symbol.symbol,
-              findDeal.deal.lastPrice,
-              findDeal.initialOrders,
-              findDeal.deal.settings.avgPrice || findDeal.deal.avgPrice,
-              findDeal.deal.initialPrice,
-              dealId,
-              false,
-              findDeal.deal,
-              false,
-            )
-            findDeal.initialOrders = this.getDealInitialOrders(dealId)
-
-            const completeLevels =
-              (this.getOrdersByStatusAndDealId({
-                dealId: findDeal.deal._id,
-                status: ['FILLED', 'CANCELED'],
-              }).filter(
-                (o) =>
-                  (o.typeOrder === TypeOrderEnum.dealRegular ||
-                    (!findDeal.deal.parent &&
-                      o.typeOrder === TypeOrderEnum.dealStart)) &&
-                  (this.data?.exchange === ExchangeEnum.bybit
-                    ? (o.status === 'FILLED' || o.status === 'CANCELED') &&
-                      +o.executedQty !== 0
-                    : o.status === 'FILLED'),
-              ).length ?? 1) + (findDeal.deal.parent ? 1 : 0)
-            findDeal.deal.levels = {
-              complete: completeLevels,
-              all: Math.max(
-                completeLevels,
-                findDeal.initialOrders.filter(
-                  (o) => o.type === TypeOrderEnum.dealRegular,
-                ).length +
-                  1 +
-                  (findDeal.deal.pendingAddFunds ?? []).length +
-                  (findDeal.deal.funds ?? []).length,
-              ),
-            }
-            if (
-              findDeal.currentOrders.filter(
-                (o) => o.type === TypeOrderEnum.dealRegular,
-              ).length === 0
-            ) {
-              findDeal.deal.levels.all = Math.max(
-                findDeal.deal.levels.complete,
-                1 +
-                  findDeal.initialOrders.filter(
-                    (o) => o.type === TypeOrderEnum.dealRegular,
-                  ).length,
-                1 + (findDeal.deal.funds ?? []).length,
-              )
-            }
-            findDeal.deal.fullFee = await this.getCommDeal(findDeal.deal)
-          }
-          this.updateDealBalances(findDeal)
-          this.saveDeal(findDeal, {
-            settings: findDeal.deal.settings,
-            levels: findDeal.deal.levels,
-            moveSlActivated: findDeal.deal.moveSlActivated,
-            moveSlArmed: findDeal.deal.moveSlArmed,
-            fullFee: findDeal.deal.fullFee,
-            trailingLevel: findDeal.deal.trailingLevel,
-            trailingMode: findDeal.deal.trailingMode,
-          }).then(async () => {
-            this.removeDealFromStopLossMethods(dealId)
-            await this.checkAllowedMethods()
-            await this.setClassProperties()
-            this.updateUsage(dealId)
-            this.updateAssets(dealId)
-            await this.setCloseByTimer(findDeal.deal)
-            // Re-arming above only updates the price the level check watches.
-            // The check itself runs from `priceUpdateCallback`, so a target the
-            // user has just moved below the market sits armed but unevaluated
-            // until the next price tick — and that cadence is the venue's, not
-            // ours: Coinbase pairs tick once every five minutes, which is how
-            // an already-in-the-money target went unfilled for minutes after
-            // the edit that put it in the money. Evaluate it against the last
-            // known price straight away.
-            const lastPrice =
-              this.getLastStreamData(findDeal.deal.symbol.symbol)?.price ||
-              findDeal.deal.lastPrice
-            if (lastPrice) {
-              await this.checkTPLevel(
-                this.botId,
-                lastPrice,
-                findDeal.deal.symbol.symbol,
-              )
-            }
-          })
-
-          if (findDeal.deal.status !== DCADealStatusEnum.start) {
-            await this.placeOrders(
-              this.botId,
-              findDeal.deal.symbol.symbol,
-              dealId,
-              await this.getOrdersToRestartAfterSettingsUpdate(dealId),
-            )
-            this.resendPendingFunds(findDeal)
-          } else {
-            await this.placeBaseOrder(
-              this.botId,
-              findDeal.deal.symbol.symbol,
-              findDeal.deal._id,
-            )
-          }
+          await this.rebuildDealOrders(findDeal, dealId)
         }
       }
       await this.afterDealUpdate(dealId)
     }
+    /**
+     * Cancel a deal's resting orders, regenerate its ladder and take profit
+     * from its current state, and place them again. Shared by a deal settings
+     * update and `restartDeal`.
+     */
+    private async rebuildDealOrders(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      dealId: string,
+    ) {
+      await this.cancelAllOrder(findDeal.deal.lastPrice, dealId, true)
+      if (findDeal.deal.status !== DCADealStatusEnum.start) {
+        findDeal.initialOrders = await this.createInitialDealOrders(
+          findDeal.deal.symbol.symbol,
+          findDeal.deal.initialPrice,
+          dealId,
+          findDeal.deal,
+        )
+        findDeal.currentOrders = await this.createCurrentDealOrders(
+          findDeal.deal.symbol.symbol,
+          findDeal.deal.lastPrice,
+          findDeal.initialOrders,
+          findDeal.deal.settings.avgPrice || findDeal.deal.avgPrice,
+          findDeal.deal.initialPrice,
+          dealId,
+          false,
+          findDeal.deal,
+          false,
+        )
+        findDeal.initialOrders = this.getDealInitialOrders(dealId)
+
+        const completeLevels =
+          (this.getOrdersByStatusAndDealId({
+            dealId: findDeal.deal._id,
+            status: ['FILLED', 'CANCELED'],
+          }).filter(
+            (o) =>
+              (o.typeOrder === TypeOrderEnum.dealRegular ||
+                (!findDeal.deal.parent &&
+                  o.typeOrder === TypeOrderEnum.dealStart)) &&
+              (this.data?.exchange === ExchangeEnum.bybit
+                ? (o.status === 'FILLED' || o.status === 'CANCELED') &&
+                  +o.executedQty !== 0
+                : o.status === 'FILLED'),
+          ).length ?? 1) + (findDeal.deal.parent ? 1 : 0)
+        findDeal.deal.levels = {
+          complete: completeLevels,
+          all: Math.max(
+            completeLevels,
+            findDeal.initialOrders.filter(
+              (o) => o.type === TypeOrderEnum.dealRegular,
+            ).length +
+              1 +
+              (findDeal.deal.pendingAddFunds ?? []).length +
+              (findDeal.deal.funds ?? []).length,
+          ),
+        }
+        if (
+          findDeal.currentOrders.filter(
+            (o) => o.type === TypeOrderEnum.dealRegular,
+          ).length === 0
+        ) {
+          findDeal.deal.levels.all = Math.max(
+            findDeal.deal.levels.complete,
+            1 +
+              findDeal.initialOrders.filter(
+                (o) => o.type === TypeOrderEnum.dealRegular,
+              ).length,
+            1 + (findDeal.deal.funds ?? []).length,
+          )
+        }
+        findDeal.deal.fullFee = await this.getCommDeal(findDeal.deal)
+      }
+      this.updateDealBalances(findDeal)
+      this.saveDeal(findDeal, {
+        settings: findDeal.deal.settings,
+        levels: findDeal.deal.levels,
+        moveSlActivated: findDeal.deal.moveSlActivated,
+        moveSlArmed: findDeal.deal.moveSlArmed,
+        fullFee: findDeal.deal.fullFee,
+        trailingLevel: findDeal.deal.trailingLevel,
+        trailingMode: findDeal.deal.trailingMode,
+      }).then(async () => {
+        this.removeDealFromStopLossMethods(dealId)
+        await this.checkAllowedMethods()
+        await this.setClassProperties()
+        this.updateUsage(dealId)
+        this.updateAssets(dealId)
+        await this.setCloseByTimer(findDeal.deal)
+        // Re-arming above only updates the price the level check watches.
+        // The check itself runs from `priceUpdateCallback`, so a target the
+        // user has just moved below the market sits armed but unevaluated
+        // until the next price tick — and that cadence is the venue's, not
+        // ours: Coinbase pairs tick once every five minutes, which is how
+        // an already-in-the-money target went unfilled for minutes after
+        // the edit that put it in the money. Evaluate it against the last
+        // known price straight away.
+        const lastPrice =
+          this.getLastStreamData(findDeal.deal.symbol.symbol)?.price ||
+          findDeal.deal.lastPrice
+        if (lastPrice) {
+          await this.checkTPLevel(
+            this.botId,
+            lastPrice,
+            findDeal.deal.symbol.symbol,
+          )
+        }
+      })
+
+      if (findDeal.deal.status !== DCADealStatusEnum.start) {
+        await this.placeOrders(
+          this.botId,
+          findDeal.deal.symbol.symbol,
+          dealId,
+          await this.getOrdersToRestartAfterSettingsUpdate(dealId),
+        )
+        this.resendPendingFunds(findDeal)
+      } else {
+        await this.placeBaseOrder(
+          this.botId,
+          findDeal.deal.symbol.symbol,
+          findDeal.deal._id,
+        )
+      }
+    }
+
+    /**
+     * Restart one deal: rebuild its orders the way a bot Restart does, without
+     * touching the bot's other deals. Feature request:
+     * https://community.gainium.io/t/restart-option-for-individual-deals/5302
+     *
+     * The rebuild is the same one a deal settings save runs, with the settings
+     * left as they are — so a safety order or take profit that was refused
+     * (not enough balance at the time) is sent again once funds are there.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `restartDeal${botId}${dealId}`,
+    )
+    async restartDeal(_botId: string, dealId: string) {
+      const findDeal = this.getDeal(dealId)
+      if (
+        !findDeal ||
+        (findDeal.deal.status !== DCADealStatusEnum.open &&
+          findDeal.deal.status !== DCADealStatusEnum.error)
+      ) {
+        // setError=false: a refused manual action is not a bot fault.
+        return this.handleErrors(
+          `Only an open deal can be restarted`,
+          'restartDeal',
+          '',
+          false,
+          true,
+          true,
+          true,
+        )
+      }
+      this.handleLog(`Restart deal ${dealId}`)
+      await this.rebuildDealOrders(findDeal, dealId)
+      await this.afterDealUpdate(dealId)
+    }
+
     /**
      * Merge deals
      * @param {string[]} _deals Id of deals to merge

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.78.0] - 2026-10-06
+
+### Added
+
+- `restartDeal` (GraphQL): restart a single DCA or Combo deal. Its open safety orders and take profit are cancelled and placed again from the deal's current state — the same rebuild a deal settings save runs — without reloading the bot or touching its other deals. Useful when an order was refused (for example for lack of balance) and the funds are now there.
+
 ## [1.77.0] - 2026-10-06
 
 ### Added
