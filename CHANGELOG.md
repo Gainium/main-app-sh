@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.76.2] - 2026-10-06
+
+### Fixed
+
+- DCA LIMIT entry reposition: when the cancel of a resting base order raced a partial fill on a venue that cancels asynchronously, the bot re-placed the base order instead of opening the deal on the fill. When the fill was later picked up, the rest of the base order was not put back on the book on contract-sized and coin-margined accounts. The reposition cancel now waits for the venue to end the order and books it through the same settle as a stranded partial entry. A cancelled order that was still listed live no longer stays `NEW` in the orders collection.
+
 ## [1.76.1] - 2026-10-06
 
 ### Added

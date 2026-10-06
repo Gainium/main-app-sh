@@ -190,6 +190,7 @@ import {
   shouldSettlePartialBaseEntry,
   shouldTopUpSettledBaseEntry,
   terminalEntryHoldsAFill,
+  type SettledBaseEntryRow,
 } from './dca/partialBaseEntry'
 import {
   resolveLimitTimeouts,
@@ -9224,8 +9225,31 @@ function createDCABotHelper<
               return
             }
             this.handleLog(`${id} not filled. Create new one`)
+            // Read BEFORE the cancel, which copies its answer onto `find`.
+            const observed = {
+              status: find.status,
+              executedQty: find.executedQty,
+              price: find.price,
+              updateTime: find.updateTime,
+            }
             const cancelBase = await this.cancelOrderOnExchange(find)
-            if (cancelBase?.status === 'FILLED') {
+            // A cancel that raced a fill ends the way a settle does, so the
+            // deal opens on what traded and the rest is put back on the book —
+            // and a venue that still lists the order live (OKX reads it back
+            // before its asynchronous cancel lands) is waited out instead of
+            // re-placed on top of. Spec 133 §4.1–§4.3.
+            if (cancelBase && find.dealId) {
+              const outcome = await this.bookCanceledBaseEntry(
+                find,
+                cancelBase,
+                observed,
+                find.dealId,
+                true,
+              )
+              if (outcome.booked) {
+                return
+              }
+            } else if (cancelBase?.status === 'FILLED') {
               return this.handleUnknownOrder(cancelBase)
             }
             if (deal?.deal.status === DCADealStatusEnum.start) {
@@ -9537,34 +9561,78 @@ function createDCABotHelper<
         updateTime: order.updateTime,
       }
       const ended = order.status === 'CANCELED' || order.status === 'EXPIRED'
-      let settled = ended
+      const settled = ended
         ? this.promoteEndedBaseEntry(order)
         : await this.cancelOrderOnExchange(order)
+      const outcome = await this.bookCanceledBaseEntry(
+        order,
+        settled,
+        observed,
+        dealId,
+        !ended,
+      )
+      if (outcome.booked) {
+        return
+      }
+      this.handleWarn(
+        `Deal ${dealId} base order ${order.clientOrderId} could not be settled (${
+          outcome.settled?.status ?? 'no answer from exchange'
+        }). Deal stays in start until the bot restarts`,
+      )
+    }
+
+    /**
+     * Book what a base order the engine just cancelled (or found ended) really
+     * traded, and mark the row engine-settled.
+     *
+     * Shared by `settlePartialBaseEntryNow` and the reposition arm of
+     * `checkBaseOrder`, so a cancel that raced a fill ends the same way from
+     * either: the forced FILLED write (spec 128), the wait for a venue that
+     * cancels asynchronously (spec 125), the fill a cancel answer dropped (spec
+     * 059), and the mark `restBaseEntryRemainder` needs to rest the remainder
+     * on contract-sized and coin-margined accounts (spec 111 §4.1.1, spec 133).
+     *
+     * `booked: false` with a terminal `settled` is an order that ended with
+     * nothing traded; a non-terminal one is still live and is left to the
+     * venue's own CANCELED event (spec 125 §4.2).
+     *
+     * @param cancelled `answer` came back from `cancelOrderOnExchange`, rather
+     *   than from `promoteEndedBaseEntry`
+     */
+    async bookCanceledBaseEntry(
+      order: Order,
+      answer: Order | null | undefined,
+      observed: SettledBaseEntryRow,
+      dealId: string,
+      cancelled: boolean,
+    ): Promise<{ booked: boolean; settled: Order | null | undefined }> {
+      let settled = answer
       // `cancelOrderOnExchange` writes a FILLED answer with the default
       // filter, which the venue's own CANCELED event has usually beaten to the
       // row. Left CANCELED there, the base order drops out of the average at
       // the next reload and `deal.size` over-states the position. Forced, as
       // `promoteEndedBaseEntry` is. Spec 128 §4.1.
-      if (!ended && settled?.status === 'FILLED') {
+      if (cancelled && settled?.status === 'FILLED') {
         this.updateOrderOnDb(settled, true)
       }
       // The venue ACCEPTED the cancel but still reports the order live — a
-      // venue that cancels asynchronously (Coinbase) answers this way every
-      // time. Wait for it to end rather than give up. Spec 125 §4.1.
+      // venue that cancels asynchronously (Coinbase, OKX) answers this way.
+      // Wait for it to end rather than give up. Spec 125 §4.1.
       if (settled && !isSettledBaseEntryAnswer(settled.status)) {
         settled = (await this.awaitBaseEntryCancel(order)) ?? settled
       }
       // A row the engine settled itself, whose fill did not shrink on the way:
       // a venue answer read in the wrong unit fails that. Spec 111 §4.1.1.
       const noteSettled = (row: Order) => {
-        if (+row.executedQty >= (+observed.executedQty || 0)) {
+        if (+row.executedQty >= (+(observed.executedQty ?? 0) || 0)) {
           this.settledBaseEntries ??= new Set()
           this.settledBaseEntries.add(row.clientOrderId)
         }
         return row
       }
       if (settled?.status === 'FILLED') {
-        return await this.bookSettledBaseEntry(noteSettled(settled), dealId)
+        await this.bookSettledBaseEntry(noteSettled(settled), dealId)
+        return { booked: true, settled }
       }
       // The cancel ENDED the order. That is the settle done, not a failure —
       // the row is terminal, so there is nothing left to ask the venue about,
@@ -9572,20 +9640,46 @@ function createDCABotHelper<
       // row the venue had already ended does. Spec 059 §4.1/§4.2.
       const fill = settledBaseEntryFill(settled, observed)
       if (settled && fill) {
-        return await this.bookSettledBaseEntry(
+        await this.bookSettledBaseEntry(
           noteSettled(this.promoteEndedBaseEntry({ ...settled, ...fill })),
           dealId,
         )
+        return { booked: true, settled }
       }
       if (settled && !isSettledBaseEntryAnswer(settled.status)) {
         this.unsettledBaseEntries ??= new Set()
         this.unsettledBaseEntries.add(order.clientOrderId)
+      } else if (settled && settled !== answer) {
+        // Ended with nothing traded, learnt from a re-read: the cancel answer
+        // `cancelOrderOnExchange` wrote still said live, and nothing else will
+        // visit a row it already dropped from memory. Spec 133 §4.3.
+        this.updateOrderOnDb(settled)
       }
-      this.handleWarn(
-        `Deal ${dealId} base order ${order.clientOrderId} could not be settled (${
-          settled?.status ?? 'no answer from exchange'
-        }). Deal stays in start until the bot restarts`,
-      )
+      return { booked: false, settled }
+    }
+
+    /**
+     * Mark a base row a reconcile found `FILLED` short as engine-settled when
+     * this bot is the one that cancelled it.
+     *
+     * `getOrder` promotes a `CANCELED`-with-fills answer to `FILLED`, so by
+     * the time the reconcile sees the row the venue's `CANCELED` is gone, and
+     * `restBaseEntryRemainder` would read it as a venue `FILLED` reading short
+     * on a contract-sized or coin-margined account and refuse the remainder.
+     * Our own recent cancel explains the short fill; the fill-did-not-shrink
+     * guard is the one `bookCanceledBaseEntry` applies. Spec 133 §4.5.
+     */
+    noteReconciledBaseEntry(before: Order, after: Order) {
+      if (
+        after.typeOrder === TypeOrderEnum.dealStart &&
+        after.status === 'FILLED' &&
+        before.status !== 'FILLED' &&
+        this.isOwnCancel(after.clientOrderId) &&
+        +after.executedQty >= (+before.executedQty || 0)
+      ) {
+        this.settledBaseEntries ??= new Set()
+        this.settledBaseEntries.add(after.clientOrderId)
+      }
     }
 
     /**
@@ -12373,6 +12467,7 @@ function createDCABotHelper<
             )
             this.updateOrderOnDb(mergedOrder)
             if (mergedOrder.status === 'FILLED') {
+              this.noteReconciledBaseEntry(o, mergedOrder)
               filledOrders.push(mergedOrder)
             }
             if (mergedOrder.status === 'PARTIALLY_FILLED') {
