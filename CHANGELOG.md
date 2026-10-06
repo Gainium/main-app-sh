@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.78.1] - 2026-10-06
+
+### Fixed
+
+- `getBotWindowStats` win rate is now wins / (wins + losses), as the bot statistics count it; a break-even deal is neither.
+
 ## [1.78.0] - 2026-10-06
 
 ### Added
