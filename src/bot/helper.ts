@@ -3019,9 +3019,12 @@ function createBotHelper<
      * per price tick and stays synchronous, so it reads this cache, keyed to
      * the position it was computed for; the ledger is read after each fill's
      * transaction is booked, and once from the tick for a position no fill
-     * refreshed (restart, settings change).
+     * refreshed (restart, settings change). `null` until that refresh lands:
+     * the check is skipped rather than decided on `position.price` (spec 135).
      */
-    private tpSlEntryPrice(position: ClearBotSchema['position']): number {
+    private tpSlEntryPrice(
+      position: ClearBotSchema['position'],
+    ): number | null {
       if (position.qty === 0 || !this.usesUnpairedEntry) {
         return position.price
       }
@@ -3037,7 +3040,7 @@ function createBotHelper<
       if (!this.tpSlEntryPending) {
         this.refreshTpSlEntry()
       }
-      return position.price
+      return null
     }
     private refreshTpSlEntry(fill?: Order): Promise<void> {
       const settings = this.data?.settings
@@ -3074,6 +3077,12 @@ function createBotHelper<
             this.updateData({ closeEntry })
             this.emit('bot settings update', { closeEntry })
           }
+        } catch (e) {
+          // A rejected queue would never refresh again, and a cold entry
+          // skips the check (spec 135).
+          this.handleWarn(
+            `TP/SL entry: refresh failed (${(e as Error)?.message ?? e})`,
+          )
         } finally {
           this.tpSlEntryPending -= 1
         }
@@ -4596,6 +4605,9 @@ function createBotHelper<
             // Spec 117: against the entry the close is booked at, not the
             // whole-position average a neutral grid's close no longer uses.
             const entry = this.tpSlEntryPrice(current)
+            if (entry === null) {
+              return { text: '', value: TpSlReturn.none }
+            }
             const diff =
               current.side === PositionSide.LONG
                 ? lastPrice - entry

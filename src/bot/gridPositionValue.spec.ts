@@ -102,6 +102,11 @@ const makeBot = () => {
     get currentLeverage() {
       return 1
     }
+    // This spec values the position against `position.price`; which entry a
+    // neutral grid picks is spec 117/135's, and a cold one skips the tick.
+    tpSlEntryPrice(position: { price: number }) {
+      return position.price
+    }
     handleLog(text: string) {
       this.logs.push(text)
     }

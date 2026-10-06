@@ -574,6 +574,49 @@ describe('a neutral grid value-changed TP/SL values the position against the clo
     })
   })
 
+  describe('spec 135: a cold entry cache never decides a neutral TP/SL', () => {
+    it('the first tick after a restart does not fire TP on position.price', async () => {
+      // A 3% TP clears on position.price at this price (3.08%) but not on
+      // the unpaired entry (≈1.03%): the reported restart case.
+      const bot = await atClose(BR)
+      const first = bot.tpSl(BR.closePrice)
+      expect(first.value).to.equal(TpSlReturn.none)
+      expect(first.text).to.equal('')
+      await settle()
+      expect(bot.tpSl(BR.closePrice).value).to.equal(TpSlReturn.none)
+      expect(bot.ordersRead).to.equal(1)
+    })
+
+    it('SL waits for the entry too, then fires on it', async () => {
+      // BR short at 1.0: +1.1% on position.price, -0.95% on the unpaired entry.
+      const bot = await atClose(BR, { slPerc: -0.005 })
+      expect(bot.tpSl(1.0).value).to.equal(TpSlReturn.none)
+      await settle()
+      expect(bot.tpSl(1.0).value).to.equal(TpSlReturn.sl)
+    })
+
+    it('a position change is not judged on the previous entry or position.price', async () => {
+      const bot = await atClose(BR)
+      bot.tpSl(BR.closePrice)
+      await settle()
+      bot.data.position = { ...bot.data.position, qty: 81 }
+      expect(bot.tpSl(0.5).value).to.equal(TpSlReturn.none)
+    })
+    it('a refresh that throws does not stop later refreshes', async () => {
+      const bot = await atClose(BR)
+      bot.updateData = () => {
+        throw new Error('db down')
+      }
+      bot.tpSl(BR.closePrice)
+      await settle()
+      bot.updateData = () => {}
+      bot.data.position = { ...bot.data.position, qty: 81 }
+      bot.tpSl(BR.closePrice)
+      await settle()
+      expect(bot.ordersRead).to.equal(2)
+    })
+  })
+
   describe('§4.5 fallbacks match closeEntryPrice', () => {
     it('a SHORT-strategy grid keeps position.price and reads nothing', async () => {
       const bot = await atClose(BR, {
