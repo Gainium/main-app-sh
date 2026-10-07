@@ -5447,6 +5447,24 @@ export type ExchangeRequestTimeProfile = Partial<BalancerTimeProfile> & {
    * be equivalent.
    */
   server?: string
+  /**
+   * Who the request was made for and from which code path — what turns "the
+   * venue budget is full" into "this account, from this caller, is filling
+   * it". Each is optional: a client is not always built with a user or bot in
+   * hand, and `accountRef` alone (a fingerprint of the stored key) still
+   * groups requests per exchange account.
+   */
+  userId?: string
+  botId?: string
+  exchangeUUID?: string
+  accountRef?: string
+  caller?: string
+  /**
+   * Balance reads only: what the per-account balance limiter would have done
+   * with this read (`merge` / `reuse` / `budget` / `live`). Recorded, not
+   * enforced — see `core/src/exchange/balanceLimiter.ts`.
+   */
+  limiter?: string
 }
 
 export interface ExchangeRequestTimeProfileSchema

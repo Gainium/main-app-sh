@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.0] - 2026-10-07
+
+### Added
+
+- Exchange request telemetry records who each request was made for (user, bot, exchange connection, and a fingerprint of the stored API key — never the key) and which code path made it, so the share of a venue's rate budget spent by one account or one caller can be measured.
+- Per-account balance-read limiter in shadow mode: every balance read still goes to the exchange, and the limiter only records whether it would have merged the read with one already in flight, reused a recent answer, or held it back over a per-minute budget. Reads that size a deal from the balance are exempt from reuse and the budget. `BALANCE_LIMITER_MODE=off` disables the bookkeeping; `BALANCE_LIMITER_WINDOW_MS` and `BALANCE_LIMITER_PER_MINUTE` tune it.
+
 ## [1.80.1] - 2026-10-06
 
 ### Fixed

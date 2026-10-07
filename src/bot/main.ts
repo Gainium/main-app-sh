@@ -73,6 +73,7 @@ import { isVenueCanceledRemainderFill } from './remainderFill'
 import { bitgetSpotMarketBuyQty } from './bitgetMarketBuyAmount'
 import { statsAfterReset } from './dca/botStatsReset'
 import ExchangeChooser from '../exchange/exchangeChooser'
+import { withExchangeCaller } from '../exchange/requestContext'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
 import utils, { isPaper } from '../utils'
@@ -2507,6 +2508,11 @@ class MainBot<T extends IMainBot> {
         subaccount,
         shouldCheckAffiliate,
       )
+      this.exchange?.setRequestContext({
+        userId: this.userId,
+        botId: this.botId,
+        exchangeUUID,
+      })
       this.handleLog('Load exchange provider')
       if (update) {
         return
@@ -4751,7 +4757,9 @@ class MainBot<T extends IMainBot> {
         } as BaseReturn<FreeAsset>
       }
     }
-    const result = await this.exchange.getBalance()
+    const result = await withExchangeCaller('bot.balancesFromExchange', () =>
+      this.exchange!.getBalance(),
+    )
     if (result.status === StatusEnum.notok) {
       // Open/widen the cooldown only for a real, venue-returned hard-auth
       // rejection. Everything else stays exactly as transient as it is now.
@@ -5012,7 +5020,10 @@ class MainBot<T extends IMainBot> {
             return
           }
         }
-        const balances = await this.exchange.getBalance()
+        const balances = await withExchangeCaller(
+          direct ? 'bot.checkAssets.direct' : 'bot.checkAssets.dbMiss',
+          () => this.exchange!.getBalance(),
+        )
         this.handleDebug('Get balance')
         if (balances.status === StatusEnum.notok) {
           // Open/widen the cooldown only for a real, venue-returned hard-auth

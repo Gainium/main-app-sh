@@ -1,4 +1,5 @@
 import { v4 } from 'uuid'
+import { withExchangeCaller } from '../exchange/requestContext'
 import DB from '../db'
 import type { PipelineStage, ProjectionFields } from 'mongoose'
 import { Types } from 'mongoose'
@@ -740,13 +741,15 @@ const resolvers = <
         // fall through and return the last STORED snapshot; the refresh keeps
         // running and lands for the next read. See `awaitSnapshotRefresh`.
         await userUtils.awaitSnapshotRefresh(
-          userUtils.userSnapshots(
-            user.data._id.toString(),
-            paperContext,
-            true,
-            undefined,
-            undefined,
-            input?.uuid,
+          withExchangeCaller('api.updateBalance', () =>
+            userUtils.userSnapshots(
+              user.data._id.toString(),
+              paperContext,
+              true,
+              undefined,
+              undefined,
+              input?.uuid,
+            ),
           ),
           user.data._id.toString(),
         )

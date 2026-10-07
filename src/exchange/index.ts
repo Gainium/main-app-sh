@@ -24,8 +24,10 @@ import type {
 } from '../../types'
 import { decrypt, decryptAsync } from '../utils/crypto'
 import { isResolverManaged } from '../utils/credentialResolver'
+import { accountRefFor, type ExchangeRequestContext } from './requestContext'
 
 export interface Exchange {
+  setRequestContext(context: ExchangeRequestContext): void
   returnGood<T>(): (r: T) => ReturnGood<T>
   returnBad(): (e: Error) => ReturnBad
   getBalance(): Promise<BaseReturn<FreeAsset>>
@@ -158,6 +160,10 @@ abstract class AbsctractExchange implements Exchange {
   private credentialsPending = false
   /** Memoises the in-flight resolution so concurrent calls collapse into one. */
   private credentialsPromise: Promise<void> | null = null
+  /** Who requests from this client are made for; stamped on telemetry. */
+  protected requestContext: ExchangeRequestContext = {}
+  /** Stable reference to the exchange account; see `accountRefFor`. */
+  protected readonly accountRef: string
   constructor(
     key?: string,
     secret?: string,
@@ -168,6 +174,7 @@ abstract class AbsctractExchange implements Exchange {
     bybitHost?: BybitHost,
     subaccount?: boolean,
   ) {
+    this.accountRef = accountRefFor(key)
     this.credentialsPending =
       isResolverManaged(key) ||
       isResolverManaged(secret) ||
@@ -187,6 +194,15 @@ abstract class AbsctractExchange implements Exchange {
     this.okxSource = okxSource
     this.bybitHost = bybitHost
     this.subaccount = subaccount
+  }
+
+  /**
+   * Attach the user / bot / exchange connection these requests are made for,
+   * so request telemetry can be grouped by them. Purely descriptive: nothing
+   * about how a request is sent depends on it.
+   */
+  setRequestContext(context: ExchangeRequestContext) {
+    this.requestContext = { ...this.requestContext, ...context }
   }
 
   /**

@@ -93,6 +93,7 @@ import {
   streamedFree,
 } from './balanceWrite'
 import { createHoldRefresh } from './holdRefresh'
+import { withExchangeCaller } from '../exchange/requestContext'
 import {
   groupSharedKeyLegs,
   isSharedWalletProvider,
@@ -485,7 +486,10 @@ const updateUserBalance = async (
         e.okxSource,
         e.bybitHost,
       )
-      const balances = await provider.getBalance()
+      provider.setRequestContext({ userId, exchangeUUID: e.uuid })
+      const balances = await withExchangeCaller('user.updateUserBalance', () =>
+        provider.getBalance(),
+      )
       if (balances.status !== 'OK') {
         // The connector reports a refusal as a NOTOK result, not a throw, so
         // the catch below never sees it. Without this line the connection
@@ -871,8 +875,8 @@ const connectUserBalance = async (
             (await reconcileSharedWalletLinks(u._id.toString(), ec, true)) ?? u,
         ),
       )
-      await Promise.all(
-        list.map((u) => updateUserBalance(u, uuid, undefined, ec)),
+      await withExchangeCaller('user.connect', () =>
+        Promise.all(list.map((u) => updateUserBalance(u, uuid, undefined, ec))),
       )
     }
     for (const u of list) {
@@ -948,7 +952,9 @@ const connectUserBalance = async (
             // venue whose stream carries no hold they are the only prompt
             // signal that `locked` moved (spec 070).
             holdRefresh.schedule(e.provider, e.uuid, parsed?.eventType, () =>
-              refreshBalanceForHold(userId, e.uuid, ec),
+              withExchangeCaller('user.holdRefresh', () =>
+                refreshBalanceForHold(userId, e.uuid, ec),
+              ),
             )
             balanceMsg.push({ ...parsed, userId, e })
             await processBalanceUpdate()
@@ -1423,9 +1429,11 @@ const userSnapshots = async (
       // portfolio refresh); keep the all-users cron sweep sequential per user,
       // since it already runs every user concurrently.
       const perUserConcurrency = id ? balanceFetchConcurrency() : 1
-      await Promise.all(
-        users.data.result.map((u) =>
-          updateUserBalance(u, uuid, !!paperContext, ec, perUserConcurrency),
+      await withExchangeCaller(id ? 'user.snapshotOne' : 'cron.snapshot', () =>
+        Promise.all(
+          users.data.result.map((u) =>
+            updateUserBalance(u, uuid, !!paperContext, ec, perUserConcurrency),
+          ),
         ),
       )
     }

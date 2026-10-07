@@ -183,6 +183,26 @@ export class RedisWrapper {
     }
   }
   /**
+   * SET key value NX EX ttlSec. Resolves true when this caller set the key,
+   * false when it already existed, undefined when Redis is unavailable.
+   */
+  public async setNx(
+    key: string,
+    value: string,
+    ttlSec: number,
+  ): Promise<boolean | undefined> {
+    if (this._instance && this._instance.isReady) {
+      return await this._instance
+        .set(key, value, { NX: true, EX: Math.max(1, Math.floor(ttlSec)) })
+        .then((r) => r === 'OK')
+        .catch((e) => {
+          logger.error(`${prefix} Redis setNx Error: ${e}`)
+          return undefined
+        })
+    }
+    return undefined
+  }
+  /**
    * Atomic INCR. Returns the new counter value, or undefined when Redis is
    * unavailable (callers must treat undefined as "could not count" and decide
    * their own fail-open/closed policy).

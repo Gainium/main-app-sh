@@ -1,4 +1,5 @@
 import Big from 'big.js'
+import { withExchangeCaller } from '../exchange/requestContext'
 import { v4 } from 'uuid'
 import type DB from '../db'
 import {
@@ -10575,7 +10576,9 @@ function createDCABotHelper<
           orderSizeType === OrderSizeTypeEnum.percFree ||
           orderSizeType === OrderSizeTypeEnum.percTotal
         ) {
-          const balances = await this.getBalancesFromExchange()
+          const balances = await withExchangeCaller('bot.dealSizing', () =>
+            this.getBalancesFromExchange(),
+          )
           if (balances && balances.status === StatusEnum.ok) {
             const long = this.isLong
             const asset = this.futures
@@ -19015,7 +19018,9 @@ function createDCABotHelper<
 
         balanceUseQty = d?.deal.balanceStart || 0
         if (!balanceUseQty) {
-          const balances = await this.getBalancesFromExchange()
+          const balances = await withExchangeCaller('bot.balanceStart', () =>
+            this.getBalancesFromExchange(),
+          )
           if (!balances || balances.status === StatusEnum.notok) {
             this.handleErrors(
               `Error getting user balances: ${balances?.reason}`,
@@ -24021,7 +24026,9 @@ function createDCABotHelper<
         )
       } else {
         const ed = await this.getExchangeInfo(symbol)
-        const balances = await this.getBalancesFromExchange()
+        const balances = await withExchangeCaller('bot.reconcile', () =>
+          this.getBalancesFromExchange(),
+        )
         answered = balances?.status === StatusEnum.ok
         verdict = reconcileSpotDealAgainstVenue(
           answered && balances?.data

@@ -1,4 +1,5 @@
 import Big from 'big.js'
+import { withExchangeCaller } from '../exchange/requestContext'
 import type {
   ComboBotSchema,
   ComboDealsSchema,
@@ -1782,7 +1783,9 @@ function createComboBotHelper<
           response.filledBase -= sell.qty
           response.filledQuote += sell.value
         }
-        const balances = await this.getBalancesFromExchange()
+        const balances = await withExchangeCaller('bot.compareBalances', () =>
+          this.getBalancesFromExchange(),
+        )
         if (!balances || balances.status === StatusEnum.notok) {
           this.handleErrors(
             `Error getting balances from exchange: ${balances?.reason}`,
@@ -4692,7 +4695,9 @@ function createComboBotHelper<
           orderSizeType === OrderSizeTypeEnum.percFree ||
           orderSizeType === OrderSizeTypeEnum.percTotal
         ) {
-          const balances = await this.getBalancesFromExchange()
+          const balances = await withExchangeCaller('bot.dealSizing', () =>
+            this.getBalancesFromExchange(),
+          )
           if (balances && balances.status === StatusEnum.ok) {
             const long = this.isLong
             const asset = this.futures
