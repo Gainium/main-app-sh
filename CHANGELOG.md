@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.84.0] - 2026-10-07
+
+### Added
+
+- Multi-coin combo bots. A combo bot can trade several pairs, each in its own deal with its own grid, like a multi-pair DCA bot. The v2 API accepts `useMulti` and `maxDealsPerPair` when creating a combo bot, and a multi-coin combo's pairs can be changed through `PUT /api/v2/bots/combo/:botId` (`pair`) and `PUT /api/v2/bots/combo/:botId/pairs`. On the cloud edition the feature is in beta for selected accounts; self-hosted is not restricted.
+
+### Fixed
+
+- Changing a combo bot's pairs through the v2 API no longer fails with "Bot not found": the pair change looked the bot up among DCA bots only.
+
 ## [1.83.0] - 2026-10-07
 
 ### Changed

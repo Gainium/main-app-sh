@@ -266,14 +266,13 @@ export const validateCreateComboBotInputSchema = (
   input: CreateComboBotInput,
   originalInput: CreateDCABotInputRaw,
 ): ValidationResult<CreateComboBotInput> => {
-  let response = validateCommonSchema(
+  const response = validateCommonSchema(
     input,
     originalInput,
     comboBotSchemaConfig,
     COMBO_EXCLUDED_FIELDS,
     COMBO_FORM_DEFAULTS,
   )
-  response = validateNotAddedMultiPairs(input, response)
 
   return response
 }

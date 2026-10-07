@@ -3158,6 +3158,7 @@ class Bot<T extends UserSchema = UserSchema> {
     pairsToSet?: string[],
     pairsToSetMode?: PairsToSetMode,
     returnResult = false,
+    botType: BotType.dca | BotType.combo = BotType.dca,
   ) {
     if (
       (pairsToChange &&
@@ -3176,13 +3177,18 @@ class Bot<T extends UserSchema = UserSchema> {
     if (!user || user.status === StatusEnum.notok) {
       return this.entityNotFound('User')
     }
+    // Multi-coin combo bots share this path; their documents live in the
+    // combo collection and save through `changeComboBot`.
+    const botDb = (
+      botType === BotType.combo ? this.comboBotDb : this.dcaBotDb
+    ) as typeof this.dcaBotDb
     const bot = botId
-      ? await this.dcaBotDb.readData({
+      ? await botDb.readData({
           _id: botId,
           userId,
           isDeleted: { $ne: true },
         })
-      : await this.dcaBotDb.readData({
+      : await botDb.readData({
           'settings.name': {
             $exists: true,
             $eq: botName,
@@ -3379,7 +3385,7 @@ class Bot<T extends UserSchema = UserSchema> {
       }`
       this.botEventDb.createData({
         botId: `${bot.data.result._id}`,
-        botType: BotType.dca,
+        botType,
         event: 'Warning',
         userId,
         paperContext: !!bot.data.result.paperContext,
@@ -3396,7 +3402,25 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     //@ts-ignore
     delete bot.data.result.settings._id
-    if (!returnResult) {
+    if (!returnResult && botType === BotType.combo) {
+      // Awaited, unlike the DCA save: a combo coin locks credits, and a
+      // refusal (not enough credits, beta gate) must reach the caller.
+      const saved = await this.changeComboBot(
+        {
+          id: `${bot.data.result._id}`,
+          pair: exchangeFormatPairs,
+        },
+        userId,
+        !!bot.data.result.paperContext,
+      )
+      if (!saved || saved.status === StatusEnum.notok) {
+        return {
+          status: StatusEnum.notok as const,
+          reason: saved?.reason || 'Internal error. Please try again later',
+          data: null,
+        }
+      }
+    } else if (!returnResult) {
       this.changeDCABot(
         {
           ...bot.data.result.settings,

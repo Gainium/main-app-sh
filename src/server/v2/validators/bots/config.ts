@@ -2056,8 +2056,6 @@ export const COMBO_EXCLUDED_FIELDS: (keyof typeof COMBO_FORM_DEFAULTS)[] = [
   'trailingSl',
   'trailingTp',
   'trailingTpPerc',
-  'useMulti',
-  'maxDealsPerPair',
   'dealCloseCondition',
   'useMinTP',
   'minTp',

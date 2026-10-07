@@ -3009,6 +3009,7 @@ const v2API = <R extends UserSchema = UserSchema>(
             pair,
             PairsToSetMode.replace,
             true,
+            botType === 'combo' ? BotType.combo : BotType.dca,
           )
           if (updatePairs.status === StatusEnum.notok) {
             if (updatePairs.reason === 'Nothing changed') {
@@ -3516,6 +3517,8 @@ const v2API = <R extends UserSchema = UserSchema>(
           pairsToChange,
           pairsToSet,
           pairsToSetMode,
+          false,
+          botType === 'combo' ? BotType.combo : BotType.dca,
         )
 
         if (result.status === StatusEnum.notok) {
