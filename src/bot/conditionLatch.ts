@@ -130,6 +130,21 @@ export const tpCoverageDrift = 'tpCoverageDrift'
 export const limitOnlyEntryFallback = 'limitOnlyEntryFallback'
 
 /**
+ * `openNewDeal` refused because the bot is at its max open deals (or its
+ * over/under split of it). Reported to the user as a notification, not as a
+ * bot event: hitting the limit is the bot working as configured, and the check
+ * runs on every start attempt — per candle per pair for indicator starts — so
+ * only the first refusal in a re-arm window is news. Bot-level: no symbol.
+ */
+export const maxDealsReached = 'maxDealsReached'
+
+/**
+ * As {@link maxDealsReached}, for the per-pair limit of a multi-pair bot.
+ * Keyed by PAIR: one pair can sit at its limit while the others still open.
+ */
+export const maxDealsPerPairReached = 'maxDealsPerPairReached'
+
+/**
  * How long a standing condition may hold before it is reported again. Matches
  * the `logWindowSec: 86400` the `Cannot start deal` subType is already
  * configured with, so the user's existing daily reminder is unchanged while the

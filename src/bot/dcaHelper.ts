@@ -308,7 +308,10 @@ import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
 import { getSubTypeBehavior } from './errorRulesCache'
 import { capLadderPlacements } from './ladderPlacementCap'
 import {
+  ConditionLatch,
   limitOnlyEntryFallback,
+  maxDealsPerPairReached,
+  maxDealsReached,
   notEnoughBalanceNewDeal,
   orderBelowExchangeMin,
   standingConditionKey,
@@ -6538,6 +6541,12 @@ function createDCABotHelper<
             this.pendingDealsPerPair.set(key, pendingDeals + 1)
             return true
           } else {
+            this.reportMaxDealsReached(
+              'pair',
+              symbol,
+              overDeals.length,
+              maxDealsOver,
+            )
             return false
           }
         } else {
@@ -6547,6 +6556,12 @@ function createDCABotHelper<
             this.pendingDealsPerPair.set(key, pendingDeals + 1)
             return true
           } else {
+            this.reportMaxDealsReached(
+              'pair',
+              symbol,
+              underDeals.length,
+              maxDealsUnder,
+            )
             return false
           }
         }
@@ -6568,6 +6583,7 @@ function createDCABotHelper<
           this.handleDebug(
             `Exceed max amount of active deals by max deals per pair ${symbol}`,
           )
+          this.reportMaxDealsReached('pair', symbol, symbolDealsLength, max)
           return false
         }
       }
@@ -6653,6 +6669,12 @@ function createDCABotHelper<
             this.pendingDealsOver += 1
             return true
           } else {
+            this.reportMaxDealsReached(
+              'bot',
+              symbol,
+              overDeals.length,
+              maxDealsOver,
+            )
             return false
           }
         } else {
@@ -6660,6 +6682,12 @@ function createDCABotHelper<
             this.pendingDealsUnder += 1
             return true
           } else {
+            this.reportMaxDealsReached(
+              'bot',
+              symbol,
+              underDeals.length,
+              maxDealsUnder,
+            )
             return false
           }
         }
@@ -6684,6 +6712,7 @@ function createDCABotHelper<
           this.handleDebug(
             `Exceed max amount of active deals by max deals ${symbol}`,
           )
+          this.reportMaxDealsReached('bot', symbol, dealsLength, max)
           return false
         }
       }
@@ -8030,6 +8059,60 @@ function createDCABotHelper<
       _level: number,
     ) {
       return
+    }
+
+    /**
+     * Fired when `openNewDeal` is refused by a max-open-deals limit. `scope`
+     * says which limit: the bot's (`symbol` is the pair that wanted to start)
+     * or the pair's own. `open`/`max` are the count and the limit that refused
+     * it — for the over/under split, the side that was full. Already
+     * deduplicated by {@link reportMaxDealsReached}.
+     */
+    async sendMaxDealsReachedAlert(
+      _scope: 'bot' | 'pair',
+      _symbol: string,
+      _open: number,
+      _max: number,
+    ) {
+      return
+    }
+
+    /**
+     * Report a max-deals refusal at most once per re-arm window per limit (and
+     * per pair for the per-pair limit). The limit value is part of the key, so
+     * a user who raises it and fills the new one hears about it the same day.
+     */
+    /** No re-arm: see {@link reportMaxDealsReached}. */
+    asapMaxDealsLatch = new ConditionLatch(0)
+
+    reportMaxDealsReached(
+      scope: 'bot' | 'pair',
+      symbol: string,
+      open: number,
+      max: number,
+    ) {
+      if (!this.allowedMethods.has('sendMaxDealsReachedAlert') || max <= 0) {
+        return
+      }
+      const key = standingConditionKey(
+        `${scope === 'bot' ? maxDealsReached : maxDealsPerPairReached}:${max}`,
+        scope === 'pair' ? symbol : undefined,
+      )
+      // An ASAP bot is full by design: it probes for a new deal after every
+      // close and is refused while at the limit, so a daily re-arm would just
+      // say "still full" every day. Report it once per limit value instead.
+      const latch =
+        this.data?.settings.startCondition === StartConditionEnum.asap
+          ? this.asapMaxDealsLatch
+          : this.standingConditionLatch
+      if (!latch.shouldReport(key, Date.now())) {
+        return
+      }
+      this.sendMaxDealsReachedAlert(scope, symbol, open, max).catch((e) =>
+        this.handleWarn(
+          `Max deals reached alert failed: ${(e as Error)?.message ?? e}`,
+        ),
+      )
     }
 
     /**
@@ -22619,12 +22702,14 @@ function createDCABotHelper<
         this.allowedMethods.add('sendDealClosedAlert')
         this.allowedMethods.add('sendDealOpenedAlert')
         this.allowedMethods.add('sendSafetyOrderFilledAlert')
+        this.allowedMethods.add('sendMaxDealsReachedAlert')
         this.allowedMethods.add('sendEightyAlert')
         this.allowedMethods.add('sendHundredAlert')
       } else {
         this.allowedMethods.delete('sendDealClosedAlert')
         this.allowedMethods.delete('sendDealOpenedAlert')
         this.allowedMethods.delete('sendSafetyOrderFilledAlert')
+        this.allowedMethods.delete('sendMaxDealsReachedAlert')
         this.allowedMethods.delete('sendEightyAlert')
         this.allowedMethods.delete('sendHundredAlert')
       }

@@ -343,6 +343,7 @@ type AllowedMethods =
   | 'sendDealClosedAlert'
   | 'sendDealOpenedAlert'
   | 'sendSafetyOrderFilledAlert'
+  | 'sendMaxDealsReachedAlert'
   | 'checkInDynamicRange'
   | 'checkInRange'
   | 'checkMaxDealsPerPair'
