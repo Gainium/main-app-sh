@@ -15,6 +15,12 @@ import { profitFactorOf } from './profitFactor'
  * the Deals tab lists as closed, minus the canceled-before-fill deals that
  * carry no price and so no money (`initialPrice` 0; see dcaHelper
  * `dealHasPrice`). Open population = what the Deals tab lists as open.
+ *
+ * A merged-away deal (`child: true`, spec 138) is in the population but is not
+ * a deal of its own — its position continues in the merged deal. It adds no
+ * deal count, win / loss, duration or drawdown; money it had already booked
+ * (realized profit, fees) still counts, and it holds its capital up to the
+ * merge (`peakCapitalBySymbol`).
  */
 
 export type BotPairStatsRow = {
@@ -56,6 +62,9 @@ const OPEN = [
 ]
 
 const num = (path: string) => ({ $ifNull: [path, 0] })
+
+/** A merged-away deal (spec 138 §1.2): its position lives on in the parent. */
+const isMergedAway = { $eq: [{ $ifNull: ['$child', false] }, true] }
 
 const finite = (v: unknown) =>
   typeof v === 'number' && Number.isFinite(v) ? v : 0
@@ -102,6 +111,9 @@ export const buildPairStatsPipeline = (
   const isOpen = { $in: ['$status', OPEN] }
   const whenClosed = (expr: unknown) => ({ $cond: [isOpen, 0, expr] })
   const whenOpen = (expr: unknown) => ({ $cond: [isOpen, expr, 0] })
+  // Per-deal figures: a closed deal that was not merged away (spec 138 §2.1.1).
+  const whenClosedDeal = (expr: unknown) =>
+    whenClosed({ $cond: [isMergedAway, 0, expr] })
   const profit = num('$profit.total')
   const profitUsd = num('$profit.totalUsd')
 
@@ -112,11 +124,15 @@ export const buildPairStatsPipeline = (
         _id: '$symbol.symbol',
         baseAsset: { $first: '$symbol.baseAsset' },
         quoteAsset: { $first: '$symbol.quoteAsset' },
-        closedDeals: { $sum: whenClosed(1) },
+        closedDeals: { $sum: whenClosedDeal(1) },
         // Win / loss by the sign of `profit.total`, exactly as the engine's
         // `isProfit` / `isLoss` — a break-even deal is neither.
-        wins: { $sum: whenClosed({ $cond: [{ $gt: [profit, 0] }, 1, 0] }) },
-        losses: { $sum: whenClosed({ $cond: [{ $lt: [profit, 0] }, 1, 0] }) },
+        wins: {
+          $sum: whenClosedDeal({ $cond: [{ $gt: [profit, 0] }, 1, 0] }),
+        },
+        losses: {
+          $sum: whenClosedDeal({ $cond: [{ $lt: [profit, 0] }, 1, 0] }),
+        },
         realizedProfitUsd: { $sum: whenClosed(profitUsd) },
         grossProfitUsd: {
           $sum: whenClosed({ $cond: [{ $gt: [profit, 0] }, profitUsd, 0] }),
@@ -135,7 +151,7 @@ export const buildPairStatsPipeline = (
           }),
         },
         totalDuration: {
-          $sum: whenClosed({
+          $sum: whenClosedDeal({
             $max: [
               0,
               {
@@ -148,7 +164,7 @@ export const buildPairStatsPipeline = (
           }),
         },
         maxDealDuration: {
-          $max: whenClosed({
+          $max: whenClosedDeal({
             $max: [
               0,
               {
@@ -160,7 +176,10 @@ export const buildPairStatsPipeline = (
             ],
           }),
         },
-        maxDrawdownPerc: { $max: num('$stats.drawdownPercent') },
+        // `$max` skips null: a merged-away deal's drawdown is not a deal's.
+        maxDrawdownPerc: {
+          $max: { $cond: [isMergedAway, null, num('$stats.drawdownPercent')] },
+        },
         openDeals: { $sum: whenOpen(1) },
         // The deal monitor's last flush of each open deal's P&L, in USD.
         unrealizedProfitUsd: { $sum: whenOpen(num('$stats.unrealizedProfit')) },
@@ -176,6 +195,10 @@ export type PairCapitalDeal = {
   /** Close time; null while the deal is open. */
   end: number | null
   capital: number
+  /** The deal's id — what a merged-away deal's `parentId` points at. */
+  id?: string
+  /** Set on a merged-away deal: the merged deal that took its position over. */
+  parentId?: string | null
 }
 
 /**
@@ -201,6 +224,8 @@ export const buildPairCapitalPipeline = (
         ],
       },
       capital: { $ifNull: ['$usage.maxUsd', num('$stats.maxUsage')] },
+      id: { $toString: '$_id' },
+      parentId: { $cond: [isMergedAway, '$parentId', null] },
     },
   },
 ]
@@ -210,11 +235,21 @@ export const buildPairCapitalPipeline = (
  * end (open deals: to now); the peak is the largest running sum. A deal that
  * closes at the same instant another opens is released first, so a sequential
  * bot re-using one deal's capital reads as that one deal, not two.
+ *
+ * A merged-away deal hands its capital to the merged deal, which is created
+ * just BEFORE its sources are cancelled — so a source is held only up to the
+ * merged deal's start, or the merge would be counted twice (spec 138 §2.1.3).
  */
 export const peakCapitalBySymbol = (
   deals: PairCapitalDeal[],
   now: number = Date.now(),
 ): Map<string, number> => {
+  const startById = new Map<string, number>()
+  for (const d of deals) {
+    if (d.id) {
+      startById.set(d.id, finite(d.start))
+    }
+  }
   const events = new Map<string, [number, number][]>()
   for (const d of deals) {
     const capital = finite(d.capital)
@@ -222,7 +257,11 @@ export const peakCapitalBySymbol = (
     if (!d.symbol || capital <= 0 || !start) {
       continue
     }
-    const end = d.end === null || d.end === undefined ? now : finite(d.end)
+    let end = d.end === null || d.end === undefined ? now : finite(d.end)
+    const handedOver = d.parentId ? startById.get(d.parentId) : undefined
+    if (handedOver) {
+      end = Math.min(end, handedOver)
+    }
     const list = events.get(d.symbol) ?? []
     list.push([start, capital], [Math.max(start, end), -capital])
     events.set(d.symbol, list)

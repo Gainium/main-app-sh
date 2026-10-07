@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.86.1] - 2026-10-07
+
+### Fixed
+
+- Merged deals: the deals merged into a new deal are no longer counted as closed deals in the bot's statistics, per-pair statistics, deal durations, "close after X deals opened" or the DCA-usage chart, and the merge moment is no longer counted twice in peak capital.
+- Merged deals: the realtime order update sent when a merge moves an order to the new deal now carries the new deal and bot.
+- Merged deals: futures funding is recorded on the merged deal.
+
+### Changed
+
+- Combo deals cannot be merged; `mergeComboDeals` answers with a reason. A combo position is spread over its minigrids, which a single merged deal cannot take over.
+
 ## [1.86.0] - 2026-10-07
 
 ### Added

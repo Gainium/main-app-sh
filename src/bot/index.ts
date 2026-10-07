@@ -8975,88 +8975,22 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Combo deals are not merged — a combo position is spread over its
+   * minigrids, which one merged deal cannot take over (spec 138 §2.4). The
+   * mutation stays in the schema so existing clients get a reason, not an
+   * unknown field.
+   */
   public async mergeComboDeals(
-    userId: string,
-    botId: string,
-    dealIds: string[],
-    paperContext: boolean,
+    _userId: string,
+    _botId: string,
+    _dealIds: string[],
+    _paperContext: boolean,
   ) {
-    if (!this.useBots) {
-      return await this.callExternalBotService<BaseReturn<string>>(
-        BotType.combo,
-        'mergeComboDeals',
-        false,
-        userId,
-        botId,
-        dealIds,
-        paperContext,
-      )
-    }
-    const findLocal = this.comboBots.find((d) => d.id === botId && d.userId)
-    if (findLocal) {
-      this.getWorkerById(findLocal.worker)?.postMessage({
-        do: 'method',
-        botType: BotType.combo,
-        botId,
-        method: 'mergeDeals',
-        args: [dealIds],
-      })
-
-      this.botEventDb.createData({
-        userId: userId,
-        botId: botId,
-        botType: BotType.combo,
-        event: 'Merge Combo deals',
-        description: `Combo deals was merged: ${dealIds.join(' ')}`,
-        paperContext,
-      })
-      return {
-        status: StatusEnum.ok as StatusEnum.ok,
-        reason: null,
-        data: `Request to merge ${dealIds.length} deals sent`,
-      }
-    }
-    const botData = await this.comboBotDb.readData({
-      _id: botId,
-      userId,
-      isDeleted: { $ne: true },
-    })
-    if (botData.data?.result) {
-      await this.createNewBot(
-        botId,
-        BotType.combo,
-        userId,
-        botData.data.result.exchange,
-        botData.data?.result?.uuid || '',
-        [botId, botData.data.result.exchange],
-        (worker) => {
-          worker.postMessage({
-            do: 'method',
-            botType: BotType.combo,
-            botId,
-            method: 'mergeDeals',
-            args: [dealIds],
-          })
-        },
-        !!paperContext,
-      )
-
-      this.botEventDb.createData({
-        userId: userId,
-        botId: botId,
-        botType: BotType.combo,
-        event: 'Merge Combo deals',
-        description: `Combo deals was merged: ${dealIds.join(' ')}`,
-        paperContext,
-      })
-    } else {
-      return this.entityNotFound('Bot')
-    }
-
     return {
-      status: StatusEnum.ok as StatusEnum.ok,
-      reason: null,
-      data: 'Deal scheduled to be closed',
+      status: StatusEnum.notok as StatusEnum.notok,
+      reason: 'Merging deals is not available for combo bots',
+      data: null,
     }
   }
 
@@ -11529,7 +11463,9 @@ class Bot<T extends UserSchema = UserSchema> {
       _id: { finished: boolean; dcas: number; configured: number }
       deals: number
     }>([
-      { $match: match },
+      // A merged deal carries a synthetic one-level ladder; the DCAs were
+      // filled by its sources, which stay in (spec 138 §2.2.2).
+      { $match: { ...match, parent: { $ne: true } } },
       {
         $group: {
           _id: {

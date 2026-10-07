@@ -12031,6 +12031,9 @@ function createDCABotHelper<
           ],
         },
         botId: this.botId,
+        // A merge opens nothing: its sources were the opened deals, the
+        // merged deal only carries their position on (spec 138 §2.2.1).
+        parent: { $ne: true },
       } as any)
       if (deals.status === StatusEnum.notok) {
         return this.handleErrors(
@@ -25546,6 +25549,18 @@ function createDCABotHelper<
         this.handleLog(this.notProceedMessage('merge deals'))
         return
       }
+      if (this.combo) {
+        // Combo deals are not merged: a combo position is spread over its
+        // minigrids, which a single merged deal cannot take over. Spec 138 §2.4.
+        return this.handleErrors(
+          `Merging deals is not available for combo bots`,
+          'mergeDeals()',
+          'combo',
+          false,
+          false,
+          false,
+        )
+      }
       const _id = this.startMethod('mergeDeals')
       const prefix = `Merge Deals | `
       if (this.data) {
@@ -25792,6 +25807,12 @@ function createDCABotHelper<
           if (isNaN(relative) || !isFinite(relative)) {
             relative = 0
           }
+          // Only flags every source was computed under: a flag selects how a
+          // deal's numbers are booked, and the merged deal books all of them.
+          const sourceFlags: DCADealFlags[] = deals[0].flags ?? []
+          const flags = sourceFlags.filter((f) =>
+            deals.every((d) => d.flags?.includes(f)),
+          )
           const mergedDeals: Omit<CleanDCADealsSchema, '_id'> = {
             botId: this.botId,
             userId: this.userId,
@@ -25817,6 +25838,11 @@ function createDCABotHelper<
               base: 0,
               quote: 0,
             },
+            // Funding cursor from the merge on, as `createDeal` seeds it: the
+            // funding commit is a compare-and-swap on `funding.offset`, so a
+            // deal without it silently drops every funding write.
+            funding: { total: 0, totalUsd: 0, offset: time, lastTime: 0 },
+            flags,
             lastPrice: avgPrice,
             commission: 0,
             createTime: time,
@@ -25943,33 +25969,35 @@ function createDCABotHelper<
           } else {
             this.handleLog(`${prefix} Created parent deal ${newDeal.data._id}`)
           }
+          // Mark the sources merged-away BEFORE cancelling them, so the stats
+          // their cancel triggers skip them (spec 138 §2.1.4). Written again
+          // after the cancels settle, as before.
+          const mergedAway = { child: true, parentId: `${newDeal.data._id}` }
+          await this.dealsDb.updateManyData({ _id: { $in: _deals } } as any, {
+            $set: mergedAway,
+          })
+          for (const d of deals) {
+            const local = this.getDeal(`${d._id}`)
+            if (local) {
+              Object.assign(local.deal, mergedAway)
+            }
+          }
           const botInstance = new Bot(false)
           for (const d of deals) {
-            if (this.combo) {
-              await botInstance.closeComboDeal(
-                this.userId,
-                d.botId,
-                `${d._id}`,
-                CloseDCATypeEnum.cancel,
-                false,
-                !!this.data.paperContext,
-              )
-            } else {
-              await botInstance.closeDCADeal(
-                this.userId,
-                d.botId,
-                `${d._id}`,
-                CloseDCATypeEnum.cancel,
-                false,
-                !!this.data.paperContext,
-              )
-            }
+            await botInstance.closeDCADeal(
+              this.userId,
+              d.botId,
+              `${d._id}`,
+              CloseDCATypeEnum.cancel,
+              false,
+              !!this.data.paperContext,
+            )
             this.handleLog(`${prefix} Closing deal ${d._id}`)
           }
           this.handleLog(`${prefix} Waiting for 2 seconds`)
           await sleep(2 * 1000)
           await this.dealsDb.updateManyData({ _id: { $in: _deals } } as any, {
-            $set: { child: true, parentId: `${newDeal.data._id}` },
+            $set: mergedAway,
           })
           const dealData = {
             ...mergedDeals,
@@ -25984,7 +26012,8 @@ function createDCABotHelper<
                   : TypeOrderEnum.dealStart,
               botId: this.botId,
             }
-            const changedOrder = { ...o, data }
+            // The realtime event carries what the database now holds.
+            const changedOrder = { ...o, ...data }
 
             if (this.shouldProceed()) {
               await this.ordersDb.updateData(
@@ -26042,6 +26071,25 @@ function createDCABotHelper<
         }
       }
       this.endMethod(_id)
+    }
+
+    /**
+     * Whether `deal` was merged into another deal (spec 138 §1.2). The merge
+     * writes `child: true` before it cancels its sources, but a source can
+     * belong to another bot's process, whose copy of the deal never saw it —
+     * so a canceled deal not flagged here is checked against the database.
+     */
+    async isMergedAway(deal: ExcludeDoc<Deal>) {
+      if (deal.child) {
+        return true
+      }
+      if (deal.status !== DCADealStatusEnum.canceled) {
+        return false
+      }
+      const read = await this.dealsDb.readData({ _id: deal._id } as any, {
+        child: 1,
+      })
+      return !!read.data?.result?.child
     }
 
     async getLeverageMultipler(deal?: ExcludeDoc<Deal>) {
@@ -27476,6 +27524,12 @@ function createDCABotHelper<
         return
       }
       if (this.data?.ignoreStats) {
+        this.endMethod(_id)
+        return
+      }
+      // A merged-away deal is not a deal: its position goes on in the merged
+      // deal, which is what gets counted when it closes (spec 138 §2.1).
+      if (await this.isMergedAway(d.deal)) {
         this.endMethod(_id)
         return
       }

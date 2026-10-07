@@ -25,6 +25,10 @@ import { profitFactorOf } from './profitFactor'
  * the lifetime figures incomparable. Return and drawdown are measured against
  * the peak capital the bot ever had committed at once, not `startBalance`,
  * which is sizing-derived and would move with every sizing change.
+ *
+ * A merged-away deal (spec 138) is not a deal: it adds no count, win / loss,
+ * streak, duration or per-deal extreme. Money it had already booked still
+ * moves realized profit, gross profit / loss and the equity drawdown.
  */
 
 export type BotWindowStats = {
@@ -73,6 +77,9 @@ export type BotWindowDeal = {
   capital: number
   profit: number
   profitUsd: number
+  id?: string
+  /** Set on a merged-away deal: the merged deal that took its position over. */
+  parentId?: string | null
 }
 
 const OPEN = [
@@ -103,6 +110,14 @@ export const buildBotWindowPipeline = (botIds: string[]): PipelineStage[] => [
       },
       profit: { $ifNull: ['$profit.total', 0] },
       profitUsd: { $ifNull: ['$profit.totalUsd', 0] },
+      id: { $toString: '$_id' },
+      parentId: {
+        $cond: [
+          { $eq: [{ $ifNull: ['$child', false] }, true] },
+          '$parentId',
+          null,
+        ],
+      },
     },
   },
 ]
@@ -124,6 +139,10 @@ export const foldBotWindowStats = (
     .sort((a, b) => finite(a.end) - finite(b.end))
   let wins = 0
   let losses = 0
+  let closedDeals = 0
+  let firstCloseTime: number | null = null
+  let dealGrossProfit = 0
+  let dealGrossLoss = 0
   let realized = 0
   let grossProfit = 0
   let grossLoss = 0
@@ -143,11 +162,24 @@ export const foldBotWindowStats = (
     const profit = finite(d.profit)
     const usd = finite(d.profitUsd)
     const length = Math.max(0, finite(d.end) - finite(d.start))
+    realized += usd
+    if (d.parentId) {
+      // Merged away: booked money only (spec 138 §2.1.2).
+      if (profit > 0) {
+        grossProfit += usd
+      } else if (profit < 0) {
+        grossLoss += usd
+      }
+      continue
+    }
+    closedDeals += 1
+    firstCloseTime ??= finite(d.end)
     // Win / loss by the sign of `profit.total`, as the engine's `isProfit` /
     // `isLoss` — a break-even deal is neither, and does not break a streak.
     if (profit > 0) {
       wins += 1
       grossProfit += usd
+      dealGrossProfit += usd
       maxProfit = Math.max(maxProfit, usd)
       winDuration += length
       maxWinDuration = Math.max(maxWinDuration, length)
@@ -157,6 +189,7 @@ export const foldBotWindowStats = (
     } else if (profit < 0) {
       losses += 1
       grossLoss += usd
+      dealGrossLoss += usd
       maxLoss = Math.min(maxLoss, usd)
       lossDuration += length
       maxLossDuration = Math.max(maxLossDuration, length)
@@ -164,7 +197,6 @@ export const foldBotWindowStats = (
       winStreak = 0
       maxLossStreak = Math.max(maxLossStreak, lossStreak)
     }
-    realized += usd
     duration += length
     maxDuration = Math.max(maxDuration, length)
   }
@@ -190,7 +222,7 @@ export const foldBotWindowStats = (
   }
   return {
     from,
-    closedDeals: closed.length,
+    closedDeals,
     wins,
     losses,
     winRate: wins + losses ? wins / (wins + losses) : 0,
@@ -202,18 +234,18 @@ export const foldBotWindowStats = (
     returnOnPeakCapital: peakCapital > 0 ? realized / peakCapital : 0,
     maxDrawdownUsd: ddUsd,
     maxDrawdownPerc: ddPerc,
-    avgDealDuration: closed.length ? duration / closed.length : 0,
+    avgDealDuration: closedDeals ? duration / closedDeals : 0,
     maxDealDuration: maxDuration,
     maxDealProfitUsd: maxProfit,
     maxDealLossUsd: maxLoss,
-    avgDealProfitUsd: wins ? grossProfit / wins : 0,
-    avgDealLossUsd: losses ? grossLoss / losses : 0,
+    avgDealProfitUsd: wins ? dealGrossProfit / wins : 0,
+    avgDealLossUsd: losses ? dealGrossLoss / losses : 0,
     maxConsecutiveWins: maxWinStreak,
     maxConsecutiveLosses: maxLossStreak,
     avgWinningDealDuration: wins ? winDuration / wins : 0,
     maxWinningDealDuration: maxWinDuration,
     avgLosingDealDuration: losses ? lossDuration / losses : 0,
     maxLosingDealDuration: maxLossDuration,
-    firstCloseTime: closed.length ? finite(closed[0].end) : null,
+    firstCloseTime,
   }
 }
