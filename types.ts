@@ -2738,6 +2738,10 @@ export interface BotMessageSchema extends SchemaI {
    * which are thereby outside `botMessageCoalesceKey`.
    */
   bucket?: number
+  /** Acknowledged by the user; kept in the history views (spec 137). */
+  isRead?: boolean
+  /** When it was read — the clock for `botMessageReadHistoryTtl`. */
+  readAt?: Date
 }
 
 export type ClearBotErrorSchema = ExcludeDoc<BotMessageSchema>

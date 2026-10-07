@@ -1014,6 +1014,10 @@ const botMessageSchema: Schema<BotMessageSchema> = new Schema({
   // `always`-mode rows and on everything written before this shipped, which is
   // exactly what keeps them out of the unique index.
   bucket: Number,
+  // Read is not delete (spec 137): a read row stays out of the tombstone TTL
+  // and in the feed's `read`/`all` views until `botMessageReadHistoryTtl`.
+  isRead: Boolean,
+  readAt: Date,
   paperContext: Boolean,
   terminal: Boolean,
   showUser: Boolean,
@@ -3267,6 +3271,36 @@ export const registerIndexes = () => {
     isDeleted: 1,
     created: -1,
   })
+
+  // Same feed, now that read rows stay `isDeleted:false` (spec 137): without
+  // `isRead` in the key the unread feed (and its badge count) would FETCH every
+  // read row in the 90-day history only to discard it. getBotMessage always
+  // constrains `isRead` as a point-set, so this index bounds it exactly and
+  // still supplies {created:-1} via SORT_MERGE. Supersedes the 5-field index
+  // above for the feed; that one is left in place because dropping an index is
+  // a separate, deliberate prod operation.
+  botMessageSchema.index(
+    {
+      userId: 1,
+      showUser: 1,
+      paperContext: 1,
+      isDeleted: 1,
+      isRead: 1,
+      created: -1,
+    },
+    { name: 'botMessageFeedByRead' },
+  )
+  // READ HISTORY RETENTION (spec 137 §2.6): a read message is kept 90 days from
+  // when it was read. A TTL index only expires documents whose field holds a
+  // date, so unread rows (no `readAt`) are never touched, and no row predates
+  // this field, so building it reaps nothing.
+  botMessageSchema.index(
+    { readAt: 1 },
+    {
+      name: 'botMessageReadHistoryTtl',
+      expireAfterSeconds: 7776000, // 90d
+    },
+  )
 
   botMessageSchema.index({
     userId: 1,

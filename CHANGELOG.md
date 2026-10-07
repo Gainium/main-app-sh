@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.85.0] - 2026-10-07
+
+### Added
+
+- Bot messages can be marked read without being deleted (`markBotMessageRead`). The notifications feed takes a `view` (`unread`, `read`, `all`) and returns each message's `isRead` / `readAt`; read messages are kept for 90 days after they were read. A new occurrence of the same error still arrives as a new unread message.
+- Notification when a bot skips a new deal because it is at its max open deals or a pair is at its max deals per pair (once per day; once for ASAP bots).
+
 ## [1.84.1] - 2026-10-07
 
 ### Fixed

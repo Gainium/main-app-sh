@@ -934,6 +934,7 @@ export const BotSchema = /* GraphQL */ `
     closeComboDeal(input: closeDCADeal!): openDCADealResponse
     changeStatus(input: changeStatusInput!): getBotResponse
     deleteBotMessage(input: deleteBotMessageInput!): deleteBotMessageResponse
+    markBotMessageRead(input: markBotMessageReadInput!): markBotMessageReadResponse
     deleteBot(input: deleteBotInput!): deleteBotResponse
     mergeDeals(input: mergeDealsInput!): mergeDealsResponse
     mergeComboDeals(input: mergeDealsInput!): mergeDealsResponse
@@ -1013,6 +1014,8 @@ export const BotSchema = /* GraphQL */ `
     id: [String!]!
   }
   input getMessageBotInput {
+    "unread | read | all; wins over unreadOnly"
+    view: String
     unreadOnly: Boolean
     page: Int
     pageSize: Int
@@ -2673,6 +2676,8 @@ export const BotSchema = /* GraphQL */ `
     terminal: Boolean
     symbol: String
     exchange: String
+    isRead: Boolean
+    readAt: Float
   }
   type botMessageList {
     result: [messageData]
@@ -5926,6 +5931,9 @@ export const BotSchema = /* GraphQL */ `
   input deleteBotMessageInput {
     id: String
   }
+  input markBotMessageReadInput {
+    id: String
+  }
   enum botTypeEnum {
     grid
     dca
@@ -5942,6 +5950,10 @@ export const BotSchema = /* GraphQL */ `
     reason: String
   }
   type deleteBotMessageResponse implements BasicResponse {
+    status: Status
+    reason: String
+  }
+  type markBotMessageReadResponse implements BasicResponse {
     status: Status
     reason: String
   }

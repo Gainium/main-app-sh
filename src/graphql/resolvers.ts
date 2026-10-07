@@ -62,7 +62,11 @@ import { isExchangeEnabled } from '../utils/adminConfig'
 import { describeUserAgent } from '../utils/userAgent'
 import userUtils, { checkLicenseKey, updateUserSteps } from '../utils/user'
 import { getBalances } from './handlers/balance.handler'
-import { deleteBotMessage, getBotMessage } from './handlers/botMessage.handler'
+import {
+  deleteBotMessage,
+  getBotMessage,
+  markBotMessageRead,
+} from './handlers/botMessage.handler'
 import { getQuantRulesStatus } from './handlers/quantRules.handler'
 import verify, { bybitAccountType } from '../exchange/verify'
 import {
@@ -3765,6 +3769,7 @@ const resolvers = <
         input,
       }: {
         input?: {
+          view?: string
           unreadOnly?: boolean
           page?: number
           pageSize?: number
@@ -3780,14 +3785,13 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      return getBotMessage(
-        user.data._id,
-        paperContext,
-        input?.unreadOnly,
-        input?.page,
-        input?.pageSize,
-        input?.search,
-      )
+      return getBotMessage(user.data._id, paperContext, {
+        view: input?.view ?? undefined,
+        unreadOnly: input?.unreadOnly,
+        page: input?.page,
+        pageSize: input?.pageSize,
+        search: input?.search,
+      })
     },
     getQuantRulesStatus: async (
       _parent: any,
@@ -7897,6 +7901,20 @@ const resolvers = <
         return user
       }
       return deleteBotMessage(user.data._id, input.id)
+    },
+    markBotMessageRead: async (
+      _parent: any,
+      { input }: { input: { id?: string } },
+      { token, req }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return markBotMessageRead(user.data._id, input.id ?? undefined)
     },
     updateProfilePicture: async (
       _parent: any,
