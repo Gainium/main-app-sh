@@ -15681,7 +15681,10 @@ function createDCABotHelper<
         : this.isLong
           ? precisionQuote
           : precisionBase
-      const balances = await this.checkAssets(true, true)
+      // Sizes the deal from the balance: always a live read.
+      const balances = await withExchangeCaller('bot.dealSizing', () =>
+        this.checkAssets(true, true),
+      )
       const asset =
         (this.futures
           ? this.coinm

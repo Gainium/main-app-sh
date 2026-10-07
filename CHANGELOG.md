@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.82.0] - 2026-10-07
+
+### Changed
+
+- Bots on the same exchange account share balance reads. The per-tick balance checks the bot engine makes before placing orders are now answered from a read of that account made within the last few seconds, or by joining one already in flight, instead of each bot asking the exchange separately. An account running many bots no longer spends a large share of the exchange's rate budget on identical balance reads, which delayed order placement for everyone on the same connector. The shared answer is dropped as soon as the account places or cancels an order, and reads that size a deal from the balance always go to the exchange. `BALANCE_LIMITER_MODE=log` restores the previous behaviour while still recording what would have been shared; `off` disables it entirely.
+
 ## [1.81.0] - 2026-10-07
 
 ### Added

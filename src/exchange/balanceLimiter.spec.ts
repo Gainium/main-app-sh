@@ -12,6 +12,7 @@ import { describe, it, beforeEach, afterEach } from 'mocha'
 import { expect } from 'chai'
 import RedisClient from '../db/redis'
 import BalanceLimiter from './balanceLimiter'
+import { StatusEnum } from '../../types'
 import {
   accountRefFor,
   currentExchangeCaller,
@@ -49,13 +50,29 @@ const memoryRedis = () => {
   }
 }
 
-describe('BalanceLimiter (shadow)', () => {
+describe('BalanceLimiter', () => {
   let redis: ReturnType<typeof memoryRedis>
   let savedGetInstance: unknown
   const limiter = BalanceLimiter.getInstance()
+  let calls = 0
+  const ok = (v = 1) => ({
+    data: {
+      status: StatusEnum.ok,
+      reason: null,
+      data: [{ asset: 'USDT', free: v, locked: 0 }],
+    } as any,
+  })
+  const live =
+    (v = 1, delay = 0) =>
+    async () => {
+      calls++
+      if (delay) await new Promise((r) => setTimeout(r, delay))
+      return ok(v)
+    }
 
   beforeEach(() => {
     redis = memoryRedis()
+    calls = 0
     savedGetInstance = (RedisClient as any).getInstance
     ;(RedisClient as any).getInstance = async () => redis
     process.env.BALANCE_LIMITER_PER_MINUTE = '2'
@@ -65,67 +82,108 @@ describe('BalanceLimiter (shadow)', () => {
   afterEach(() => {
     ;(RedisClient as any).getInstance = savedGetInstance
     delete process.env.BALANCE_LIMITER_PER_MINUTE
+    delete process.env.BALANCE_LIMITER_MODE
   })
 
-  it('merges a read that overlaps one in flight', async () => {
-    const first = await limiter.begin('acct', 'bot.checkAssets.dbMiss')
-    const second = await limiter.begin('acct', 'bot.checkAssets.dbMiss')
-    expect(first.verdict).to.equal('live')
-    expect(second.verdict).to.equal('merge')
-  })
-
-  it('reuses a recent live answer, until the account places an order', async () => {
-    const first = await limiter.begin('acct', 'api.updateBalance')
-    first.settle(true)
+  it('serves a bot balance check from a recent answer instead of the venue', async () => {
+    const first = await limiter.read('acct', 'bot.checkAssets.direct', live(5))
+    expect(first.served).to.equal(false)
     await flush()
-    expect((await limiter.begin('acct', 'api.updateBalance')).verdict).to.equal(
-      'reuse',
-    )
+    const second = await limiter.read('acct', 'bot.checkAssets.direct', live(9))
+    expect(second.served).to.equal(true)
+    expect(second.verdict).to.equal('reuse')
+    expect((second as any).data.data[0].free).to.equal(5)
+    expect(calls).to.equal(1)
+  })
+
+  it('merges concurrent bot balance checks into one venue call', async () => {
+    const [a, b, c] = await Promise.all([
+      limiter.read('acct', 'bot.checkAssets.direct', live(1, 20)),
+      limiter.read('acct', 'bot.checkAssets.direct', live(1, 20)),
+      limiter.read('acct', 'bot.checkAssets.dbMiss', live(1, 20)),
+    ])
+    expect(calls).to.equal(1)
+    expect([a, b, c].filter((o) => o.served).length).to.equal(2)
+  })
+
+  it('reads live again once the account places or cancels an order', async () => {
+    await limiter.read('acct', 'bot.checkAssets.direct', live(5))
+    await flush()
     limiter.invalidate('acct')
     await flush()
-    expect((await limiter.begin('acct', 'api.updateBalance')).verdict).to.equal(
-      'live',
-    )
+    const after = await limiter.read('acct', 'bot.checkAssets.direct', live(7))
+    expect(after.served).to.equal(false)
+    expect(calls).to.equal(2)
   })
 
-  it('does not open a reuse window from a failed read', async () => {
-    const first = await limiter.begin('acct', 'api.updateBalance')
-    first.settle(false)
+  it('does not store an answer that an order overtook', async () => {
+    const pending = limiter.read('acct', 'bot.checkAssets.direct', live(5, 30))
     await flush()
-    expect((await limiter.begin('acct', 'api.updateBalance')).verdict).to.equal(
-      'live',
-    )
+    limiter.invalidate('acct')
+    await pending
+    await flush()
+    const next = await limiter.read('acct', 'bot.checkAssets.direct', live(7))
+    expect(next.served).to.equal(false)
   })
 
-  it('holds back reads over the per-minute budget', async () => {
+  it('never serves deal sizing or non-bot callers from a stored answer', async () => {
+    await limiter.read('acct', 'bot.checkAssets.direct', live(5))
+    await flush()
+    for (const caller of [
+      'bot.dealSizing',
+      'bot.balanceStart',
+      'api.updateBalance',
+    ]) {
+      const o = await limiter.read('acct', caller, live(6))
+      expect(o.served, caller).to.equal(false)
+    }
+    expect(calls).to.equal(4)
+  })
+
+  it('records the verdict without enforcing it in log mode', async () => {
+    process.env.BALANCE_LIMITER_MODE = 'log'
+    await limiter.read('acct', 'bot.checkAssets.direct', live(5))
+    await flush()
+    const o = await limiter.read('acct', 'bot.checkAssets.direct', live(6))
+    expect(o.served).to.equal(false)
+    expect(o.verdict).to.equal('reuse')
+  })
+
+  it('does not store a failed read', async () => {
+    await limiter.read('acct', 'bot.checkAssets.direct', async () => {
+      calls++
+      return {
+        data: { status: StatusEnum.notok, reason: 'x', data: null } as any,
+      }
+    })
+    await flush()
+    const o = await limiter.read('acct', 'bot.checkAssets.direct', live(6))
+    expect(o.served).to.equal(false)
+  })
+
+  it('records the per-minute budget verdict but still reads', async () => {
     for (let i = 0; i < 2; i++) {
-      const t = await limiter.begin('acct', 'api.updateBalance')
-      expect(t.verdict).to.equal('live')
-      t.settle(false)
+      await limiter.read('acct', 'api.updateBalance', live())
+      await flush()
+      limiter.invalidate('acct')
       await flush()
     }
-    expect((await limiter.begin('acct', 'api.updateBalance')).verdict).to.equal(
-      'budget',
-    )
-  })
-
-  it('never reuses or budgets a deal-sizing read', async () => {
-    for (let i = 0; i < 3; i++) {
-      const t = await limiter.begin('acct', 'bot.dealSizing')
-      expect(t.verdict).to.equal('live')
-      t.settle(true)
-      await flush()
-    }
+    const o = await limiter.read('acct', 'api.updateBalance', live())
+    expect(o.served).to.equal(false)
+    expect(o.verdict).to.equal('budget')
   })
 
   it('keeps accounts independent', async () => {
-    await limiter.begin('a', 'x')
-    expect((await limiter.begin('b', 'x')).verdict).to.equal('live')
+    await limiter.read('a', 'bot.checkAssets.direct', live())
+    await flush()
+    const o = await limiter.read('b', 'bot.checkAssets.direct', live())
+    expect(o.served).to.equal(false)
   })
 
-  it('records nothing when switched off', async () => {
+  it('does nothing when switched off', async () => {
     process.env.BALANCE_LIMITER_MODE = 'off'
-    expect((await limiter.begin('acct', 'x')).verdict).to.equal('')
+    const o = await limiter.read('acct', 'bot.checkAssets.direct', live())
+    expect(o.verdict).to.equal('')
     expect(redis.kv.size).to.equal(0)
   })
 })

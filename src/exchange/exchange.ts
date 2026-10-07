@@ -376,31 +376,41 @@ class Exchange extends AbstractExchange {
   async getBalance(
     timeProfile = this.getEmptyTimeProfile('getBalance'),
   ): Promise<BaseReturn<FreeAsset>> {
-    // Shadow classification only — the read below is made regardless. Run
-    // alongside it rather than before it so the bookkeeping adds no latency.
-    // A retry re-enters with the same profile object; it is classified once.
-    const ticket = balanceLimiterClassified.has(timeProfile)
-      ? undefined
-      : BalanceLimiter.getInstance().begin(
-          this.accountRef,
-          timeProfile.caller ?? '',
-        )
-    balanceLimiterClassified.add(timeProfile)
-    const result = await this.apiCall<FreeAsset>(
-      {
-        endpoint: 'balance',
-        method: 'get',
-        isPrivate: true,
-      },
-      timeProfile,
-    ).catch(this.handleError(this.getBalance, timeProfile))
-    if (ticket) {
-      const { verdict, settle } = await ticket
-      settle(result.data?.status === StatusEnum.ok)
-      result.timeProfile.limiter = verdict
+    const live = () =>
+      this.apiCall<FreeAsset>(
+        {
+          endpoint: 'balance',
+          method: 'get',
+          isPrivate: true,
+        },
+        timeProfile,
+      ).catch(this.handleError(this.getBalance, timeProfile))
+    // A retry re-enters with the same profile object; it goes straight to the
+    // venue rather than through the limiter a second time.
+    if (balanceLimiterClassified.has(timeProfile)) {
+      const result = await live()
+      this.saveTimeProfile(result.timeProfile)
+      return result.data
     }
-    this.saveTimeProfile(result.timeProfile)
-    return result.data
+    balanceLimiterClassified.add(timeProfile)
+    const outcome = await BalanceLimiter.getInstance().read(
+      this.accountRef,
+      timeProfile.caller ?? '',
+      live,
+    )
+    if (outcome.served) {
+      // Answered without a venue call. Recorded under its own request name so
+      // `getBalance` keeps counting only real venue calls.
+      this.saveTimeProfile({
+        ...timeProfile,
+        requestName: 'getBalanceCached',
+        limiter: outcome.verdict,
+      })
+      return outcome.data
+    }
+    outcome.result.timeProfile.limiter = outcome.verdict
+    this.saveTimeProfile(outcome.result.timeProfile)
+    return outcome.result.data
   }
 
   /**
