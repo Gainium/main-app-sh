@@ -8849,6 +8849,38 @@ class MainBot<T extends IMainBot> {
               this.endMethod(_id)
               return findInCurrent
             }
+            // "Already exists" is the venue saying it HAS an order under this
+            // id — typically our own, accepted on a submit whose answer was
+            // lost and then re-sent. Writing it off and sending a `…2` copy
+            // leaves the original live on the venue and unregistered from the
+            // stream router, so its fill never reaches the deal. Ask first, the
+            // same way the ambiguous-failure branch below does; only a definite
+            // "no such order" falls through to the regenerated id. An invalid
+            // id is a format refusal, not a statement that the order exists.
+            if (
+              this.orders &&
+              request.reason
+                .toLowerCase()
+                .indexOf('Client order id is not valid'.toLowerCase()) === -1
+            ) {
+              const settled = await this._handleUnknownOrder(
+                order.clientOrderId,
+                order.symbol,
+                true,
+              )
+              // On a definite "no such order" the ladder hands back the order
+              // it just wrote off as CANCELED — that is not the venue having it.
+              const kept =
+                this.getOrderFromMap(order.clientOrderId) ??
+                (settled && settled.status !== 'CANCELED' ? settled : undefined)
+              if (kept) {
+                this.handleLog(
+                  `Order ${order.clientOrderId} returned as duplicate and ${this.data.exchange} has it — keeping it instead of re-sending`,
+                )
+                this.endMethod(_id)
+                return kept
+              }
+            }
             this.deleteOrder(order.clientOrderId)
             this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             order.clientOrderId = `${order.clientOrderId.slice(

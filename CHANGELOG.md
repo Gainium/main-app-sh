@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.84.1] - 2026-10-07
+
+### Fixed
+
+- When an exchange answers "client order ID already exists", the bot now asks the exchange for that order and keeps tracking it. It sends a copy under a new ID only when the exchange confirms it has no such order. Before, the bot marked the order canceled and placed a second one, which left the original live on the exchange with its fills not reaching the deal.
+
 ## [1.84.0] - 2026-10-07
 
 ### Added
