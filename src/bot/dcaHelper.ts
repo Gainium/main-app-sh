@@ -17420,10 +17420,24 @@ function createDCABotHelper<
         for (const order of orders.cancel.sort((a) =>
           a.type === TypeOrderEnum.dealTP ? -1 : 1,
         )) {
+          // The previous take-profit leaves the diff because its replacement,
+          // sized net of `tpHistory`, is in `orders.new` — a re-size, never a
+          // close (spec `037`). Promoting a partly sold one to FILLED closed the
+          // deal on that fraction and market-sold the rest, the same defect the
+          // `toPlace` loop's cancel below opts out of (spec `007`). A TP the
+          // venue filled in full still comes back FILLED (spec `026`). Scoped to
+          // the DCA single take-profit, the set `setFilledInsteadOfCanceled`
+          // declined to promote before 1.56.3; multi-TP targets and combo keep
+          // their promotion.
+          const resizesTp =
+            order.type === TypeOrderEnum.dealTP &&
+            !order.tpSlTarget &&
+            this.botType === BotType.dca
           const o = await this.cancelGridOnExchange(
             order,
             order.type === TypeOrderEnum.dealTP,
             false,
+            !resizesTp,
           )
           if (
             o?.status === 'FILLED' ||

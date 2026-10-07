@@ -9382,10 +9382,15 @@ class MainBot<T extends IMainBot> {
     )
   }
 
+  /**
+   * @param promotePartialToFilled handed straight to `cancelOrderOnExchange` —
+   * pass `false` when this cancel re-sizes a take-profit (see there).
+   */
   async cancelGridOnExchange(
     order: Grid,
     cancelPartiallyFilled = false,
     removeFromLocal = true,
+    promotePartialToFilled = true,
   ) {
     const find = this.findOrderForGrid(order, cancelPartiallyFilled)
     if (find) {
@@ -9393,6 +9398,7 @@ class MainBot<T extends IMainBot> {
         find,
         true,
         removeFromLocal,
+        promotePartialToFilled,
       )
       return result
     }

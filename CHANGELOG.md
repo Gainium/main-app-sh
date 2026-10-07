@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.86.2] - 2026-10-07
+
+### Fixed
+
+- DCA: when a safety order fills while the take-profit is partly sold, the take-profit is now re-placed for the remainder instead of the partial being treated as a full take-profit fill, which closed the deal and sold the rest at market. A take-profit that fills in full still closes the deal.
+
 ## [1.86.1] - 2026-10-07
 
 ### Fixed
