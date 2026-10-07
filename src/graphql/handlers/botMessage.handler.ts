@@ -47,7 +47,15 @@ export const botMessageFeedFilter = (
     view,
     unreadOnly = true,
     search,
-  }: { view?: string; unreadOnly?: boolean; search?: string },
+    type,
+    botId,
+  }: {
+    view?: string
+    unreadOnly?: boolean
+    search?: string
+    type?: string
+    botId?: string
+  },
 ): Record<string, unknown> | null => {
   if (view !== undefined && view !== null && !BOT_MESSAGE_VIEWS.includes(view)) {
     return null
@@ -67,6 +75,11 @@ export const botMessageFeedFilter = (
           ? { $in: [true] }
           : ANY_BOOL,
   }
+  // Severity / bot narrowing for the history page (§3.4). Residual filters
+  // after the index-bounded prefix — the history page is paginated and the
+  // set they apply to is bounded by the 90-day read TTL.
+  if (type) filter.type = type
+  if (botId) filter.botId = botId
   if (search) {
     filter.$or = [
       { message: { $regex: search, $options: 'i' } },
@@ -89,18 +102,24 @@ export const getBotMessage = async (
     page,
     pageSize,
     search,
+    type,
+    botId,
   }: {
     view?: string
     unreadOnly?: boolean
     page?: number
     pageSize?: number
     search?: string
+    type?: string
+    botId?: string
   } = {},
 ) => {
   const filter = botMessageFeedFilter(userId, paperContext, {
     view,
     unreadOnly,
     search,
+    type,
+    botId,
   })
   if (!filter) {
     return {

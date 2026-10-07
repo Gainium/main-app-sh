@@ -76,6 +76,19 @@ describe('spec 137 — feed filter per view', () => {
     expect(f!.$or).to.be.an('array').with.length.greaterThan(0)
   })
 
+  it('§3.4 severity and bot narrow any view', () => {
+    const f = botMessageFeedFilter(USER, false, {
+      view: 'all',
+      type: 'error',
+      botId: 'bot-9',
+    })
+    expect(f!.type).to.equal('error')
+    expect(f!.botId).to.equal('bot-9')
+    const plain = botMessageFeedFilter(USER, false, { view: 'all' })
+    expect(plain).to.not.have.property('type')
+    expect(plain).to.not.have.property('botId')
+  })
+
   it('§3.1 unknown view is rejected', async () => {
     expect(botMessageFeedFilter(USER, false, { view: 'archived' })).to.equal(
       null,
@@ -181,7 +194,7 @@ describe('spec 137 — GraphQL contract', () => {
 
   it('§3.1 §3.2 feed takes a view and returns read state', () => {
     expect(
-      errors(`query { getMessageBot(input: { view: "read", page: 1, pageSize: 20, search: "x" }) {
+      errors(`query { getMessageBot(input: { view: "read", page: 1, pageSize: 20, search: "x", type: "error", botId: "b" }) {
         status reason total data { result { _id message isRead readAt } } } }`),
     ).to.deep.equal([])
   })

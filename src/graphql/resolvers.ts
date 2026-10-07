@@ -3770,6 +3770,8 @@ const resolvers = <
       }: {
         input?: {
           view?: string
+          type?: string
+          botId?: string
           unreadOnly?: boolean
           page?: number
           pageSize?: number
@@ -3791,6 +3793,8 @@ const resolvers = <
         page: input?.page,
         pageSize: input?.pageSize,
         search: input?.search,
+        type: input?.type ?? undefined,
+        botId: input?.botId ?? undefined,
       })
     },
     getQuantRulesStatus: async (

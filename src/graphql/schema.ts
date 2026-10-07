@@ -1016,6 +1016,9 @@ export const BotSchema = /* GraphQL */ `
   input getMessageBotInput {
     "unread | read | all; wins over unreadOnly"
     view: String
+    "severity: error | warning | info"
+    type: String
+    botId: String
     unreadOnly: Boolean
     page: Int
     pageSize: Int

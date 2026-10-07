@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.86.0] - 2026-10-07
+
+### Added
+
+- The bot notifications feed can be narrowed to one severity (`type`) and one bot (`botId`), in any view.
+
 ## [1.85.0] - 2026-10-07
 
 ### Added
