@@ -9,7 +9,7 @@
  * against the generator's `fieldMetadata` map, because the YAML is the artefact
  * that is served at https://api.gainium.io/api/v2/openapi.yaml and that client
  * generators consume. `gridBotSchemaConfig` is the same object
- * `validators/bots/schema.ts:97` hands to `shouldBeValidEnumValue` at request
+ * `validators/schema.ts:97` hands to `shouldBeValidEnumValue` at request
  * time, so it is the authority on what is actually accepted — the doc is
  * compared to it, never the other way round.
  */

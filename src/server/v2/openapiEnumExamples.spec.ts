@@ -6,7 +6,7 @@
  *
  * Asserted against the committed `openapi-v2.yaml`, the artefact served at
  * https://api.gainium.io/api/v2/openapi.yaml. The validator configs are the
- * same objects `validators/bots/schema.ts` hands to `shouldBeValidEnumValue`,
+ * same objects `validators/schema.ts` hands to `shouldBeValidEnumValue`,
  * so they are the authority on what a request may carry.
  */
 import { expect } from 'chai'
