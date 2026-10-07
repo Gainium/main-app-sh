@@ -1,5 +1,6 @@
 import Big from 'big.js'
 import { withExchangeCaller } from '../exchange/requestContext'
+import { holdFromRestOnly } from '../utils/holdRefresh'
 import { v4 } from 'uuid'
 import type DB from '../db'
 import {
@@ -15215,12 +15216,49 @@ function createDCABotHelper<
       return 0
     }
 
+    /**
+     * Pre-deal balance gate for the open-new-deal loop.
+     *
+     * A bot that cannot fund its next deal retries every cycle, and each try
+     * read the WHOLE account balance from the exchange (twice, with the 5 s
+     * re-check). On an account running hundreds of underfunded bots that is
+     * hundreds of full-account reads a minute against a venue budget shared
+     * with every other user.
+     *
+     * So the gate first decides from the stored, stream-maintained balances.
+     * A shortfall they already show is answered without an exchange call; a
+     * pass is confirmed with a live read before anything is opened, so a
+     * stored figure can only ever DELAY a deal, never open one the account
+     * cannot fund. Always live when the reported shortfall is itself used
+     * for sizing (reduce-to-available) or when stored balances are known to
+     * be incomplete for the venue (holds not streamed; no stored balances).
+     */
+    async checkBalanceGate(symbol: string) {
+      const settings = await this.getAggregatedSettings()
+      const exchange = this.data?.exchange
+      const storedUsable =
+        !!exchange &&
+        !holdFromRestOnly.has(exchange) &&
+        exchange !== ExchangeEnum.coinbase &&
+        exchange !== ExchangeEnum.ftx &&
+        !settings.reduceToAvailableBalance
+      if (storedUsable) {
+        const stored = await this.checkBalance(symbol, 1, 'whole', 'stored')
+        if (!stored.status && !stored.unknown) {
+          return stored
+        }
+      }
+      return this.checkBalance(symbol)
+    }
+
     async checkBalance(
       symbol: string,
       /** the deal's size multiple of the configured size (1 = as configured) */
       sizeMultiplier = 1,
       /** what the multiple scales: the base order only, or the whole deal */
       sizeScope: 'base' | 'whole' = 'whole',
+      /** `stored`: decide from stored balances only — see checkBalanceGate */
+      source: 'live' | 'stored' = 'live',
     ): Promise<{
       status: boolean
       required: number
@@ -15255,7 +15293,10 @@ function createDCABotHelper<
       if (!ed) {
         return result
       }
-      const balance = await this.checkAssets(true, true)
+      const balance =
+        source === 'stored'
+          ? await this.checkAssets(true, false, true)
+          : await this.checkAssets(true, true)
       if (!balance) {
         // The read failed — it is already reported on its own by
         // `checkAssets()`. Bypass exactly like the `latestPrice === 0` and
@@ -16535,7 +16576,7 @@ function createDCABotHelper<
           this.handleLog(
             `Bot status is ${this.data?.status}, close after tp ${this.closeAfterTpFilled}`,
           )
-          let checkBalance = await this.checkBalance(symbol)
+          let checkBalance = await this.checkBalanceGate(symbol)
           if (!checkBalance.status) {
             this.handleDebug(
               checkBalance.unknown
@@ -16543,7 +16584,7 @@ function createDCABotHelper<
                 : `Not enough balance to start new deal. Required: ${checkBalance.required}, available: ${checkBalance.available}, repeat check in 5 seconds`,
             )
             await sleep(5000)
-            checkBalance = await this.checkBalance(symbol)
+            checkBalance = await this.checkBalanceGate(symbol)
           }
           if (checkBalance.unknown) {
             // The balance could not be READ — twice, with the retry above in

@@ -4910,6 +4910,16 @@ class MainBot<T extends IMainBot> {
   async checkAssets(
     returnData = false,
     direct = false,
+    /**
+     * Read stored balances only, counting an asset with no stored row as 0.
+     * Stored rows exist only for assets the exchange reports (absent ones are
+     * zeroed by the balance refresh), so once a connection has ANY stored row
+     * a missing one means "holds none" — not "unknown". Without this, a pair
+     * whose coin the account never held falls through to a full exchange read
+     * on every call. Still reads the exchange when the connection has no
+     * stored rows at all.
+     */
+    missingAsZero = false,
   ): Promise<Map<string, FreeAsset[0]> | undefined> {
     this.handleLog('Check assets start')
     const asset: Map<string, FreeAsset[0]> = new Map()
@@ -4980,6 +4990,8 @@ class MainBot<T extends IMainBot> {
           }
 
           if (find.length === this.pairs.size) {
+            finish = true
+          } else if (missingAsZero && b.length > 0) {
             finish = true
           }
         } else if (balancesFromDb.status === StatusEnum.notok) {

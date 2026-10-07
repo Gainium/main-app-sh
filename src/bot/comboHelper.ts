@@ -4320,6 +4320,8 @@ function createComboBotHelper<
       sizeMultiplier = 1,
       /** the base order only, or the whole deal (combo: a whole-deal bound) */
       _sizeScope: 'base' | 'whole' = 'whole',
+      /** `stored`: decide from stored balances only — see checkBalanceGate */
+      source: 'live' | 'stored' = 'live',
     ): Promise<{
       status: boolean
       required: number
@@ -4355,7 +4357,10 @@ function createComboBotHelper<
         return result
       }
       const ex = await this.getExchangeInfo(symbol)
-      const balance = await this.checkAssets(true, true)
+      const balance =
+        source === 'stored'
+          ? await this.checkAssets(true, false, true)
+          : await this.checkAssets(true, true)
       if (!balance) {
         // Same defect and same reasoning as the DCA path; see
         // `dcaHelper.checkBalance` and spec 054.
@@ -5600,7 +5605,7 @@ function createComboBotHelper<
             }
             return
           }
-          let checkBalance = await this.checkBalance(symbol)
+          let checkBalance = await this.checkBalanceGate(symbol)
           if (!checkBalance.status) {
             this.handleDebug(
               checkBalance.unknown
@@ -5608,7 +5613,7 @@ function createComboBotHelper<
                 : `Not enough balance to start new deal. Required: ${checkBalance.required}, available: ${checkBalance.available}, repeat check in 5 seconds`,
             )
             await sleep(5000)
-            checkBalance = await this.checkBalance(symbol)
+            checkBalance = await this.checkBalanceGate(symbol)
           }
           if (checkBalance.unknown) {
             // Same defect and same reasoning as the DCA path, latch policy

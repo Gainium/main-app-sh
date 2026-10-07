@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.0] - 2026-10-07
+
+### Changed
+
+- A bot that cannot fund its next deal no longer asks the exchange for the whole account balance on every retry. The open-new-deal balance check now decides from the stored, stream-maintained balances first: a shortfall they already show is answered without an exchange call, and a pass is confirmed with a live read before the deal opens, so a stored figure can delay a deal but never open one the account cannot fund. Bots that open a reduced deal from the available balance, and venues whose streamed balances do not carry order holds, still read live.
+- Stored balances answer for a pair's coin the account has never held (counted as zero) instead of falling through to a full exchange read, once the connection has stored balances at all.
+
 ## [1.82.0] - 2026-10-07
 
 ### Changed
