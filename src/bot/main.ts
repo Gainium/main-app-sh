@@ -1324,11 +1324,18 @@ class MainBot<T extends IMainBot> {
         symbol,
         newClientOrderIds: ids,
       })
-      if (res.status !== StatusEnum.ok || !res.data?.length) {
+      if (res.status !== StatusEnum.ok) {
         // A venue or transport that cannot batch says so once and is not asked
         // again by this process. The reason is not inspected: every non-ok
         // answer means "resolve these yourself", which the caller does anyway.
         unsupportedOrderBatch.add(this.data.exchange)
+        return
+      }
+      if (!res.data?.length) {
+        // A good answer with no rows is the venue answering, not declining:
+        // OKX resolves a batch from the open-orders list, so it comes back
+        // empty when every order has filled or been cancelled since. Those are
+        // resolved one by one this pass, and the next pass still batches.
         return
       }
       const map = new Map<string, CommonOrder>()
