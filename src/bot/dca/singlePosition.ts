@@ -17,26 +17,6 @@ export const SINGLE_POSITION_CLOSE_AFTER_OPENED_REASON =
 export const SINGLE_POSITION_START_BOT_REASON =
   'Start the bot to switch it to single position'
 
-/** Spec 139 §8.1. */
-export const SINGLE_POSITION_BACKTEST_REASON =
-  'Backtesting is not available for single-position bots yet'
-
-/**
- * Spec 139 §8.1: the backtester does not simulate single position, so a
- * backtest of a bot with it on is refused rather than run as if it were off.
- */
-export const singlePositionBacktestRefusal = (
-  payload: unknown,
-): string | null => {
-  const p = payload as {
-    type?: string
-    data?: { settings?: { singlePosition?: unknown } | null } | null
-  } | null
-  return p?.data?.settings?.singlePosition === true && p.type !== 'grid'
-    ? SINGLE_POSITION_BACKTEST_REASON
-    : null
-}
-
 /** Spec 139 §5.1.2 — followed by the comma-separated pair symbols. */
 export const SINGLE_POSITION_MULTIPLE_OPEN_PREFIX =
   'Single position: more than one open deal on '

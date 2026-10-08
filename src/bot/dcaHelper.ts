@@ -16873,6 +16873,13 @@ function createDCABotHelper<
         }
         this.endMethod(_id)
       }
+      // §3.2.8: an entry is refused wherever a new deal would be. A bot the
+      // bot controller (or a stop condition) has put in monitoring opens no
+      // deal from a start signal (`openNewDealBody`), so it adds no entry
+      // either; a manual "+ New deal" (`skip`) still goes through, as there.
+      if (!skip && this.data?.status === BotStatusEnum.monitoring) {
+        return refuse('bot is in monitoring mode')
+      }
       const dealId = `${position.deal._id}`
       // §3.5: one entry in flight per position — skipped, not queued, and not
       // reported to the user.

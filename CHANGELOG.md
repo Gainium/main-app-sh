@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.87.2] - 2026-10-08
+
+### Changed
+
+- Single position: backtests run. The backtester (1.12.0) simulates single position, so a backtest of a single-position bot is no longer refused (GraphQL and v2 API). The server-side worker hands `singlePosition` and `maxPositionEntries` to the backtester with the rest of the bot settings.
+
+### Fixed
+
+- Single position: a bot in monitoring (bot controller or a stop condition) no longer adds entries to an open position on a start signal. An entry is now refused wherever a new deal would be; a manual "+ New deal" still adds one, as it still opens a deal there.
+
 ## [1.87.1] - 2026-10-08
 
 ### Fixed

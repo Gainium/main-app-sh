@@ -187,7 +187,6 @@ import { DataResponse, ErrorResponse } from '../db/crud'
 import { LargeAccountService } from '../bot/largeAccount/largeAccountService'
 import { getInPositions } from './handlers/inPositions.handler'
 import { DEAL_TOTALS_ARGS } from '../bot/dealListFilter'
-import { singlePositionBacktestRefusal } from '../bot/dca/singlePosition'
 
 /**
  * The single reply every failed password login gets, whatever went wrong.
@@ -5213,15 +5212,6 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const singlePositionRefusal = singlePositionBacktestRefusal(input.payload)
-      if (singlePositionRefusal) {
-        return {
-          status: StatusEnum.notok,
-          reason: singlePositionRefusal,
-          data: null,
-        }
-      }
-
       try {
         let requestId = ''
         if (input.payload.type === BotType.dca) {

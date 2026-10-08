@@ -1,6 +1,7 @@
 import ExchangeChooser from '../../../exchange/exchangeChooser'
 import AbstractExchange from '../../../exchange'
 import DCABackteser from './dca'
+import { dcaBacktesterInput } from './dcaInput'
 import GridBacktester from './grid'
 import logger from '../../../utils/logger'
 import { MathHelper } from '../../../utils/math'
@@ -476,12 +477,7 @@ class BacktestWrapper {
       const instance =
         this.data.type === BotType.dca || this.data.type === BotType.combo
           ? new DCABackteser(
-              {
-                ...this.data.data,
-                prices,
-                symbols: s,
-                useFile: true,
-              },
+              dcaBacktesterInput(this.data.data, prices, s),
               this.handleBacktestLog,
             )
           : this.data.type === BotType.grid

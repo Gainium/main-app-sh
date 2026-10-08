@@ -31,13 +31,20 @@ import {
   planPositionsByPair,
   positionEntriesOf,
   SINGLE_POSITION_ASAP_SPACING_REASON,
-  SINGLE_POSITION_BACKTEST_REASON,
   SINGLE_POSITION_CLOSE_AFTER_OPENED_REASON,
   SINGLE_POSITION_MULTIPLE_OPEN_PREFIX,
   SINGLE_POSITION_START_BOT_REASON,
-  singlePositionBacktestRefusal,
   singlePositionSettingsError,
 } from './singlePosition'
+import DCABacktesting from '@gainium/backtester/dist/dca'
+import { StrategyContextManager } from '@gainium/backtester/dist/dca/strategy/context'
+import { DCAOrderTypeEnum } from '@gainium/backtester/dist/types'
+import type {
+  DCABacktestingResult,
+  FullBar,
+  Symbols,
+} from '@gainium/backtester/dist/types'
+import { dcaBacktesterInput } from '../../backtest/process/backtestWrapper/dcaInput'
 import {
   BotStatusEnum,
   CooldownUnits,
@@ -201,7 +208,7 @@ const entryGates = (bot: any) => {
   return calls
 }
 
-describe('spec 139 §2 / §7 / §8 — the pure rules', () => {
+describe('spec 139 §2 / §7 — the pure rules', () => {
   it('§7.1 ASAP needs a dynamic filter with a deviation or a start cooldown', () => {
     const asap = {
       singlePosition: true,
@@ -287,20 +294,142 @@ describe('spec 139 §2 / §7 / §8 — the pure rules', () => {
     expect(plans.find((p) => p.symbol === 'B')!.sources).to.have.length(0)
     expect(pairsWithSeveralOpenDeals(deals)).to.deep.equal(['A'])
   })
+})
 
-  it('§8.1 a backtest of a single-position bot is refused', () => {
+describe('spec 139 §8 — a server-side backtest simulates single position', () => {
+  const HOUR = 3600e3
+  const FROM = Date.UTC(2026, 0, 1)
+  const PAIR = 'AAA_USDT'
+  const symbol: Symbols = {
+    pair: PAIR,
+    exchange: ExchangeEnum.binance,
+    baseAsset: { name: 'AAA', minAmount: 0.0001, maxAmount: 1e9, step: 0.0001 },
+    quoteAsset: { name: 'USDT', minAmount: 1 },
+    maxOrders: 200,
+    priceAssetPrecision: 4,
+  } as Symbols
+  // A falling-then-recovering market: an ASAP position takes entries on
+  // the way down (cooldown-spaced) and closes on the way back up.
+  const bars: FullBar[] = Array.from({ length: 120 }, (_, i) => {
+    const p = (k: number) => 100 + 10 * Math.sin(k / 15) - k * 0.02
+    const open = p(i - 1)
+    const close = p(i)
+    return {
+      time: FROM + i * HOUR,
+      open,
+      close,
+      high: Math.max(open, close) + 0.3,
+      low: Math.min(open, close) - 0.3,
+      volume: 1000,
+      symbol: PAIR,
+    }
+  })
+  /** A request's `payload.data` as the dashboard / v2 API send it. */
+  const requestData = (over: Record<string, unknown> = {}): any => ({
+    exchange: ExchangeEnum.binance,
+    exchangeUUID: 'u',
+    interval: '1h',
+    userFee: 0.001,
+    balances: [{ asset: 'USDT', free: '1000000', locked: '0' }],
+    from: FROM,
+    to: FROM + bars.length * HOUR,
+    combo: false,
+    fullResult: true,
+    settings: {
+      name: 'sp',
+      pair: [PAIR],
+      strategy: 'LONG',
+      futures: false,
+      coinm: false,
+      leverage: 1,
+      profitCurrency: 'quote',
+      orderSizeType: 'quote',
+      orderFixedIn: 'quote',
+      baseOrderSize: '100',
+      orderSize: '100',
+      startOrderType: 'MARKET',
+      startCondition: StartConditionEnum.asap,
+      dcaCondition: 'percentage',
+      useDca: true,
+      ordersCount: 4,
+      activeOrdersCount: 4,
+      step: '1.5',
+      stepScale: '1.2',
+      volumeScale: '1.3',
+      minimumDeviation: '0',
+      useTp: true,
+      tpPerc: '2',
+      useSl: false,
+      dealCloseCondition: 'tp',
+      dealCloseConditionSL: 'tp',
+      closeDealType: 'closeByMarket',
+      maxNumberOfOpenDeals: '1',
+      maxDealsPerPair: '1',
+      indicators: [],
+      indicatorGroups: [],
+      useCooldown: true,
+      cooldownAfterDealStart: true,
+      cooldownAfterDealStartInterval: 3,
+      cooldownAfterDealStartUnits: CooldownUnits.hours,
+      singlePosition: true,
+      maxPositionEntries: '3',
+      ...over,
+    },
+  })
+  const prices = [{ symbol: PAIR, price: 100 }]
+  let runNo = 0
+  const backtest = async (data: any) => {
+    StrategyContextManager.setActiveContext(`core-single-position-${++runNo}`)
+    // `useFile` reads bars back from a CSV the worker's loader writes; this
+    // run hands the bars in directly.
+    const bt = new DCABacktesting({
+      ...dcaBacktesterInput(data, prices, [symbol]),
+      useFile: false,
+    })
+    return (await bt.test([
+      { bar: bars, interval: '1h' as any },
+    ])) as DCABacktestingResult
+  }
+
+  it('§8.1 the worker hands the backtester singlePosition and maxPositionEntries', () => {
+    const input = dcaBacktesterInput(requestData(), prices, [symbol])
+    expect(input.settings).to.include({
+      singlePosition: true,
+      maxPositionEntries: '3',
+    })
+    expect(input.symbols).to.deep.equal([symbol])
+    expect(input.prices).to.deep.equal(prices)
+  })
+
+  it('§8.2 the backtest runs: one position per pair, entries, no safety orders', async () => {
+    const r = await backtest(requestData())
+    expect(r.deals.length).to.be.greaterThan(0)
+    const sorted = [...r.deals].sort((a, b) => a.startTime - b.startTime)
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i].startTime).to.be.at.least(
+        sorted[i - 1].closedTime as number,
+      )
+    }
+    const entries = r.deals.map((d) => d.positionEntries ?? 0)
+    expect(Math.max(...entries), 'a position took entries').to.be.greaterThan(1)
     expect(
-      singlePositionBacktestRefusal({
-        type: 'dca',
-        data: { settings: { singlePosition: true } },
-      }),
-    ).to.equal(SINGLE_POSITION_BACKTEST_REASON)
-    expect(
-      singlePositionBacktestRefusal({
-        type: 'dca',
-        data: { settings: { singlePosition: false } },
-      }),
-    ).to.equal(null)
+      Math.max(...entries),
+      'maxPositionEntries caps a position',
+    ).to.be.at.most(3)
+    for (const d of r.deals) {
+      expect(
+        d.filledOrders.filter((o) => o.type === DCAOrderTypeEnum.dca),
+        'safety orders are off',
+      ).to.have.length(0)
+    }
+  })
+
+  it('§8.2 the same bot without the setting runs as before', async () => {
+    const r = await backtest(
+      requestData({ singlePosition: false, maxPositionEntries: undefined }),
+    )
+    expect(r.deals.length).to.be.greaterThan(0)
+    expect(r.deals.every((d) => (d.positionEntries ?? 1) <= 1)).to.equal(true)
   })
 })
 
@@ -465,6 +594,43 @@ describe('spec 139 §3.2 — the gates of an entry', () => {
     calls.addDealFunds.length = 0
     await bot.openNewDeal(BOT_ID, SYMBOL)
     expect(calls.addDealFunds).to.have.length(0)
+  })
+
+  it('§3.2.8 a bot in monitoring adds no entry from a start signal', async () => {
+    const bot = helper()
+    const calls = entryGates(bot)
+    bot.data.status = BotStatusEnum.monitoring
+    bot.getOpenDeals = () => [fullDeal(POSITION)]
+    let notOpened = 0
+    await bot.openNewDeal(BOT_ID, SYMBOL, false, false, 0, () => {
+      notOpened += 1
+    })
+    expect(calls.addDealFunds).to.have.length(0)
+    expect(calls.newDeal).to.equal(0)
+    expect(notOpened).to.equal(1)
+    expect(calls.reported, 'no "position full" report either').to.have.length(0)
+  })
+
+  it('§3.2.8 the same rule as a new deal: refused on an empty pair too, a manual start passes both', async () => {
+    // Empty pair: the real `openNewDealBody` refuses a monitoring bot.
+    const empty = helper()
+    entryGates(empty)
+    delete empty.openNewDealBody
+    empty.data.status = BotStatusEnum.monitoring
+    empty.getOpenDeals = () => []
+    let notOpened = 0
+    await empty.openNewDeal(BOT_ID, SYMBOL, false, false, 0, () => {
+      notOpened += 1
+    })
+    expect(notOpened).to.equal(1)
+    // "+ New deal" (`skip`) opens a deal in monitoring, so it adds an entry.
+    const bot = helper()
+    const calls = entryGates(bot)
+    bot.data.status = BotStatusEnum.monitoring
+    bot.getOpenDeals = () => [fullDeal(POSITION)]
+    await bot.openNewDealMan(SYMBOL)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(calls.addDealFunds).to.have.length(1)
   })
 
   it('§3.3 a limit base order makes a limit entry', async () => {
