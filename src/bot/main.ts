@@ -1339,15 +1339,20 @@ class MainBot<T extends IMainBot> {
         return
       }
       const map = new Map<string, CommonOrder>()
+      // Under both ids: `getOrder` asks by the client id on most venues but by
+      // the venue's order id where `venueOrderId` translates it (KuCoin
+      // futures, Kraken, Coinbase). Keyed by the client id alone, a row for
+      // one of those could never be found.
       for (const order of res.data) {
-        const key = order.clientOrderId || order.orderId
-        if (key) {
-          map.set(`${key}`, order)
+        for (const key of [order.clientOrderId, order.orderId]) {
+          if (key) {
+            map.set(`${key}`, order)
+          }
         }
       }
       this.reconcileBatch = map.size ? map : null
       this.handleDebug(
-        `Reconcile prefetch resolved ${map.size}/${ids.length} orders in one call`,
+        `Reconcile prefetch resolved ${new Set(map.values()).size}/${ids.length} orders in one call`,
       )
     } catch (e) {
       // Never fatal: the pass proceeds one order at a time.
@@ -5442,6 +5447,9 @@ class MainBot<T extends IMainBot> {
       // question asked outside the pass that fetched it.
       const prefetched = this.reconcileBatch?.get(id)
       if (prefetched) {
+        // Both keys the row was stored under, so it stays single-use.
+        this.reconcileBatch?.delete(`${prefetched.clientOrderId}`)
+        this.reconcileBatch?.delete(`${prefetched.orderId}`)
         this.reconcileBatch?.delete(id)
       }
       const result = prefetched
