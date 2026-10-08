@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.1] - 2026-10-09
+
+### Fixed
+
+- Kraken: a cancel answered with `WOrder:Cancel pending` (accepted, still being finalised) is now treated as a cancellation in progress — the bot re-reads the order instead of showing an error and switching to error status.
+
 ## [1.88.0] - 2026-10-08
 
 ### Added

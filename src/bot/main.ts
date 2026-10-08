@@ -9570,7 +9570,10 @@ class MainBot<T extends IMainBot> {
           request.reason.indexOf(
             'Cancellation failed as the order is already under cancelling status',
           ) !== -1 ||
-          request.reason.indexOf('DUPLICATE_CANCEL_REQUEST') !== -1
+          request.reason.indexOf('DUPLICATE_CANCEL_REQUEST') !== -1 ||
+          // Kraken spot: `WOrder:Cancel pending` is a warning, not a refusal —
+          // the venue accepted the cancel and is still finalising it.
+          request.reason.indexOf('Cancel pending') !== -1
         ) {
           this.handleDebug(
             `Cancellation in progress ${order.clientOrderId}. Sleep 5s`,
