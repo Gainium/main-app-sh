@@ -21,6 +21,7 @@ import createDCABotHelper from '../dcaHelper'
 import MainBot from '../main'
 import Bot from '../index'
 import { ConditionLatch } from '../conditionLatch'
+import { MathHelper } from '../../utils/math'
 import { checkDCABotSettings } from '../utils'
 import { foldBotWindowStats } from '../botWindowStats'
 import { peakCapitalBySymbol } from '../pairStats'
@@ -212,6 +213,14 @@ describe('spec 139 §2 / §7 / §8 — the pure rules', () => {
     expect(
       singlePositionSettingsError({ ...asap, useDynamicPriceFilter: true }),
       'a filter with no deviation does not space entries',
+    ).to.equal(SINGLE_POSITION_ASAP_SPACING_REASON)
+    expect(
+      singlePositionSettingsError({
+        ...asap,
+        useDynamicPriceFilter: true,
+        dynamicPriceFilterUnderValue: '5',
+      }),
+      'over / under without the deviation leaves the engine filter unarmed',
     ).to.equal(SINGLE_POSITION_ASAP_SPACING_REASON)
     expect(
       singlePositionSettingsError({
@@ -957,6 +966,237 @@ describe('spec 139 §7.2 — the v2 update check', () => {
       true,
     )
     expect(r.status).to.equal(StatusEnum.notok)
+  })
+})
+
+describe('spec 139 §4.2.5 — the take profit after an adoption (live order map)', () => {
+  // A USDM long position of 3 entries (avg 82819.4, TP 0.003) adopts two
+  // 0.001 deals filled at 82836.3. Built on the REAL order / deal maps,
+  // `saveDeal` (which swaps the map's deal copy), `getAvgPrice`,
+  // `updateDealBalances`, `rebuildDealOrders`, `createCurrentDealOrders` and
+  // `getTPOrder`; only venue I/O and side bookkeeping are stubbed. What the
+  // venue is asked to place is what `placeOrders` receives.
+  const T = '000000000000000000000d11'
+  const S1 = '000000000000000000000d12'
+  const S2 = '000000000000000000000d13'
+  const fill = (
+    id: string,
+    dealId: string,
+    price: number,
+    typeOrder: TypeOrderEnum,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    clientOrderId: id,
+    dealId,
+    botId: BOT_ID,
+    userId: USER_ID,
+    status: 'FILLED',
+    side: 'BUY',
+    typeOrder,
+    price: `${price}`,
+    origPrice: `${price}`,
+    origQty: '0.001',
+    executedQty: '0.001',
+    updateTime: 1,
+    symbol: SYMBOL,
+    ...extra,
+  })
+
+  const liveBot = () => {
+    const bot = helper(
+      spSettings({
+        useTp: true,
+        tpPerc: '1',
+        dealCloseCondition: 'tp',
+        dealCloseConditionSL: 'tp',
+        useDca: false,
+        orderSizeType: 'base',
+        baseOrderSize: '0.001',
+        indicators: [],
+        multiTp: [],
+        futures: true,
+      }),
+    )
+    Object.defineProperty(bot, 'futures', { value: true, configurable: true })
+    Object.assign(bot, {
+      math: new MathHelper(),
+      orders: new Map(),
+      ordersKeys: new Set(),
+      orderStatusMap: new Map(),
+      orderDealMap: new Map(),
+      orderStatuses: ['NEW', 'PARTIALLY_FILLED'],
+      deals: new Map(),
+      dealStatusMap: new Map(),
+      dealSymbolMap: new Map(),
+      profitBaseDealMap: new Map(),
+      sharedStream: { addOrder() {}, removeOrder() {} },
+      brokerCode: '',
+      data: { ...helper().data, flags: [], settings: bot.data.settings },
+    })
+    delete bot.getOrdersByStatusAndDealId
+    delete bot.getOrderFromMap
+    delete bot.getAggregatedSettings
+    for (const k of ['setOrdersToRedis', 'setDealToRedis']) {
+      bot[k] = () => undefined
+    }
+    bot.handleErrors = (r: string) => {
+      throw new Error(r)
+    }
+    bot.getExchangeInfo = async () => ({
+      pair: SYMBOL,
+      baseAsset: { name: 'BTC', minAmount: 0.001, step: 0.001 },
+      quoteAsset: { name: 'USDT', minAmount: 5 },
+      priceAssetPrecision: 1,
+    })
+    bot.getUserFee = async () => ({ maker: 0.0002, taker: 0.0004 })
+    bot.baseAssetPrecision = async () => 3
+    bot.getUsdRate = async () => 1
+    bot.getLatestPrice = async () => 82813.5
+    bot.getLeverageMultipler = async () => 1
+    bot.getCommDeal = async () => 0
+    bot.computeObservedFeeLedger = async () => null
+    bot.getLastStreamData = () => undefined
+    for (const k of [
+      'updateUsage',
+      'updateAssets',
+      'checkDealSlMethods',
+      'removeDealFromStopLossMethods',
+      'checkAllowedMethods',
+      'setClassProperties',
+      'setCloseByTimer',
+      'checkTPLevel',
+      'resendPendingFunds',
+      'afterDealUpdate',
+      'checkDealsPriceExtremum',
+      'carryStopLossLatches',
+      'updateDealLastPrices',
+      'updateDealLastTime',
+      'armNextPositionEntry',
+    ]) {
+      bot[k] = async () => undefined
+    }
+    const deal = {
+      ...fullDeal(T).deal,
+      positionEntries: 3,
+      settings: {
+        useDca: false,
+        avgPrice: 82819.4,
+        tpPerc: '1',
+        useTp: true,
+        dealCloseCondition: 'tp',
+      },
+      levels: { all: 3, complete: 3 },
+      initialBalances: { base: 0, quote: 248.4582 },
+      currentBalances: { base: 0.003, quote: 0 },
+      funds: [
+        { price: 82822.4, qty: 0.001 },
+        { price: 82813.5, qty: 0.001 },
+      ],
+      lastPrice: 82813.5,
+      avgPrice: 82819.4,
+      initialPrice: 82822.4,
+      size: 0.003,
+      flags: [],
+    }
+    const oldTp = {
+      qty: 0.003,
+      price: 83714.5,
+      side: 'SELL',
+      type: TypeOrderEnum.dealTP,
+      dealId: T,
+    }
+    bot.setDeal(
+      {
+        deal,
+        initialOrders: [],
+        currentOrders: [oldTp],
+        previousOrders: [],
+        closeBySl: false,
+        notCheckSl: false,
+        closeByTp: false,
+      },
+      false,
+    )
+    for (const o of [
+      fill('bo', T, 82822.4, TypeOrderEnum.dealStart),
+      fill('roa1', T, 82822.4, TypeOrderEnum.dealRegular, {
+        addFundsId: 'a1',
+        positionEntry: true,
+      }),
+      fill('roa2', T, 82813.5, TypeOrderEnum.dealRegular, {
+        addFundsId: 'a2',
+        positionEntry: true,
+      }),
+    ]) {
+      bot.setOrder(o, false)
+    }
+    const source = (id: string) => ({
+      ...deal,
+      _id: id,
+      createTime: 2_000,
+      funds: [],
+      settings: { useDca: true },
+    })
+    bot.dealsDb = {
+      readData: async () => ok([source(S1), source(S2)]),
+      updateManyData: async () => ok(null),
+      updateData: async () => ok(null),
+    }
+    bot.ordersDb = {
+      readData: async () =>
+        ok([
+          fill('s1bo', S1, 82836.3, TypeOrderEnum.dealStart),
+          fill('s2bo', S2, 82836.3, TypeOrderEnum.dealStart),
+        ]),
+      updateData: async () => ok(null),
+    }
+    bot.closeDealById = async () => undefined
+    bot.cancelAllOrder = async () => undefined
+    const placed: any[] = []
+    bot.placeOrders = async (
+      _b: string,
+      _s: string,
+      _d: string,
+      o: { new: any[] },
+    ) => {
+      placed.push(...o.new)
+    }
+    return { bot, placed }
+  }
+
+  it('rests a TP for the whole position at the new average', async function () {
+    this.timeout(10_000)
+    const { bot, placed } = liveBot()
+    await bot.adoptDeals(T, [S1, S2])
+    const tps = placed.filter((g) => g.type === TypeOrderEnum.dealTP)
+    expect(tps, 'one take profit is placed').to.have.length(1)
+    expect(tps[0].qty).to.equal(0.005)
+    // avg 82826.1 × 1.01 × the round-trip fee displacement — not the
+    // pre-adoption 83714.5 off avg 82819.4.
+    expect(tps[0].price).to.equal(83721.3)
+    expect(bot.getDeal(T).currentOrders).to.deep.equal(tps)
+  })
+
+  it('a further entry after the adoption re-sizes the TP over all six', async function () {
+    this.timeout(10_000)
+    const { bot, placed } = liveBot()
+    await bot.adoptDeals(T, [S1, S2])
+    placed.length = 0
+    const live = bot.getDeal(T)
+    live.deal.pendingAddFunds = [
+      { id: 'a3', qty: '0.001', positionEntry: true },
+    ]
+    const entry = fill('roa3', T, 82700, TypeOrderEnum.dealRegular, {
+      addFundsId: 'a3',
+      positionEntry: true,
+    })
+    bot.setOrder(entry, false)
+    await bot.updateDeal(BOT_ID, entry)
+    await new Promise((r) => setTimeout(r, 20))
+    const tps = placed.filter((g) => g.type === TypeOrderEnum.dealTP)
+    expect(tps).to.have.length(1)
+    expect(tps[0].qty).to.equal(0.006)
+    expect(bot.getDeal(T).deal.positionEntries).to.equal(6)
   })
 })
 

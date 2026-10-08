@@ -71,12 +71,13 @@ const positive = (v: unknown) => {
   return Number.isFinite(n) && n > 0
 }
 
-/** §7.1: a dynamic price filter with a deviation. */
+/**
+ * §7.1: a dynamic price filter with a deviation. The engine only arms the
+ * filter (and the ASAP price trigger) when `dynamicPriceFilterDeviation` is
+ * set; over / under values without it leave the filter off.
+ */
 export const hasDynamicSpacing = (s: SpacingSettings) =>
-  !!s.useDynamicPriceFilter &&
-  (positive(s.dynamicPriceFilterDeviation) ||
-    positive(s.dynamicPriceFilterOverValue) ||
-    positive(s.dynamicPriceFilterUnderValue))
+  !!s.useDynamicPriceFilter && positive(s.dynamicPriceFilterDeviation)
 
 /** §7.1: a cooldown after deal start with an interval. */
 export const hasStartCooldown = (s: SpacingSettings) =>

@@ -26266,7 +26266,11 @@ function createDCABotHelper<
       position.deal.settings.useDca = false
       position.deal.bestPrice = 0
       await this.updateDealBalances(position)
-      this.saveDeal(position, {
+      // `saveDeal` is queued per deal and REPLACES the map's entry with a
+      // copy. Wait for it, then rebuild on the live entry: `rebuildDealOrders`
+      // writes the new orders onto the object it is given and places what the
+      // MAP holds, so a stale `position` re-placed the pre-adoption TP.
+      await this.saveDeal(position, {
         funds: position.deal.funds,
         tpHistory: position.deal.tpHistory,
         positionEntries: position.deal.positionEntries,
@@ -26278,11 +26282,13 @@ function createDCABotHelper<
         initialBalances: position.deal.initialBalances,
         currentBalances: position.deal.currentBalances,
       })
-      await this.rebuildDealOrders(position, targetDealId)
+      const live = this.getDeal(targetDealId) ?? position
+      await this.rebuildDealOrders(live, targetDealId)
       await this.updateUsage(targetDealId)
-      await this.checkDealSlMethods(position)
+      const rebuilt = this.getDeal(targetDealId) ?? live
+      await this.checkDealSlMethods(rebuilt)
       // §4.2.6
-      this.emit('bot deal update', position.deal)
+      this.emit('bot deal update', rebuilt.deal)
       this.endMethod(_id)
       return {
         status: StatusEnum.ok as const,
@@ -26301,7 +26307,8 @@ function createDCABotHelper<
         return
       }
       d.deal.positionEntries = positionEntriesOf(d.deal)
-      this.saveDeal(d, { positionEntries: d.deal.positionEntries })
+      // Settled before the rebuild below reads the map (see adoptDealsBody).
+      await this.saveDeal(d, { positionEntries: d.deal.positionEntries })
       if (d.deal.settings.useDca !== false) {
         await this.updateDealSettings(dealId, {
           useDca: false,

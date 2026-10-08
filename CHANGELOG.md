@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.87.1] - 2026-10-08
+
+### Fixed
+
+- Single position: after an adoption the take profit is placed for the whole position at its new average. It used to re-place the take profit the position held before the adoption, because the rebuild read the order plan from a deal copy that a pending save had not replaced yet.
+- Single position with an ASAP start now needs the dynamic price filter's deviation (`dynamicPriceFilterDeviation`) set: over / under values alone do not arm the filter that spaces entries.
+
 ## [1.87.0] - 2026-10-08
 
 ### Added
