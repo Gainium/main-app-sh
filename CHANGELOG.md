@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.87.3] - 2026-10-08
+
+### Fixed
+
+- Combo: on a multi-coin combo bot, each deal's take profit and stop loss now trigger on that deal's own coin price. They used to be checked against the price of the first coin in the bot's pair list, so a deal on a coin priced far from it could be closed seconds after opening. The price gate that decides when take profit, stop loss and DCA-level checks run is also kept per coin now. Single-coin combo bots behave as before.
+
 ## [1.87.2] - 2026-10-08
 
 ### Changed

@@ -22764,38 +22764,55 @@ function createDCABotHelper<
 
     checkDealsPriceExtremum() {
       if (this.combo) {
-        const values = [...this.dealsForStopLossCombo.values()]
-        const min = this.isLong
-          ? values.sort((a, b) => b.sl - a.sl)?.[0]?.sl
-          : values.sort((a, b) => b.tp - a.tp)?.[0]?.tp
-        const max = this.isLong
-          ? values.filter((v) => !!v.tp).sort((a, b) => a.tp - b.tp)?.[0]?.tp
-          : values.filter((v) => !!v.sl).sort((a, b) => a.sl - b.sl)?.[0]?.sl
-        this.highestLow.set(this.data?.settings.pair[0] ?? '', min ?? 0)
-        this.lowestHigh.set(this.data?.settings.pair[0] ?? '', max || Infinity)
+        // Keyed by each deal's own symbol: a multi-coin bot's deals trade at
+        // unrelated prices, so one gate under `pair[0]` mixes their levels.
+        const bySymbol = <T>(entries: Iterable<[string, T]>) =>
+          [...entries].reduce((acc, [k, v]) => {
+            const symbol = this.getDeal(k)?.deal.symbol.symbol ?? ''
+            acc.set(symbol, [...(acc.get(symbol) ?? []), v])
+            return acc
+          }, new Map<string, T[]>())
+        const slTpBySymbol = bySymbol(this.dealsForStopLossCombo.entries())
+        const dcaCheckBySymbol = bySymbol(this.dealsDCALevelCheck.entries())
+        const dcaByMarketBySymbol = bySymbol(this.dealsDCAByMarket.entries())
+        const symbols = new Set([
+          ...slTpBySymbol.keys(),
+          ...dcaCheckBySymbol.keys(),
+          ...dcaByMarketBySymbol.keys(),
+        ])
+        for (const symbol of symbols) {
+          const values = slTpBySymbol.get(symbol) ?? []
+          const min = this.isLong
+            ? values.sort((a, b) => b.sl - a.sl)?.[0]?.sl
+            : values.sort((a, b) => b.tp - a.tp)?.[0]?.tp
+          const max = this.isLong
+            ? values.filter((v) => !!v.tp).sort((a, b) => a.tp - b.tp)?.[0]?.tp
+            : values.filter((v) => !!v.sl).sort((a, b) => a.sl - b.sl)?.[0]?.sl
 
-        const valuesDCACheck = [...this.dealsDCALevelCheck.values()]
-        const valuesDCAByMarketCheck = [...this.dealsDCAByMarket.values()]
-        const minDCACheck = this.isLong
-          ? Math.max(
-              valuesDCAByMarketCheck.sort((a, b) => b - a)?.[0] ?? 0,
-              valuesDCACheck.sort((a, b) => b - a)?.[0] ?? 0,
-            )
-          : 0
-        const maxDCACheck = this.isLong
-          ? Infinity
-          : Math.min(
-              valuesDCAByMarketCheck.sort((a, b) => a - b)?.[0] || Infinity,
-              valuesDCACheck.sort((a, b) => a - b)?.[0] || Infinity,
-            )
-        this.highestLow.set(
-          this.data?.settings.pair[0] ?? '',
-          Math.max(min ?? 0, minDCACheck),
-        )
-        this.lowestHigh.set(
-          this.data?.settings.pair[0] ?? '',
-          Math.min(max || Infinity, maxDCACheck),
-        )
+          const valuesDCACheck = dcaCheckBySymbol.get(symbol) ?? []
+          const valuesDCAByMarketCheck = dcaByMarketBySymbol.get(symbol) ?? []
+          const minDCACheck = this.isLong
+            ? Math.max(
+                valuesDCAByMarketCheck.sort((a, b) => b - a)?.[0] ?? 0,
+                valuesDCACheck.sort((a, b) => b - a)?.[0] ?? 0,
+              )
+            : 0
+          const maxDCACheck = this.isLong
+            ? Infinity
+            : Math.min(
+                valuesDCAByMarketCheck.sort((a, b) => a - b)?.[0] || Infinity,
+                valuesDCACheck.sort((a, b) => a - b)?.[0] || Infinity,
+              )
+          this.highestLow.set(symbol, Math.max(min ?? 0, minDCACheck))
+          this.lowestHigh.set(symbol, Math.min(max || Infinity, maxDCACheck))
+        }
+        for (const map of [this.highestLow, this.lowestHigh]) {
+          map.forEach((_, k) => {
+            if (!symbols.has(k)) {
+              map.delete(k)
+            }
+          })
+        }
       } else {
         const dealsForMoveSlMin = [...this.dealsForMoveSl.entries()].reduce(
           (acc, [k, v]) => {

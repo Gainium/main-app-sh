@@ -6084,24 +6084,32 @@ function createComboBotHelper<
       if (!this.allowedMethods.has('checkDealsStopLoss')) {
         return
       }
-      const symbol = this.data?.settings?.pair?.[0]
-      if (!symbol) {
-        return
-      }
-      const lastOrder = this.lastFilledOrderMap.get(symbol)
-      const lastPrice = +(lastOrder?.price ?? '0')
-      const lastStreamData = this.getLastStreamData(symbol)
-      if (lastPrice && !isNaN(lastPrice) && isFinite(lastPrice) && lastOrder) {
-        if ((lastStreamData?.time ?? 0) < lastOrder.updateTime) {
-          this.setLastStreamData(symbol, {
-            price: lastPrice,
-            time: lastOrder.updateTime,
-          })
+      // Each deal is judged on its own symbol's price — a multi-coin bot's
+      // deals trade at unrelated prices, so `pair[0]`'s would cross them.
+      const prices = new Map<string, number | undefined>()
+      const priceOf = (symbol: string) => {
+        if (prices.has(symbol)) {
+          return prices.get(symbol)
         }
-      }
-      const price = this.getLastStreamData(symbol)?.price
-      if (!price) {
-        return
+        const lastOrder = this.lastFilledOrderMap.get(symbol)
+        const lastPrice = +(lastOrder?.price ?? '0')
+        const lastStreamData = this.getLastStreamData(symbol)
+        if (
+          lastPrice &&
+          !isNaN(lastPrice) &&
+          isFinite(lastPrice) &&
+          lastOrder
+        ) {
+          if ((lastStreamData?.time ?? 0) < lastOrder.updateTime) {
+            this.setLastStreamData(symbol, {
+              price: lastPrice,
+              time: lastOrder.updateTime,
+            })
+          }
+        }
+        const price = this.getLastStreamData(symbol)?.price
+        prices.set(symbol, price)
+        return price
       }
       for (const [deal, data] of this.dealsForStopLossCombo) {
         const { tp, sl } = data
@@ -6110,6 +6118,10 @@ function createComboBotHelper<
         }
         const d = this.getDeal(deal)
         if (!d || d.closeBySl || d.deal.status !== DCADealStatusEnum.open) {
+          continue
+        }
+        const price = priceOf(d.deal.symbol.symbol)
+        if (!price) {
           continue
         }
         const { useSl, useTp } = await this.getAggregatedSettings(d.deal)
