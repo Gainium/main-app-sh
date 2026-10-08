@@ -1356,6 +1356,23 @@ export interface Funding {
   history?: FundingHistoryEntry[]
 }
 
+/**
+ * Per-deal settings a `startDeal` webhook may carry, replacing the bot's own
+ * value for that one deal. See `src/bot/signalDealOverrides.ts`.
+ */
+export type SignalDealOverrides = {
+  /** Base order size, in the bot's own base-order unit. */
+  baseOrderSize?: string
+  /** Take profit, % from the deal's average price. */
+  tpPerc?: string
+  /** Stop loss distance, % from the deal's reference price (stored negative). */
+  slPerc?: string
+  /** Take profit at this price. DCA bots only. */
+  tpPrice?: string
+  /** Stop loss at this price. DCA bots only. */
+  slPrice?: string
+}
+
 export interface DCADealsSchema extends SchemaI {
   action?: ActionsEnum
   closeTrigger?: DCACloseTriggerEnum
@@ -1460,6 +1477,12 @@ export interface DCADealsSchema extends SchemaI {
   sizes?: Sizes
   fullFee?: number
   fixSize?: number
+  /**
+   * What the `startDeal` webhook that opened this deal overrode (already
+   * written into `settings`). Kept as the record of it, and because it is what
+   * lets a non-terminal DCA deal use the fixed TP / SL prices in `settings`.
+   */
+  signalOverrides?: SignalDealOverrides
   orderSizeType?: OrderSizeTypeEnum
   tags?: string[]
   ac?: {

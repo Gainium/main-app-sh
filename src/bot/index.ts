@@ -9,6 +9,7 @@ import {
 import { isPaper } from '../utils'
 import utils from '../utils'
 import { CLOSE_SETTLE, awaitDealsClosed } from './closeSettle'
+import { parseSignalDealOverrides } from './signalDealOverrides'
 import { buyDialogEventsFor } from './buyDialogEvent'
 import {
   resolveChangeTrailActor,
@@ -202,6 +203,15 @@ export type WebhookData = {
   pairsToSetMode?: PairsToSetMode
   closeType?: 'limit' | 'market' | 'leave' | 'cancel'
   type?: AddFundsTypeEnum
+  /**
+   * `startDeal` only: this deal's own base order / TP / SL, replacing the
+   * bot's. Numbers or numeric strings. See `signalDealOverrides.ts`.
+   */
+  baseOrderSize?: string | number
+  tpPerc?: string | number
+  slPerc?: string | number
+  tpPrice?: string | number
+  slPrice?: string | number
 }
 
 const defaultBotsPerWorker = 100
@@ -9688,17 +9698,30 @@ class Bot<T extends UserSchema = UserSchema> {
         event.botType = findBot.type
         event.paperContext = findBot.paperContext
         if (action === WebhookActionEnum.start) {
-          event.metadata = JSON.stringify({ action, symbol })
-          this.handleDebug(`Received ${action} signal for ${uuid}`)
-          call = () =>
-            findBot &&
-            this.getWorkerById(findBot.worker)?.postMessage({
-              do: 'method',
-              botType: findBot.type,
-              botId: findBot.id,
-              method: 'openDealBySignal',
-              args: [findBot.id, symbol, ignoreSettings],
+          // Validated here, before anything is dispatched, so a malformed
+          // value comes back to the sender as a 400 instead of a deal opened
+          // without the exit it asked for.
+          const parsed = parseSignalDealOverrides(data, findBot.type)
+          if (parsed.error) {
+            failReason = parsed.error
+          } else {
+            const overrides = parsed.overrides
+            event.metadata = JSON.stringify({
+              action,
+              symbol,
+              ...(overrides ?? {}),
             })
+            this.handleDebug(`Received ${action} signal for ${uuid}`)
+            call = () =>
+              findBot &&
+              this.getWorkerById(findBot.worker)?.postMessage({
+                do: 'method',
+                botType: findBot.type,
+                botId: findBot.id,
+                method: 'openDealBySignal',
+                args: [findBot.id, symbol, ignoreSettings, overrides],
+              })
+          }
         }
         if (
           action === WebhookActionEnum.close ||

@@ -23,6 +23,10 @@ import type {
 import type { InitialGrid } from './helper'
 import type { FullDeal } from './dcaHelper'
 import type { NewDealTrigger } from './newDealApproval'
+import {
+  applySignalDealOverrides,
+  type SignalDealOverrides,
+} from './signalDealOverrides'
 import { nextLadderLevel } from './dca/ladderLevels'
 import {
   pickRestoreBaseEntry,
@@ -5017,6 +5021,8 @@ function createComboBotHelper<
       _fixSize = 0,
       _dynamicAr: DynamicArPrices[] = [],
       sizes?: Sizes | null,
+      _orderSizeType?: OrderSizeTypeEnum,
+      signalOverrides?: SignalDealOverrides | null,
     ): Promise<string | undefined> {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('create deal'))
@@ -5135,15 +5141,19 @@ function createComboBotHelper<
               quote: 0,
             },
           },
-          settings: {
-            ...dealSettings,
-            updatedComboAdjustments:
-              (dealSettings.orderSizeType === OrderSizeTypeEnum.percFree ||
-                dealSettings.orderSizeType === OrderSizeTypeEnum.percTotal) &&
-              (dealSettings.coinm || dealSettings.profitCurrency === 'base')
-                ? true
-                : undefined,
-          },
+          settings: applySignalDealOverrides(
+            {
+              ...dealSettings,
+              updatedComboAdjustments:
+                (dealSettings.orderSizeType === OrderSizeTypeEnum.percFree ||
+                  dealSettings.orderSizeType === OrderSizeTypeEnum.percTotal) &&
+                (dealSettings.coinm || dealSettings.profitCurrency === 'base')
+                  ? true
+                  : undefined,
+            },
+            signalOverrides,
+          ),
+          ...(signalOverrides ? { signalOverrides } : {}),
           parentId: null,
           childIds: [],
           parent: false,
@@ -5236,6 +5246,9 @@ function createComboBotHelper<
       _fixSize = 0,
       _dynamicAr: DynamicArPrices[] = [],
       sizes?: Sizes | null,
+      _orderSizeType?: OrderSizeTypeEnum,
+      _forceLimit = false,
+      signalOverrides?: SignalDealOverrides | null,
     ) {
       const _id = this.startMethod('placeBaseOrder')
       let dealId: string | undefined
@@ -5248,6 +5261,8 @@ function createComboBotHelper<
           _fixSize,
           _dynamicAr,
           sizes,
+          undefined,
+          signalOverrides,
         )
         if (!dealId) {
           this.resetPending(this.botId, symbol)
@@ -5523,6 +5538,7 @@ function createComboBotHelper<
       time = 0,
       cbIfNotOpened?: () => void,
       trigger?: NewDealTrigger,
+      signalOverrides?: SignalDealOverrides | null,
     ) {
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
@@ -5534,6 +5550,7 @@ function createComboBotHelper<
             time,
             cbIfNotOpened,
             trigger,
+            signalOverrides,
           ),
         )
         return this.handleDebug('Loading not complete yet')
@@ -5689,6 +5706,28 @@ function createComboBotHelper<
                 return
               }
             }
+            const signalRefusal = await this.signalOverridesRefusal(
+              symbol,
+              signalOverrides,
+            )
+            if (signalRefusal) {
+              this.handleErrors(
+                `Deal for ${symbol} not opened: ${signalRefusal}`,
+                'openNewDeal',
+                '',
+                false,
+                true,
+                true,
+                false,
+                symbol,
+              )
+              this.resetPending(this.botId, symbol)
+              this.endMethod(_id)
+              if (cbIfNotOpened) {
+                cbIfNotOpened()
+              }
+              return
+            }
             // Last step before the deal exists: every gate above has passed.
             // Same hook as the DCA path (inherited `approveNewDeal`).
             const approval = await this.checkNewDealApproval(
@@ -5711,6 +5750,7 @@ function createComboBotHelper<
             if (this.useCompountReduce) {
               sizes = await this.calculateCompoundReduce(symbol)
             }
+            this.requestSignalBaseOrderSize(approval, settings, signalOverrides)
             // A size multiplier from the approval (checked at the scaled size).
             const sized = await this.applyNewDealSize(symbol, approval, sizes, {
               reduced: false,
@@ -5730,6 +5770,9 @@ function createComboBotHelper<
               undefined,
               undefined,
               sizes,
+              undefined,
+              false,
+              signalOverrides,
             )
             await this.reportNewDealSize(symbol, approval, sized.outcome)
           } else {

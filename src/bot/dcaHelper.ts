@@ -106,6 +106,12 @@ import {
   type NewDealTrigger,
 } from './newDealApproval'
 import {
+  applySignalDealOverrides,
+  hasSignalTpSl,
+  signalPriceError,
+  type SignalDealOverrides,
+} from './signalDealOverrides'
+import {
   buildDealCloseSignal,
   dealCloseHeldDescription,
   resolveDealCloseTrigger,
@@ -1622,7 +1628,14 @@ function createDCABotHelper<
             settings.useFixedTPPrices) ||
           (this.botType === BotType.dca &&
             settings.useRiskReward &&
-            settings.riskUseTpRatio),
+            settings.riskUseTpRatio) ||
+          // A deal opened with a `tpPrice` from its webhook. Keyed on the
+          // record of the signal, not on `useFixedTPPrices` alone, which a
+          // regular deal can carry over from settings without ever using it.
+          (this.botType === BotType.dca &&
+            !!deal?.signalOverrides?.tpPrice &&
+            settings.useTp &&
+            settings.useFixedTPPrices),
         useFixedSLPrices:
           (this.botType === BotType.dca &&
             settings.type === DCATypeEnum.terminal &&
@@ -1630,7 +1643,13 @@ function createDCABotHelper<
             !settings.trailingSl &&
             !settings.moveSL &&
             settings.useFixedSLPrices) ||
-          (this.botType === BotType.dca && settings.useRiskReward),
+          (this.botType === BotType.dca && settings.useRiskReward) ||
+          (this.botType === BotType.dca &&
+            !!deal?.signalOverrides?.slPrice &&
+            settings.useSl &&
+            !settings.trailingSl &&
+            !settings.moveSL &&
+            settings.useFixedSLPrices),
       }
     }
 
@@ -2263,6 +2282,7 @@ function createDCABotHelper<
       dynamicAr: DynamicArPrices[] = [],
       sizes?: Sizes | null,
       orderSizeType?: OrderSizeTypeEnum,
+      signalOverrides?: SignalDealOverrides | null,
     ): Promise<string | undefined> {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('create deal'))
@@ -2373,40 +2393,44 @@ function createDCABotHelper<
               quote: 0,
             },
           },
-          settings: {
-            ...dealSettings,
-            fixedSlPrice: this.data.settings.useRiskReward
-              ? fixSl
+          settings: applySignalDealOverrides(
+            {
+              ...dealSettings,
+              fixedSlPrice: this.data.settings.useRiskReward
                 ? fixSl
-                : undefined
-              : this.data.settings.fixedSlPrice,
-            fixedTpPrice:
-              this.data.settings.useRiskReward &&
-              this.data.settings.riskUseTpRatio
-                ? fixTp
-                  ? fixTp
+                  ? fixSl
                   : undefined
-                : this.data.settings.fixedTpPrice,
-            useTp:
-              this.data.settings.useRiskReward &&
-              fixTp &&
-              this.data.settings.riskUseTpRatio
+                : this.data.settings.fixedSlPrice,
+              fixedTpPrice:
+                this.data.settings.useRiskReward &&
+                this.data.settings.riskUseTpRatio
+                  ? fixTp
+                    ? fixTp
+                    : undefined
+                  : this.data.settings.fixedTpPrice,
+              useTp:
+                this.data.settings.useRiskReward &&
+                fixTp &&
+                this.data.settings.riskUseTpRatio
+                  ? true
+                  : this.data.settings.useTp,
+              useSl: this.data.settings.useRiskReward
                 ? true
-                : this.data.settings.useTp,
-            useSl: this.data.settings.useRiskReward
-              ? true
-              : this.data.settings.useSl,
-            dealCloseCondition:
-              this.data.settings.useRiskReward &&
-              fixTp &&
-              this.data.settings.riskUseTpRatio
-                ? CloseConditionEnum.tp
-                : this.data.settings.dealCloseCondition,
-            dealCloseConditionSL:
-              this.data.settings.useRiskReward && fixSl
-                ? CloseConditionEnum.tp
-                : this.data.settings.dealCloseConditionSL,
-          },
+                : this.data.settings.useSl,
+              dealCloseCondition:
+                this.data.settings.useRiskReward &&
+                fixTp &&
+                this.data.settings.riskUseTpRatio
+                  ? CloseConditionEnum.tp
+                  : this.data.settings.dealCloseCondition,
+              dealCloseConditionSL:
+                this.data.settings.useRiskReward && fixSl
+                  ? CloseConditionEnum.tp
+                  : this.data.settings.dealCloseConditionSL,
+            },
+            signalOverrides,
+          ),
+          ...(signalOverrides ? { signalOverrides } : {}),
           parentId: null,
           childIds: [],
           parent: false,
@@ -11031,6 +11055,7 @@ function createDCABotHelper<
       sizes?: Sizes | null,
       orderSizeType?: OrderSizeTypeEnum,
       forceLimit = false,
+      signalOverrides?: SignalDealOverrides | null,
     ) {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('place base order'))
@@ -11048,6 +11073,7 @@ function createDCABotHelper<
           dynamicAr,
           sizes,
           orderSizeType,
+          signalOverrides,
         )
         if (!dealId) {
           this.resetPending(this.botId, symbol)
@@ -16553,6 +16579,60 @@ function createDCABotHelper<
     }
 
     /**
+     * Why a webhook's own TP / SL cannot open this deal, if they cannot. Not
+     * opening is the answer for a signal whose exits cannot be honoured:
+     * opening without them, or with exits that fire on placement, is worse.
+     */
+    async signalOverridesRefusal(
+      symbol: string,
+      o?: SignalDealOverrides | null,
+    ): Promise<string | undefined> {
+      if (!o) {
+        return
+      }
+      const settings = await this.getAggregatedSettings()
+      if (
+        hasSignalTpSl(o) &&
+        settings.useRiskReward &&
+        settings.type !== DCATypeEnum.terminal
+      ) {
+        return 'take profit / stop loss from the signal cannot be used on a risk/reward bot, whose size is derived from its own stop loss'
+      }
+      if (o.tpPrice || o.slPrice) {
+        if (this.combo) {
+          return 'tpPrice / slPrice are only available for DCA bots'
+        }
+        const price = await this.getLatestPrice(symbol)
+        if (!(price > 0)) {
+          return 'the current price is not available to check the signal prices against'
+        }
+        return signalPriceError(o, price, this.isLong)
+      }
+    }
+
+    /**
+     * A webhook's `baseOrderSize`, as a base-order-only size multiplier on the
+     * configured base order. Applied (and re-checked) by
+     * {@link applyNewDealSize} like any requested size; it replaces a size an
+     * approving hook may have asked for, since the sender's is explicit.
+     */
+    requestSignalBaseOrderSize(
+      ctx: NewDealApprovalContext | null,
+      settings: { baseOrderSize?: string },
+      o?: SignalDealOverrides | null,
+    ) {
+      if (!ctx || !o?.baseOrderSize) {
+        return
+      }
+      const configured = +(settings.baseOrderSize ?? '0')
+      // 0 lands on `out_of_bounds` and is reported, rather than dividing by 0.
+      ctx.sizeMultiplier = configured > 0 ? +o.baseOrderSize / configured : 0
+      ctx.sizeScope = 'base'
+      ctx.sizeSource = 'webhook'
+      delete ctx.extensionRef
+    }
+
+    /**
      * Applies an approving hook's `sizeMultiplier` to a new deal: base order
      * and every safety order scaled together (on top of compound /
      * risk-reduction `sizes`), then the balance and the exchange minimums are
@@ -16573,11 +16653,14 @@ function createDCABotHelper<
       if (!ctx || !Number.isFinite(requested) || requested === 1) {
         return { sizes, outcome: null }
       }
+      // Only a webhook size is labelled; an extension's outcome keeps its shape.
+      const source =
+        ctx.sizeSource === 'webhook' ? { source: ctx.sizeSource } : {}
       const keep = (
         reason: NewDealSizeOutcome['reason'],
       ): { sizes: Sizes | null | undefined; outcome: NewDealSizeOutcome } => ({
         sizes,
-        outcome: { requested, applied: 1, reason },
+        outcome: { requested, applied: 1, reason, ...source },
       })
       const settings = await this.getAggregatedSettings()
       if (
@@ -16602,7 +16685,11 @@ function createDCABotHelper<
       if (opts.reduced) {
         return keep('reduced_to_available')
       }
-      if (!(requested >= NEW_DEAL_SIZE_MIN && requested <= NEW_DEAL_SIZE_MAX)) {
+      if (
+        !(ctx.sizeSource === 'webhook'
+          ? requested > 0
+          : requested >= NEW_DEAL_SIZE_MIN && requested <= NEW_DEAL_SIZE_MAX)
+      ) {
         return keep('out_of_bounds')
       }
       const scope = ctx.sizeScope === 'base' ? 'base' : 'whole'
@@ -16638,7 +16725,7 @@ function createDCABotHelper<
       }
       return {
         sizes: { ...scaled, multiplier: requested, multiplierScope: scope },
-        outcome: { requested, applied: requested, scope },
+        outcome: { requested, applied: requested, scope, ...source },
       }
     }
 
@@ -16797,6 +16884,7 @@ function createDCABotHelper<
       time = 0,
       cbIfNotOpened?: () => void,
       trigger?: NewDealTrigger,
+      signalOverrides?: SignalDealOverrides | null,
     ) {
       if (!this.loadingComplete || !this.singlePositionActive) {
         return this.openNewDealBody(
@@ -16807,6 +16895,7 @@ function createDCABotHelper<
           time,
           cbIfNotOpened,
           trigger,
+          signalOverrides,
         )
       }
       // §3.5: start signals for one pair are serialised — a second signal
@@ -16837,6 +16926,14 @@ function createDCABotHelper<
             time,
             cbIfNotOpened,
             trigger,
+            signalOverrides,
+          )
+        }
+        if (signalOverrides) {
+          // An entry joins a position that already has its own size and
+          // exits; the signal's are for a new deal.
+          this.handleLog(
+            `Single position | ${symbol}: signal base order / TP / SL not applied to an entry into ${position.deal._id}`,
           )
         }
         return await this.addPositionEntry(
@@ -17048,6 +17145,7 @@ function createDCABotHelper<
       time = 0,
       cbIfNotOpened?: () => void,
       trigger?: NewDealTrigger,
+      signalOverrides?: SignalDealOverrides | null,
     ) {
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
@@ -17059,6 +17157,7 @@ function createDCABotHelper<
             time,
             cbIfNotOpened,
             trigger,
+            signalOverrides,
           ),
         )
         return this.handleLog('Loading not complete yet')
@@ -17218,6 +17317,28 @@ function createDCABotHelper<
                 return
               }
             }
+            const signalRefusal = await this.signalOverridesRefusal(
+              symbol,
+              signalOverrides,
+            )
+            if (signalRefusal) {
+              this.handleErrors(
+                `Deal for ${symbol} not opened: ${signalRefusal}`,
+                'openNewDeal',
+                '',
+                false,
+                true,
+                true,
+                false,
+                symbol,
+              )
+              this.resetPending(this.botId, symbol)
+              this.endMethod(_id)
+              if (cbIfNotOpened) {
+                cbIfNotOpened()
+              }
+              return
+            }
             let fixSl = 0
             let fixTp = 0
             let fixSize = 0
@@ -17330,6 +17451,7 @@ function createDCABotHelper<
               }
               return
             }
+            this.requestSignalBaseOrderSize(approval, settings, signalOverrides)
             // A size multiplier from the approval: checked again at the
             // scaled size; anything that fails opens the configured size.
             const sized = await this.applyNewDealSize(symbol, approval, sizes, {
@@ -17365,6 +17487,9 @@ function createDCABotHelper<
               fixSize,
               dynamicAr,
               sizes,
+              undefined,
+              false,
+              signalOverrides,
             )
             this.releaseReduceToAvailableClaim(symbol)
             await this.reportNewDealSize(symbol, approval, sized.outcome)
@@ -17532,11 +17657,17 @@ function createDCABotHelper<
       _botId: string,
       _symbol?: string,
       ignoreSettings = false,
+      signalOverrides?: SignalDealOverrides | null,
     ) {
       this.handleLog('Open new deal by signal')
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
-          this.openDealBySignal.bind(this)(_botId, _symbol, ignoreSettings),
+          this.openDealBySignal.bind(this)(
+            _botId,
+            _symbol,
+            ignoreSettings,
+            signalOverrides,
+          ),
         )
         return this.handleLog('Loading not complete yet')
       }
@@ -17572,6 +17703,18 @@ function createDCABotHelper<
         settings.startCondition === StartConditionEnum.tradingviewSignals ||
         ignoreSettings
       ) {
+        // A price belongs to one pair; on a multi-pair bot it needs `symbol`.
+        if (
+          (signalOverrides?.tpPrice || signalOverrides?.slPrice) &&
+          pairsToUse.length > 1
+        ) {
+          return this.handleErrors(
+            'Received a signal with tpPrice / slPrice but no symbol. On a multi-pair bot a signal with prices must name its symbol',
+            'openDealBySignal',
+            '',
+            false,
+          )
+        }
         for (const symbol of pairsToUse) {
           await this.openNewDeal(
             this.botId,
@@ -17581,6 +17724,7 @@ function createDCABotHelper<
             0,
             undefined,
             'webhook',
+            signalOverrides,
           )
         }
       } else {

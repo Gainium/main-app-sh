@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.0] - 2026-10-08
+
+### Added
+
+- Webhooks: a `startDeal` signal can carry the deal's own `baseOrderSize`, `tpPerc` / `tpPrice` and `slPerc` / `slPrice`. Each replaces the bot's setting for that one deal; the bot's settings are unchanged. Prices are available on DCA bots; Combo and hedge bots take percentages. A value that is not a positive number, both a percentage and a price for the same exit, or a price on a non-DCA bot is answered with HTTP 400 and nothing opens. A price already passed by the market, TP/SL on a risk/reward bot, or a price without `symbol` on a multi-pair bot leaves the deal unopened with a bot error.
+
 ## [1.87.3] - 2026-10-08
 
 ### Fixed
