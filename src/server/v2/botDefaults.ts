@@ -246,6 +246,9 @@ export const DCA_FORM_DEFAULTS: DCABotSettings = {
   reduceToAvailableBalance: false,
   reduceToAvailableMinSize: '',
   dcaByMarket: false,
+  // Spec 139: off unless asked for; '' = no entry limit.
+  singlePosition: false,
+  maxPositionEntries: '',
 }
 
 export const COMBO_FORM_DEFAULTS: ComboBotSettings = {

@@ -153,7 +153,11 @@ class BotOperations {
   @IdMute(mutex, (data: MethodBotDto) =>
     data.method === 'getStats' || data.method === 'openDealBySignal'
       ? v4()
-      : data.method === 'mergeDeals'
+      : // Spec 139: adoption / conversion run with merges, on their own key
+        // — they cancel deals of this bot through its ordinary methods.
+        ['mergeDeals', 'adoptDeals', 'enableSinglePosition'].includes(
+            data.method,
+          )
         ? `mergeDeals${data.botId}`
         : `methodBot${data.botId}`,
   )

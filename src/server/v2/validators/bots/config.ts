@@ -2007,6 +2007,18 @@ export const dcaBotSchemaConfig: Record<
     min: 0,
   },
   dcaByMarket: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  // Spec 139 — single position per pair. DCA bots only.
+  singlePosition: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  maxPositionEntries: {
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.canBeEmptyString,
+      ValidatorsEnum.shouldBeValidNumber,
+    ],
+    min: 0,
+    max: 1000,
+    maxPrecision: 0,
+  },
 }
 
 // Combo Bot extends DCA Bot with some additional/overridden fields
@@ -2096,6 +2108,8 @@ export const COMBO_EXCLUDED_FIELDS: (keyof typeof COMBO_FORM_DEFAULTS)[] = [
   'dcaByMarket',
   'useLimitPrice',
   'baseSlOn',
+  'singlePosition',
+  'maxPositionEntries',
 ]
 
 export const TERMINAL_DEAL_EXCLUDED_FIELDS: (keyof typeof DCA_FORM_DEFAULTS)[] =
@@ -2209,6 +2223,8 @@ export const TERMINAL_DEAL_EXCLUDED_FIELDS: (keyof typeof DCA_FORM_DEFAULTS)[] =
     'useSeparateMaxDealsOverAndUnderPerSymbol',
     'maxDealsOverPerSymbol',
     'maxDealsUnderPerSymbol',
+    'singlePosition',
+    'maxPositionEntries',
   ]
 export const gridBotSchemaConfig: Record<
   keyof typeof GRID_FORM_DEFAULTS,

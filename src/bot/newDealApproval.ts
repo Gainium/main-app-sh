@@ -66,6 +66,13 @@ export type NewDealApprovalContext = {
   sizeScope?: 'base' | 'whole'
   /** An extension's own reference for this approval (e.g. its decision id). */
   extensionRef?: string
+  /**
+   * Spec 139 §3.2.7: the request adds an entry to the open position `dealId`
+   * of a single-position bot instead of opening a deal. A size multiplier is
+   * not applied to an entry.
+   */
+  entry?: boolean
+  dealId?: string
 }
 
 /** Bounds of a new deal's size multiplier, enforced by the engine. */

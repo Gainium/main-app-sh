@@ -6180,6 +6180,7 @@ class MainBot<T extends IMainBot> {
       minigridBudget: o.minigridBudget,
       dcaLevel: o.dcaLevel,
       addFundsId: o.addFundsId,
+      positionEntry: o.positionEntry,
       liquidation: o.liquidation,
     }
   }
@@ -9275,6 +9276,7 @@ class MainBot<T extends IMainBot> {
             dcaLevel: order.dcaLevel,
             minigridId: order.minigridId,
             addFundsId: order.addFundsId,
+            positionEntry: order.positionEntry,
             liquidation: order.liquidation,
             sl: order.sl,
           })

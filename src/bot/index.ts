@@ -108,6 +108,16 @@ import {
 import { statsAfterReset } from './dca/botStatsReset'
 import { oldStartDcaDealsFilter } from './dca/oldStartDealsFilter'
 import {
+  pairsWithSeveralOpenDeals,
+  SINGLE_POSITION_ADOPT_COMBO_REASON,
+  SINGLE_POSITION_ADOPT_HEDGE_REASON,
+  SINGLE_POSITION_START_BOT_REASON,
+  singlePositionMultipleOpenReason,
+  singlePositionSettingsError,
+  togglesSinglePosition,
+  turnsSinglePositionOn,
+} from './dca/singlePosition'
+import {
   buildPairCapitalPipeline,
   buildPairStatsPipeline,
   peakCapitalBySymbol,
@@ -3839,6 +3849,15 @@ class Bot<T extends UserSchema = UserSchema> {
     // the startDca indicator that prices its ladder, or it can never open a
     // deal. Seed it at creation so no client can produce one without. Bug #463.
     const settings = ensureDynamicArIndicator(rest)
+    // Spec 139 §7 / §2.3.3.
+    const singlePositionError = singlePositionSettingsError(settings)
+    if (singlePositionError) {
+      return {
+        status: StatusEnum.notok as const,
+        reason: singlePositionError,
+        data: null,
+      }
+    }
     if (
       (isPaper(settings.exchange) && !paperContext) ||
       (!isPaper(settings.exchange) && paperContext)
@@ -3968,6 +3987,9 @@ class Bot<T extends UserSchema = UserSchema> {
     // the atr/adr ladder — and its silent-no-deal failure — applies here too.
     const { vars, ...rest } = _settings
     const settings = ensureDynamicArIndicator(rest)
+    // Spec 139 §2.4: combo bots do not take single position.
+    delete settings.singlePosition
+    delete settings.maxPositionEntries
     if (
       (isPaper(settings.exchange) && !paperContext) ||
       (!isPaper(settings.exchange) && paperContext)
@@ -4327,6 +4349,12 @@ class Bot<T extends UserSchema = UserSchema> {
     },
     paperContext: boolean,
   ) {
+    // Spec 139 §2.4: one position per side of a hedge bot is follow-up
+    // work — a leg never runs as a single-position bot.
+    for (const leg of [settings.long, settings.short]) {
+      delete leg.singlePosition
+      delete leg.maxPositionEntries
+    }
     const preparedLongBot = await this.prepareDCABot(
       userId,
       settings.long,
@@ -4851,7 +4879,15 @@ class Bot<T extends UserSchema = UserSchema> {
   }
 
   public async changeDCABot(
-    input: Partial<DCABotSettings> & { id: string; vars?: BotVars | null },
+    input: Partial<DCABotSettings> & {
+      id: string
+      vars?: BotVars | null
+      /**
+       * Spec 139 §5.1.2: switching single position on may adopt the open
+       * deals of a pair that holds more than one. Not a setting.
+       */
+      adoptOpenDeals?: boolean | null
+    },
     userId: string,
     paperContext: boolean,
     // Default OFF: a settings save must not touch the orders of deals that are
@@ -4874,7 +4910,7 @@ class Bot<T extends UserSchema = UserSchema> {
         trail,
       )
     }
-    const { id, vars, ...settings } = input
+    const { id, vars, adoptOpenDeals, ...settings } = input
     const bot = await this.dcaBotDb.readData({
       _id: id,
       userId,
@@ -4890,6 +4926,60 @@ class Bot<T extends UserSchema = UserSchema> {
     const oldSettings = [bot.data.result].flat()[0]
     const set: { $set: Partial<DCABotSchema> } = {
       $set: { vars },
+    }
+    // Spec 139 §2.4: a hedge leg ignores single position.
+    if (oldSettings.parentBotId) {
+      delete settings.singlePosition
+      delete settings.maxPositionEntries
+    }
+    const singlePositionError = singlePositionSettingsError({
+      ...oldSettings.settings,
+      ...settings,
+    })
+    if (singlePositionError) {
+      return {
+        status: StatusEnum.notok as const,
+        reason: singlePositionError,
+        data: null,
+      }
+    }
+    const botRunning = ['open', 'range', 'error', 'monitoring'].includes(
+      oldSettings.status,
+    )
+    const runningWorker = botRunning
+      ? this.dcaBots.find((b) => b.id === id && b.userId === userId)
+      : undefined
+    const enableSinglePosition =
+      turnsSinglePositionOn(oldSettings.settings, settings) &&
+      oldSettings.settings.type !== DCATypeEnum.terminal
+    if (enableSinglePosition) {
+      const open = await this.dcaDealsDb.readData(
+        { botId: id, userId, status: DCADealStatusEnum.open } as any,
+        { symbol: 1 },
+        {},
+        true,
+      )
+      if (open.status === StatusEnum.notok) {
+        return open
+      }
+      // §5.1.4: adoption cancels orders on the exchange — it needs the
+      // bot's worker.
+      if (open.data.result.length && !runningWorker) {
+        return {
+          status: StatusEnum.notok as const,
+          reason: SINGLE_POSITION_START_BOT_REASON,
+          data: null,
+        }
+      }
+      // §5.1.2: merging positions is never implicit.
+      const several = pairsWithSeveralOpenDeals(open.data.result)
+      if (several.length && !adoptOpenDeals) {
+        return {
+          status: StatusEnum.notok as const,
+          reason: singlePositionMultipleOpenReason(several),
+          data: null,
+        }
+      }
     }
 
     const resetStats =
@@ -4908,7 +4998,10 @@ class Bot<T extends UserSchema = UserSchema> {
       (typeof settings.volumeScale !== 'undefined' &&
         oldSettings.settings.volumeScale !== settings.volumeScale) ||
       (typeof settings.orderSizeType !== 'undefined' &&
-        oldSettings.settings.orderSizeType !== settings.orderSizeType)
+        oldSettings.settings.orderSizeType !== settings.orderSizeType) ||
+      // Spec 139 §2.5: deal counts, win rate and durations mean something
+      // else on either side of the switch.
+      togglesSinglePosition(oldSettings.settings, settings)
     // `maxNumberOfOpenDeals` is deliberately absent: it changes how many deals
     // run at once, not the size of any one of them, so every per-deal
     // aggregate stays comparable. `startBalance` (seeded once from it) is kept
@@ -5006,15 +5099,27 @@ class Bot<T extends UserSchema = UserSchema> {
           ['open', 'range', 'error', 'monitoring'].includes(oldSettings.status)
         ) {
           if (find) {
-            this.getWorkerById(find.worker)?.postMessage({
-              do: 'method',
-              botType: BotType.dca,
-              botId: id,
-              method: 'reloadBot',
-              // rebuildIndicators: the settings that define the indicator set
-              // are exactly what just changed.
-              args: [id, replaceOrders, true],
-            })
+            this.getWorkerById(find.worker)?.postMessage(
+              enableSinglePosition
+                ? {
+                    // Spec 139 §5.1.1: reloads on the new settings, then
+                    // leaves one position per pair.
+                    do: 'method',
+                    botType: BotType.dca,
+                    botId: id,
+                    method: 'enableSinglePosition',
+                    args: [id, !!adoptOpenDeals],
+                  }
+                : {
+                    do: 'method',
+                    botType: BotType.dca,
+                    botId: id,
+                    method: 'reloadBot',
+                    // rebuildIndicators: the settings that define the
+                    // indicator set are exactly what just changed.
+                    args: [id, replaceOrders, true],
+                  },
+            )
           }
         }
       }
@@ -5125,6 +5230,9 @@ class Bot<T extends UserSchema = UserSchema> {
       )
     }
     const { id, vars, ...settings } = input
+    // Spec 139 §2.4: combo bots do not take single position.
+    delete settings.singlePosition
+    delete settings.maxPositionEntries
     const bot = await this.comboBotDb.readData({
       _id: id,
       userId,
@@ -8972,6 +9080,113 @@ class Bot<T extends UserSchema = UserSchema> {
       status: StatusEnum.ok as StatusEnum.ok,
       reason: null,
       data: 'Deal scheduled to be closed',
+    }
+  }
+
+  /**
+   * Spec 139 §4 / §5.2.4: fold open deals into the open deal `targetDealId`
+   * of bot `botId`, which keeps its id and history. The sources may belong to
+   * other bots (terminal deals each have their own), as with `mergeDeals`.
+   * Runs in the target bot's worker.
+   */
+  public async adoptDeals(
+    userId: string,
+    botId: string,
+    targetDealId: string,
+    dealIds: string[],
+    paperContext: boolean,
+  ) {
+    if (!this.useBots) {
+      return await this.callExternalBotService<BaseReturn<string>>(
+        BotType.dca,
+        'adoptDeals',
+        false,
+        userId,
+        botId,
+        targetDealId,
+        dealIds,
+        paperContext,
+      )
+    }
+    const notok = (reason: string) => ({
+      status: StatusEnum.notok as const,
+      reason,
+      data: null,
+    })
+    const botData = await this.dcaBotDb.readData({
+      _id: botId,
+      userId,
+      isDeleted: { $ne: true },
+    })
+    if (botData.status === StatusEnum.notok) {
+      return botData
+    }
+    if (!botData.data?.result) {
+      const combo = await this.comboBotDb.readData({ _id: botId, userId })
+      return combo.data?.result
+        ? notok(SINGLE_POSITION_ADOPT_COMBO_REASON)
+        : this.entityNotFound('Bot')
+    }
+    if (botData.data.result.parentBotId) {
+      return notok(SINGLE_POSITION_ADOPT_HEDGE_REASON)
+    }
+    const sources = [...new Set((dealIds ?? []).map((d) => `${d}`))].filter(
+      (d) => d !== `${targetDealId}`,
+    )
+    if (!sources.length) {
+      return notok('No deals to adopt')
+    }
+    const target = await this.dcaDealsDb.readData({
+      _id: targetDealId,
+      userId,
+    } as any)
+    if (target.status === StatusEnum.notok) {
+      return target
+    }
+    if (
+      !target.data?.result ||
+      `${target.data.result.botId}` !== `${botId}` ||
+      target.data.result.status !== DCADealStatusEnum.open
+    ) {
+      return notok(`Deal ${targetDealId} must be an open deal of this bot`)
+    }
+    const dispatch = {
+      do: 'method',
+      botType: BotType.dca,
+      botId,
+      method: 'adoptDeals',
+      args: [targetDealId, sources],
+    }
+    const findLocal = this.dcaBots.find(
+      (d) => d.id === botId && d.userId === userId,
+    )
+    if (findLocal) {
+      this.getWorkerById(findLocal.worker)?.postMessage(dispatch)
+    } else {
+      await this.createNewBot(
+        botId,
+        BotType.dca,
+        userId,
+        botData.data.result.exchange,
+        botData.data.result.uuid || '',
+        [botId, botData.data.result.exchange],
+        (worker) => worker.postMessage(dispatch),
+        paperContext,
+        botData.data.result.settings.type ?? DCATypeEnum.regular,
+      )
+    }
+    this.botEventDb.createData({
+      userId,
+      botId,
+      botType: BotType.dca,
+      event: 'Adopt DCA deals',
+      description: `DCA deals adopted into ${targetDealId}: ${sources.join(' ')}`,
+      paperContext,
+    })
+    return {
+      status: StatusEnum.ok as const,
+      reason: null,
+      data: `Request to adopt ${sources.length} deals sent`,
     }
   }
 

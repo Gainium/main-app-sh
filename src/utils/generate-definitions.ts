@@ -385,6 +385,8 @@ const DCA_SECTIONS: SectionLayout[] = [
       'startCondition',
       'maxNumberOfOpenDeals',
       'maxDealsPerPair',
+      'singlePosition',
+      'maxPositionEntries',
       'useSeparateMaxDealsOverAndUnder',
       'maxDealsOver',
       'maxDealsUnder',

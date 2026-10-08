@@ -870,6 +870,7 @@ const orderSchema: Schema<OrderSchema> = new Schema({
   minigridId: String,
   addFundsId: String,
   reduceFundsId: String,
+  positionEntry: Boolean,
   minigridBudget: Number,
   liquidation: Boolean,
   sl: Boolean,
@@ -1467,6 +1468,8 @@ const dcaBotSettings = new Schema({
   reduceToAvailableBalance: Boolean,
   reduceToAvailableMinSize: String,
   dcaByMarket: Boolean,
+  singlePosition: Boolean,
+  maxPositionEntries: String,
   terminalDealType: { type: String, enum: TerminalDealTypeEnum },
   useMultiTp: Boolean,
   multiTp: [multiTP],
@@ -2032,6 +2035,8 @@ const funds = [
     // Spec 111: the resting rest of a part-filled base order.
     baseRemainder: Boolean,
     baseTotal: String,
+    // Spec 139 §3.3: a single-position entry.
+    positionEntry: Boolean,
   },
 ]
 
@@ -2239,6 +2244,9 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   allowBaseProcess: Boolean,
   pendingAddFunds: funds,
   pendingReduceFunds: funds,
+  // Spec 139: single position.
+  positionEntries: Number,
+  adoptedIds: [String],
   blockOrders: [
     { price: Number, qty: Number, side: { type: String, enum: SideEnum } },
   ],

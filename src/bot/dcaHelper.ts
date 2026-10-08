@@ -277,6 +277,14 @@ import {
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
 import {
+  maxPositionEntriesOf,
+  planPositionsByPair,
+  positionEntriesOf,
+  positionIsFull,
+  SINGLE_POSITION_ADOPT_COMBO_REASON,
+  SINGLE_POSITION_ADOPT_HEDGE_REASON,
+} from './dca/singlePosition'
+import {
   describeTpRepairScope,
   parseTpRepairScope,
   reconcileTpCoverage,
@@ -311,6 +319,7 @@ import {
   ConditionLatch,
   limitOnlyEntryFallback,
   maxDealsPerPairReached,
+  positionEntriesReached,
   maxDealsReached,
   notEnoughBalanceNewDeal,
   orderBelowExchangeMin,
@@ -1598,6 +1607,11 @@ function createDCABotHelper<
       const settings = {
         ...botSettings,
         ...(deal?.settings ?? {}),
+        // Spec 139 §2.3.1: a single-position bot sizes and funds a new
+        // position without safety orders. A deal carries its own `useDca`
+        // (written false when it became a position), so only the bot-level
+        // view is overridden here; the bot's DCA settings are kept.
+        ...(!deal && this.singlePositionActive ? { useDca: false } : {}),
       }
       return {
         ...settings,
@@ -1622,7 +1636,14 @@ function createDCABotHelper<
 
     getInitalDealSettings(): Deal['settings'] | undefined {
       if (this.data) {
-        return this.utils.getInitalDealSettings(BotType.dca, this.data.settings)
+        const settings = this.utils.getInitalDealSettings(
+          BotType.dca,
+          this.data.settings,
+        )
+        // Spec 139 §2.3.1: a new position is created without safety orders.
+        return this.singlePositionActive
+          ? { ...settings, useDca: false }
+          : settings
       }
     }
 
@@ -2321,7 +2342,7 @@ function createDCABotHelper<
           createTime: time,
           updateTime: time,
           levels: {
-            all: this.data.settings.useDca
+            all: dealSettings.useDca
               ? this.data.settings.dcaCondition === DCAConditionEnum.indicators
                 ? this.data.settings.indicators.filter(
                     (si) => si.indicatorAction === IndicatorAction.startDca,
@@ -2415,6 +2436,8 @@ function createDCABotHelper<
           // from before the deal existed.
           funding: { total: 0, totalUsd: 0, offset: time, lastTime: 0 },
           tags: ['TPrev150925'],
+          // Spec 139 §3.4.1: the base order is the position's first entry.
+          ...(this.singlePositionActive ? { positionEntries: 1 } : {}),
         } as any)
         if (record.status === StatusEnum.notok) {
           this.handleErrors(
@@ -4393,16 +4416,22 @@ function createDCABotHelper<
         this.handleWarn(`Latest price not found for ${symbol}`)
         return false
       }
+      // Spec 139 §3.2.4: a position measures from its LAST ENTRY's fill,
+      // never from its average — the average moves toward the market after
+      // every entry and would bunch entries ever closer. The entry fill writes
+      // that price to `entry` (and `avg`) of the pair's row.
+      const singlePosition = this.singlePositionActive
       const referencePrice =
+        !singlePosition &&
         settings.dynamicPriceFilterPriceType ===
-        DynamicPriceFilterPriceTypeEnum.avg
+          DynamicPriceFilterPriceTypeEnum.avg
           ? lastData.avg
           : lastData.entry
       const calculatedOverValue =
         referencePrice + (referencePrice * overValue) / 100
       const calculatedUnderValue =
         referencePrice - (referencePrice * underValue) / 100
-      if (settings.useNoOverlapDeals) {
+      if (settings.useNoOverlapDeals && !singlePosition) {
         const openDeals = this.getDealsByStatusAndSymbol({
           symbol: symbol,
           status: DCADealStatusEnum.open,
@@ -6485,6 +6514,12 @@ function createDCABotHelper<
       if (!this.allowedMethods.has('checkMaxDealsPerPair')) {
         return true
       }
+      if (this.singlePositionActive) {
+        // Spec 139 §2.3.2: one deal per pair by definition. `openNewDeal`
+        // routes a pair that holds a deal to an entry and serialises the
+        // signals of a pair, so the per-pair limit has nothing to add.
+        return true
+      }
       const settings = await this.getAggregatedSettings()
       if (this.useMaxDealsPerSymbolOverAndUnder) {
         const deals = this.getOpenDeals(true, symbol)
@@ -6588,6 +6623,20 @@ function createDCABotHelper<
         }
       }
       return true
+    }
+    /**
+     * Spec 139: this bot holds at most one open deal per pair. DCA bots only —
+     * combo (§2.4, spec 138), hedge legs (`parentBotId`) and terminal deals
+     * ignore the setting.
+     */
+    get singlePositionActive(): boolean {
+      return (
+        !this.combo &&
+        this.botType === BotType.dca &&
+        !this.data?.parentBotId &&
+        !!this.data?.settings?.singlePosition &&
+        this.data?.settings?.type !== DCATypeEnum.terminal
+      )
     }
     get useMaxDealsOverAndUnder() {
       return (
@@ -8069,7 +8118,7 @@ function createDCABotHelper<
      * deduplicated by {@link reportMaxDealsReached}.
      */
     async sendMaxDealsReachedAlert(
-      _scope: 'bot' | 'pair',
+      _scope: 'bot' | 'pair' | 'entries',
       _symbol: string,
       _open: number,
       _max: number,
@@ -8086,7 +8135,8 @@ function createDCABotHelper<
     asapMaxDealsLatch = new ConditionLatch(0)
 
     reportMaxDealsReached(
-      scope: 'bot' | 'pair',
+      /** `entries`: a single-position deal is full (spec 139 §3.2.2). */
+      scope: 'bot' | 'pair' | 'entries',
       symbol: string,
       open: number,
       max: number,
@@ -8095,8 +8145,14 @@ function createDCABotHelper<
         return
       }
       const key = standingConditionKey(
-        `${scope === 'bot' ? maxDealsReached : maxDealsPerPairReached}:${max}`,
-        scope === 'pair' ? symbol : undefined,
+        `${
+          scope === 'bot'
+            ? maxDealsReached
+            : scope === 'entries'
+              ? positionEntriesReached
+              : maxDealsPerPairReached
+        }:${max}`,
+        scope === 'bot' ? undefined : symbol,
       )
       // An ASAP bot is full by design: it probes for a new deal after every
       // close and is refused while at the limit, so a daily re-arm would just
@@ -8247,6 +8303,10 @@ function createDCABotHelper<
           this.stop()
         }
         await this.updateDealLastPrices(this.botId)
+        // Spec 139: an ASAP position asks for its next entry once open.
+        if (findDeal.deal.status === DCADealStatusEnum.open) {
+          this.armNextPositionEntry(orderBo.symbol)
+        }
       }
       if (
         (!findDeal && dealId) ||
@@ -8779,6 +8839,9 @@ function createDCABotHelper<
           })
         }
         if (roa) {
+          const baseRemainderFill = (findDeal.deal.pendingAddFunds ?? []).some(
+            (s) => s.id === order.addFundsId && s.baseRemainder,
+          )
           findDeal.deal.pendingAddFunds = (
             findDeal.deal.pendingAddFunds ?? []
           ).filter((s) => s.id !== order.addFundsId)
@@ -8847,9 +8910,39 @@ function createDCABotHelper<
           // out. Fills not booked yet are left to their own `updateDeal`.
           await this.updateDealBalances(findDeal, true)
           findDeal.closeByTp = false
+          // Spec 139 §3.4: a single-position entry grows the position.
+          const positionEntry = !!order.positionEntry
+          if (positionEntry) {
+            findDeal.deal.positionEntries = positionEntriesOf(findDeal.deal) + 1
+            // §3.4.3: the target moved — the trail re-bases, as on a safety
+            // order fill.
+            findDeal.deal.bestPrice = 0
+            this.positionEntriesSent?.get(dealId)?.delete(clientOrderId)
+          }
           await this.checkDealSlMethods(findDeal)
           this.checkDealsPriceExtremum()
           this.carryStopLossLatches(findDeal)
+          if (positionEntry) {
+            const fillTime = +new Date()
+            // §3.4.2: the dynamic filter's reference and the start of the
+            // cooldown after deal start are this fill.
+            this.updateDealLastPrices(this.botId, {
+              symbol: order.symbol,
+              avg: price,
+              entry: price,
+              time: fillTime,
+            })
+            this.updateDealLastTime(
+              this.botId,
+              'opened',
+              fillTime,
+              order.symbol,
+            )
+            this.saveDeal(findDeal, {
+              positionEntries: findDeal.deal.positionEntries,
+              bestPrice: 0,
+            })
+          }
           this.saveDeal(findDeal, {
             funds: findDeal.deal.funds,
             pendingAddFunds: findDeal.deal.pendingAddFunds,
@@ -8873,6 +8966,9 @@ function createDCABotHelper<
             dealId,
             this.findDiff(findDeal.currentOrders, findDeal.previousOrders),
           )
+          if (positionEntry || baseRemainderFill) {
+            this.armNextPositionEntry(order.symbol)
+          }
         } else if (order.typeOrder === TypeOrderEnum.dealTP) {
           const isReduce = !!order.reduceFundsId
           if (isReduce) {
@@ -16347,6 +16443,8 @@ function createDCABotHelper<
       trigger: NewDealTrigger | undefined,
       startCondition: StartConditionEnum | undefined,
       indicators?: SettingsIndicators[],
+      /** Spec 139 §3.2.7: an entry into this open position. */
+      entryDealId?: string,
     ): Promise<NewDealApprovalContext | null> {
       const resolved = resolveNewDealTrigger(
         skip,
@@ -16354,12 +16452,14 @@ function createDCABotHelper<
         startCondition,
         trigger,
       )
+      const entry = entryDealId ? { entry: true, dealId: entryDealId } : {}
       if (resolved === 'manual') {
         return {
           botId: this.botId,
           symbol,
           trigger: 'manual',
           time: +new Date(),
+          ...entry,
         }
       }
       let price: number | undefined
@@ -16377,6 +16477,7 @@ function createDCABotHelper<
           resolved === 'indicator' ? buildNewDealSignal(indicators) : undefined,
         price,
         time: +new Date(),
+        ...entry,
       }
       let approved = true
       try {
@@ -16590,7 +16691,349 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * Spec 139 §3.5: pairs of a single-position bot whose start signal is being
+     * handled right now. Optional so a prototype-built instance works.
+     */
+    singlePositionBusy?: Set<string>
+    /** Spec 139 §3.5: entry orders sent and not booked yet, per deal. */
+    positionEntriesSent?: Map<string, Set<string>>
+    /** Spec 139 §4.2: adoptions / conversions running in this bot. */
+    positionOps?: number
+    private positionOpChain?: Promise<unknown>
+
+    /**
+     * Run one position-changing operation (merge, adoption, conversion) at a
+     * time per bot — the "same mutex as mergeDeals" of spec 139 §4.2. While one
+     * runs, start signals of a single-position bot are skipped (§3.5).
+     */
+    async runPositionOp<T>(fn: () => Promise<T>): Promise<T> {
+      const prev = this.positionOpChain ?? Promise.resolve()
+      this.positionOps = (this.positionOps ?? 0) + 1
+      const run = prev.then(fn, fn)
+      this.positionOpChain = run.catch(() => undefined)
+      try {
+        return await run
+      } finally {
+        this.positionOps = Math.max(0, (this.positionOps ?? 1) - 1)
+      }
+    }
+
+    /** Spec 139 §3.5: an addition sent for this position entry. */
+    notePositionEntrySent(dealId: string, clientOrderId: string) {
+      this.positionEntriesSent ??= new Map()
+      const set = this.positionEntriesSent.get(dealId) ?? new Set<string>()
+      set.add(clientOrderId)
+      this.positionEntriesSent.set(dealId, set)
+    }
+
+    /**
+     * Spec 139 §3.5: the position has an entry that is not booked yet — its
+     * base order (deal still `start`), a resting entry / base remainder, or an
+     * entry that filled and whose `updateDeal` has not run.
+     */
+    positionEntryInFlight(d: FullDeal<ExcludeDoc<Deal>>): boolean {
+      if (d.deal.status === DCADealStatusEnum.start) {
+        return true
+      }
+      if (
+        (d.deal.pendingAddFunds ?? []).some(
+          (p) => p.positionEntry || p.baseRemainder,
+        )
+      ) {
+        return true
+      }
+      const dealId = `${d.deal._id}`
+      if (
+        this.getOrdersByStatusAndDealId({
+          dealId,
+          status: ['NEW', 'PARTIALLY_FILLED'],
+        }).some((o) => o.positionEntry)
+      ) {
+        return true
+      }
+      const sent = this.positionEntriesSent?.get(dealId)
+      if (!sent) {
+        return false
+      }
+      const booked = this.dealUpdateOrders.get(dealId)
+      for (const id of [...sent]) {
+        const o = this.getOrderFromMap(id)
+        if (o && o.status === 'FILLED' && !booked?.has(id)) {
+          return true
+        }
+        if (!o || booked?.has(id) || o.status !== 'FILLED') {
+          sent.delete(id)
+        }
+      }
+      return false
+    }
+
+    /**
+     * Spec 139 §3.4.2 / §7: an ASAP single-position bot has no close to
+     * re-probe after, so ask for the next entry once one is booked; the
+     * cooldown and the dynamic filter decide when it goes.
+     */
+    armNextPositionEntry(symbol: string) {
+      if (
+        !this.singlePositionActive ||
+        this.data?.settings?.startCondition !== StartConditionEnum.asap
+      ) {
+        return
+      }
+      void this.openNewDeal(this.botId, symbol)
+    }
+
+    /**
+     * Opens a new deal — or, on a single-position bot whose pair already holds
+     * an open deal, adds an entry to it (spec 139 §3.1). Every start path
+     * (start condition, "+ New deal", API / webhook, Max, restart) comes here.
+     */
     async openNewDeal(
+      _botId: string,
+      symbol: string,
+      skip = false,
+      dynamic = false,
+      time = 0,
+      cbIfNotOpened?: () => void,
+      trigger?: NewDealTrigger,
+    ) {
+      if (!this.loadingComplete || !this.singlePositionActive) {
+        return this.openNewDealBody(
+          _botId,
+          symbol,
+          skip,
+          dynamic,
+          time,
+          cbIfNotOpened,
+          trigger,
+        )
+      }
+      // §3.5: start signals for one pair are serialised — a second signal
+      // that arrives while the first is being handled is skipped, so two
+      // near-simultaneous signals cannot both find the pair empty. So is one
+      // that arrives while a position is being merged / adopted.
+      this.singlePositionBusy ??= new Set()
+      if (this.singlePositionBusy.has(symbol) || (this.positionOps ?? 0) > 0) {
+        this.handleDebug(
+          `Single position | start signal for ${symbol} skipped: another one is being handled`,
+        )
+        if (cbIfNotOpened) {
+          cbIfNotOpened()
+        }
+        return
+      }
+      this.singlePositionBusy.add(symbol)
+      try {
+        const position = this.getOpenDeals(false, symbol).sort(
+          (a, b) => (a.deal.createTime ?? 0) - (b.deal.createTime ?? 0),
+        )[0]
+        if (!position) {
+          return await this.openNewDealBody(
+            _botId,
+            symbol,
+            skip,
+            dynamic,
+            time,
+            cbIfNotOpened,
+            trigger,
+          )
+        }
+        return await this.addPositionEntry(
+          symbol,
+          position,
+          skip,
+          dynamic,
+          cbIfNotOpened,
+          trigger,
+        )
+      } finally {
+        this.singlePositionBusy.delete(symbol)
+      }
+    }
+
+    /**
+     * Spec 139 §3.2–§3.3: a start signal on a pair whose position is open adds
+     * one entry to it, through the add-funds machinery, after the ordinary
+     * gates in their usual order.
+     */
+    async addPositionEntry(
+      symbol: string,
+      position: FullDeal<ExcludeDoc<Deal>>,
+      skip: boolean,
+      dynamic: boolean,
+      cbIfNotOpened?: () => void,
+      trigger?: NewDealTrigger,
+    ) {
+      const _id = this.startMethod('addPositionEntry')
+      const refuse = (debug: string) => {
+        this.handleDebug(`Single position | ${symbol}: ${debug}`)
+        if (cbIfNotOpened) {
+          cbIfNotOpened()
+        }
+        this.endMethod(_id)
+      }
+      const dealId = `${position.deal._id}`
+      // §3.5: one entry in flight per position — skipped, not queued, and not
+      // reported to the user.
+      if (this.positionEntryInFlight(position)) {
+        return refuse(`entry in flight on ${dealId}, signal skipped`)
+      }
+      const settings = await this.getAggregatedSettings()
+      // §3.2.1: `maxNumberOfOpenDeals` is not consulted — the pair already
+      // holds its slot. §3.2.2: the entry limit instead.
+      if (positionIsFull(position.deal, settings.maxPositionEntries)) {
+        this.reportMaxDealsReached(
+          'entries',
+          symbol,
+          positionEntriesOf(position.deal),
+          maxPositionEntriesOf(settings.maxPositionEntries),
+        )
+        return refuse(`position ${dealId} is full`)
+      }
+      // §3.2.3 / §3.2.4: the price filters; the dynamic one measures from the
+      // last entry's fill (`checkInDynamicRange`).
+      const skipRange = skip && !dynamic
+      if (!skipRange && !(await this.checkInRange(symbol))) {
+        return refuse('price filter refused the entry')
+      }
+      if (
+        this.data?.status === BotStatusEnum.closed ||
+        (this.data?.status === BotStatusEnum.error &&
+          this.data.previousStatus === BotStatusEnum.closed)
+      ) {
+        return refuse(`bot status is ${this.data?.status}`)
+      }
+      // §3.2.6: balance, as for a base order. A single-position bot has no
+      // safety orders, so the requirement is the entry alone.
+      const checkBalance = await this.checkBalanceGate(symbol)
+      if (checkBalance.unknown) {
+        return refuse('cannot read balance')
+      }
+      const reduce = checkBalance.status
+        ? { ratio: null }
+        : await this.reduceToAvailableRatio(checkBalance, symbol)
+      if (!checkBalance.status && reduce.ratio === null) {
+        if (
+          this.standingConditionLatch.shouldReport(
+            standingConditionKey(notEnoughBalanceNewDeal, symbol),
+            +new Date(),
+          )
+        ) {
+          this.handleErrors(
+            `Not enough balance to add an entry to the ${symbol} position. Required: ${checkBalance.required}, available: ${checkBalance.available}`,
+            'openNewDeal',
+            '',
+            false,
+            true,
+            true,
+            false,
+            symbol,
+          )
+        }
+        return refuse('not enough balance')
+      }
+      if (checkBalance.status) {
+        this.standingConditionLatch.clear(
+          standingConditionKey(notEnoughBalanceNewDeal, symbol),
+        )
+      }
+      const release = () => this.releaseReduceToAvailableClaim(symbol)
+      // §3.2.5: cooldown after deal start counts from the last entry's fill
+      // (`lastOpenedDeal*`, written on that fill); cooldown after deal stop
+      // is unchanged.
+      if (!(skip && !dynamic)) {
+        for (const check of [
+          await this.checkCooldownStart(this.botId, symbol),
+          await this.checkCooldownStop(this.botId, symbol),
+        ]) {
+          if (!check.status) {
+            if (settings.startCondition === StartConditionEnum.asap) {
+              const prev = this.openNewDealTimer.get(symbol)
+              if (prev) {
+                clearTimeout(prev)
+              }
+              this.openNewDealTimer.set(
+                symbol,
+                setTimeout(
+                  () => this.openDealAfterTimer(),
+                  Math.max(0, check.last + check.cooldown - +new Date() - 1),
+                ),
+              )
+            }
+            release()
+            return refuse(
+              `cooldown: last ${check.last}, cooldown ${check.cooldown}`,
+            )
+          }
+        }
+      }
+      // §3.2.6: `allowRaiseToExchangeMin`, as for a base order.
+      if (await this.refuseDealBelowExchangeMin(symbol, 0, undefined)) {
+        release()
+        return refuse('entry below the exchange minimum')
+      }
+      // §3.2.7: approval hooks see an entry, not a new deal.
+      const approval = await this.checkNewDealApproval(
+        symbol,
+        skip,
+        dynamic,
+        trigger,
+        settings.startCondition,
+        settings.indicators,
+        dealId,
+      )
+      if (!approval) {
+        release()
+        return refuse('approval refused the entry')
+      }
+      // §3.3: sized and typed like the bot's base order.
+      const price = await this.getLatestPrice(symbol)
+      const base = price
+        ? await this.getBaseOrder(symbol, undefined, undefined, price)
+        : undefined
+      if (!base || !(+base.origQty > 0)) {
+        release()
+        return refuse('cannot size the entry')
+      }
+      let qty = +base.origQty
+      if (reduce.ratio !== null) {
+        qty = this.math.round(
+          qty * reduce.ratio,
+          await this.baseAssetPrecision(symbol),
+          true,
+        )
+        const message = `Not enough balance for a full entry on ${symbol} (required: ${checkBalance.required}, available: ${checkBalance.available}). Adding it at ${this.math.round(reduce.ratio * 100, 1)}% of the configured size`
+        this.handleLog(message)
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: message,
+          paperContext: !!this.data?.paperContext,
+          symbol,
+          deal: dealId,
+          type: MessageTypeEnum.info,
+        })
+      }
+      const limit = base.type === OrderTypeEnum.limit
+      this.handleLog(
+        `Single position | ${symbol}: add entry ${positionEntriesOf(position.deal) + 1} to ${dealId}, qty ${qty}${limit ? ` @ ${base.price}` : ''}`,
+      )
+      await this.addDealFunds(this.botId, dealId, {
+        qty: `${qty}`,
+        asset: OrderSizeTypeEnum.base,
+        type: AddFundsTypeEnum.fixed,
+        useLimitPrice: limit,
+        limitPrice: limit ? `${base.price}` : undefined,
+        positionEntry: true,
+      })
+      release()
+      this.endMethod(_id)
+    }
+
+    protected async openNewDealBody(
       _botId: string,
       symbol: string,
       skip = false,
@@ -25553,12 +25996,395 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec 139 §5.2.4: on a single-position bot a merge that would leave two
+     * open deals on the pair is routed to an adoption into the position — the
+     * oldest open deal of this bot on the pair, whether or not it was among the
+     * selected deals. Null: an ordinary merge (no position on the pair yet;
+     * the merged deal becomes the position, §5.2.2).
+     */
+    async singlePositionMergeRoute(
+      dealIds: string[],
+    ): Promise<{ target: string; sources: string[] } | null> {
+      const read = await this.dealsDb.readData(
+        {
+          _id: { $in: dealIds },
+          status: DCADealStatusEnum.open,
+          userId: this.userId,
+        } as any,
+        undefined,
+        {},
+        true,
+      )
+      if (read.status === StatusEnum.notok || !read.data.result.length) {
+        return null
+      }
+      const symbol = read.data.result[0].symbol?.symbol
+      if (!symbol) {
+        return null
+      }
+      const candidates = [
+        ...this.getOpenDeals(true, symbol).map((d) => d.deal),
+        ...read.data.result.filter(
+          (d) =>
+            `${d.botId}` === `${this.botId}` && d.symbol?.symbol === symbol,
+        ),
+      ] as { _id: string; createTime: number; symbol: { symbol: string } }[]
+      if (!candidates.length) {
+        return null
+      }
+      const [plan] = planPositionsByPair(
+        candidates.map((d) => ({ ...d, _id: `${d._id}` })),
+      )
+      const target = `${plan.target._id}`
+      const sources = [...new Set(dealIds.map((id) => `${id}`))].filter(
+        (id) => id !== target,
+      )
+      return sources.length ? { target, sources } : null
+    }
+
+    /**
+     * Spec 139 §4: fold open deals into the open deal `targetDealId`, which
+     * keeps its id, creation time and history. Runs one at a time with
+     * merges and conversions (`runPositionOp`).
+     */
+    async adoptDeals(targetDealId: string, dealIds: string[]) {
+      return this.runPositionOp(() =>
+        this.adoptDealsBody(`${targetDealId}`, dealIds),
+      )
+    }
+
+    private async adoptDealsBody(targetDealId: string, dealIds: string[]) {
+      if (!this.shouldProceed()) {
+        this.handleLog(this.notProceedMessage('adopt deals'))
+        return
+      }
+      // §4.1: combo positions are spread over minigrids (spec 138 §2.4);
+      // one position per side of a hedge bot is follow-up work (§2.4).
+      if (this.combo) {
+        return this.handleErrors(
+          SINGLE_POSITION_ADOPT_COMBO_REASON,
+          'adoptDeals()',
+          'combo',
+          false,
+          false,
+          false,
+        )
+      }
+      if (this.data?.parentBotId) {
+        return this.handleErrors(
+          SINGLE_POSITION_ADOPT_HEDGE_REASON,
+          'adoptDeals()',
+          'hedge',
+          false,
+          false,
+          false,
+        )
+      }
+      if (!this.data) {
+        return
+      }
+      const _id = this.startMethod('adoptDeals')
+      const prefix = 'Adopt deals | '
+      const fail = (reason: string) => {
+        this.endMethod(_id)
+        return this.handleErrors(
+          reason,
+          'adoptDeals()',
+          '',
+          false,
+          false,
+          false,
+        )
+      }
+      const target = this.getDeal(targetDealId)
+      if (!target || target.deal.status !== DCADealStatusEnum.open) {
+        return fail(`Deal ${targetDealId} must be an open deal of this bot`)
+      }
+      const sourceIds = [...new Set(dealIds.map((id) => `${id}`))].filter(
+        (id) => id !== targetDealId,
+      )
+      if (!sourceIds.length) {
+        return fail('No deals to adopt')
+      }
+      const read = await this.dealsDb.readData(
+        {
+          _id: { $in: sourceIds },
+          status: DCADealStatusEnum.open,
+          userId: this.userId,
+        } as any,
+        undefined,
+        {},
+        true,
+      )
+      if (read.status === StatusEnum.notok) {
+        return fail(`Read deals error. ${read.reason}`)
+      }
+      const sources = read.data.result
+      if (sources.length < sourceIds.length) {
+        return fail('Cannot find all deals to adopt — they must be open')
+      }
+      if (sources.some((d) => d.symbol?.symbol !== target.deal.symbol.symbol)) {
+        return fail('All deals must be the same pair')
+      }
+      if (sources.some((d) => d.strategy !== target.deal.strategy)) {
+        return fail('All deals must be the same strategy')
+      }
+      if (sources.some((d) => d.parentBotId)) {
+        this.endMethod(_id)
+        return this.handleErrors(
+          SINGLE_POSITION_ADOPT_HEDGE_REASON,
+          'adoptDeals()',
+          'hedge',
+          false,
+          false,
+          false,
+        )
+      }
+      const ordersRead = await this.ordersDb.readData(
+        {
+          userId: this.userId,
+          dealId: { $in: sourceIds },
+          status: { $in: ['FILLED', 'PARTIALLY_FILLED'] },
+          typeOrder: {
+            $in: [
+              TypeOrderEnum.dealStart,
+              TypeOrderEnum.dealRegular,
+              TypeOrderEnum.dealTP,
+            ],
+          },
+        },
+        undefined,
+        {},
+        true,
+      )
+      if (ordersRead.status === StatusEnum.notok) {
+        return fail(`Cannot get orders from db. ${ordersRead.reason}`)
+      }
+      const orders = ordersRead.data.result.filter((o) => +o.executedQty > 0)
+      this.handleLog(
+        `${prefix}${sourceIds.join(', ')} into ${targetDealId}, ${orders.length} filled orders`,
+      )
+      // §4.2.1: marked merged-away BEFORE the cancel, so the stats the cancel
+      // triggers skip them (spec 138 §2.1.4). Re-asserted after it.
+      const mergedAway = { child: true, parentId: targetDealId }
+      await this.dealsDb.updateManyData({ _id: { $in: sourceIds } } as any, {
+        $set: mergedAway,
+      })
+      for (const id of sourceIds) {
+        const local = this.getDeal(id)
+        if (local) {
+          Object.assign(local.deal, mergedAway)
+        }
+      }
+      // §4.2.2: the ordinary close path cancels each source's resting orders
+      // and credits whatever it booked to its own bot. A deal of this bot is
+      // closed here directly — this worker's method queue is busy with the
+      // adoption, so a request routed back to it would wait for the adoption
+      // to end.
+      const botInstance = new Bot(false)
+      for (const d of sources) {
+        if (`${d.botId}` === `${this.botId}`) {
+          await this.closeDealById(
+            this.botId,
+            `${d._id}`,
+            CloseDCATypeEnum.cancel,
+            false,
+          )
+        } else {
+          await botInstance.closeDCADeal(
+            this.userId,
+            d.botId,
+            `${d._id}`,
+            CloseDCATypeEnum.cancel,
+            false,
+            !!this.data.paperContext,
+          )
+        }
+      }
+      await sleep(2 * 1000)
+      await this.dealsDb.updateManyData({ _id: { $in: sourceIds } } as any, {
+        $set: mergedAway,
+      })
+      // §4.2.3: the sources' fills move to the position. Entry fills are
+      // booked like additions (`addFundsId` + `deal.funds`), so the position
+      // keeps ONE base order and every fold that reads the add-funds ledger
+      // (average, balances, usage, TP size) counts them; TP fills stay TP
+      // fills.
+      const booked =
+        this.dealUpdateOrders.get(targetDealId) ?? new Set<string>()
+      const adoptedFunds: { price: number; qty: number }[] = []
+      for (const o of orders) {
+        const entry = o.typeOrder !== TypeOrderEnum.dealTP
+        const data: Partial<Order> = entry
+          ? {
+              dealId: targetDealId,
+              botId: this.botId,
+              typeOrder: TypeOrderEnum.dealRegular,
+              addFundsId: o.addFundsId || `adopted-${o.dealId}`,
+              positionEntry: true,
+            }
+          : { dealId: targetDealId, botId: this.botId }
+        const changedOrder = { ...o, ...data } as Order
+        if (entry) {
+          adoptedFunds.push({ price: +o.price, qty: +o.executedQty })
+        }
+        if (this.shouldProceed()) {
+          await this.ordersDb.updateData(
+            { clientOrderId: o.clientOrderId },
+            { $set: data },
+          )
+        }
+        if (this.getOrderFromMap(o.clientOrderId)) {
+          this.deleteOrder(o.clientOrderId, false)
+        }
+        this.setOrder(changedOrder)
+        // Never routed through `updateDeal`: not an entry in flight.
+        booked.add(o.clientOrderId)
+        this.emit('bot update', changedOrder)
+      }
+      this.dealUpdateOrders.set(targetDealId, booked)
+      // §4.2.4: recompute the position from all of its filled orders.
+      const position = this.getDeal(targetDealId) ?? target
+      position.deal.funds = [...(position.deal.funds ?? []), ...adoptedFunds]
+      position.deal.tpHistory = [
+        ...(position.deal.tpHistory ?? []),
+        ...sources.flatMap((d) => d.tpHistory ?? []),
+      ]
+      position.deal.positionEntries =
+        positionEntriesOf(position.deal) + sources.length
+      position.deal.adoptedIds = [
+        ...new Set([...(position.deal.adoptedIds ?? []), ...sourceIds]),
+      ]
+      const avg = await this.getAvgPrice(targetDealId)
+      if (avg.avg > 0) {
+        position.deal.avgPrice = avg.avg
+        position.deal.displayAvg = avg.display
+        position.deal.settings.avgPrice = avg.avg
+      }
+      // §4.2.5: a position has no safety orders (§2.3.1); its unfilled ones
+      // go with the rebuild, which also re-sizes the TP and the SL.
+      position.deal.settings.useDca = false
+      position.deal.bestPrice = 0
+      await this.updateDealBalances(position)
+      this.saveDeal(position, {
+        funds: position.deal.funds,
+        tpHistory: position.deal.tpHistory,
+        positionEntries: position.deal.positionEntries,
+        adoptedIds: position.deal.adoptedIds,
+        avgPrice: position.deal.avgPrice,
+        displayAvg: position.deal.displayAvg,
+        'settings.avgPrice': position.deal.settings.avgPrice,
+        bestPrice: 0,
+        initialBalances: position.deal.initialBalances,
+        currentBalances: position.deal.currentBalances,
+      })
+      await this.rebuildDealOrders(position, targetDealId)
+      await this.updateUsage(targetDealId)
+      await this.checkDealSlMethods(position)
+      // §4.2.6
+      this.emit('bot deal update', position.deal)
+      this.endMethod(_id)
+      return {
+        status: StatusEnum.ok as const,
+        reason: null,
+        data: `${sourceIds.length} deals adopted into ${targetDealId}`,
+      }
+    }
+
+    /**
+     * Spec 139 §5.1.1: an open deal becomes its pair's position — its unfilled
+     * safety orders are cancelled and its TP rebuilt.
+     */
+    private async convertToPosition(dealId: string) {
+      const d = this.getDeal(dealId)
+      if (!d || d.deal.status !== DCADealStatusEnum.open) {
+        return
+      }
+      d.deal.positionEntries = positionEntriesOf(d.deal)
+      this.saveDeal(d, { positionEntries: d.deal.positionEntries })
+      if (d.deal.settings.useDca !== false) {
+        await this.updateDealSettings(dealId, {
+          useDca: false,
+        } as Partial<Deal['settings']>)
+      }
+    }
+
+    /**
+     * Spec 139 §5.1: the bot was just switched to single position. Reload it
+     * on the saved settings, then leave one position per pair: the oldest
+     * open deal adopts the others, a lone deal is converted. A deal still
+     * waiting for its base order on a pair that holds a position is cancelled.
+     */
+    async enableSinglePosition(_botId: string, adoptOpenDeals = false) {
+      await this.reloadBot(this.botId, false, true)
+      if (!this.singlePositionActive) {
+        return
+      }
+      return this.runPositionOp(async () => {
+        const plans = planPositionsByPair(
+          this.getOpenDeals(true).map((d) => ({
+            ...d.deal,
+            _id: `${d.deal._id}`,
+          })),
+        )
+        for (const plan of plans) {
+          if (plan.sources.length) {
+            if (!adoptOpenDeals) {
+              // The server refused the change unless the caller asked for
+              // the adoption; a deal that opened in between is adopted all
+              // the same — the invariant wins.
+              this.handleWarn(
+                `Single position | ${plan.symbol}: adopting ${plan.sources.length} deals opened while the setting was being switched on`,
+              )
+            }
+            await this.adoptDealsBody(
+              plan.target._id,
+              plan.sources.map((s) => s._id),
+            )
+          } else {
+            await this.convertToPosition(plan.target._id)
+          }
+        }
+        const held = new Set(plans.map((p) => p.symbol))
+        for (const d of this.getDealsByStatusAndSymbol({
+          status: DCADealStatusEnum.start,
+        })) {
+          if (held.has(d.deal.symbol.symbol)) {
+            this.handleLog(
+              `Single position | ${d.deal.symbol.symbol}: cancelling ${d.deal._id}, which has not started, in favour of the open position`,
+            )
+            await this.closeDealById(
+              this.botId,
+              `${d.deal._id}`,
+              CloseDCATypeEnum.cancel,
+              false,
+            )
+          }
+        }
+      })
+    }
+
+    /**
+     * Merge deals (spec 138). On a single-position bot, routed to an adoption
+     * when the pair already holds a position (spec 139 §5.2).
+     */
+    async mergeDeals(_deals: string[]) {
+      if (this.singlePositionActive) {
+        const route = await this.singlePositionMergeRoute(_deals)
+        if (route) {
+          return this.adoptDeals(route.target, route.sources)
+        }
+      }
+      return this.runPositionOp(() => this.mergeDealsBody(_deals))
+    }
+
+    /**
      * Merge deals
      * @param {string[]} _deals Id of deals to merge
      * @param {(botId: string, dealId: string, close?: CloseDCATypeEnum, reopen?: boolean) => Promise<{status: StatusEnum.ok, reason: null, data: string} | undefined}> closeFn Closed deal funstion
      */
 
-    async mergeDeals(_deals: string[]) {
+    private async mergeDealsBody(_deals: string[]) {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('merge deals'))
         return
@@ -25971,6 +26797,9 @@ function createDCABotHelper<
             },
             type: this.data.settings.type,
             tpHistory: deals.map((d) => d.tpHistory ?? []).flat(),
+            // Spec 139 §5.2.2: on a single-position bot the merged deal is
+            // the pair's position.
+            ...(this.singlePositionActive ? { positionEntries: 1 } : {}),
           }
           const newDeal = await this.dealsDb.createData(mergedDeals as any)
           if (newDeal.status === StatusEnum.notok) {
@@ -26688,8 +27517,13 @@ function createDCABotHelper<
             : PositionSide.SHORT
           : PositionSide.BOTH,
         addFundsId,
+        // Spec 139 §3.3: told apart from a user's addition and counted.
+        ...(settings.positionEntry ? { positionEntry: true } : {}),
       }
       this.handleDebug(`Add funds | create order ${order.clientOrderId}`)
+      if (settings.positionEntry) {
+        this.notePositionEntrySent(dealId, order.clientOrderId)
+      }
       const result = await this.sendOrderToExchange(order)
       if (result && result.status === 'FILLED') {
         this.processFilledOrder(result)

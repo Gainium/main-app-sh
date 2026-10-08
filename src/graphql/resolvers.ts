@@ -187,6 +187,7 @@ import { DataResponse, ErrorResponse } from '../db/crud'
 import { LargeAccountService } from '../bot/largeAccount/largeAccountService'
 import { getInPositions } from './handlers/inPositions.handler'
 import { DEAL_TOTALS_ARGS } from '../bot/dealListFilter'
+import { singlePositionBacktestRefusal } from '../bot/dca/singlePosition'
 
 /**
  * The single reply every failed password login gets, whatever went wrong.
@@ -5212,6 +5213,14 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const singlePositionRefusal = singlePositionBacktestRefusal(input.payload)
+      if (singlePositionRefusal) {
+        return {
+          status: StatusEnum.notok,
+          reason: singlePositionRefusal,
+          data: null,
+        }
+      }
 
       try {
         let requestId = ''
@@ -8324,6 +8333,34 @@ const resolvers = <
       return Bot.mergeDeals(
         user.data._id.toString(),
         input.botId,
+        input.dealIds,
+        !!user.data.paperContext,
+      )
+    },
+    adoptDeals: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: {
+          botId: string
+          targetDealId: string
+          dealIds: string[]
+        }
+      },
+      { token, req }: InputRequest,
+    ) => {
+      if (token === 'demo' || !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return Bot.adoptDeals(
+        user.data._id.toString(),
+        input.botId,
+        input.targetDealId,
         input.dealIds,
         !!user.data.paperContext,
       )

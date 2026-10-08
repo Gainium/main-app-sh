@@ -145,6 +145,12 @@ export const maxDealsReached = 'maxDealsReached'
 export const maxDealsPerPairReached = 'maxDealsPerPairReached'
 
 /**
+ * As {@link maxDealsReached}, for a single-position deal that holds its
+ * `maxPositionEntries` (spec 139 §3.2.2). Keyed by PAIR.
+ */
+export const positionEntriesReached = 'positionEntriesReached'
+
+/**
  * How long a standing condition may hold before it is reported again. Matches
  * the `logWindowSec: 86400` the `Cannot start deal` subType is already
  * configured with, so the user's existing daily reminder is unchanged while the

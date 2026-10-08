@@ -937,6 +937,7 @@ export const BotSchema = /* GraphQL */ `
     markBotMessageRead(input: markBotMessageReadInput!): markBotMessageReadResponse
     deleteBot(input: deleteBotInput!): deleteBotResponse
     mergeDeals(input: mergeDealsInput!): mergeDealsResponse
+    adoptDeals(input: adoptDealsInput!): mergeDealsResponse
     mergeComboDeals(input: mergeDealsInput!): mergeDealsResponse
     saveBacktest(input: backtestInput!): saveBacktestsResponse
     saveComboBacktest(input: comboBacktestInput!): saveBacktestsResponse
@@ -3437,6 +3438,8 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXopen: String
     useMulti: Boolean
     maxDealsPerPair: String
+    singlePosition: Boolean
+    maxPositionEntries: String
     ignoreStartDeals: Boolean
     comboTpBase: String
     comboSmartGridsCount: String
@@ -4433,6 +4436,8 @@ export const BotSchema = /* GraphQL */ `
     startBlocked: dealStartBlock
     paperContext: Boolean
     parentBotId: String
+    positionEntries: Float
+    adoptedIds: [String]
     flags: [String]
     closeTrigger: String
     note: String
@@ -5199,6 +5204,8 @@ export const BotSchema = /* GraphQL */ `
     closeAfterX: String
     useMulti: Boolean
     maxDealsPerPair: String
+    singlePosition: Boolean
+    maxPositionEntries: String
     ignoreStartDeals: Boolean
     comboTpBase: String
     comboSmartGridsCount: String
@@ -5618,6 +5625,9 @@ export const BotSchema = /* GraphQL */ `
     closeAfterXprofitCond: String
     closeAfterX: String
     maxDealsPerPair: String
+    singlePosition: Boolean
+    maxPositionEntries: String
+    adoptOpenDeals: Boolean
     ignoreStartDeals: Boolean
     comboTpBase: String
     comboSmartGridsCount: String
@@ -6046,6 +6056,11 @@ export const BotSchema = /* GraphQL */ `
   }
   input mergeDealsInput {
     botId: String!
+    dealIds: [String!]!
+  }
+  input adoptDealsInput {
+    botId: String!
+    targetDealId: String!
     dealIds: [String!]!
   }
   type mergeDealsResponse implements BasicResponse {

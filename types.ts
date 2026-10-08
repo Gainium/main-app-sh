@@ -954,6 +954,18 @@ export interface DCABotSettings extends BaseSettings {
    */
   reduceToAvailableMinSize?: string
   dcaByMarket?: boolean
+  /**
+   * At most one open deal per pair (spec 139). A start signal on a pair that
+   * already holds an open deal adds an entry to it instead of opening a
+   * second deal; safety orders are off while it is on. DCA bots only.
+   * Missing means off.
+   */
+  singlePosition?: boolean
+  /**
+   * The most entries a single-position deal may hold, counting its base
+   * order. '' / '0' / missing: no limit. A string, like `maxDealsPerPair`.
+   */
+  maxPositionEntries?: string
 }
 
 export enum IndicatorsLogicEnum {
@@ -1416,6 +1428,13 @@ export interface DCADealsSchema extends SchemaI {
   allowBaseProcess?: boolean
   pendingAddFunds?: (AddFundsSettings & { id: string })[]
   pendingReduceFunds?: (AddFundsSettings & { id: string })[]
+  /**
+   * Single position (spec 139): entries the deal holds, counting the base
+   * order and one per adopted deal. Missing means 1.
+   */
+  positionEntries?: number
+  /** Single position (spec 139 §4.3): ids of the deals adopted into this one. */
+  adoptedIds?: string[]
   blockOrders?: BlockOrder[]
   funds?: {
     price: number
@@ -1597,6 +1616,8 @@ export type AddFundsSettings = {
   baseRemainder?: boolean
   /** That base order's requested quantity, for "filled of total". */
   baseTotal?: string
+  /** A single-position entry (spec 139 §3.3), not a user's add-funds. */
+  positionEntry?: boolean
 }
 
 export interface ComboDealsSchema extends DCADealsSchema {
@@ -3625,6 +3646,11 @@ export type Order = CommonOrder & {
   minigridId?: string
   addFundsId?: string
   reduceFundsId?: string
+  /**
+   * A single-position entry (spec 139 §3.3): placed for a start signal, or a
+   * fill of a deal adopted into the position (§4.2.3).
+   */
+  positionEntry?: boolean
   minigridBudget?: number
   liquidation?: boolean
   sl?: boolean

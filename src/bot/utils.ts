@@ -26,6 +26,7 @@ import {
 import utils from '../utils'
 import { detailedDiff } from 'deep-object-diff'
 import { ProjectionFields } from 'mongoose'
+import { singlePositionSettingsError } from './dca/singlePosition'
 const { mapToArray, mapToObject } = utils
 
 export const convertDCABot = (input: ClearDCABotSchema): ClearDCABotSchema => {
@@ -416,6 +417,10 @@ const botSettingsKeyToPropertyName = (
       return 'Volume scale'
     case 'useTp':
       return 'Use TP'
+    case 'singlePosition':
+      return 'Single position per pair'
+    case 'maxPositionEntries':
+      return 'Max entries per position'
     default:
       return key
   }
@@ -1228,6 +1233,13 @@ export const checkDCADealSettings = (
   return { status: StatusEnum.ok }
 }
 
+/** Spec 139: the single-position keys a DCA settings update accepts. */
+const singlePositionKeys = [
+  'singlePosition',
+  'maxPositionEntries',
+  'adoptOpenDeals',
+]
+
 export const checkDCABotSettings = (
   botSettings: DCABotSettings,
   settings: Partial<DCABotSettings>,
@@ -1272,8 +1284,14 @@ export const checkDCABotSettings = (
     // Full-array replacements, validated by applyIndicatorSettingsUpdate.
     'indicators',
     'indicatorGroups',
+    // Spec 139 — single position per pair (DCA only). `adoptOpenDeals` is
+    // not a setting: it lets the change adopt the open deals (§5.1.2).
+    ...singlePositionKeys,
   ]
-  const onlyDcaKeys = [...onlyDcaSettingsKeys].filter((v) => v !== 'orderSize')
+  const onlyDcaKeys = [
+    ...[...onlyDcaSettingsKeys].filter((v) => v !== 'orderSize'),
+    ...singlePositionKeys,
+  ]
 
   const onlyComboKeys = [
     ...onlyComboSettingsKeys,
@@ -1518,6 +1536,28 @@ export const checkDCABotSettings = (
         }
       }
     }
+  }
+
+  if (
+    !checkBoolean(settings.singlePosition) ||
+    !checkBoolean((settings as { adoptOpenDeals?: unknown }).adoptOpenDeals) ||
+    !(
+      typeof settings.maxPositionEntries === 'undefined' ||
+      settings.maxPositionEntries === '' ||
+      (checkStringAsNumber(settings.maxPositionEntries) &&
+        Number.isInteger(+settings.maxPositionEntries) &&
+        +settings.maxPositionEntries >= 0)
+    )
+  ) {
+    return { status: StatusEnum.notok, reason: 'Wrong settings' }
+  }
+  // Spec 139 §7 / §2.3.3, on the settings the bot will run with.
+  const singlePositionError = singlePositionSettingsError({
+    ...botSettings,
+    ...settings,
+  })
+  if (singlePositionError) {
+    return { status: StatusEnum.notok, reason: singlePositionError }
   }
 
   return { status: StatusEnum.ok }

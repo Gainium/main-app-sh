@@ -190,6 +190,16 @@ const fieldMetadata: Record<
   minOpenDeal: { description: 'Minimum price to open deals', example: '1' },
   useMulti: { description: 'Enable multiple pairs trading', example: false },
   maxDealsPerPair: { description: 'Max deals per trading pair', example: '2' },
+  singlePosition: {
+    description:
+      'Single position per pair (DCA bots only): at most one open deal per pair. A start signal on a pair that already holds an open deal adds an entry to it (sized like the base order) instead of opening a second deal. Safety orders are off while it is on. With start condition ASAP it needs a dynamic price filter or a cooldown after deal start. Switching it on while a pair has more than one open deal requires adoptOpenDeals: true on the update',
+    example: false,
+  },
+  maxPositionEntries: {
+    description:
+      'Single position: the most entries a position may hold, counting its base order. Empty or 0: no limit',
+    example: '5',
+  },
   ignoreStartDeals: {
     description: 'Ignore deals in start condition check',
     example: false,

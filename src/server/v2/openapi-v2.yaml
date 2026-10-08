@@ -2211,6 +2211,14 @@ components:
               type: boolean
               description: Execute DCA orders at market price
               example: false
+            singlePosition:
+              type: boolean
+              description: "Single position per pair (DCA bots only): at most one open deal per pair. A start signal on a pair that already holds an open deal adds an entry to it (sized like the base order) instead of opening a second deal. Safety orders are off while it is on. With start condition ASAP it needs a dynamic price filter or a cooldown after deal start. Switching it on while a pair has more than one open deal requires adoptOpenDeals: true on the update"
+              example: false
+            maxPositionEntries:
+              type: string
+              description: "Single position: the most entries a position may hold, counting its base order. Empty or 0: no limit"
+              example: "5"
     DCABotStandard:
       allOf:
         - $ref: "#/components/schemas/DCABotMinimal"
@@ -4727,6 +4735,15 @@ components:
       type: object
       description: Input schema for updating DCA bot settings
       properties:
+        singlePosition:
+          type: boolean
+          description: "Single position per pair: at most one open deal per pair; a start signal on a pair that holds an open deal adds an entry to it. Safety orders are off while it is on. With start condition ASAP it needs a dynamic price filter or a cooldown after deal start"
+        maxPositionEntries:
+          type: string
+          description: "Single position: the most entries a position may hold, counting its base order. Empty or 0: no limit"
+        adoptOpenDeals:
+          type: boolean
+          description: "Not a setting. Switching singlePosition on while a pair holds more than one open deal is refused (reason 'Single position: more than one open deal on <pairs>') unless this is true: the oldest open deal of each such pair then adopts the others, whose open orders are cancelled. The bot must be running"
         pair:
           type: array
           description: Trading pairs. In the format {base}_{quote}

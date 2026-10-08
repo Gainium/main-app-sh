@@ -1,3 +1,4 @@
+import { singlePositionBacktestRefusal } from '../../bot/dca/singlePosition'
 /**
  * API v2.0 Endpoints
  *
@@ -4355,6 +4356,14 @@ const v2API = <R extends UserSchema = UserSchema>(
         status: StatusEnum.notok,
         reason: 'Payload is required',
       }
+    }
+    // Spec 139 §8.1.
+    const singlePositionRefusal = singlePositionBacktestRefusal({
+      ...payload,
+      type: botType,
+    })
+    if (singlePositionRefusal) {
+      return { status: StatusEnum.notok, reason: singlePositionRefusal }
     }
 
     // Validate pairs in settings

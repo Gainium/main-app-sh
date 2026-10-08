@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.87.0] - 2026-10-08
+
+### Added
+
+- DCA: "single position per pair" (`singlePosition`). The bot holds at most one open deal per pair: a start signal on a pair that already holds an open deal adds an entry to it, sized like the base order, instead of opening a second deal. Safety orders are off while it is on. `maxPositionEntries` limits the entries a position may hold.
+- Entries are spaced by the dynamic price filter, measured from the last entry's fill, and by the cooldown after deal start, counted from the last entry. Only one entry is in flight per position.
+- `adoptDeals` folds open deals into an open deal, which keeps its id and history; merging a deal into a single-position bot that already holds the pair adopts it.
+- Switching the setting on adopts the open deals of a pair into its oldest one when asked to (`adoptOpenDeals`), and is refused otherwise or while the bot is stopped with open deals.
+- Single position with an ASAP start needs a dynamic price filter or a cooldown after deal start, and cannot be combined with "close after X deals opened". Backtests of single-position bots are refused for now. Combo and hedge bots do not take the setting.
 ## [1.86.2] - 2026-10-07
 
 ### Fixed

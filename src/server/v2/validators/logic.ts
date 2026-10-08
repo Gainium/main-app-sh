@@ -23,6 +23,7 @@ import { CreateDCABotInputRaw } from '../api'
 import { DCA_FORM_DEFAULTS } from '../botDefaults'
 import { Types } from 'mongoose'
 import { findPairBySymbol } from '../../../bot/utils'
+import { singlePositionSettingsError } from '../../../bot/dca/singlePosition'
 
 const indicatorsCheck: {
   condition: (input: DCABotSettings) => boolean
@@ -453,6 +454,13 @@ export const validateCreateDCABotInputLogic = async <
       'moveSL',
       `Move SL cannot be used together with Trailing SL. Please choose one of these options.`,
     ])
+  }
+
+  // Spec 139 §7 / §2.3.3: a single-position bot needs a way to space its
+  // entries, and cannot close after X deals opened.
+  const singlePositionError = singlePositionSettingsError(input)
+  if (singlePositionError) {
+    response.errors.push(['singlePosition', singlePositionError])
   }
 
   if (
