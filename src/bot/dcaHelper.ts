@@ -170,6 +170,7 @@ import {
   closeNotActioned,
   convertDCABot,
   convertComboBot,
+  futuresPosition,
   limitOnlyEntryReplaced,
   orderBelowExchangeMinSubType,
   positionLeftOpen,
@@ -280,6 +281,7 @@ import {
   dealPositionGoneMessage,
   reconcileDealAgainstVenue,
   reconcileSpotDealAgainstVenue,
+  restingTpPositionGoneMessage,
   type PositionReconcileVerdict,
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
@@ -302,6 +304,7 @@ import {
   type TpCoverageProbe,
 } from './dca/tpCoverageReconcile'
 import RetryBackoff from './retryBackoff'
+import AuthFailureGuard from './authGuard'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
 import { removePaperFormExchangeName } from '../exchange/helpers'
@@ -462,6 +465,29 @@ const uncoveredCloseBackoff = new RetryBackoff({
   namespace: 'ucr',
   minMs: 5 * 60 * 1000,
   maxMs: 60 * 60 * 1000,
+})
+
+/**
+ * How long a futures deal stops re-sending its RESTING take-profit after the
+ * venue refused it as un-reducible (`Futures position`) AND reported no
+ * position for the deal (spec `143`).
+ *
+ * `placeOrders` re-sends a missing take-profit on every pass over the deal —
+ * each worker start, user-stream reconnect and orders check — and the venue
+ * gives the same answer every time while the position is gone. Only a refusal
+ * whose position probe found nothing opens or widens the window, so a deal
+ * whose position is there keeps today's cadence.
+ *
+ * `memoryMs` is a day because those passes come hours apart: with the default
+ * (twice the window) every refusal would find the last one forgotten, restart
+ * at `minMs` with `attempt: 1`, and re-announce the deal each time. `attempt`
+ * is what keeps the user's warning to one per episode.
+ */
+const restingTpPositionGoneBackoff = new RetryBackoff({
+  namespace: 'tpg',
+  minMs: 15 * 60 * 1000,
+  maxMs: 6 * 60 * 60 * 1000,
+  memoryMs: 24 * 60 * 60 * 1000,
 })
 
 /**
@@ -18551,6 +18577,17 @@ function createDCABotHelper<
                   `Send new order request ${order.newClientOrderId}, qty ${order.qty}, price ${order.price}, side ${order.side}`,
                 )
               }
+            } else if (
+              order.type === TypeOrderEnum.dealTP &&
+              deal &&
+              this.futures
+            ) {
+              result = await this.sendFuturesRestingTp(
+                deal,
+                order,
+                sendOptions,
+                ed,
+              )
             } else {
               result = await this.sendGridToExchange(order, sendOptions, ed)
             }
@@ -24868,6 +24905,146 @@ function createDCABotHelper<
             }
           }
         }
+      }
+    }
+
+    /**
+     * Send a futures deal's resting take-profit. Spec
+     * `specs/143.resting-tp-refused-for-a-vanished-position.md`.
+     *
+     * Everything but the refusal handling is `sendGridToExchange` as the plain
+     * branch of `placeOrdersHoldingDealLock` calls it. The refusal is taken back
+     * (`returnError`) so that a `Futures position` one — the venue saying there
+     * is nothing for this reduce-only order to reduce — can be checked against
+     * the venue's position. That subType is `showUser: false`, so until now a
+     * deal whose position had gone re-sent its take-profit on every pass, for
+     * weeks, and the user was told nothing.
+     *
+     * @returns what `sendGridToExchange` returned, or nothing when the send was
+     *   skipped because the venue has already said this deal has no position.
+     */
+    private async sendFuturesRestingTp(
+      deal: FullDeal<ExcludeDoc<Deal>>,
+      order: Grid,
+      sendOptions: OrderAdditionalParams,
+      ed: ClearPairsSchema,
+    ): Promise<Order | string | void> {
+      const dealId = `${deal.deal._id}`
+      const gone = await restingTpPositionGoneBackoff.check([this.botId, dealId])
+      if (gone.suppressed) {
+        this.handleDebug(
+          `Deal ${dealId} TP ${order.newClientOrderId} not sent: the exchange reported no position for this deal (${gone.reason}). Next attempt after ${new Date(gone.until).toISOString()}`,
+        )
+        return
+      }
+      // With `returnError` the refusal is reported here instead of in
+      // `sendOrderToExchange`, and the same way it would have been there:
+      // `setError`/`sendError` from `needToSendOrder`, and nothing at all when
+      // the refusal is the account's auth cooldown being replayed rather than
+      // an answer from the venue (that tail's `authShortCircuit`).
+      const uuid = `${this.data?.exchangeUUID ?? ''}`
+      const authCooldown = uuid
+        ? (await AuthFailureGuard.check(uuid)).failed
+        : false
+      const result = await this.sendGridToExchange(
+        order,
+        sendOptions,
+        ed,
+        true,
+      )
+      if (typeof result !== 'string') {
+        if (result) {
+          // The venue took a take-profit for this deal, so whatever it said
+          // about the position before no longer holds.
+          await restingTpPositionGoneBackoff.clear([this.botId, dealId])
+        }
+        return result
+      }
+      const refused = this.convertGridToOrder(order, sendOptions, ed)
+      if (refused && !authCooldown) {
+        const setError = this.needToSendOrder(refused)
+        this.handleOrderErrors(
+          result,
+          refused,
+          'limitOrders()',
+          `Send new order request ${refused.clientOrderId}, qty ${refused.origQty}, price ${refused.price}, side ${refused.side}`,
+          setError,
+          setError,
+        )
+      }
+      if (
+        this.getErrorSubType(result) === futuresPosition &&
+        // A leverage misconfiguration shares the subType but is not about the
+        // position; `handleErrors` keeps it a visible error on its own.
+        result.toLowerCase().indexOf('leverage') === -1
+      ) {
+        await this.checkRefusedRestingTpPosition(deal, result)
+      }
+      return result
+    }
+
+    /**
+     * Spec `143` §4.2–§4.4. Ask the venue whether a deal whose resting
+     * take-profit it just refused as un-reducible still has a position. If it
+     * has none, hold the take-profit back for a while and tell the user — once
+     * per episode. The deal is never closed here and nothing is booked: unlike
+     * `reconcileDealPosition`, this deal never reached its take profit, and
+     * what happened to its position is for the user to see on the exchange.
+     */
+    private async checkRefusedRestingTpPosition(
+      deal: FullDeal<ExcludeDoc<Deal>>,
+      reason: string,
+    ) {
+      const dealId = `${deal.deal._id}`
+      const symbol = deal.deal.symbol.symbol
+      if (!this.exchange) {
+        return
+      }
+      const positions = await this.exchange.futures_getPositions(symbol)
+      const answered = positions?.status === StatusEnum.ok
+      // `closeDeal` is the reconciler's "the venue holds nothing for this
+      // deal"; here it only decides whether to hold the take-profit back.
+      const verdict = reconcileDealAgainstVenue(
+        answered && positions.data
+          ? { kind: 'positions', positions: positions.data }
+          : { kind: 'unavailable' },
+        symbol,
+        this.isLong ? 'LONG' : 'SHORT',
+        !!this.hedge,
+      )
+      if (!verdict.closeDeal) {
+        if (answered) {
+          await restingTpPositionGoneBackoff.clear([this.botId, dealId])
+        }
+        this.handleDebug(
+          `Deal ${dealId} TP refused (${reason}); ${verdict.verdict} — the take profit is retried as usual`,
+        )
+        return
+      }
+      const state = await restingTpPositionGoneBackoff.record(
+        [this.botId, dealId],
+        reason,
+      )
+      this.handleLog(
+        `Deal ${dealId} TP refused (${reason}) and ${verdict.verdict} on ${this.data?.exchange} — not re-sending the take profit until ${new Date(state.until).toISOString()} (refusal ${state.attempt}); the deal stays open`,
+      )
+      if (state.attempt === 1 && this.shouldProceed()) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: restingTpPositionGoneMessage({
+            dealId,
+            symbol,
+            exchange: `${this.data?.exchange ?? ''}`,
+            reason,
+          }),
+          paperContext: !!this.data?.paperContext,
+          deal: dealId,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
       }
     }
 

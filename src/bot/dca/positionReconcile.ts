@@ -189,3 +189,29 @@ export const dealPositionGoneMessage = ({
   `Deal ${dealId} (${symbol}) ${trigger}, but ${exchange} reports no open position for it — ` +
   `the position this deal was tracking is no longer on the exchange. ` +
   `The deal has been closed with the profit it had already realised, instead of being left open to retry a close that cannot succeed.`
+
+/**
+ * What the user reads when a deal's RESTING take-profit is refused because the
+ * venue holds no position for it. Spec `143`.
+ *
+ * Not {@link dealPositionGoneMessage}: that one reports a deal the engine has
+ * just CLOSED. This path deliberately leaves the deal open — it never reached
+ * its take profit, and whether the position was closed by hand, liquidated or
+ * moved is something only the user can see on the exchange — so it asks the
+ * user to look instead of telling them it acted.
+ */
+export const restingTpPositionGoneMessage = ({
+  dealId,
+  symbol,
+  exchange,
+  reason,
+}: {
+  dealId: string
+  symbol: string
+  exchange: string
+  reason: string
+}): string =>
+  `${exchange} refused the take-profit order for deal ${dealId} (${symbol}): "${reason}". ` +
+  `${exchange} reports no open position for this deal, so the take profit cannot be placed. ` +
+  `The deal has been left open and the bot will only retry the take profit occasionally. ` +
+  `Check the position on the exchange - if it is gone, close this deal manually.`

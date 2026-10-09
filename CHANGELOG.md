@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.7] - 2026-10-09
+
+### Fixed
+
+- Futures DCA: when the exchange refuses a deal's take-profit because there is nothing to reduce, the bot now checks the exchange position. If the exchange holds no position for the deal, the deal gets a warning asking the user to check the exchange and close the deal by hand, and the take-profit is retried with growing pauses (15 minutes up to 6 hours) instead of being re-sent on every pass. The deal is never closed automatically for this. Other refusals are reported as before.
+
 ## [1.88.6] - 2026-10-09
 
 ### Changed
