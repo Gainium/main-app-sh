@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.2] - 2026-10-09
+
+### Fixed
+
+- DCA and Combo trailing take profit: a price tick the exchange stamped before the deal's latest fill no longer arms or moves the trail. When the price feed lagged in a fast move, a safety-order fill could lower the take-profit line below a price the market had already left, and the trail armed on that old price and closed the deal by market below its average. Ticks from after the latest fill are handled as before.
+
 ## [1.88.1] - 2026-10-09
 
 ### Fixed

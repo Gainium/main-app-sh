@@ -261,6 +261,7 @@ import {
   trailingRetryStateAfterRefusal,
   trailingTpArmingPermitted,
 } from './dca/trailingCloseRetry'
+import { isTickBeforeLatestFill } from './dca/tickBeforeFill'
 import {
   levelAt,
   parseTrailingGuardMode,
@@ -791,6 +792,8 @@ function createDCABotHelper<
     trailingGuardReported: Map<string, number> = new Map()
     dealsForMoveSl: Map<string, number> = new Map()
     dealsForTrailing: Map<string, TrailingDeal> = new Map()
+    /** Venue time of each deal's latest processed fill (spec 142). */
+    latestDealFillTime: Map<string, number> = new Map()
     dealsForStopLoss: Map<string, number> = new Map()
     dealsForIndicatorUnpnl: Map<string, DealIndicatorUnpnlVal> = new Map()
     dealsForStopLossCombo: Map<string, DealStopLossCombo> = new Map()
@@ -20970,6 +20973,10 @@ function createDCABotHelper<
         : new Set<string>()
       if (dealId && !getSet.has(clientOrderId)) {
         this.processedFilled.set(dealId, getSet.add(clientOrderId))
+        const fillTime = +order.updateTime
+        if (fillTime > (this.latestDealFillTime.get(dealId) ?? 0)) {
+          this.latestDealFillTime.set(dealId, fillTime)
+        }
         if (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId) {
           return this.updateDeal(this.botId, order)
         }
@@ -22693,6 +22700,7 @@ function createDCABotHelper<
     removeDealFromStopLossMethods(dealId: string) {
       this.dealsForMoveSl.delete(dealId)
       this.dealsForTrailing.delete(dealId)
+      this.latestDealFillTime.delete(dealId)
       this.dealsForStopLoss.delete(dealId)
       this.dealsForStopLossCombo.delete(dealId)
       this.dealsDCALevelCheck.delete(dealId)
@@ -24381,6 +24389,17 @@ function createDCABotHelper<
         const lastStreamData = this.getLastStreamData(d.deal.symbol.symbol)
         const last = lastStreamData?.price
         if (!last) {
+          continue
+        }
+        // Spec 142: a lagging feed can still be delivering prices from before
+        // the deal's latest fill — a market that fill already left. Arming
+        // (or moving) the trail on one closes the deal below its average.
+        if (
+          isTickBeforeLatestFill(
+            lastStreamData?.time,
+            this.latestDealFillTime.get(deal),
+          )
+        ) {
           continue
         }
         const settings = await this.getAggregatedSettings(d.deal)
