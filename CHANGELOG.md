@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.4] - 2026-10-09
+
+### Fixed
+
+- Adaptive close now also covers the resting take-profit on spot DCA bots. A take-profit refused for not enough balance is placed at the free balance (never more than the deal holds) instead of leaving the deal with no take-profit and the bot in error, and it is kept rather than cancelled back to full size on the next pass.
+
 ## [1.88.3] - 2026-10-09
 
 ### Fixed

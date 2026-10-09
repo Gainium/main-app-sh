@@ -1178,6 +1178,61 @@ function createDCABotHelper<
      * what a deal owns. Base-denominated only: the one caller is gated on
      * `!this.futures`, so there is no contract conversion to do here.
      */
+    protected async sendTpAtFreeBalance(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      tpOrder: Grid,
+      sendOptions: OrderAdditionalParams,
+      ed: ClearPairsSchema,
+    ): Promise<Order | string | void | undefined> {
+      const balances = await this.checkAssets(true)
+      const asset = ed.baseAsset.name
+      const find = balances?.get(asset)
+      if (!find) {
+        this.handleDebug(`Asset ${asset} not found in user balances`)
+        return
+      }
+      // Same three-way minimum as the market close: the wallet's free base
+      // (shared with every other bot on this account), the TP itself, and
+      // what this deal still holds — so it can only ever sell LESS.
+      const toPlace = Math.min(
+        this.math.round(
+          find.free,
+          await this.baseAssetPrecision(ed.pair),
+          true,
+        ),
+        tpOrder.qty,
+        this.dealOwnBasePosition(findDeal),
+      )
+      if (toPlace >= tpOrder.qty) {
+        return
+      }
+      if (
+        toPlace < ed.baseAsset.minAmount ||
+        toPlace * tpOrder.price < ed.quoteAsset.minAmount
+      ) {
+        this.handleDebug(
+          `Asset ${asset} free amount ${toPlace} is lower than exchange requirements, TP stays unplaced`,
+        )
+        return
+      }
+      this.handleLog(
+        `TP ${tpOrder.newClientOrderId} refused for balance; adaptive close places it at ${toPlace} ${asset} (was ${tpOrder.qty})`,
+      )
+      return this.sendGridToExchange(
+        {
+          ...tpOrder,
+          qty: toPlace,
+          newClientOrderId: markOrderId(
+            tpOrder.newClientOrderId,
+            ORDER_ID_MARKER.adaptiveClose,
+          ),
+        },
+        { ...sendOptions, acBefore: tpOrder.qty, acAfter: toPlace },
+        ed,
+        true,
+      )
+    }
+
     protected dealOwnBasePosition(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
     ): number {
@@ -9709,12 +9764,7 @@ function createDCABotHelper<
       this.handleDebug(
         `${order.clientOrderId} not filled, price unchanged at ${order.price}. Keeping it`,
       )
-      this.armBaseRepositionTick(
-        dealTimer,
-        dealId,
-        symbol,
-        order.clientOrderId,
-      )
+      this.armBaseRepositionTick(dealTimer, dealId, symbol, order.clientOrderId)
       this.dealTimersMap.set(dealId, dealTimer)
       return true
     }
@@ -18263,6 +18313,22 @@ function createDCABotHelper<
                 ? parseFloat(tp[0].origQty) -
                   (parseFloat(tp[0].executedQty) || 0)
                 : 0
+              // A take-profit adaptive close already shrank to the free balance
+              // answers this same target: cancelling it to re-send the full
+              // size would only be refused and shrunk again, on every pass.
+              // It is re-sized once the target grows past what it was shrunk
+              // from (a safety order filled).
+              if (
+                tp.length > 0 &&
+                !settings.useMultiTp &&
+                tp[0].acBefore &&
+                order.qty <= tp[0].acBefore
+              ) {
+                this.handleDebug(
+                  `Deal TP ${tp[0].clientOrderId} was sized to the free balance (${restingTpQty} of ${tp[0].acBefore}). Keep it`,
+                )
+                continue
+              }
               if (
                 tp.length > 0 &&
                 restingTpQty < order.qty &&
@@ -18419,6 +18485,69 @@ function createDCABotHelper<
                   },
                   'placeOrders()',
                   `Send new order request ${realFeeOrder.newClientOrderId}, qty ${realFeeOrder.qty}, price ${realFeeOrder.price}, side ${realFeeOrder.side}`,
+                )
+              }
+            } else if (
+              order.type === TypeOrderEnum.dealTP &&
+              deal &&
+              !this.futures &&
+              this.data?.settings.adaptiveClose
+            ) {
+              // Adaptive close, for the resting take-profit as well as for the
+              // market close (`closeDealById`): a TP refused for balance is
+              // re-sent at what the wallet has free, never more than this deal
+              // holds. Without it a deal a few units short of its own TP — fee
+              // dust, or a sibling bot on the same pair and account — had no
+              // TP at all and error-stated the bot on every pass.
+              result = await this.sendGridToExchange(
+                order,
+                sendOptions,
+                ed,
+                true,
+              )
+              if (
+                typeof result === 'string' &&
+                notEnoughErrors.some((s) =>
+                  `${result}`.toLowerCase().includes(s.toLowerCase()),
+                )
+              ) {
+                const resized = await this.sendTpAtFreeBalance(
+                  deal,
+                  order,
+                  sendOptions,
+                  ed,
+                )
+                if (resized !== undefined) {
+                  result = resized
+                }
+              }
+              if (typeof result === 'string') {
+                this.handleOrderErrors(
+                  result,
+                  {
+                    symbol: ed.pair,
+                    orderId: '0',
+                    clientOrderId: order.newClientOrderId,
+                    transactTime: +new Date(),
+                    updateTime: +new Date(),
+                    price: `${order.price}`,
+                    origQty: `${order.qty}`,
+                    executedQty: '0',
+                    cummulativeQuoteQty: '0',
+                    status: 'CANCELED',
+                    type: 'LIMIT',
+                    side: order.side,
+                    quoteAsset: ed.quoteAsset.name,
+                    baseAsset: ed.baseAsset.name,
+                    typeOrder: order.type,
+                    exchange: this.data.exchange,
+                    exchangeUUID: this.data.exchangeUUID,
+                    botId: this.botId,
+                    userId: this.userId,
+                    origPrice: `${order.price}`,
+                  },
+                  'placeOrders()',
+                  `Send new order request ${order.newClientOrderId}, qty ${order.qty}, price ${order.price}, side ${order.side}`,
                 )
               }
             } else {
@@ -25654,7 +25783,8 @@ function createDCABotHelper<
           )
           .filter(
             (o) =>
-              !skipUnbooked || !this.ordersInBetweenUpdates.has(o.clientOrderId),
+              !skipUnbooked ||
+              !this.ordersInBetweenUpdates.has(o.clientOrderId),
           )
         const filledBase =
           filled.reduce(
