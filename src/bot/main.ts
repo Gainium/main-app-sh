@@ -770,6 +770,18 @@ const orderNeverReachedExchange = 'Order not found: no exchange order id'
  *  changes `typeof MainBot` and breaks the mixin casts in helper.ts/dcaHelper.ts. */
 const notEnoughBalanceKeyVersion = 2
 /**
+ * An adaptive-close resend: an order the engine just re-sized to the free
+ * balance it read DIRECTLY from the venue (`acAfter` is set only there). The
+ * not-enough-balance cooldown exists because our cached balance can disagree
+ * with the venue; this order was sized from the venue's own figure, so it must
+ * reach the venue. Without this the cooldown — keyed per (symbol, side) and
+ * screening at the SMALLEST size ever refused — answered the shrunk
+ * take-profit itself, and adaptive close could never place anything.
+ */
+export const isFreshlySizedResend = (order: { acAfter?: number }) =>
+  typeof order.acAfter === 'number' && order.acAfter > 0
+
+/**
  * Cooldown for orders the account cannot fund. Shares its mechanism with
  * {@link ComplianceGuard} — same shape of problem: the venue keeps rejecting
  * for a reason that will not change in the next few seconds, and nothing in the
@@ -8266,6 +8278,7 @@ class MainBot<T extends IMainBot> {
             this.requiredForOrder(order) >= refusedRequired
           if (
             atRefusedSize &&
+            !isFreshlySizedResend(order) &&
             (this.data.notEnoughBalance.orders?.[notEnoughBalanceId] ?? 0) >=
               this.notEnoughBalanceThreshold
           ) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.5] - 2026-10-09
+
+### Fixed
+
+- Adaptive close: an order re-sized to the free balance read directly from the exchange is no longer refused by the bot's own not-enough-balance cooldown, which could stop adaptive close from placing anything.
+
 ## [1.88.4] - 2026-10-09
 
 ### Fixed
