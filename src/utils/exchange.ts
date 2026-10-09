@@ -129,6 +129,21 @@ export const isAmbiguousOrderFailure = (reason?: string | null): boolean => {
 }
 
 /**
+ * Did a PLACEMENT come back saying the order does not exist?
+ *
+ * A placement refusal never reads like that — the venue states why it will not
+ * take the order. "Order does not exist" / "Order not found" out of a placement
+ * can only come from the connector reading the order back AFTER submitting it,
+ * and a venue that has just accepted an order may not serve it for a few
+ * seconds. Writing it off left the order live on the venue, untracked, holding
+ * the funds the deal's next attempt then lacked. So it is asked about, exactly
+ * like {@link isAmbiguousOrderFailure}. Placement context only: on a lookup or a
+ * cancel the same words are a real answer (see `isDefinitiveOrderNotFound`).
+ */
+export const isPlacementReadBackMiss = (reason?: string | null): boolean =>
+  /\border (does not exist|not found)\b/.test(`${reason ?? ''}`.toLowerCase())
+
+/**
  * Does this whole-call failure mean "this connector has no such batch route"?
  *
  * Two shapes qualify, and only two:

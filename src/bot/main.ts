@@ -80,6 +80,7 @@ import utils, { isPaper } from '../utils'
 import { resolveConnection } from '../utils/credentials'
 import {
   isAmbiguousOrderFailure,
+  isPlacementReadBackMiss,
   isBatchRouteUnavailable,
   isTransportRetryExhausted,
 } from '../utils/exchange'
@@ -9002,7 +9003,8 @@ class MainBot<T extends IMainBot> {
             !notEnoughBalanceShortCircuit &&
             !complianceShortCircuit &&
             !authShortCircuit &&
-            isAmbiguousOrderFailure(request.reason)
+            (isAmbiguousOrderFailure(request.reason) ||
+              isPlacementReadBackMiss(request.reason))
           ) {
             this.handleWarn(
               `Ambiguous outcome for order ${order.clientOrderId} (${request.reason}) — asking ${this.data.exchange} whether it has it before writing it off`,

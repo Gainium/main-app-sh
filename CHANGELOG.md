@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.3] - 2026-10-09
+
+### Fixed
+
+- A new order whose placement comes back as "order does not exist" / "order not found" (the connector failing to read back an order the exchange just accepted) is now checked with the exchange before being written off, like other ambiguous outcomes. Before, it was dropped while it could be resting on the exchange, untracked.
+
 ## [1.88.2] - 2026-10-09
 
 ### Fixed
