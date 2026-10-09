@@ -322,6 +322,7 @@ import {
 import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
 import { getSubTypeBehavior } from './errorRulesCache'
 import { capLadderPlacements } from './ladderPlacementCap'
+import { priceMovedSince } from './priceStreamGap'
 import {
   ConditionLatch,
   limitOnlyEntryFallback,
@@ -24443,6 +24444,8 @@ function createDCABotHelper<
       // observation of a fresh-because-we-served-it symbol reads as a live
       // tick and declares recovery one run early.
       const healthNoted: Set<string> = new Set()
+      /** Stale symbols to note, with the price the bot held before polling. */
+      const heldPrices: Map<string, number | undefined> = new Map()
       for (const d of this.getDealsByStatusAndSymbol({
         status: DCADealStatusEnum.open,
       }).filter((d) => !d.closeBySl && !d.deal.blockSl && !d.notCheckSl)) {
@@ -24464,11 +24467,14 @@ function createDCABotHelper<
         )
         // Info-level, state-change only: this REST poll is the fallback, and a
         // symbol that never leaves it has no live `trade@` stream at all.
+        // Noted after the REST read, which tells a quiet market from a
+        // missing stream (see PriceStreamGapTracker#note).
         if (noteHealth) {
-          this.trackPriceStreamHealth(symbol, true)
+          heldPrices.set(symbol, lastStreamData?.price)
         }
         symbols.add(symbol)
       }
+      const restPrices: Map<string, number> = new Map()
       if (this.exchange && symbols.size) {
         this.handleDebug(
           `Required prices for ${symbols.size} symbols in price timer`,
@@ -24478,6 +24484,7 @@ function createDCABotHelper<
         if (allPrices.status === StatusEnum.ok) {
           const prices = allPrices.data.filter((p) => symbols.has(p.pair))
           for (const p of prices) {
+            restPrices.set(p.pair, p.price)
             this.priceUpdateCallback(this.botId, {
               symbol: p.pair,
               price: p.price,
@@ -24486,6 +24493,13 @@ function createDCABotHelper<
             })
           }
         }
+      }
+      for (const [symbol, held] of heldPrices) {
+        this.trackPriceStreamHealth(
+          symbol,
+          true,
+          priceMovedSince(held, restPrices.get(symbol)),
+        )
       }
     }
     /** Check trailing conditions */

@@ -5159,8 +5159,17 @@ class MainBot<T extends IMainBot> {
    * run because we wrote that freshness ourselves, so recovery is only declared
    * on a run that finds it fresh without having served it the run before.
    */
-  protected trackPriceStreamHealth(symbol: string, stale: boolean) {
-    const event = this.priceStreamGaps.note(symbol, stale, +new Date())
+  protected trackPriceStreamHealth(
+    symbol: string,
+    stale: boolean,
+    priceMoved?: boolean,
+  ) {
+    const event = this.priceStreamGaps.note(
+      symbol,
+      stale,
+      +new Date(),
+      priceMoved,
+    )
     if (!event) {
       return
     }

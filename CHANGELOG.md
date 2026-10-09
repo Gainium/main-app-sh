@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.6] - 2026-10-09
+
+### Changed
+
+- The bot log no longer reports "No live price stream" for a pair that is merely quiet. A thin pair can go minutes without a trade, and the venues' tickers only push on a change, so such a pair fell back to the REST price poll and was reported as having no stream, although the stream was fine and the price had not moved. The report is now made only once the REST price differs from the last price the bot held — the market moved without a tick reaching the bot — or when that cannot be told (no price held yet, or the REST read failed). The fallback poll itself is unchanged.
+
 ## [1.88.5] - 2026-10-09
 
 ### Fixed

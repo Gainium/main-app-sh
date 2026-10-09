@@ -10,7 +10,7 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import { PriceStreamGapTracker } from './priceStreamGap'
+import { PriceStreamGapTracker, priceMovedSince } from './priceStreamGap'
 
 const MIN = 60 * 1000
 const REPEAT = 60 * MIN
@@ -128,6 +128,49 @@ describe('PriceStreamGapTracker', () => {
     it('is off when no grace is configured', () => {
       const t = new PriceStreamGapTracker(REPEAT)
       expect(t.note('BTCUSDT', true, 0)).to.deep.equal({ kind: 'entered' })
+    })
+  })
+
+  describe('quiet market vs missing stream', () => {
+    // A thin pair can go minutes without a trade. The venue's ticker only
+    // pushes on a change, so the bot sees no tick — and REST returns the
+    // same price. That is a quiet market, not a missing stream.
+    it('is silent while REST keeps returning the price the bot held', () => {
+      const t = new PriceStreamGapTracker(REPEAT)
+      expect(t.note('POWRUSDT', true, 0, false)).to.equal(null)
+      expect(t.note('POWRUSDT', false, 2.5 * MIN)).to.equal(null)
+      expect(t.note('POWRUSDT', true, 5 * MIN, false)).to.equal(null)
+      // A real tick comes back: the unannounced gap ends silently.
+      expect(t.note('POWRUSDT', false, 7.5 * MIN)).to.equal(null)
+      expect(t.note('POWRUSDT', false, 10 * MIN)).to.equal(null)
+      expect(t.gapped()).to.deep.equal([])
+    })
+
+    it('reports the gap once the price moved without a tick', () => {
+      const t = new PriceStreamGapTracker(REPEAT)
+      expect(t.note('BNBUSDT', true, 0, false)).to.equal(null)
+      expect(t.note('BNBUSDT', true, 2.5 * MIN, true)).to.deep.equal({
+        kind: 'entered',
+      })
+      expect(t.note('BNBUSDT', false, 5 * MIN)).to.equal(null)
+      expect(t.note('BNBUSDT', false, 7.5 * MIN)).to.deep.equal({
+        kind: 'recovered',
+        minutes: 8,
+      })
+    })
+
+    it('reports as before when it cannot tell (no held price / REST failed)', () => {
+      const t = new PriceStreamGapTracker(REPEAT)
+      expect(t.note('FLR-USDC', true, 0, undefined)).to.deep.equal({
+        kind: 'entered',
+      })
+    })
+
+    it('priceMovedSince compares the held price with REST', () => {
+      expect(priceMovedSince(1.234, 1.234)).to.equal(false)
+      expect(priceMovedSince(1.234, 1.235)).to.equal(true)
+      expect(priceMovedSince(undefined, 1.2)).to.equal(undefined)
+      expect(priceMovedSince(1.2, undefined)).to.equal(undefined)
     })
   })
 

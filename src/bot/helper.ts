@@ -44,6 +44,7 @@ import { IdMutex, IdMute } from '../utils/mutex'
 import { botDb, transactionDb } from '../db/dbInit'
 import { DealStats } from './worker/statsService'
 import { botMonitor, CalculateGridLiveStatsParams } from './botMonitor'
+import { priceMovedSince } from './priceStreamGap'
 
 /**
  * Price in initial grids
@@ -4901,7 +4902,9 @@ function createBotHelper<
       // grid bot on a symbol with no live stream evaluates its TP/SL on this
       // timer's cadence, not the market's. Logged only for bots that actually
       // depend on the price, and only after the gate above.
-      this.trackPriceStreamHealth(symbol, true)
+      // Noted after the REST read, which tells a quiet market from a missing
+      // stream (see PriceStreamGapTracker#note).
+      let restPrice: number | undefined
       if (this.exchange) {
         this.handleDebug(`Grid Required prices for ${symbol} in price timer`)
         const allPrices = await this.exchange?.getAllPrices(true)
@@ -4909,6 +4912,7 @@ function createBotHelper<
         if (allPrices.status === StatusEnum.ok) {
           const prices = allPrices.data.filter((p) => p.pair === symbol)
           for (const p of prices) {
+            restPrice = p.price
             this.priceUpdateCallback(this.botId, {
               symbol: p.pair,
               price: p.price,
@@ -4918,6 +4922,11 @@ function createBotHelper<
           }
         }
       }
+      this.trackPriceStreamHealth(
+        symbol,
+        true,
+        priceMovedSince(lastStreamData?.price, restPrice),
+      )
     }
 
     @IdMute(mutex, (botId: string) => `${botId}closeBotByTp`)

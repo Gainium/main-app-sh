@@ -69,14 +69,25 @@ export class PriceStreamGapTracker {
   }
 
   /**
-   * @param stale true when this run is about to serve the symbol from REST
-   * because the stream has gone quiet past the timeout.
+   * @param stale true when this run served the symbol from REST because the
+   * stream has gone quiet past the timeout.
+   * @param priceMoved for a stale run: did the REST price differ from the
+   * last price the bot held? `false` means nothing traded — a thin market
+   * that is quiet, not a stream that is missing — so the gap is served
+   * silently, like the boot grace, and announced only once a later run finds
+   * the price moved without a tick. `undefined` (no previous price, or the
+   * REST read failed) cannot tell the two apart and is reported as before.
    * @returns the state change worth logging, or null when nothing changed.
    */
-  note(symbol: string, stale: boolean, now: number): PriceStreamGapEvent {
+  note(
+    symbol: string,
+    stale: boolean,
+    now: number,
+    priceMoved?: boolean,
+  ): PriceStreamGapEvent {
     const state = this.states.get(symbol)
     if (stale) {
-      const announce = !this.inGrace(symbol, now)
+      const announce = !this.inGrace(symbol, now) && priceMoved !== false
       if (!state) {
         this.states.set(symbol, {
           since: now,
@@ -91,8 +102,9 @@ export class PriceStreamGapTracker {
         if (!announce) {
           return null
         }
-        // Grace is over and the symbol still has no stream: report it now,
-        // from the moment we first served it.
+        // Grace is over (or the price has now moved without a tick) and the
+        // symbol still has no stream: report it now, from the moment we
+        // first served it.
         state.announced = true
         state.lastLogged = now
         return { kind: 'entered' }
@@ -137,6 +149,20 @@ export class PriceStreamGapTracker {
   forget(symbol: string) {
     this.states.delete(symbol)
   }
+}
+
+/**
+ * Did the market move between the price the bot held and a fresh REST read?
+ * `undefined` when either side is missing — no basis to call it quiet.
+ */
+export function priceMovedSince(
+  held: number | undefined,
+  rest: number | undefined,
+): boolean | undefined {
+  if (!held || !rest || !Number.isFinite(+held) || !Number.isFinite(+rest)) {
+    return undefined
+  }
+  return Math.abs(+rest - +held) > Math.abs(+held) * 1e-9
 }
 
 function minutesSince(since: number, now: number) {
