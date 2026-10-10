@@ -14367,51 +14367,53 @@ function createDCABotHelper<
         type: this.botType,
       }
       const timeout = wait ? this.indicatorTimeout : 0
+      let unsubscribed = false
       if (this.rabbitClient) {
         const result = await this.rabbitClient.sendWithCallback<
           BotParentUnsubscribeIndicatorEventDto,
           boolean
         >(rabbitIndicatorsKey, payload, timeout)
-        if (result) {
-          if (result.response) {
-            const text = `Unsubscribed from indicator ${id}`
-            if (this.showIndicatorLogs()) {
-              this.handleLog(text)
-            } else {
-              this.handleDebug(text)
-            }
-            const get = this.indicatorConfigIdMap.get(id)
-            this.indicatorConfigIdMap.delete(id)
-            if (get) {
-              const getRoom = this.indicatorRoomConfigMap.get(room)
-              if (getRoom) {
-                getRoom.delete(get)
-                if (getRoom.size === 0) {
-                  this.indicatorRoomConfigMap.delete(room)
-                  this.indicatorSubscribedRooms.delete(room)
-                } else {
-                  this.indicatorRoomConfigMap.set(room, getRoom)
-                }
-              }
-            }
-            // The room listener serves every config of this bot in the room:
-            // drop it only with the last one, or the configs still in the
-            // room (another deal's level, a start condition with the same
-            // indicator) stop receiving data.
-            if (
-              this.redisSubIndicators &&
-              cb &&
-              !this.indicatorRoomConfigMap.has(room)
-            ) {
-              this.redisSubIndicators.unsubscribe(
-                room,
-                this.indicatorRoomCb.get(room) ?? cb,
-              )
-              this.indicatorRoomCb.delete(room)
-            }
-            return true
+        unsubscribed = !!result?.response
+      }
+      const text = unsubscribed
+        ? `Unsubscribed from indicator ${id}`
+        : `Unsubscribe from indicator ${id} not confirmed by the indicator service`
+      if (this.showIndicatorLogs()) {
+        this.handleLog(text)
+      } else {
+        this.handleDebug(text)
+      }
+      // Local bookkeeping runs whatever the indicator service answered: the
+      // caller drops the indicator either way, and a config left in the room
+      // map would keep receiving the room's data.
+      const get = this.indicatorConfigIdMap.get(id)
+      this.indicatorConfigIdMap.delete(id)
+      if (get) {
+        const getRoom = this.indicatorRoomConfigMap.get(room)
+        if (getRoom) {
+          getRoom.delete(get)
+          if (getRoom.size === 0) {
+            this.indicatorRoomConfigMap.delete(room)
+            this.indicatorSubscribedRooms.delete(room)
+          } else {
+            this.indicatorRoomConfigMap.set(room, getRoom)
           }
         }
+      }
+      // The room listener serves every config of this bot in the room: drop
+      // it only with the last one, or the configs still in the room (another
+      // deal's level, a start condition with the same indicator) stop
+      // receiving data.
+      if (
+        this.redisSubIndicators &&
+        cb &&
+        !this.indicatorRoomConfigMap.has(room)
+      ) {
+        this.redisSubIndicators.unsubscribe(
+          room,
+          this.indicatorRoomCb.get(room) ?? cb,
+        )
+        this.indicatorRoomCb.delete(room)
       }
 
       return true

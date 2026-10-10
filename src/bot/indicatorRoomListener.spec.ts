@@ -18,7 +18,7 @@ import createDCABotHelper from './dcaHelper'
 const Helper: any = createDCABotHelper(MainBot as any)
 const ROOM = 'rsi-14rsi-binance-BTCUSDT-1h'
 
-function makeBot() {
+function makeBot(opts: { unsubscribeFails?: boolean } = {}) {
   const listeners = new Map<string, Set<unknown>>()
   let n = 0
   const bot: any = Object.create(Helper.prototype)
@@ -38,7 +38,9 @@ function makeBot() {
       sendWithCallback: async (_q: string, msg: any) =>
         msg.event === 'subscribeIndicator'
           ? { response: { status: true, room: ROOM, id: `sub${++n}` } }
-          : { response: true },
+          : opts.unsubscribeFails
+            ? null // timed out / no answer from the indicator service
+            : { response: true },
     },
     redisSubIndicators: {
       subscribe: (room: string, cb: unknown) => {
@@ -91,5 +93,25 @@ describe('DCA bot indicator room listener', () => {
     expect(listeners.get(ROOM)?.size ?? 0).to.equal(0)
     await subscribe('level4')
     expect(listeners.get(ROOM)?.size).to.equal(1)
+  })
+
+  it('a failed unsubscribe still stops the dropped config getting data', async () => {
+    const { bot, listeners, subscribe, unsubscribe } = makeBot({
+      unsubscribeFails: true,
+    })
+    const a = await subscribe('level2')
+    const b = await subscribe('level3')
+    await unsubscribe(a)
+    const got: string[] = []
+    bot.indicatorDataCb = (_id: string, m: any) =>
+      got.push(m.responseParams.uuid)
+    for (const cb of listeners.get(ROOM) ?? []) {
+      ;(cb as (m: string) => void)(JSON.stringify({ data: [], price: 1 }))
+    }
+    expect(got).to.deep.equal(['level3'])
+    // …and the last one leaving drops the room listener.
+    await unsubscribe(b)
+    expect(listeners.get(ROOM)?.size ?? 0).to.equal(0)
+    expect(bot.indicatorRoomConfigMap.has(ROOM)).to.equal(false)
   })
 })

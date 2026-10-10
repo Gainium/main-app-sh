@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.89.3] - 2026-10-10
+
+### Fixed
+
+- DCA bots: when the indicator service did not confirm an indicator unsubscribe in time, the bot kept routing that indicator's updates to a condition it had already removed. The bot now always forgets the condition locally, and releases its listener for the indicator when no other condition uses it.
+
 ## [1.89.2] - 2026-10-10
 
 ### Fixed
