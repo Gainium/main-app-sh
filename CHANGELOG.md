@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.90.0] - 2026-10-10
+
+### Changed
+
+- Indicator conditions: the decision a DCA bot makes for an indicator condition (every indicator type and option, how long a signal holds, and the indicator configuration it subscribes) now lives in one shared module, `src/indicators/conditions`, with no I/O, so other parts of the platform can evaluate conditions exactly as bots do. Bot behaviour is unchanged: a characterization suite recorded from the previous code pins every decision, status and subscription.
+
 ## [1.89.3] - 2026-10-10
 
 ### Fixed
