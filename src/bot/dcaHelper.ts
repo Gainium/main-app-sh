@@ -14491,848 +14491,14 @@ function createDCABotHelper<
           const time = +new Date()
           this.handleDebug(`Open indicators | Symbol ${symbol} start`)
           await Promise.all(
-            filteredIndicators.map(async (i) => {
-              {
-                if (!this.data) {
-                  return
-                }
-                const {
-                  indicatorLength: _indicatorLength,
-                  type,
-                  uuid,
-                  indicatorInterval,
-                  checkLevel: _checkLevel,
-                  condition,
-                  maType,
-                  maCrossingValue,
-                  maCrossingInterval,
-                  maCrossingLength,
-                  maUUID,
-                  stochSmoothD: _stochSmoothD,
-                  stochSmoothK: _stochSmoothK,
-                  stochRSI: _stochRSI,
-                  leftBars: _leftBars,
-                  rightBars: _rightBars,
-                  basePeriods: _basePeriods,
-                  pumpPeriods: _pumpPeriods,
-                  pump: _pump,
-                  baseCrack: _baseCrack,
-                  indicatorAction,
-                  section,
-                  psarInc: _psarInc,
-                  psarMax: _psarMax,
-                  psarStart: _psarStart,
-                  keepConditionBars,
-                  voLong: _voLong,
-                  voShort: _voShort,
-                  uoFast: _uoFast,
-                  uoMiddle: _uoMiddle,
-                  uoSlow: _uoSlow,
-                  momSource,
-                  bbwpLookback,
-                  xOscillator1,
-                  xOscillator2,
-                  xOscillator2Interval,
-                  xOscillator2length: _xOscillator2length,
-                  xOscillator2voLong: _xOscillator2voLong,
-                  xOscillator2voShort: _xOscillator2voShort,
-                  xoUUID,
-                  percentile,
-                  mar1length: _mar1length,
-                  mar1type,
-                  mar2length,
-                  mar2type,
-                  bbwMa,
-                  bbwMaLength: _bbwMaLength,
-                  bbwMult: _bbwMult,
-                  macdFast: _macdFast,
-                  macdSlow: _macdSlow,
-                  macdMaSignal,
-                  macdMaSource,
-                  divOscillators,
-                  trendFilter,
-                  trendFilterLookback,
-                  trendFilterType,
-                  trendFilterValue,
-                  factor: _factor,
-                  atrLength: _atrLength,
-                  pcValue,
-                  ppHighLeft,
-                  ppHighRight,
-                  ppLowLeft,
-                  ppLowRight,
-                  ppMult,
-                  athLookback: _athLookback,
-                  kcMa,
-                  kcRange,
-                  kcRangeLength: _kcRangeLength,
-                  lwMaxDuration,
-                  lwThreshold,
-                } = i
-                let { percentileLookback, percentilePercentage } = i
-                percentileLookback = percentileLookback ?? 150
-                percentilePercentage = percentilePercentage ?? 80
-                const macdFast = +(_macdFast ?? 12)
-                const macdSlow = +(_macdSlow ?? 26)
-                const indicatorLength = +(_indicatorLength ?? 14)
-                const factor = +(_factor ?? 3)
-                const atrLength = +(_atrLength ?? 10)
-
-                const checkLevel = +(_checkLevel ?? 0)
-                const athLookback = +(_athLookback ?? 100)
-                const stochSmoothD = +(_stochSmoothD ?? 3)
-                const stochSmoothK = +(_stochSmoothK ?? 3)
-                const stochRSI = +(_stochRSI ?? 14)
-                const leftBars = +(_leftBars ?? 5)
-                const rightBars = +(_rightBars ?? 5)
-                const mar1length = +(_mar1length ?? 20)
-                const basePeriods = +(_basePeriods ?? 36)
-                const pumpPeriods = +(_pumpPeriods ?? 8)
-                const uoFast = +(_uoFast ?? 7)
-                const uoMiddle = +(_uoMiddle ?? 14)
-                const uoSlow = +(_uoSlow ?? 28)
-                const psarInc = +(_psarInc ?? 0.02)
-                const psarMax = +(_psarMax ?? 0.2)
-                const psarStart = +(_psarStart ?? 0.02)
-                const voLong = +(_voLong ?? 10)
-                const voShort = +(_voShort ?? 5)
-                const bbwMult = +(_bbwMult ?? 2)
-                const kcRangeLength = +(_kcRangeLength ?? 20)
-                const bbwMaLength = +(_bbwMaLength ?? 20)
-                const pump = +(_pump ?? 3)
-                const baseCrack = +(_baseCrack ?? 3)
-                const xOscillator2length = +(_xOscillator2length ?? 14)
-                if (
-                  (settings.startCondition !== StartConditionEnum.ti &&
-                    indicatorAction === IndicatorAction.startDeal) ||
-                  (!settings.useRiskReward &&
-                    indicatorAction === IndicatorAction.riskReward) ||
-                  (settings.useRiskReward &&
-                    indicatorAction === IndicatorAction.riskReward &&
-                    settings.type === DCATypeEnum.terminal) ||
-                  ((!settings.useTp ||
-                    (settings.dealCloseCondition !==
-                      CloseConditionEnum.techInd &&
-                      !this.tpAr)) &&
-                    indicatorAction === IndicatorAction.closeDeal &&
-                    section !== IndicatorSection.sl) ||
-                  ((!settings.useSl ||
-                    (settings.dealCloseConditionSL !==
-                      CloseConditionEnum.techInd &&
-                      !this.slAr)) &&
-                    indicatorAction === IndicatorAction.closeDeal &&
-                    section === IndicatorSection.sl) ||
-                  ((!settings.useDca ||
-                    !(
-                      settings.dcaCondition === DCAConditionEnum.indicators ||
-                      this.scaleAr
-                    )) &&
-                    indicatorAction === IndicatorAction.startDca) ||
-                  ((!settings.useBotController ||
-                    settings.botStart !== BotStartTypeEnum.indicators) &&
-                    indicatorAction === IndicatorAction.stopBot) ||
-                  ((!settings.useBotController ||
-                    settings.botActualStart !== BotStartTypeEnum.indicators) &&
-                    indicatorAction === IndicatorAction.startBot)
-                ) {
-                  return
-                }
-                if (indicatorLength && indicatorInterval) {
-                  const rrOrAr =
-                    indicatorAction === IndicatorAction.riskReward ||
-                    (indicatorAction === IndicatorAction.startDca &&
-                      this.scaleAr) ||
-                    (indicatorAction === IndicatorAction.closeDeal &&
-                      section !== IndicatorSection.sl &&
-                      this.tpAr) ||
-                    (indicatorAction === IndicatorAction.closeDeal &&
-                      section === IndicatorSection.sl &&
-                      this.slAr)
-                  const otherOnType = rrOrAr
-                    ? []
-                    : filteredIndicators.filter(
-                        (i) =>
-                          i.indicatorAction === indicatorAction &&
-                          ((!i.section && !section) || i.section === section),
-                      )
-                  const lowerIntervals = otherOnType.filter(
-                    (i) =>
-                      timeIntervalMap[i.indicatorInterval] <
-                      timeIntervalMap[indicatorInterval],
-                  ).length
-                  const useAnd =
-                    i.indicatorAction === IndicatorAction.closeDeal
-                      ? i.section === IndicatorSection.sl
-                        ? !settings.stopDealSlLogic ||
-                          settings.stopDealSlLogic === IndicatorsLogicEnum.and
-                        : !settings.stopDealLogic ||
-                          settings.stopDealLogic === IndicatorsLogicEnum.and
-                      : i.indicatorAction === IndicatorAction.startBot
-                        ? !settings.startBotLogic ||
-                          settings.startBotLogic === IndicatorsLogicEnum.and
-                        : i.indicatorAction === IndicatorAction.startDeal
-                          ? !settings.startDealLogic ||
-                            settings.startDealLogic === IndicatorsLogicEnum.and
-                          : i.indicatorAction === IndicatorAction.stopBot
-                            ? !settings.stopBotLogic ||
-                              settings.stopBotLogic === IndicatorsLogicEnum.and
-                            : false
-                  const hasLower = rrOrAr
-                    ? false
-                    : otherOnType.length > 1 && lowerIntervals > 0 && useAnd
-                  if (hasLower) {
-                    this.handleDebug(
-                      `Indicator ${uuid} ${symbol} ${indicatorAction} has indicators with lower interval: ${lowerIntervals}`,
-                    )
-                  }
-                  const indicatorData: BotParentIndicatorEventDto = {
-                    data: {
-                      indicatorConfig:
-                        type === IndicatorEnum.lw
-                          ? {
-                              type: IndicatorEnum.lw,
-                              lwThreshold: +(lwThreshold ?? 2),
-                              lwMaxDuration: +(lwMaxDuration ?? 1000),
-                            }
-                          : type === IndicatorEnum.obfvg
-                            ? { type }
-                            : type === IndicatorEnum.dc
-                              ? { type, length: indicatorLength }
-                              : type === IndicatorEnum.macd
-                                ? {
-                                    type,
-                                    shortInterval: macdFast ?? 12,
-                                    longInterval: macdSlow ?? 26,
-                                    signalInterval: indicatorLength,
-                                    percentile,
-                                    percentileLookback,
-                                    percentilePercentage,
-                                    maSignal: macdMaSignal ?? MAEnum.ema,
-                                    maSource: macdMaSource ?? MAEnum.ema,
-                                  }
-                                : type === IndicatorEnum.st
-                                  ? {
-                                      type,
-                                      factor: factor ?? 3,
-                                      atrLength: atrLength ?? 10,
-                                    }
-                                  : type === IndicatorEnum.pp
-                                    ? {
-                                        type,
-                                        ppHighLeft: +(ppHighLeft ?? 5),
-                                        ppHighRight: +(ppHighRight ?? 5),
-                                        ppLowLeft: +(ppLowLeft ?? 5),
-                                        ppLowRight: +(ppLowRight ?? 5),
-                                        ppMult: +(ppMult ?? 1),
-                                      }
-                                    : type === IndicatorEnum.tv
-                                      ? {
-                                          type,
-                                          checkLevel,
-                                          useAsEntryExitPoints:
-                                            condition ===
-                                            TradingviewAnalysisConditionEnum.entry,
-                                        }
-                                      : type === IndicatorEnum.pc
-                                        ? {
-                                            type,
-                                            pcUp: Math.abs(+(pcValue ?? '5')),
-                                            pcDown: Math.abs(+(pcValue ?? '5')),
-                                          }
-                                        : type === IndicatorEnum.div
-                                          ? {
-                                              type,
-                                              oscillators: divOscillators ?? [],
-                                            }
-                                          : type === IndicatorEnum.ma
-                                            ? {
-                                                type,
-                                                interval: indicatorLength,
-                                                maType: maType || MAEnum.ema,
-                                              }
-                                            : type === IndicatorEnum.ath
-                                              ? {
-                                                  type,
-                                                  lookback: athLookback ?? 100,
-                                                }
-                                              : type === IndicatorEnum.xo
-                                                ? xOscillator1 ===
-                                                  IndicatorEnum.vo
-                                                  ? {
-                                                      type: xOscillator1,
-                                                      voLong: voLong ?? 10,
-                                                      voShort: voShort ?? 5,
-                                                    }
-                                                  : {
-                                                      type:
-                                                        xOscillator1 ||
-                                                        IndicatorEnum.rsi,
-                                                      interval: indicatorLength,
-                                                    }
-                                                : type === IndicatorEnum.atr
-                                                  ? {
-                                                      type,
-                                                      interval: indicatorLength,
-                                                    }
-                                                  : type === IndicatorEnum.adr
-                                                    ? {
-                                                        type,
-                                                        interval:
-                                                          indicatorLength,
-                                                      }
-                                                    : type ===
-                                                        IndicatorEnum.stoch
-                                                      ? {
-                                                          type,
-                                                          k: indicatorLength,
-                                                          dsmooth:
-                                                            stochSmoothD ?? 1,
-                                                          ksmooth:
-                                                            stochSmoothK ?? 3,
-                                                        }
-                                                      : type ===
-                                                          IndicatorEnum.stochRSI
-                                                        ? {
-                                                            type,
-                                                            k: indicatorLength,
-                                                            dsmooth:
-                                                              stochSmoothD ?? 3,
-                                                            ksmooth:
-                                                              stochSmoothK ?? 3,
-                                                            interval:
-                                                              stochRSI ?? 14,
-                                                          }
-                                                        : type ===
-                                                            IndicatorEnum.sr
-                                                          ? {
-                                                              type,
-                                                              leftBars:
-                                                                leftBars ?? 15,
-                                                              rightBars:
-                                                                rightBars ?? 15,
-                                                            }
-                                                          : type ===
-                                                              IndicatorEnum.mar
-                                                            ? {
-                                                                type,
-                                                                mar1type:
-                                                                  mar1type ||
-                                                                  MAEnum.ema,
-                                                                mar1length:
-                                                                  mar1length ||
-                                                                  20,
-                                                                mar2type:
-                                                                  mar2type ||
-                                                                  MAEnum.price,
-                                                                mar2length:
-                                                                  mar2length ||
-                                                                  20,
-                                                                percentile,
-                                                                percentileLookback,
-                                                                percentilePercentage,
-                                                                trendFilter,
-                                                                trendFilterLookback,
-                                                                trendFilterType,
-                                                                trendFilterValue,
-                                                              }
-                                                            : type ===
-                                                                IndicatorEnum.mfi
-                                                              ? {
-                                                                  type,
-                                                                  interval:
-                                                                    indicatorLength ??
-                                                                    14,
-                                                                  percentile,
-                                                                  percentileLookback,
-                                                                  percentilePercentage,
-                                                                }
-                                                              : type ===
-                                                                  IndicatorEnum.qfl
-                                                                ? {
-                                                                    type,
-                                                                    basePeriods:
-                                                                      basePeriods ??
-                                                                      36,
-                                                                    pumpPeriods:
-                                                                      pumpPeriods ??
-                                                                      8,
-                                                                    pump:
-                                                                      (pump ??
-                                                                        3) /
-                                                                      100,
-                                                                    baseCrack:
-                                                                      (baseCrack ??
-                                                                        3) /
-                                                                      100,
-                                                                  }
-                                                                : type ===
-                                                                    IndicatorEnum.uo
-                                                                  ? {
-                                                                      type,
-                                                                      fast:
-                                                                        uoFast ??
-                                                                        7,
-                                                                      middle:
-                                                                        uoMiddle ??
-                                                                        14,
-                                                                      slow:
-                                                                        uoSlow ??
-                                                                        28,
-                                                                      percentile,
-                                                                      percentileLookback,
-                                                                      percentilePercentage,
-                                                                    }
-                                                                  : type ===
-                                                                      IndicatorEnum.mom
-                                                                    ? {
-                                                                        type,
-                                                                        interval:
-                                                                          indicatorLength,
-                                                                        source:
-                                                                          momSource ??
-                                                                          'close',
-                                                                        percentile,
-                                                                        percentileLookback,
-                                                                        percentilePercentage,
-                                                                      }
-                                                                    : type ===
-                                                                        IndicatorEnum.bbwp
-                                                                      ? {
-                                                                          type,
-                                                                          interval:
-                                                                            indicatorLength,
-                                                                          source:
-                                                                            momSource ??
-                                                                            'close',
-                                                                          lookback:
-                                                                            bbwpLookback ??
-                                                                            252,
-                                                                        }
-                                                                      : type ===
-                                                                          IndicatorEnum.psar
-                                                                        ? {
-                                                                            type,
-                                                                            start:
-                                                                              psarStart ??
-                                                                              0.02,
-                                                                            inc:
-                                                                              psarInc ??
-                                                                              0.02,
-                                                                            max:
-                                                                              psarMax ??
-                                                                              0.2,
-                                                                          }
-                                                                        : type ===
-                                                                            IndicatorEnum.vo
-                                                                          ? {
-                                                                              type,
-                                                                              voLong:
-                                                                                voLong ??
-                                                                                10,
-                                                                              voShort:
-                                                                                voShort ??
-                                                                                5,
-                                                                              percentile,
-                                                                              percentileLookback,
-                                                                              percentilePercentage,
-                                                                            }
-                                                                          : type ===
-                                                                              IndicatorEnum.kc
-                                                                            ? {
-                                                                                type,
-                                                                                interval:
-                                                                                  indicatorLength,
-                                                                                ma:
-                                                                                  kcMa ||
-                                                                                  MAEnum.ema,
-                                                                                multiplier:
-                                                                                  bbwMult ||
-                                                                                  2,
-                                                                                range:
-                                                                                  kcRange ||
-                                                                                  RangeType.atr,
-                                                                                rangeLength:
-                                                                                  kcRangeLength ||
-                                                                                  20,
-                                                                              }
-                                                                            : type ===
-                                                                                IndicatorEnum.kcpb
-                                                                              ? {
-                                                                                  type,
-                                                                                  interval:
-                                                                                    indicatorLength,
-                                                                                  ma:
-                                                                                    kcMa ||
-                                                                                    MAEnum.ema,
-                                                                                  multiplier:
-                                                                                    bbwMult ||
-                                                                                    2,
-                                                                                  range:
-                                                                                    kcRange ||
-                                                                                    RangeType.atr,
-                                                                                  rangeLength:
-                                                                                    kcRangeLength ||
-                                                                                    20,
-                                                                                  percentile,
-                                                                                  percentileLookback,
-                                                                                  percentilePercentage,
-                                                                                }
-                                                                              : type ===
-                                                                                  IndicatorEnum.bb
-                                                                                ? {
-                                                                                    type,
-                                                                                    interval:
-                                                                                      indicatorLength,
-                                                                                    bbwMa:
-                                                                                      bbwMa ||
-                                                                                      MAEnum.sma,
-                                                                                    bbwMaLength:
-                                                                                      bbwMaLength ||
-                                                                                      20,
-                                                                                    bbwMult:
-                                                                                      bbwMult ||
-                                                                                      2,
-                                                                                  }
-                                                                                : type ===
-                                                                                    IndicatorEnum.bbw
-                                                                                  ? {
-                                                                                      type,
-                                                                                      interval:
-                                                                                        indicatorLength,
-                                                                                      bbwMa:
-                                                                                        bbwMa ||
-                                                                                        MAEnum.sma,
-                                                                                      bbwMaLength:
-                                                                                        bbwMaLength ||
-                                                                                        20,
-                                                                                      bbwMult:
-                                                                                        bbwMult ||
-                                                                                        2,
-                                                                                      percentile,
-                                                                                      percentileLookback,
-                                                                                      percentilePercentage,
-                                                                                    }
-                                                                                  : type ===
-                                                                                      IndicatorEnum.bbpb
-                                                                                    ? {
-                                                                                        type,
-                                                                                        interval:
-                                                                                          indicatorLength,
-                                                                                        bbwMa:
-                                                                                          bbwMa ||
-                                                                                          MAEnum.sma,
-                                                                                        bbwMaLength:
-                                                                                          bbwMaLength ||
-                                                                                          20,
-                                                                                        bbwMult:
-                                                                                          bbwMult ||
-                                                                                          2,
-                                                                                        percentile,
-                                                                                        percentileLookback,
-                                                                                        percentilePercentage,
-                                                                                      }
-                                                                                    : type ===
-                                                                                        IndicatorEnum.ecd
-                                                                                      ? {
-                                                                                          type,
-                                                                                        }
-                                                                                      : ({
-                                                                                          type,
-                                                                                          interval:
-                                                                                            indicatorLength,
-                                                                                          percentile,
-                                                                                          percentileLookback,
-                                                                                          percentilePercentage,
-                                                                                        } as IndicatorConfig),
-                      interval:
-                        type === IndicatorEnum.adr
-                          ? ExchangeIntervals.oneD
-                          : indicatorInterval,
-                      symbol,
-                      exchange: this.data.exchange,
-                      test: false,
-                      limitMultiplier: serviceRestart
-                        ? this.convertToMultiplier(keepConditionBars)
-                        : undefined,
-                      load1d: rrOrAr || hasLower,
-                    },
-                    event: 'subscribeIndicator',
-                    botId: this.botId,
-                    responseId: v4(),
-                    responseParams: {
-                      uuid,
-                      symbol,
-                    },
-                    type: this.botType,
-                  }
-                  const { id, room, data, cb } =
-                    await this.sendIndicatorSubscribeEvent(indicatorData)
-                  if (!id) {
-                    this.handleDebug(
-                      `Indicator ${uuid} ${symbol} not connected`,
-                    )
-                    return
-                  }
-                  const maChild =
-                    type === IndicatorEnum.ma &&
-                    maCrossingValue !== MAEnum.price &&
-                    maCrossingInterval &&
-                    maCrossingLength &&
-                    maUUID &&
-                    maCrossingValue &&
-                    indicatorAction !== IndicatorAction.riskReward &&
-                    !(
-                      this.scaleAr &&
-                      indicatorAction === IndicatorAction.startDca
-                    ) &&
-                    !(
-                      indicatorAction === IndicatorAction.closeDeal &&
-                      section !== IndicatorSection.sl &&
-                      this.tpAr
-                    ) &&
-                    !(
-                      indicatorAction === IndicatorAction.closeDeal &&
-                      section === IndicatorSection.sl &&
-                      this.slAr
-                    )
-                  const xoChild =
-                    type === IndicatorEnum.xo &&
-                    xOscillator2 &&
-                    xOscillator2Interval &&
-                    xOscillator2length &&
-                    xoUUID &&
-                    indicatorAction !== IndicatorAction.riskReward &&
-                    !(
-                      this.scaleAr &&
-                      indicatorAction === IndicatorAction.startDca
-                    ) &&
-                    !(
-                      indicatorAction === IndicatorAction.closeDeal &&
-                      section !== IndicatorSection.sl &&
-                      this.tpAr
-                    ) &&
-                    !(
-                      indicatorAction === IndicatorAction.closeDeal &&
-                      section === IndicatorSection.sl &&
-                      this.slAr
-                    )
-                  const key = `${uuid}@${symbol}`
-                  const findInCurrent = serviceRestart
-                    ? this.data.indicatorsData?.find(
-                        (id) =>
-                          id.signature === this.getIndicatorSignature(i) &&
-                          id.symbol === symbol &&
-                          id.uuid === uuid,
-                      )
-                    : _indicators.get(key)
-
-                  const active = (findInCurrent?.statusTo ?? 0) > +new Date()
-                  const k = `${indicatorInterval}@${indicatorAction}`
-                  this.indicatorsIntervalActionMap.set(
-                    k,
-                    (this.indicatorsIntervalActionMap.get(k) ?? 0) + 1,
-                  )
-                  this.indicators.set(key, {
-                    uuid,
-                    id: id,
-                    room,
-                    status: active ? (findInCurrent?.status ?? false) : false,
-                    statusSince: active
-                      ? findInCurrent?.statusSince
-                      : undefined,
-                    statusTo: active ? findInCurrent?.statusTo : undefined,
-                    numberOfSignals: active
-                      ? findInCurrent?.numberOfSignals
-                      : undefined,
-                    data: !!data,
-                    history: data ?? [],
-                    symbol,
-                    key,
-                    action: indicatorAction,
-                    maCross: false,
-                    section,
-                    interval: indicatorInterval,
-                    parentIndicator: '',
-                    childIndicator: maChild ? maUUID : xoChild ? xoUUID : '',
-                    cb,
-                    groupId: i.groupId,
-                    is1d: rrOrAr || hasLower,
-                  })
-                  const text = `Bot connected to ${type} indicator. Id: ${id}, room: ${room}`
-                  if (this.showIndicatorLogs()) {
-                    this.handleLog(text)
-                  } else {
-                    this.handleDebug(text)
-                  }
-                  if (maChild) {
-                    const load1d =
-                      hasLower &&
-                      timeIntervalMap[indicatorInterval] <=
-                        timeIntervalMap[maCrossingInterval]
-                    const indicatorChildData: BotParentIndicatorEventDto = {
-                      data: {
-                        indicatorConfig: {
-                          type,
-                          interval: maCrossingLength,
-                          maType: maCrossingValue,
-                        },
-                        interval: maCrossingInterval,
-                        symbol,
-                        exchange: this.data.exchange,
-                        test: false,
-                        load1d,
-                      },
-
-                      botId: this.botId,
-                      responseId: v4(),
-                      responseParams: { uuid: maUUID, symbol },
-                      event: 'subscribeIndicator',
-                      type: this.botType,
-                    }
-                    const {
-                      id: idChild,
-                      room: roomChild,
-                      data: dataChild,
-                      cb: cbChild,
-                    } = await this.sendIndicatorSubscribeEvent(
-                      indicatorChildData,
-                    )
-                    if (!idChild) {
-                      this.handleWarn(
-                        `Indicator ${maUUID} ${symbol} not connected`,
-                      )
-                      return
-                    }
-                    const maKey = `${maUUID}@${symbol}`
-                    const findInCurrent = _indicators.get(maKey)
-
-                    const active =
-                      !serviceRestart &&
-                      (findInCurrent?.statusTo ?? 0) > +new Date()
-                    this.indicators.set(maKey, {
-                      uuid: maUUID,
-                      id: idChild,
-                      room: roomChild,
-                      status: active ? (findInCurrent?.status ?? false) : false,
-                      statusSince: active
-                        ? findInCurrent?.statusSince
-                        : undefined,
-                      statusTo: active ? findInCurrent?.statusTo : undefined,
-                      numberOfSignals: active
-                        ? findInCurrent?.numberOfSignals
-                        : undefined,
-                      data: !!dataChild,
-                      history: dataChild ?? [],
-                      symbol,
-                      key: maKey,
-                      action: indicatorAction,
-                      maCross: true,
-                      section,
-                      interval: indicatorInterval,
-                      parentIndicator: uuid,
-                      childIndicator: '',
-                      cb: cbChild,
-                      groupId: '',
-                      is1d: load1d,
-                    })
-                    const text = `Bot connected to ${type} indicator. Id: ${idChild}, room: ${roomChild}`
-                    if (this.showIndicatorLogs()) {
-                      this.handleLog(text)
-                    } else {
-                      this.handleDebug(text)
-                    }
-                  }
-                  if (xoChild) {
-                    const load1d =
-                      hasLower &&
-                      timeIntervalMap[indicatorInterval] <=
-                        timeIntervalMap[
-                          xOscillator2Interval || indicatorInterval
-                        ]
-                    const indicatorChildData: BotParentIndicatorEventDto = {
-                      data: {
-                        indicatorConfig:
-                          xOscillator2 === IndicatorEnum.vo
-                            ? {
-                                type: xOscillator2,
-                                voLong: _xOscillator2voLong ?? voLong ?? 10,
-                                voShort: _xOscillator2voShort ?? voShort ?? 5,
-                              }
-                            : {
-                                type: xOscillator2 || IndicatorEnum.mfi,
-                                interval: xOscillator2length || indicatorLength,
-                              },
-                        interval: xOscillator2Interval || indicatorInterval,
-                        symbol,
-                        exchange: this.data.exchange,
-                        test: false,
-                        load1d,
-                      },
-                      event: 'subscribeIndicator',
-                      botId: this.botId,
-                      responseId: v4(),
-                      responseParams: { uuid: xoUUID, symbol },
-                      type: this.botType,
-                    }
-                    const {
-                      id: idChild,
-                      room: roomChild,
-                      data: dataChild,
-                      cb: cbChild,
-                    } = await this.sendIndicatorSubscribeEvent(
-                      indicatorChildData,
-                    )
-                    if (!idChild) {
-                      this.handleWarn(
-                        `Indicator ${xoUUID} ${symbol} not connected`,
-                      )
-                      return
-                    }
-                    const xoKey = `${xoUUID}@${symbol}`
-                    const findInCurrent = _indicators.get(xoKey)
-                    const active =
-                      !serviceRestart &&
-                      (findInCurrent?.statusTo ?? 0) > +new Date()
-                    this.indicators.set(xoKey, {
-                      uuid: xoUUID,
-                      id: idChild,
-                      room: roomChild,
-                      status: active ? (findInCurrent?.status ?? false) : false,
-                      statusSince: active
-                        ? findInCurrent?.statusSince
-                        : undefined,
-                      statusTo: active ? findInCurrent?.statusTo : undefined,
-                      numberOfSignals: active
-                        ? findInCurrent?.numberOfSignals
-                        : undefined,
-                      data: !!dataChild,
-                      history: dataChild ?? [],
-                      symbol,
-                      key: xoKey,
-                      action: indicatorAction,
-                      maCross: true,
-                      section,
-                      interval: indicatorInterval,
-                      childIndicator: '',
-                      parentIndicator: uuid,
-                      cb: cbChild,
-                      groupId: '',
-                      is1d: load1d,
-                    })
-                    const text = `Bot connected to ${type} indicator. Id: ${idChild}, room: ${roomChild}`
-                    if (this.showIndicatorLogs()) {
-                      this.handleLog(text)
-                    } else {
-                      this.handleDebug(text)
-                    }
-                  }
-                } else {
-                  this.handleDebug(
-                    `Bot start condition set to ${type}, but values wasn't provided.`,
-                  )
-                }
-              }
-            }),
+            filteredIndicators.map((i) =>
+              this.connectSettingsIndicator(i, symbol, {
+                settings,
+                filteredIndicators,
+                serviceRestart,
+                previous: _indicators,
+              }),
+            ),
           )
           await sleep(0)
           this.handleDebug(
@@ -15357,6 +14523,866 @@ function createDCABotHelper<
       this.endMethod(_id)
       this.runAfterIndicatorsConnected(this.botId)
       this.startSessionCheckTimer()
+    }
+
+    /**
+     * Subscribe one configured indicator (and its MA / XO child) on `symbol`.
+     * Split out of `openIndicators` so `syncDcaIndicatorLevels` can subscribe
+     * a single DCA level without rebuilding every subscription.
+     */
+    private async connectSettingsIndicator(
+      i: SettingsIndicators,
+      symbol: string,
+      {
+        settings,
+        filteredIndicators,
+        serviceRestart,
+        previous: _indicators,
+      }: {
+        settings: Schema['settings']
+        filteredIndicators: SettingsIndicators[]
+        serviceRestart?: boolean
+        previous: Map<string, LocalIndicators>
+      },
+    ) {
+      if (!this.data) {
+        return
+      }
+      const {
+        indicatorLength: _indicatorLength,
+        type,
+        uuid,
+        indicatorInterval,
+        checkLevel: _checkLevel,
+        condition,
+        maType,
+        maCrossingValue,
+        maCrossingInterval,
+        maCrossingLength,
+        maUUID,
+        stochSmoothD: _stochSmoothD,
+        stochSmoothK: _stochSmoothK,
+        stochRSI: _stochRSI,
+        leftBars: _leftBars,
+        rightBars: _rightBars,
+        basePeriods: _basePeriods,
+        pumpPeriods: _pumpPeriods,
+        pump: _pump,
+        baseCrack: _baseCrack,
+        indicatorAction,
+        section,
+        psarInc: _psarInc,
+        psarMax: _psarMax,
+        psarStart: _psarStart,
+        keepConditionBars,
+        voLong: _voLong,
+        voShort: _voShort,
+        uoFast: _uoFast,
+        uoMiddle: _uoMiddle,
+        uoSlow: _uoSlow,
+        momSource,
+        bbwpLookback,
+        xOscillator1,
+        xOscillator2,
+        xOscillator2Interval,
+        xOscillator2length: _xOscillator2length,
+        xOscillator2voLong: _xOscillator2voLong,
+        xOscillator2voShort: _xOscillator2voShort,
+        xoUUID,
+        percentile,
+        mar1length: _mar1length,
+        mar1type,
+        mar2length,
+        mar2type,
+        bbwMa,
+        bbwMaLength: _bbwMaLength,
+        bbwMult: _bbwMult,
+        macdFast: _macdFast,
+        macdSlow: _macdSlow,
+        macdMaSignal,
+        macdMaSource,
+        divOscillators,
+        trendFilter,
+        trendFilterLookback,
+        trendFilterType,
+        trendFilterValue,
+        factor: _factor,
+        atrLength: _atrLength,
+        pcValue,
+        ppHighLeft,
+        ppHighRight,
+        ppLowLeft,
+        ppLowRight,
+        ppMult,
+        athLookback: _athLookback,
+        kcMa,
+        kcRange,
+        kcRangeLength: _kcRangeLength,
+        lwMaxDuration,
+        lwThreshold,
+      } = i
+      let { percentileLookback, percentilePercentage } = i
+      percentileLookback = percentileLookback ?? 150
+      percentilePercentage = percentilePercentage ?? 80
+      const macdFast = +(_macdFast ?? 12)
+      const macdSlow = +(_macdSlow ?? 26)
+      const indicatorLength = +(_indicatorLength ?? 14)
+      const factor = +(_factor ?? 3)
+      const atrLength = +(_atrLength ?? 10)
+
+      const checkLevel = +(_checkLevel ?? 0)
+      const athLookback = +(_athLookback ?? 100)
+      const stochSmoothD = +(_stochSmoothD ?? 3)
+      const stochSmoothK = +(_stochSmoothK ?? 3)
+      const stochRSI = +(_stochRSI ?? 14)
+      const leftBars = +(_leftBars ?? 5)
+      const rightBars = +(_rightBars ?? 5)
+      const mar1length = +(_mar1length ?? 20)
+      const basePeriods = +(_basePeriods ?? 36)
+      const pumpPeriods = +(_pumpPeriods ?? 8)
+      const uoFast = +(_uoFast ?? 7)
+      const uoMiddle = +(_uoMiddle ?? 14)
+      const uoSlow = +(_uoSlow ?? 28)
+      const psarInc = +(_psarInc ?? 0.02)
+      const psarMax = +(_psarMax ?? 0.2)
+      const psarStart = +(_psarStart ?? 0.02)
+      const voLong = +(_voLong ?? 10)
+      const voShort = +(_voShort ?? 5)
+      const bbwMult = +(_bbwMult ?? 2)
+      const kcRangeLength = +(_kcRangeLength ?? 20)
+      const bbwMaLength = +(_bbwMaLength ?? 20)
+      const pump = +(_pump ?? 3)
+      const baseCrack = +(_baseCrack ?? 3)
+      const xOscillator2length = +(_xOscillator2length ?? 14)
+      if (
+        (settings.startCondition !== StartConditionEnum.ti &&
+          indicatorAction === IndicatorAction.startDeal) ||
+        (!settings.useRiskReward &&
+          indicatorAction === IndicatorAction.riskReward) ||
+        (settings.useRiskReward &&
+          indicatorAction === IndicatorAction.riskReward &&
+          settings.type === DCATypeEnum.terminal) ||
+        ((!settings.useTp ||
+          (settings.dealCloseCondition !==
+            CloseConditionEnum.techInd &&
+            !this.tpAr)) &&
+          indicatorAction === IndicatorAction.closeDeal &&
+          section !== IndicatorSection.sl) ||
+        ((!settings.useSl ||
+          (settings.dealCloseConditionSL !==
+            CloseConditionEnum.techInd &&
+            !this.slAr)) &&
+          indicatorAction === IndicatorAction.closeDeal &&
+          section === IndicatorSection.sl) ||
+        ((!settings.useDca ||
+          !(
+            settings.dcaCondition === DCAConditionEnum.indicators ||
+            this.scaleAr
+          )) &&
+          indicatorAction === IndicatorAction.startDca) ||
+        ((!settings.useBotController ||
+          settings.botStart !== BotStartTypeEnum.indicators) &&
+          indicatorAction === IndicatorAction.stopBot) ||
+        ((!settings.useBotController ||
+          settings.botActualStart !== BotStartTypeEnum.indicators) &&
+          indicatorAction === IndicatorAction.startBot)
+      ) {
+        return
+      }
+      if (indicatorLength && indicatorInterval) {
+        const rrOrAr =
+          indicatorAction === IndicatorAction.riskReward ||
+          (indicatorAction === IndicatorAction.startDca &&
+            this.scaleAr) ||
+          (indicatorAction === IndicatorAction.closeDeal &&
+            section !== IndicatorSection.sl &&
+            this.tpAr) ||
+          (indicatorAction === IndicatorAction.closeDeal &&
+            section === IndicatorSection.sl &&
+            this.slAr)
+        const otherOnType = rrOrAr
+          ? []
+          : filteredIndicators.filter(
+              (i) =>
+                i.indicatorAction === indicatorAction &&
+                ((!i.section && !section) || i.section === section),
+            )
+        const lowerIntervals = otherOnType.filter(
+          (i) =>
+            timeIntervalMap[i.indicatorInterval] <
+            timeIntervalMap[indicatorInterval],
+        ).length
+        const useAnd =
+          i.indicatorAction === IndicatorAction.closeDeal
+            ? i.section === IndicatorSection.sl
+              ? !settings.stopDealSlLogic ||
+                settings.stopDealSlLogic === IndicatorsLogicEnum.and
+              : !settings.stopDealLogic ||
+                settings.stopDealLogic === IndicatorsLogicEnum.and
+            : i.indicatorAction === IndicatorAction.startBot
+              ? !settings.startBotLogic ||
+                settings.startBotLogic === IndicatorsLogicEnum.and
+              : i.indicatorAction === IndicatorAction.startDeal
+                ? !settings.startDealLogic ||
+                  settings.startDealLogic === IndicatorsLogicEnum.and
+                : i.indicatorAction === IndicatorAction.stopBot
+                  ? !settings.stopBotLogic ||
+                    settings.stopBotLogic === IndicatorsLogicEnum.and
+                  : false
+        const hasLower = rrOrAr
+          ? false
+          : otherOnType.length > 1 && lowerIntervals > 0 && useAnd
+        if (hasLower) {
+          this.handleDebug(
+            `Indicator ${uuid} ${symbol} ${indicatorAction} has indicators with lower interval: ${lowerIntervals}`,
+          )
+        }
+        const indicatorData: BotParentIndicatorEventDto = {
+          data: {
+            indicatorConfig:
+              type === IndicatorEnum.lw
+                ? {
+                    type: IndicatorEnum.lw,
+                    lwThreshold: +(lwThreshold ?? 2),
+                    lwMaxDuration: +(lwMaxDuration ?? 1000),
+                  }
+                : type === IndicatorEnum.obfvg
+                  ? { type }
+                  : type === IndicatorEnum.dc
+                    ? { type, length: indicatorLength }
+                    : type === IndicatorEnum.macd
+                      ? {
+                          type,
+                          shortInterval: macdFast ?? 12,
+                          longInterval: macdSlow ?? 26,
+                          signalInterval: indicatorLength,
+                          percentile,
+                          percentileLookback,
+                          percentilePercentage,
+                          maSignal: macdMaSignal ?? MAEnum.ema,
+                          maSource: macdMaSource ?? MAEnum.ema,
+                        }
+                      : type === IndicatorEnum.st
+                        ? {
+                            type,
+                            factor: factor ?? 3,
+                            atrLength: atrLength ?? 10,
+                          }
+                        : type === IndicatorEnum.pp
+                          ? {
+                              type,
+                              ppHighLeft: +(ppHighLeft ?? 5),
+                              ppHighRight: +(ppHighRight ?? 5),
+                              ppLowLeft: +(ppLowLeft ?? 5),
+                              ppLowRight: +(ppLowRight ?? 5),
+                              ppMult: +(ppMult ?? 1),
+                            }
+                          : type === IndicatorEnum.tv
+                            ? {
+                                type,
+                                checkLevel,
+                                useAsEntryExitPoints:
+                                  condition ===
+                                  TradingviewAnalysisConditionEnum.entry,
+                              }
+                            : type === IndicatorEnum.pc
+                              ? {
+                                  type,
+                                  pcUp: Math.abs(+(pcValue ?? '5')),
+                                  pcDown: Math.abs(+(pcValue ?? '5')),
+                                }
+                              : type === IndicatorEnum.div
+                                ? {
+                                    type,
+                                    oscillators: divOscillators ?? [],
+                                  }
+                                : type === IndicatorEnum.ma
+                                  ? {
+                                      type,
+                                      interval: indicatorLength,
+                                      maType: maType || MAEnum.ema,
+                                    }
+                                  : type === IndicatorEnum.ath
+                                    ? {
+                                        type,
+                                        lookback: athLookback ?? 100,
+                                      }
+                                    : type === IndicatorEnum.xo
+                                      ? xOscillator1 ===
+                                        IndicatorEnum.vo
+                                        ? {
+                                            type: xOscillator1,
+                                            voLong: voLong ?? 10,
+                                            voShort: voShort ?? 5,
+                                          }
+                                        : {
+                                            type:
+                                              xOscillator1 ||
+                                              IndicatorEnum.rsi,
+                                            interval: indicatorLength,
+                                          }
+                                      : type === IndicatorEnum.atr
+                                        ? {
+                                            type,
+                                            interval: indicatorLength,
+                                          }
+                                        : type === IndicatorEnum.adr
+                                          ? {
+                                              type,
+                                              interval:
+                                                indicatorLength,
+                                            }
+                                          : type ===
+                                              IndicatorEnum.stoch
+                                            ? {
+                                                type,
+                                                k: indicatorLength,
+                                                dsmooth:
+                                                  stochSmoothD ?? 1,
+                                                ksmooth:
+                                                  stochSmoothK ?? 3,
+                                              }
+                                            : type ===
+                                                IndicatorEnum.stochRSI
+                                              ? {
+                                                  type,
+                                                  k: indicatorLength,
+                                                  dsmooth:
+                                                    stochSmoothD ?? 3,
+                                                  ksmooth:
+                                                    stochSmoothK ?? 3,
+                                                  interval:
+                                                    stochRSI ?? 14,
+                                                }
+                                              : type ===
+                                                  IndicatorEnum.sr
+                                                ? {
+                                                    type,
+                                                    leftBars:
+                                                      leftBars ?? 15,
+                                                    rightBars:
+                                                      rightBars ?? 15,
+                                                  }
+                                                : type ===
+                                                    IndicatorEnum.mar
+                                                  ? {
+                                                      type,
+                                                      mar1type:
+                                                        mar1type ||
+                                                        MAEnum.ema,
+                                                      mar1length:
+                                                        mar1length ||
+                                                        20,
+                                                      mar2type:
+                                                        mar2type ||
+                                                        MAEnum.price,
+                                                      mar2length:
+                                                        mar2length ||
+                                                        20,
+                                                      percentile,
+                                                      percentileLookback,
+                                                      percentilePercentage,
+                                                      trendFilter,
+                                                      trendFilterLookback,
+                                                      trendFilterType,
+                                                      trendFilterValue,
+                                                    }
+                                                  : type ===
+                                                      IndicatorEnum.mfi
+                                                    ? {
+                                                        type,
+                                                        interval:
+                                                          indicatorLength ??
+                                                          14,
+                                                        percentile,
+                                                        percentileLookback,
+                                                        percentilePercentage,
+                                                      }
+                                                    : type ===
+                                                        IndicatorEnum.qfl
+                                                      ? {
+                                                          type,
+                                                          basePeriods:
+                                                            basePeriods ??
+                                                            36,
+                                                          pumpPeriods:
+                                                            pumpPeriods ??
+                                                            8,
+                                                          pump:
+                                                            (pump ??
+                                                              3) /
+                                                            100,
+                                                          baseCrack:
+                                                            (baseCrack ??
+                                                              3) /
+                                                            100,
+                                                        }
+                                                      : type ===
+                                                          IndicatorEnum.uo
+                                                        ? {
+                                                            type,
+                                                            fast:
+                                                              uoFast ??
+                                                              7,
+                                                            middle:
+                                                              uoMiddle ??
+                                                              14,
+                                                            slow:
+                                                              uoSlow ??
+                                                              28,
+                                                            percentile,
+                                                            percentileLookback,
+                                                            percentilePercentage,
+                                                          }
+                                                        : type ===
+                                                            IndicatorEnum.mom
+                                                          ? {
+                                                              type,
+                                                              interval:
+                                                                indicatorLength,
+                                                              source:
+                                                                momSource ??
+                                                                'close',
+                                                              percentile,
+                                                              percentileLookback,
+                                                              percentilePercentage,
+                                                            }
+                                                          : type ===
+                                                              IndicatorEnum.bbwp
+                                                            ? {
+                                                                type,
+                                                                interval:
+                                                                  indicatorLength,
+                                                                source:
+                                                                  momSource ??
+                                                                  'close',
+                                                                lookback:
+                                                                  bbwpLookback ??
+                                                                  252,
+                                                              }
+                                                            : type ===
+                                                                IndicatorEnum.psar
+                                                              ? {
+                                                                  type,
+                                                                  start:
+                                                                    psarStart ??
+                                                                    0.02,
+                                                                  inc:
+                                                                    psarInc ??
+                                                                    0.02,
+                                                                  max:
+                                                                    psarMax ??
+                                                                    0.2,
+                                                                }
+                                                              : type ===
+                                                                  IndicatorEnum.vo
+                                                                ? {
+                                                                    type,
+                                                                    voLong:
+                                                                      voLong ??
+                                                                      10,
+                                                                    voShort:
+                                                                      voShort ??
+                                                                      5,
+                                                                    percentile,
+                                                                    percentileLookback,
+                                                                    percentilePercentage,
+                                                                  }
+                                                                : type ===
+                                                                    IndicatorEnum.kc
+                                                                  ? {
+                                                                      type,
+                                                                      interval:
+                                                                        indicatorLength,
+                                                                      ma:
+                                                                        kcMa ||
+                                                                        MAEnum.ema,
+                                                                      multiplier:
+                                                                        bbwMult ||
+                                                                        2,
+                                                                      range:
+                                                                        kcRange ||
+                                                                        RangeType.atr,
+                                                                      rangeLength:
+                                                                        kcRangeLength ||
+                                                                        20,
+                                                                    }
+                                                                  : type ===
+                                                                      IndicatorEnum.kcpb
+                                                                    ? {
+                                                                        type,
+                                                                        interval:
+                                                                          indicatorLength,
+                                                                        ma:
+                                                                          kcMa ||
+                                                                          MAEnum.ema,
+                                                                        multiplier:
+                                                                          bbwMult ||
+                                                                          2,
+                                                                        range:
+                                                                          kcRange ||
+                                                                          RangeType.atr,
+                                                                        rangeLength:
+                                                                          kcRangeLength ||
+                                                                          20,
+                                                                        percentile,
+                                                                        percentileLookback,
+                                                                        percentilePercentage,
+                                                                      }
+                                                                    : type ===
+                                                                        IndicatorEnum.bb
+                                                                      ? {
+                                                                          type,
+                                                                          interval:
+                                                                            indicatorLength,
+                                                                          bbwMa:
+                                                                            bbwMa ||
+                                                                            MAEnum.sma,
+                                                                          bbwMaLength:
+                                                                            bbwMaLength ||
+                                                                            20,
+                                                                          bbwMult:
+                                                                            bbwMult ||
+                                                                            2,
+                                                                        }
+                                                                      : type ===
+                                                                          IndicatorEnum.bbw
+                                                                        ? {
+                                                                            type,
+                                                                            interval:
+                                                                              indicatorLength,
+                                                                            bbwMa:
+                                                                              bbwMa ||
+                                                                              MAEnum.sma,
+                                                                            bbwMaLength:
+                                                                              bbwMaLength ||
+                                                                              20,
+                                                                            bbwMult:
+                                                                              bbwMult ||
+                                                                              2,
+                                                                            percentile,
+                                                                            percentileLookback,
+                                                                            percentilePercentage,
+                                                                          }
+                                                                        : type ===
+                                                                            IndicatorEnum.bbpb
+                                                                          ? {
+                                                                              type,
+                                                                              interval:
+                                                                                indicatorLength,
+                                                                              bbwMa:
+                                                                                bbwMa ||
+                                                                                MAEnum.sma,
+                                                                              bbwMaLength:
+                                                                                bbwMaLength ||
+                                                                                20,
+                                                                              bbwMult:
+                                                                                bbwMult ||
+                                                                                2,
+                                                                              percentile,
+                                                                              percentileLookback,
+                                                                              percentilePercentage,
+                                                                            }
+                                                                          : type ===
+                                                                              IndicatorEnum.ecd
+                                                                            ? {
+                                                                                type,
+                                                                              }
+                                                                            : ({
+                                                                                type,
+                                                                                interval:
+                                                                                  indicatorLength,
+                                                                                percentile,
+                                                                                percentileLookback,
+                                                                                percentilePercentage,
+                                                                              } as IndicatorConfig),
+            interval:
+              type === IndicatorEnum.adr
+                ? ExchangeIntervals.oneD
+                : indicatorInterval,
+            symbol,
+            exchange: this.data.exchange,
+            test: false,
+            limitMultiplier: serviceRestart
+              ? this.convertToMultiplier(keepConditionBars)
+              : undefined,
+            load1d: rrOrAr || hasLower,
+          },
+          event: 'subscribeIndicator',
+          botId: this.botId,
+          responseId: v4(),
+          responseParams: {
+            uuid,
+            symbol,
+          },
+          type: this.botType,
+        }
+        const { id, room, data, cb } =
+          await this.sendIndicatorSubscribeEvent(indicatorData)
+        if (!id) {
+          this.handleDebug(
+            `Indicator ${uuid} ${symbol} not connected`,
+          )
+          return
+        }
+        const maChild =
+          type === IndicatorEnum.ma &&
+          maCrossingValue !== MAEnum.price &&
+          maCrossingInterval &&
+          maCrossingLength &&
+          maUUID &&
+          maCrossingValue &&
+          indicatorAction !== IndicatorAction.riskReward &&
+          !(
+            this.scaleAr &&
+            indicatorAction === IndicatorAction.startDca
+          ) &&
+          !(
+            indicatorAction === IndicatorAction.closeDeal &&
+            section !== IndicatorSection.sl &&
+            this.tpAr
+          ) &&
+          !(
+            indicatorAction === IndicatorAction.closeDeal &&
+            section === IndicatorSection.sl &&
+            this.slAr
+          )
+        const xoChild =
+          type === IndicatorEnum.xo &&
+          xOscillator2 &&
+          xOscillator2Interval &&
+          xOscillator2length &&
+          xoUUID &&
+          indicatorAction !== IndicatorAction.riskReward &&
+          !(
+            this.scaleAr &&
+            indicatorAction === IndicatorAction.startDca
+          ) &&
+          !(
+            indicatorAction === IndicatorAction.closeDeal &&
+            section !== IndicatorSection.sl &&
+            this.tpAr
+          ) &&
+          !(
+            indicatorAction === IndicatorAction.closeDeal &&
+            section === IndicatorSection.sl &&
+            this.slAr
+          )
+        const key = `${uuid}@${symbol}`
+        const findInCurrent = serviceRestart
+          ? this.data.indicatorsData?.find(
+              (id) =>
+                id.signature === this.getIndicatorSignature(i) &&
+                id.symbol === symbol &&
+                id.uuid === uuid,
+            )
+          : _indicators.get(key)
+
+        const active = (findInCurrent?.statusTo ?? 0) > +new Date()
+        const k = `${indicatorInterval}@${indicatorAction}`
+        this.indicatorsIntervalActionMap.set(
+          k,
+          (this.indicatorsIntervalActionMap.get(k) ?? 0) + 1,
+        )
+        this.indicators.set(key, {
+          uuid,
+          id: id,
+          room,
+          status: active ? (findInCurrent?.status ?? false) : false,
+          statusSince: active
+            ? findInCurrent?.statusSince
+            : undefined,
+          statusTo: active ? findInCurrent?.statusTo : undefined,
+          numberOfSignals: active
+            ? findInCurrent?.numberOfSignals
+            : undefined,
+          data: !!data,
+          history: data ?? [],
+          symbol,
+          key,
+          action: indicatorAction,
+          maCross: false,
+          section,
+          interval: indicatorInterval,
+          parentIndicator: '',
+          childIndicator: maChild ? maUUID : xoChild ? xoUUID : '',
+          cb,
+          groupId: i.groupId,
+          is1d: rrOrAr || hasLower,
+        })
+        const text = `Bot connected to ${type} indicator. Id: ${id}, room: ${room}`
+        if (this.showIndicatorLogs()) {
+          this.handleLog(text)
+        } else {
+          this.handleDebug(text)
+        }
+        if (maChild) {
+          const load1d =
+            hasLower &&
+            timeIntervalMap[indicatorInterval] <=
+              timeIntervalMap[maCrossingInterval]
+          const indicatorChildData: BotParentIndicatorEventDto = {
+            data: {
+              indicatorConfig: {
+                type,
+                interval: maCrossingLength,
+                maType: maCrossingValue,
+              },
+              interval: maCrossingInterval,
+              symbol,
+              exchange: this.data.exchange,
+              test: false,
+              load1d,
+            },
+
+            botId: this.botId,
+            responseId: v4(),
+            responseParams: { uuid: maUUID, symbol },
+            event: 'subscribeIndicator',
+            type: this.botType,
+          }
+          const {
+            id: idChild,
+            room: roomChild,
+            data: dataChild,
+            cb: cbChild,
+          } = await this.sendIndicatorSubscribeEvent(
+            indicatorChildData,
+          )
+          if (!idChild) {
+            this.handleWarn(
+              `Indicator ${maUUID} ${symbol} not connected`,
+            )
+            return
+          }
+          const maKey = `${maUUID}@${symbol}`
+          const findInCurrent = _indicators.get(maKey)
+
+          const active =
+            !serviceRestart &&
+            (findInCurrent?.statusTo ?? 0) > +new Date()
+          this.indicators.set(maKey, {
+            uuid: maUUID,
+            id: idChild,
+            room: roomChild,
+            status: active ? (findInCurrent?.status ?? false) : false,
+            statusSince: active
+              ? findInCurrent?.statusSince
+              : undefined,
+            statusTo: active ? findInCurrent?.statusTo : undefined,
+            numberOfSignals: active
+              ? findInCurrent?.numberOfSignals
+              : undefined,
+            data: !!dataChild,
+            history: dataChild ?? [],
+            symbol,
+            key: maKey,
+            action: indicatorAction,
+            maCross: true,
+            section,
+            interval: indicatorInterval,
+            parentIndicator: uuid,
+            childIndicator: '',
+            cb: cbChild,
+            groupId: '',
+            is1d: load1d,
+          })
+          const text = `Bot connected to ${type} indicator. Id: ${idChild}, room: ${roomChild}`
+          if (this.showIndicatorLogs()) {
+            this.handleLog(text)
+          } else {
+            this.handleDebug(text)
+          }
+        }
+        if (xoChild) {
+          const load1d =
+            hasLower &&
+            timeIntervalMap[indicatorInterval] <=
+              timeIntervalMap[
+                xOscillator2Interval || indicatorInterval
+              ]
+          const indicatorChildData: BotParentIndicatorEventDto = {
+            data: {
+              indicatorConfig:
+                xOscillator2 === IndicatorEnum.vo
+                  ? {
+                      type: xOscillator2,
+                      voLong: _xOscillator2voLong ?? voLong ?? 10,
+                      voShort: _xOscillator2voShort ?? voShort ?? 5,
+                    }
+                  : {
+                      type: xOscillator2 || IndicatorEnum.mfi,
+                      interval: xOscillator2length || indicatorLength,
+                    },
+              interval: xOscillator2Interval || indicatorInterval,
+              symbol,
+              exchange: this.data.exchange,
+              test: false,
+              load1d,
+            },
+            event: 'subscribeIndicator',
+            botId: this.botId,
+            responseId: v4(),
+            responseParams: { uuid: xoUUID, symbol },
+            type: this.botType,
+          }
+          const {
+            id: idChild,
+            room: roomChild,
+            data: dataChild,
+            cb: cbChild,
+          } = await this.sendIndicatorSubscribeEvent(
+            indicatorChildData,
+          )
+          if (!idChild) {
+            this.handleWarn(
+              `Indicator ${xoUUID} ${symbol} not connected`,
+            )
+            return
+          }
+          const xoKey = `${xoUUID}@${symbol}`
+          const findInCurrent = _indicators.get(xoKey)
+          const active =
+            !serviceRestart &&
+            (findInCurrent?.statusTo ?? 0) > +new Date()
+          this.indicators.set(xoKey, {
+            uuid: xoUUID,
+            id: idChild,
+            room: roomChild,
+            status: active ? (findInCurrent?.status ?? false) : false,
+            statusSince: active
+              ? findInCurrent?.statusSince
+              : undefined,
+            statusTo: active ? findInCurrent?.statusTo : undefined,
+            numberOfSignals: active
+              ? findInCurrent?.numberOfSignals
+              : undefined,
+            data: !!dataChild,
+            history: dataChild ?? [],
+            symbol,
+            key: xoKey,
+            action: indicatorAction,
+            maCross: true,
+            section,
+            interval: indicatorInterval,
+            childIndicator: '',
+            parentIndicator: uuid,
+            cb: cbChild,
+            groupId: '',
+            is1d: load1d,
+          })
+          const text = `Bot connected to ${type} indicator. Id: ${idChild}, room: ${roomChild}`
+          if (this.showIndicatorLogs()) {
+            this.handleLog(text)
+          } else {
+            this.handleDebug(text)
+          }
+        }
+      } else {
+        this.handleDebug(
+          `Bot start condition set to ${type}, but values wasn't provided.`,
+        )
+      }
     }
 
     private startSessionCheckTimer() {
