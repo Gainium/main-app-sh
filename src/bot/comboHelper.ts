@@ -4583,9 +4583,16 @@ function createComboBotHelper<
      * there. Fail-open on anything unsizeable (no price, no exchange info, no
      * sizing report) — that is the behaviour before this check existed.
      *
+     * A manual request (`trigger === 'manual'`) is reported on every click,
+     * outside the latch, so it neither consumes nor resets the automatic
+     * retries' once-per-condition report (spec 144).
+     *
      * @returns {boolean} true when the deal was refused
      */
-    async refuseDealBelowMinimumBudget(symbol: string): Promise<boolean> {
+    async refuseDealBelowMinimumBudget(
+      symbol: string,
+      trigger?: NewDealTrigger,
+    ): Promise<boolean> {
       const key = standingConditionKey(baseGridBelowMinimumBudget, symbol)
       if (!this.futures) {
         return false
@@ -4612,8 +4619,12 @@ function createComboBotHelper<
       const ed = await this.getExchangeInfo(symbol)
       // Once per (pair, condition), not once per cycle — the level count and
       // the base order size are settings, so nothing but an edit clears this.
-      // See `openNewDeal`'s balance refusal and spec 008.
-      if (this.standingConditionLatch.shouldReport(key, +new Date())) {
+      // See `openNewDeal`'s balance refusal and spec 008. A click is always
+      // answered (spec 144).
+      if (
+        trigger === 'manual' ||
+        this.standingConditionLatch.shouldReport(key, +new Date())
+      ) {
         this.handleErrors(
           gridBudgetRefusalMessage({
             budget,
@@ -5614,7 +5625,7 @@ function createComboBotHelper<
           // Spec 087. Before the balance check, because this is a settings
           // fault whatever the account holds — and a shortfall computed from an
           // over-committed base order would name the wrong cause.
-          if (await this.refuseDealBelowMinimumBudget(symbol)) {
+          if (await this.refuseDealBelowMinimumBudget(symbol, trigger)) {
             this.resetPending(this.botId, symbol)
             this.endMethod(_id)
             if (cbIfNotOpened) {
@@ -5793,8 +5804,10 @@ function createComboBotHelper<
             // Once per (pair, condition), not once per cycle — same defect and
             // same reasoning as the DCA path; see `dcaHelper.openNewDeal` and
             // spec 008. Combo has no terminal deal type, so there is no
-            // one-shot exemption here.
+            // one-shot exemption here; a manual click is always answered
+            // (spec 144).
             if (
+              trigger === 'manual' ||
               this.standingConditionLatch.shouldReport(
                 standingConditionKey(notEnoughBalanceNewDeal, symbol),
                 +new Date(),

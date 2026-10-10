@@ -245,6 +245,50 @@ describe('a combo base grid the venue minimum cannot fund (spec 087)', () => {
     })
   })
 
+  describe('spec 144 a manual request is always answered', () => {
+    it('§1.1 reports every manual refusal, not just the first', async () => {
+      const bot = makeBot()
+      for (let i = 0; i < 3; i++) {
+        await bot.refuseDealBelowMinimumBudget('SOL-USD', 'manual')
+      }
+      expect(bot.reported).to.have.length(3)
+    })
+
+    it('§1.3 still refuses a manual request', async () => {
+      const bot = makeBot()
+      expect(
+        await bot.refuseDealBelowMinimumBudget('SOL-USD', 'manual'),
+      ).to.equal(true)
+    })
+
+    it('§1.3 a manual report does not consume or reset the automatic latch', async () => {
+      const bot = makeBot()
+      // Manual first: the automatic retry after it is still the first report.
+      await bot.refuseDealBelowMinimumBudget('SOL-USD', 'manual')
+      await bot.refuseDealBelowMinimumBudget('SOL-USD')
+      expect(bot.reported).to.have.length(2)
+      // Latched now: further retries stay silent, clicks in between do not
+      // re-arm them.
+      await bot.refuseDealBelowMinimumBudget('SOL-USD', 'manual')
+      await bot.refuseDealBelowMinimumBudget('SOL-USD')
+      await bot.refuseDealBelowMinimumBudget('SOL-USD', 'timer')
+      expect(bot.reported).to.have.length(3)
+    })
+
+    it('§1.1 openNewDealMan labels its call manual', async () => {
+      const bot = makeBot()
+      const calls: any[][] = []
+      bot.openNewDeal = async (...a: any[]) => {
+        calls.push(a)
+      }
+      await bot.openNewDealMan('SOL-USD')
+      expect(calls).to.have.length(1)
+      expect(calls[0][1]).to.equal('SOL-USD')
+      expect(calls[0][2]).to.equal(true)
+      expect(calls[0][6]).to.equal('manual')
+    })
+  })
+
   describe('§5.4 a correctly funded pair is untouched', () => {
     it('does not refuse at a level count the budget funds', async () => {
       for (const levels of [2, 3, 5, 7, 8]) {

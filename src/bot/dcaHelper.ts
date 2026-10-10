@@ -15449,7 +15449,17 @@ function createDCABotHelper<
         const symbols = _symbol ? [_symbol] : (settings.pair ?? [])
         this.handleLog('Open new deal manualy')
         for (const symbol of symbols) {
-          this.openNewDeal(this.botId, symbol, true)
+          // Labelled so a refusal is reported on every click, not latched
+          // like the automatic retries (spec 144).
+          this.openNewDeal(
+            this.botId,
+            symbol,
+            true,
+            false,
+            0,
+            undefined,
+            'manual',
+          )
         }
       }
     }
@@ -17099,6 +17109,7 @@ function createDCABotHelper<
         : await this.reduceToAvailableRatio(checkBalance, symbol)
       if (!checkBalance.status && reduce.ratio === null) {
         if (
+          trigger === 'manual' ||
           this.standingConditionLatch.shouldReport(
             standingConditionKey(notEnoughBalanceNewDeal, symbol),
             +new Date(),
@@ -17606,9 +17617,11 @@ function createDCABotHelper<
             // `required`/`price` are recomputed from the live price every cycle,
             // so the text differs each time while the condition is identical.
             // Terminal deals are exempt: that is a one-shot the user just asked
-            // for, it stops the bot below, and it must always be answered.
+            // for, it stops the bot below, and it must always be answered. So
+            // is a manual click, for the same reason (spec 144).
             if (
               settings.type === DCATypeEnum.terminal ||
+              trigger === 'manual' ||
               this.standingConditionLatch.shouldReport(
                 standingConditionKey(notEnoughBalanceNewDeal, symbol),
                 +new Date(),

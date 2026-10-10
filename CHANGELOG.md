@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.88.8] - 2026-10-10
+
+### Fixed
+
+- Manual "open deal": when a deal cannot open because the account balance is too low, or because a combo pair's budget cannot fund every base grid level at the exchange minimum, every manual request now shows the reason. Previously only the first request in a while did, and later clicks were refused silently. Automatic retries still report the condition once. Whether a deal opens is unchanged.
+
 ## [1.88.7] - 2026-10-09
 
 ### Fixed
