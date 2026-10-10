@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.90.1] - 2026-10-11
+
+### Fixed
+
+- RabbitMQ: a publish that met a full channel write buffer was reported as a failed send, although the message was already buffered and delivered. Publishers now wait for the buffer to drain, and the condition is logged at most once a minute per queue. Request/reply calls no longer give up on a request that was in fact sent.
+- Indicators: when the price connector restarts, every indicator re-requests its candle stream at once. Identical requests made within a short window are now sent once, so the burst no longer overruns the channel.
+
 ## [1.90.0] - 2026-10-10
 
 ### Changed

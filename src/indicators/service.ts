@@ -75,9 +75,9 @@ import { IdMute, IdMutex } from '../utils/mutex'
 import { isKucoin, isOkx, isUsdmKucoin } from '../utils/exchange'
 import RedisClient, { RedisWrapper } from '../db/redis'
 import { removePaperFormExchangeName } from '../exchange/helpers'
-import RabbitClient from '../db/rabbit'
 import { getId } from '.'
 import { CandlesProvider } from './candleProvider'
+import { CandlesRequestBatcher } from './candlesRequests'
 
 const { sleep } = utils
 
@@ -362,7 +362,6 @@ class InternalIndicator {
   private limitMultiplier = 0
   private is1d?: boolean = false
   private lastSentUpdateAt = 0
-  private rabbitClient = new RabbitClient()
   constructor({
     indicatorConfig,
     test,
@@ -1188,7 +1187,7 @@ class InternalIndicator {
     }
     // Display pair, not symbolCode — must match getRedisChannelName() above
     // and the connector's display-pair keyed subscription maps.
-    this.rabbitClient.send('candlesRequests', {
+    CandlesRequestBatcher.getInstance().request({
       symbol: this.symbol,
       exchange,
       interval,

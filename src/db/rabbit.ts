@@ -25,6 +25,72 @@ const sendWithCallbackMutex = new IdMutex(1000)
 
 const retryTimeout = 30 * 1000
 
+// --- Write-buffer backpressure -------------------------------------------------
+// `channel.publish` mirrors `stream.Writable#write`: `false` means the channel's
+// write buffer is over its high-water mark, NOT that the message was dropped —
+// it is already buffered and will go out. The right response is to wait for the
+// channel's 'drain' before publishing more, not to report a failure.
+
+const DRAIN_TIMEOUT_MS = 10 * 1000
+
+const BACKPRESSURE_LOG_MS = 60 * 1000
+
+const drainWaits = new WeakMap<Channel, Promise<void>>()
+
+/**
+ * Resolves on the channel's next 'drain' (or 'close', or after
+ * DRAIN_TIMEOUT_MS). Every publisher waiting on the same channel shares one
+ * listener pair, so a burst cannot pile up thousands of 'drain' listeners.
+ */
+export const waitForDrain = (
+  channel: Channel,
+  timeoutMs = DRAIN_TIMEOUT_MS,
+): Promise<void> => {
+  let wait = drainWaits.get(channel)
+  if (!wait) {
+    wait = new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer)
+        channel.removeListener('drain', done)
+        channel.removeListener('close', done)
+        drainWaits.delete(channel)
+        resolve()
+      }
+      const timer = setTimeout(done, timeoutMs)
+      channel.once('drain', done)
+      channel.once('close', done)
+    })
+    drainWaits.set(channel, wait)
+  }
+  return wait
+}
+
+const backpressureNotices = new Map<
+  string,
+  { lastAt: number; suppressed: number }
+>()
+
+/** One log line per queue per BACKPRESSURE_LOG_MS, carrying the count. */
+export const noteBackpressure = (queue: string, now = Date.now()): boolean => {
+  const notice = backpressureNotices.get(queue) ?? { lastAt: 0, suppressed: 0 }
+  backpressureNotices.set(queue, notice)
+  if (now - notice.lastAt < BACKPRESSURE_LOG_MS) {
+    notice.suppressed += 1
+    return false
+  }
+  logger.warn(
+    `${prefix} Write buffer full publishing to ${queue}, waiting for drain${
+      notice.suppressed
+        ? ` (${notice.suppressed} more since the last notice)`
+        : ''
+    }`,
+  )
+  notice.lastAt = now
+  notice.suppressed = 0
+  return true
+}
+// ------------------------------------------------------------------------------
+
 // --- RPC-latency counters (Phase 4b) ------------------------------------------
 // Module-level (NOT per-instance) so every Rabbit instance in a process
 // accumulates into the same table — the main-app publisher reads a snapshot of
@@ -419,10 +485,10 @@ class Rabbit {
       )
 
       if (!result) {
-        logger.error(
-          `${prefix} Failed to send message to queue ${queue} in sendWithCallback`,
-        )
-        return null
+        // buffered, not dropped: the request is on its way, so keep waiting
+        // for its reply — just let the buffer drain first
+        noteBackpressure(queue)
+        await waitForDrain(dedicatedChannel)
       }
       let tag: Replies.Consume | null = null
 
@@ -546,10 +612,10 @@ class Rabbit {
         Buffer.from(JSON.stringify({ payload })),
       )
       if (!result) {
-        logger.error(
-          `${prefix} Failed to send message to queue ${queue} in send`,
-        )
-        return
+        // buffered, not dropped: hold this send's mutex slot until the buffer
+        // drains, so a burst of publishers is throttled instead of growing it
+        noteBackpressure(queue)
+        await waitForDrain(channel)
       }
     } catch (e) {
       logger.error(`${prefix} Error in send in ${queue}: ${e}, ${payload}`)
