@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- Indicators: when a bot service, the metrics service or the automations service restarted, the indicator service forgot every subscriber of the indicator rooms that service used, including bots in other services sharing the same room. The room could later be closed while those bots were still listening, and they stopped receiving indicator updates until they were restarted. A restart now forgets only the restarted service's own subscriptions. Bot subscriptions now name the service they come from.
+- Indicators: when a bot service or another service that consumes indicators (such as the metrics service) restarted, the indicator service forgot every subscriber of the indicator rooms that service used, including bots in other services sharing the same room. The room could later be closed while those bots were still listening, and they stopped receiving indicator updates until they were restarted. A restart now forgets only the restarted service's own subscriptions. Bot subscriptions now name the service they come from.
 - DCA bots: when two of a bot's indicator conditions used the same indicator, settings and interval on a pair (for example two deals on the same pair at different DCA levels, or a DCA level and a start condition), removing the one subscribed first stopped the other from receiving updates. The bot's listener for that indicator now stays until its last condition is removed.
 
 ## [1.89.1] - 2026-10-10
