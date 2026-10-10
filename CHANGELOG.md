@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.89.1] - 2026-10-10
+
+### Fixed
+
+- When the exchange refuses an order as a duplicate and confirms it has no such order, the bot re-sends it under a new client order id. That id was made by replacing the last character with `2`, so an id that already ended in `2` was re-sent unchanged, refused again, and the order was dropped, leaving that level empty on the exchange. The re-sent id now always differs from the refused one, with the same prefix and length. The check that first asks the exchange and keeps a live original is unchanged.
+
 ## [1.89.0] - 2026-10-10
 
 ### Changed

@@ -266,3 +266,45 @@ describe('a venue "client order ID already exists" is resolved before any write-
     ])
   })
 })
+
+describe('a duplicate re-send never reuses the refused id (spec 145)', () => {
+  const resendAfterDuplicate = async (clientOrderId: string) => {
+    const bot = makeBot(
+      async (req: any) =>
+        req.newClientOrderId === clientOrderId
+          ? refused('Duplicated externalId + symbol')()
+          : {
+              status: StatusEnum.ok,
+              reason: null,
+              data: { ...makeOrder(), clientOrderId: req.newClientOrderId },
+            },
+      refused('Order not found'),
+    )
+    await bot.sendOrderToExchange({ ...makeOrder(), clientOrderId })
+    return bot.venueCalls.map((c: any) => c.newClientOrderId) as string[]
+  }
+
+  it('§4.1 an id ending in 2 is re-sent under a different id', async () => {
+    const original = 'D-RO-1H3SrU63c7ZVNKPryk1kXG9LKUQ6i2'
+    const sent = await resendAfterDuplicate(original)
+    expect(sent).to.have.length(2)
+    expect(sent[1]).to.not.equal(original)
+    expect(sent[1]).to.have.length(original.length)
+    expect(sent[1].slice(0, -1)).to.equal(original.slice(0, -1))
+  })
+
+  it('§4.2 an id already regenerated once is re-sent under a different id', async () => {
+    const sent = await resendAfterDuplicate(REGENERATED)
+    expect(sent).to.have.length(2)
+    expect(sent[1]).to.not.equal(REGENERATED)
+    expect(sent[1]).to.have.length(REGENERATED.length)
+    expect(sent[1].slice(0, -1)).to.equal(REGENERATED.slice(0, -1))
+  })
+
+  it('§4.3 an id not ending in 2 still regenerates to …2', async () => {
+    expect(await resendAfterDuplicate(CLIENT_ID)).to.deep.equal([
+      CLIENT_ID,
+      REGENERATED,
+    ])
+  })
+})

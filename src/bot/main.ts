@@ -8923,10 +8923,14 @@ class MainBot<T extends IMainBot> {
             }
             this.deleteOrder(order.clientOrderId)
             this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+            // Swap the last character for one it is not: a fixed `2` re-sent
+            // an id already ending in `2` (incl. one regenerated here before)
+            // unchanged, and the venue refused that copy for good. Same prefix
+            // and length; `2`/`3` are valid in every id alphabet (hex for HL).
             order.clientOrderId = `${order.clientOrderId.slice(
               0,
               order.clientOrderId.length - 1,
-            )}2`
+            )}${order.clientOrderId.endsWith('2') ? '3' : '2'}`
             this.endMethod(_id)
             return this.sendOrderToExchange(order, returnError, 1)
           }
