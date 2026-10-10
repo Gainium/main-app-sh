@@ -497,7 +497,7 @@ class InternalIndicatorsFactory {
     })
   }
 
-  private async removeCallbackIndicator(id: string) {
+  private async removeCallbackIndicator(id: string, subscriberId?: string) {
     const indicator = this.indicators.get(id)
     if (!indicator) {
       logger.error(
@@ -508,7 +508,7 @@ class InternalIndicatorsFactory {
     const worker = this.getWorkerById(indicator.workerId)
     const payload: IndicatorServiceParentMessageRemoveCallback = {
       event: 'removeCallback',
-      payload: [id],
+      payload: subscriberId === undefined ? [id] : [id, subscriberId],
       id: id,
       response: '',
     }
@@ -809,6 +809,20 @@ class InternalIndicatorsFactory {
       find.subcribersSet = new Set()
       this.indicators.set(id, find)
       await this.removeCallbackIndicator(id)
+    }
+  }
+  /**
+   * Forget one subscriber (external id, as returned by `subscribe`) whose
+   * process died, without closing the room even if it was the last one: the
+   * restarted process re-subscribes to the same rooms. Unlike
+   * `removeCallback(room)` it leaves the room's other subscribers counted.
+   */
+  public async removeSubscriberCallback(id: string) {
+    const [subscriberId, idToFind] = id.split(this.splitPhrase)
+    const find = this.indicators.get(idToFind)
+    if (find && find.subcribersSet.delete(id)) {
+      this.subscribersCount -= 1
+      await this.removeCallbackIndicator(idToFind, subscriberId)
     }
   }
 

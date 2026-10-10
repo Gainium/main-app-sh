@@ -5258,6 +5258,12 @@ export type BotParentIndicatorEventDto = {
     symbol: string
   }
   type: BotType
+  /**
+   * Restart beacon of the sending process (`botService${BotServiceType}`), so
+   * the indicator service can drop exactly that process's subscriptions when
+   * it restarts. Absent from older senders.
+   */
+  service?: string
 }
 
 export type BotParentUnsubscribeIndicatorEventDto = {
@@ -5650,7 +5656,8 @@ export type IndicatorServiceChildMessageRemoveCallback = {
 
 export type IndicatorServiceParentMessageRemoveCallback = {
   event: 'removeCallback'
-  payload: [string]
+  /** [room] drops every subscriber; [room, subscriberId] drops only that one */
+  payload: [string] | [string, string]
   id: string
   response: string
 }

@@ -511,11 +511,21 @@ class InternalIndicator {
     }
     return { id: externalId }
   }
-  public removeCallback(id: string) {
-    this.subscribers = []
+  /**
+   * Forget subscribers without closing the room, for subscribers whose process
+   * died and will never unsubscribe. With `subscriberId` only that one is
+   * dropped; without it every subscriber is (legacy — also forgets live
+   * subscribers of other processes sharing the room).
+   */
+  public removeCallback(id: string, subscriberId?: string) {
+    this.subscribers =
+      subscriberId === undefined
+        ? []
+        : this.subscribers.filter((s) => s.id !== subscriberId)
     this.handleDebug(
-      `Remove subscriber ${id}. Left - ${this.subscribers.length}`,
+      `Remove subscriber ${subscriberId ?? id}. Left - ${this.subscribers.length}`,
     )
+    return this.subscribers.length
   }
   public unsubscribe(id: string) {
     this.subscribers = this.subscribers.filter((s) => s.id !== id)

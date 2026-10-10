@@ -206,6 +206,7 @@ import {
   defaultLimitFallbackMs,
 } from './dca/limitTimeouts'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
+import { BotServiceType } from '../config'
 import {
   repositionKeepsRestingBaseEntry,
   terminalLimitEntryPrice,
@@ -659,6 +660,12 @@ function createDCABotHelper<
     indicatorRoomConfigMap: Map<string, Set<string>> = new Map()
     indicatorConfigIdMap: Map<string, string> = new Map()
     indicatorSubscribedRooms: Set<string> = new Set()
+    /**
+     * The one Redis listener per indicator room. It serves every config of
+     * this bot in the room (it walks `indicatorRoomConfigMap`), so it must be
+     * the same function for all of them and leave only with the last one.
+     */
+    indicatorRoomCb: Map<string, (_msg: string) => void> = new Map()
     indicatorGroupsToUse: SettingsIndicatorGroup[] = []
     botProfitDb = botProfitChartDb
     /** Bot deals */
@@ -14293,7 +14300,15 @@ function createDCABotHelper<
             data?: IndicatorHistory[]
             lastPrice?: number
           }
-        >(rabbitIndicatorsKey, data, this.indicatorTimeout)
+        >(
+          rabbitIndicatorsKey,
+          // Tag the subscription with this process's restart beacon so a
+          // restart of another process sharing the room leaves it counted.
+          BotServiceType
+            ? { ...data, service: `botService${BotServiceType}` }
+            : data,
+          this.indicatorTimeout,
+        )
         if (result && result?.response) {
           if (result.response.status) {
             const room = `${result.response.room}`
@@ -14302,7 +14317,9 @@ function createDCABotHelper<
             get.add(config)
             this.indicatorRoomConfigMap.set(room, get)
             this.indicatorConfigIdMap.set(result.response.id, config)
-            const cb = this.indicatorDataCbRedis(room)
+            const cb =
+              this.indicatorRoomCb.get(room) ?? this.indicatorDataCbRedis(room)
+            this.indicatorRoomCb.set(room, cb)
             if (!this.indicatorSubscribedRooms.has(room)) {
               this.indicatorSubscribedRooms.add(room)
               if (this.redisSubIndicators) {
@@ -14363,9 +14380,6 @@ function createDCABotHelper<
             } else {
               this.handleDebug(text)
             }
-            if (this.redisSubIndicators && cb) {
-              this.redisSubIndicators.unsubscribe(room, cb)
-            }
             const get = this.indicatorConfigIdMap.get(id)
             this.indicatorConfigIdMap.delete(id)
             if (get) {
@@ -14379,6 +14393,21 @@ function createDCABotHelper<
                   this.indicatorRoomConfigMap.set(room, getRoom)
                 }
               }
+            }
+            // The room listener serves every config of this bot in the room:
+            // drop it only with the last one, or the configs still in the
+            // room (another deal's level, a start condition with the same
+            // indicator) stop receiving data.
+            if (
+              this.redisSubIndicators &&
+              cb &&
+              !this.indicatorRoomConfigMap.has(room)
+            ) {
+              this.redisSubIndicators.unsubscribe(
+                room,
+                this.indicatorRoomCb.get(room) ?? cb,
+              )
+              this.indicatorRoomCb.delete(room)
             }
             return true
           }

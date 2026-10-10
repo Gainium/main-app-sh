@@ -4,13 +4,17 @@ import Rabbit from '../db/rabbit'
 import RedisClient, { RedisWrapper } from '../db/redis'
 import HealthServer from '../utils/healthServer'
 
-import { BotType, rabbitIndicatorsKey, serviceLogRedis } from '../../types'
+import { rabbitIndicatorsKey, serviceLogRedis } from '../../types'
 import type {
   BotParentIndicatorEventDto,
   BotParentUnsubscribeIndicatorEventDto,
   IndicatorHistory,
 } from '../../types'
 import { IdMute, IdMutex } from '../utils/mutex'
+import {
+  IndicatorSubscriberOwners,
+  indicatorSubscriberOwner,
+} from '../indicators/subscriberOwners'
 
 const mutex = new IdMutex()
 const cbMutex = new IdMutex(1000)
@@ -23,8 +27,8 @@ class IndicatorsService {
   private rabbitClient: Rabbit = new Rabbit()
   private redisClient: RedisWrapper | null = null
   private redisSubClient: RedisWrapper | null = null
-  private rabbitIdRoomsMapDca: Map<string, Set<string>> = new Map()
-  private rabbitIdRoomsMapCombo: Map<string, Set<string>> = new Map()
+  /** Subscriber ids per owning process, keyed by its restart beacon. */
+  private subscriberOwners = new IndicatorSubscriberOwners()
   private indicatorsFactory = Indicators.getInstance()
   constructor() {
     this.redisServiceLogListener = this.redisServiceLogListener.bind(this)
@@ -76,17 +80,13 @@ class IndicatorsService {
         return
       }
       if (restart.startsWith('botService')) {
-        const type = restart.replace('botService', '')
         this.handleDebug(
-          `Bot service restarted, remove indicator callbacks for ${type}`,
+          `Bot service restarted, remove indicator callbacks for ${restart.replace('botService', '')}`,
         )
-        const map =
-          type === BotType.dca
-            ? this.rabbitIdRoomsMapDca
-            : this.rabbitIdRoomsMapCombo
-        for (const k of map.keys()) {
-          this.indicatorsFactory.removeCallback(k)
-          map.delete(k)
+        // Drop only the restarted process's own subscriber ids: the rooms are
+        // shared with other processes' live subscribers.
+        for (const { id } of this.subscriberOwners.take(restart)) {
+          void this.indicatorsFactory.removeSubscriberCallback(id)
         }
       }
     } catch (e) {
@@ -157,14 +157,8 @@ class IndicatorsService {
         return null
       }
       const { room, id, message, data, lastPrice } = subscriptionResult
-      const map =
-        msg.type === BotType.dca
-          ? this.rabbitIdRoomsMapDca
-          : this.rabbitIdRoomsMapCombo
-      const get = map.get(room) ?? new Set()
-      get.add(id)
-      map.set(room, get)
       if (id && room) {
+        this.subscriberOwners.add(indicatorSubscriberOwner(msg), room, id)
         this.handleDebug('Subscribed:', 'room', room, 'id', id)
       }
       if (this.rabbitClient) {
@@ -193,19 +187,9 @@ class IndicatorsService {
     const { id } = msg
     await this.indicatorsFactory.unsubscribe(id)
 
-    const map =
-      msg.type === BotType.dca
-        ? this.rabbitIdRoomsMapDca
-        : this.rabbitIdRoomsMapCombo
-    for (const [room, ids] of map.entries()) {
-      if (ids.has(id)) {
-        ids.delete(id)
-        if (ids.size === 0) {
-          map.delete(room)
-        }
-        this.handleDebug('Unsubscribed:', 'room', room, 'id', id)
-        return true
-      }
+    const room = this.subscriberOwners.remove(id)
+    if (room) {
+      this.handleDebug('Unsubscribed:', 'room', room, 'id', id)
     }
     return true
   }
