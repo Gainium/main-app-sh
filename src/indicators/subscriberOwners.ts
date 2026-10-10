@@ -6,7 +6,7 @@ import { BotType } from '../../types'
  *
  * A room (exchange/symbol/interval/indicator config) is shared by every
  * subscriber with the same config — bots of different types, bots in
- * different processes, the metrics service, automations. The old restart
+ * different processes, the metrics service, other consumer services. The old restart
  * handler called `removeCallback(room)` for every room the restarted process
  * had touched, which emptied the room's whole subscriber list. The room kept
  * publishing, but its live subscribers from other processes were no longer
@@ -16,7 +16,8 @@ import { BotType } from '../../types'
  *
  * The owner key is the restart beacon the owning process publishes on
  * `serviceLog`: `botService${BotServiceType}` for bot processes,
- * `metricsService`, `automationsService`.
+ * `metricsService`, or the `service` a consumer process sends with its
+ * subscriptions.
  */
 export const indicatorSubscriberOwner = (msg: {
   type: string
