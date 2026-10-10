@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.89.0] - 2026-10-10
+
+### Changed
+
+- DCA by indicators: the bot now subscribes only the indicator of each open deal's next DCA level, instead of every DCA indicator on every pair. Only that level could act on a signal anyway, so which orders are placed is unchanged, with one difference in timing: when a deal reaches a level, that level's indicator is evaluated from the next candle close on. The candle that had already closed before the deal got there is not counted as its signal. Bots that use DCA indicators for scale adaptive orders keep every indicator subscribed as before.
+
 ## [1.88.8] - 2026-10-10
 
 ### Fixed

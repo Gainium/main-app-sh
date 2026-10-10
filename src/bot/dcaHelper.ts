@@ -708,6 +708,12 @@ function createDCABotHelper<
     pendingDealsPerPair: Map<string, number> = new Map()
     /** Last indicators data map */
     lastIndicatorsDataMap: Map<string, number> = new Map()
+    /**
+     * `uuid@symbol` → when a DCA-level indicator was subscribed because a deal
+     * reached its level. Candles that had already closed by then are not
+     * signals for that level; see `syncDcaIndicatorLevels`.
+     */
+    dcaIndicatorArmedAt: Map<string, number> = new Map()
     /** Initial all deals value */
     allDeals = 0
     /** Allow to place orders by deal*/
@@ -955,6 +961,7 @@ function createDCABotHelper<
       this.deals.set(key, deal)
       this.setDealByStatus(deal.deal.status, key)
       this.setDealBySymbol(deal.deal.symbol.symbol, key)
+      this.scheduleDcaIndicatorSync(this.botId)
       if (save) {
         this.setDealToRedis(
           this.botId,
@@ -977,6 +984,7 @@ function createDCABotHelper<
       this.removeDealByStatus(key)
       if (get) {
         this.removeDealBySymbol(get.deal.symbol.symbol, key)
+        this.scheduleDcaIndicatorSync(this.botId)
       }
     }
 
@@ -5416,6 +5424,22 @@ function createDCABotHelper<
       let risk = false
       let dcaAr = false
       this.lastIndicatorsDataMap.set(key, lastTime)
+      const armedAt = this.dcaIndicatorArmedAt.get(key)
+      if (armedAt !== undefined) {
+        const step =
+          timeIntervalMap[
+            this.indicators.get(key)?.interval ?? ExchangeIntervals.oneM
+          ]
+        if (lastTime + step <= armedAt) {
+          this.handleDebug(
+            `DCA Signals | ${key} candle ${new Date(
+              lastTime,
+            ).toISOString()} closed before the level was armed, skip`,
+          )
+          return
+        }
+        this.dcaIndicatorArmedAt.delete(key)
+      }
       const settings = await this.getAggregatedSettings()
       if (this.data) {
         const [lastData, prevData] = sortedByTime
@@ -14423,6 +14447,7 @@ function createDCABotHelper<
           ...(settings.pair ?? []),
           ...this.getOpenDeals().map((d) => d.deal.symbol.symbol),
         ])
+        const dueDca = this.dueDcaIndicatorKeys(settings)
         const copySymbols = new Set([...symbols])
         if (saveIndicators) {
           ;[...this.indicators.values()].forEach((i) => {
@@ -14491,14 +14516,21 @@ function createDCABotHelper<
           const time = +new Date()
           this.handleDebug(`Open indicators | Symbol ${symbol} start`)
           await Promise.all(
-            filteredIndicators.map((i) =>
-              this.connectSettingsIndicator(i, symbol, {
-                settings,
-                filteredIndicators,
-                serviceRestart,
-                previous: _indicators,
-              }),
-            ),
+            filteredIndicators
+              .filter(
+                (i) =>
+                  !dueDca ||
+                  i.indicatorAction !== IndicatorAction.startDca ||
+                  dueDca.has(`${i.uuid}@${symbol}`),
+              )
+              .map((i) =>
+                this.connectSettingsIndicator(i, symbol, {
+                  settings,
+                  filteredIndicators,
+                  serviceRestart,
+                  previous: _indicators,
+                }),
+              ),
           )
           await sleep(0)
           this.handleDebug(
@@ -14526,6 +14558,118 @@ function createDCABotHelper<
     }
 
     /**
+     * DCA by indicators: each `startDca` indicator is one ladder level, and a
+     * deal only acts on the indicator of its NEXT level (`addDCAOrderByIndicator`
+     * drops every other one). So only that indicator is subscribed, per open
+     * deal, rather than every level on every pair.
+     *
+     * `null` when the bot does not DCA by indicators, or when scale-AR reads the
+     * `startDca` indicators as values — those stay subscribed as before.
+     */
+    private dueDcaIndicatorKeys(
+      settings: Schema['settings'],
+    ): Set<string> | null {
+      if (
+        this.scaleAr ||
+        !settings.useDca ||
+        settings.dcaCondition !== DCAConditionEnum.indicators
+      ) {
+        return null
+      }
+      const levels = (settings.indicators ?? []).filter(
+        (i) => i.indicatorAction === IndicatorAction.startDca,
+      )
+      const due = new Set<string>()
+      for (const d of this.getDealsByStatusAndSymbol({
+        status: DCADealStatusEnum.open,
+      })) {
+        const level = levels[nextLadderLevel(d.deal) - 1]
+        if (level) {
+          due.add(`${level.uuid}@${d.deal.symbol.symbol}`)
+        }
+      }
+      return due
+    }
+
+    @RunWithDelay((botId: string) => `${botId}syncDcaIndicatorLevels`, 1_000)
+    scheduleDcaIndicatorSync(_botId: string) {
+      this.syncDcaIndicatorLevels(this.botId)
+    }
+
+    /**
+     * Move DCA-level subscriptions to where the deals are now: drop the
+     * indicator of a level a deal has passed (or a closed deal's), subscribe
+     * the one it has reached. Runs coalesced after any deal change.
+     *
+     * A newly subscribed level is armed: its first data is the candle that
+     * closed BEFORE the deal reached the level, which the subscribe-everything
+     * engine had already spent while the deal was on the previous level. Only
+     * candles closing after the arm time can fire it.
+     */
+    @IdMute(mutex, (botId: string) => `${botId}openIndicators`)
+    async syncDcaIndicatorLevels(_botId: string) {
+      if (
+        !this.data ||
+        !this.redisSubIndicators ||
+        this.data.settings.dcaCondition !== DCAConditionEnum.indicators
+      ) {
+        return
+      }
+      const settings = await this.getAggregatedSettings()
+      const due = this.dueDcaIndicatorKeys(settings)
+      if (!due) {
+        return
+      }
+      for (const i of [...this.indicators.values()]) {
+        if (i.action !== IndicatorAction.startDca) {
+          continue
+        }
+        const levelKey = i.parentIndicator
+          ? `${i.parentIndicator}@${i.symbol}`
+          : i.key
+        if (due.has(levelKey)) {
+          continue
+        }
+        await this.sendIndicatorUnsubscribeEvent(i.id, i.room, i.cb)
+        this.indicators.delete(i.key)
+        this.lastIndicatorsDataMap.delete(i.key)
+        this.dcaIndicatorArmedAt.delete(i.key)
+        if (!i.parentIndicator) {
+          const k = `${i.interval}@${i.action}`
+          this.indicatorsIntervalActionMap.set(
+            k,
+            (this.indicatorsIntervalActionMap.get(k) ?? 1) - 1,
+          )
+        }
+      }
+      const filteredIndicators = (settings.indicators ?? []).filter(
+        (i) =>
+          i.type !== IndicatorEnum.unpnl && i.type !== IndicatorEnum.session,
+      )
+      for (const key of due) {
+        if (this.indicators.has(key)) {
+          continue
+        }
+        const at = key.indexOf('@')
+        const uuid = key.slice(0, at)
+        const symbol = key.slice(at + 1)
+        const i = filteredIndicators.find((f) => f.uuid === uuid)
+        if (!i) {
+          continue
+        }
+        this.handleDebug(`DCA Signals | Subscribe next level ${key}`)
+        await this.connectSettingsIndicator(i, symbol, {
+          settings,
+          filteredIndicators,
+          serviceRestart: false,
+          previous: new Map(),
+          armDcaLevel: true,
+        })
+      }
+      this.runAfterIndicatorsConnected(this.botId)
+    }
+
+    /**
      * Subscribe one configured indicator (and its MA / XO child) on `symbol`.
      * Split out of `openIndicators` so `syncDcaIndicatorLevels` can subscribe
      * a single DCA level without rebuilding every subscription.
@@ -14538,11 +14682,13 @@ function createDCABotHelper<
         filteredIndicators,
         serviceRestart,
         previous: _indicators,
+        armDcaLevel,
       }: {
         settings: Schema['settings']
         filteredIndicators: SettingsIndicators[]
         serviceRestart?: boolean
         previous: Map<string, LocalIndicators>
+        armDcaLevel?: boolean
       },
     ) {
       if (!this.data) {
@@ -15116,6 +15262,9 @@ function createDCABotHelper<
             symbol,
           },
           type: this.botType,
+        }
+        if (armDcaLevel) {
+          this.dcaIndicatorArmedAt.set(`${uuid}@${symbol}`, Date.now())
         }
         const { id, room, data, cb } =
           await this.sendIndicatorSubscribeEvent(indicatorData)
