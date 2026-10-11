@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.90.2] - 2026-10-11
+
+### Fixed
+
+- Combo and grid bots: a grid level whose size was already an exact number of exchange lots could be rounded up by one extra lot, because the lot-step check used a floating-point remainder that reads some exact multiples (for example 0.118 at a 0.001 step) as almost a whole step. A combo base order could then come out one lot short and the minigrid sell above it one lot larger than the buy it closes. Exact multiples now keep their size; sizes that are genuinely between lots and the exchange-minimum raise round up as before. The Bitget futures price-tick alignment used the same check and is corrected the same way.
+
 ## [1.90.1] - 2026-10-11
 
 ### Fixed

@@ -8072,7 +8072,10 @@ class MainBot<T extends IMainBot> {
       typeof ed?.priceMultiplier?.decimals !== 'undefined' &&
       ed?.priceMultiplier?.decimals !== null
     ) {
-      const mod = this.math.remainder(+order.price, ed.priceMultiplier.decimals)
+      const mod = this.math.gridRemainder(
+        +order.price,
+        ed.priceMultiplier.decimals,
+      )
       if (mod > Number.EPSILON) {
         order.price = `${this.math.round(
           +order.price - mod + ed.priceMultiplier.decimals,
@@ -10682,9 +10685,14 @@ class MainBot<T extends IMainBot> {
                 ? sellQty
                 : buyQty
               : qty
-            const mod = newBalance
-              ? this.math.remainder(gridQty, symbol.baseAsset.step)
-              : gridQty % symbol.baseAsset.step
+            // An already aligned quantity has no remainder; the float `%` of an
+            // exact multiple can read as almost a whole step and gain a lot.
+            const mod =
+              this.math.gridRemainder(gridQty, symbol.baseAsset.step) === 0
+                ? 0
+                : newBalance
+                  ? this.math.remainder(gridQty, symbol.baseAsset.step)
+                  : gridQty % symbol.baseAsset.step
             if (mod > Number.EPSILON) {
               gridQty = this.math.round(
                 gridQty - mod + symbol.baseAsset.step,

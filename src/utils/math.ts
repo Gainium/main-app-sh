@@ -66,6 +66,30 @@ export class MathHelper {
     return ((a * multiplier) % (b * multiplier)) / multiplier
   }
 
+  /**
+   * `remainder()` for an "is `a` on the `b` grid" test. A float remainder of an
+   * exact multiple can come back as a hair under a whole step
+   * (`0.118 % 0.001` is `0.000999…`), and a caller that then rounds up to the
+   * next step adds a full lot to a quantity that was already aligned. Returns 0
+   * when `a / b` is a whole number of steps; falls back to `remainder()` for a
+   * value that is genuinely off the grid.
+   */
+  gridRemainder(a: number, b: number) {
+    const ratio = a / b
+    // The float noise in `a / b` grows with the ratio, so a fixed tolerance
+    // runs out on a large quantity against a small step. The cap keeps the
+    // tolerance far below the smallest gap a genuinely off-grid quantity
+    // shows (a sizeable fraction of a step), so a real remainder survives.
+    const tolerance = Math.min(
+      1e-3,
+      Math.max(this.eps, Math.abs(ratio) * this.eps),
+    )
+    if (Math.abs(ratio - Math.round(ratio)) <= tolerance) {
+      return 0
+    }
+    return this.remainder(a, b)
+  }
+
   stDev(array: number[]) {
     const n = array.length
     const mean = array.reduce((a, b) => a + b, 0) / n
