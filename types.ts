@@ -410,6 +410,30 @@ export enum IndicatorStartConditionEnum {
   bw = 'bw',
 }
 
+/**
+ * What a smoothed oscillator condition compares (only when `smoothing` is on):
+ * - `value` (default): the condition reads the smoothed line S = MA(R) instead
+ *   of the indicator's line R, against indicatorValue / percentile as usual.
+ * - `line`: R against S (gt / lt / cu / cd; the value fields are ignored,
+ *   `bw` never fires). Percentile mode overrides it.
+ */
+export enum SmoothingCompareEnum {
+  value = 'value',
+  line = 'line',
+}
+
+/** Moving averages allowed as oscillator smoothing (`none` = off). */
+export const SMOOTHING_VALUES = [
+  'none',
+  'sma',
+  'ema',
+  'wma',
+  'dema',
+  'tema',
+  'hma',
+  'rma',
+] as const
+
 export enum BBCrossingEnum {
   middle = 'middle',
   upper = 'upper',
@@ -533,6 +557,17 @@ export type SettingsIndicators = {
   factor?: number
   atrLength?: number
   stCondition?: STConditionEnum
+  /**
+   * Smoothable oscillators only (SMOOTHABLE_INDICATORS). Moving average over
+   * the indicator's main line: 'sma' | 'ema' | 'wma' | 'dema' | 'tema' |
+   * 'hma' | 'rma' (case-insensitive). Missing, null, 'none' or unknown = off
+   * (unchanged behaviour).
+   */
+  smoothing?: string | null
+  /** Smoothing length (1..1000); missing, null or 0 = off. */
+  smoothingLength?: number | null
+  /** Missing / null = 'value'. See SmoothingCompareEnum. */
+  smoothingCompare?: SmoothingCompareEnum | null
   pcUp?: string
   pcDown?: string
   pcCondition?: PCConditionEnum
@@ -4114,6 +4149,26 @@ export enum IndicatorEnum {
   lw = 'LW',
 }
 
+/**
+ * Indicators whose single main line can be smoothed: the value oscillators
+ * that the value / percentile conditions read as `value`.
+ */
+export const SMOOTHABLE_INDICATORS = [
+  IndicatorEnum.rsi,
+  IndicatorEnum.cci,
+  IndicatorEnum.mfi,
+  IndicatorEnum.wr,
+  IndicatorEnum.uo,
+  IndicatorEnum.mom,
+  IndicatorEnum.ao,
+  IndicatorEnum.adx,
+  IndicatorEnum.bbpb,
+  IndicatorEnum.kcpb,
+  IndicatorEnum.bbw,
+  IndicatorEnum.vo,
+  IndicatorEnum.mar,
+] as const
+
 export enum MAEnum {
   ema = 'ema',
   sma = 'sma',
@@ -4236,6 +4291,13 @@ export type DivergenceOscillators =
   | IndicatorEnum.bbpb
   | IndicatorEnum.stoch
 
+/** Smoothing of a smoothable oscillator's config; absent = off. */
+type Smoothing = {
+  /** normalised MA type */
+  smoothing?: string
+  smoothingLength?: number
+}
+
 export type IndicatorConfig =
   | { type: IndicatorEnum.lw; lwThreshold: number; lwMaxDuration: number }
   | { type: IndicatorEnum.obfvg }
@@ -4278,12 +4340,14 @@ export type IndicatorConfig =
       mar2type: MAEnum
       mar2length: number
     } & Percentile &
-      TrendFilter)
+      TrendFilter &
+      Smoothing)
   | ({
       type: IndicatorEnum.mom
       interval: number
       source: string
-    } & Percentile)
+    } & Percentile &
+      Smoothing)
   | {
       type: IndicatorEnum.bbwp
       interval: number
@@ -4301,14 +4365,16 @@ export type IndicatorConfig =
         | IndicatorEnum.atr
         | IndicatorEnum.adr
       interval: number
-    } & Percentile)
+    } & Percentile &
+      Smoothing)
   | ({
       type: IndicatorEnum.bbw | IndicatorEnum.bb | IndicatorEnum.bbpb
       interval: number
       bbwMult?: number
       bbwMa?: MAEnum
       bbwMaLength?: number
-    } & Percentile)
+    } & Percentile &
+      Smoothing)
   | ({
       type: IndicatorEnum.kc | IndicatorEnum.kcpb
       interval: number
@@ -4316,7 +4382,8 @@ export type IndicatorConfig =
       ma?: MAEnum
       range?: RangeType
       rangeLength?: number
-    } & Percentile)
+    } & Percentile &
+      Smoothing)
   | ({
       type: IndicatorEnum.macd
       longInterval: number
@@ -4333,7 +4400,8 @@ export type IndicatorConfig =
     }
   | ({
       type: IndicatorEnum.ao
-    } & Percentile)
+    } & Percentile &
+      Smoothing)
   | {
       type: IndicatorEnum.stochRSI
       interval: number
@@ -4346,7 +4414,8 @@ export type IndicatorConfig =
       fast: number
       middle: number
       slow: number
-    } & Percentile)
+    } & Percentile &
+      Smoothing)
   | {
       type: IndicatorEnum.ic
       conversionPeriods: number
@@ -4377,7 +4446,8 @@ export type IndicatorConfig =
       inc: number
       max: number
     }
-  | ({ type: IndicatorEnum.vo; voShort: number; voLong: number } & Percentile)
+  | ({ type: IndicatorEnum.vo; voShort: number; voLong: number } & Percentile &
+      Smoothing)
   | { type: IndicatorEnum.ecd }
   | {
       type: IndicatorEnum.lw

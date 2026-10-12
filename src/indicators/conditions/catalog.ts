@@ -13,6 +13,7 @@ import {
 } from '../../../types'
 import type { SettingsIndicators } from '../../../types'
 import { indicatorLengthOf, referenceSubscription } from './config'
+import { getSmoothingMode, smoothingSettingsGaps } from './smoothing'
 
 export type IndicatorConditionSource =
   /** evaluated by `evaluateIndicatorCondition` from the indicator room's bars */
@@ -119,6 +120,7 @@ export function conditionSettingsGaps(
   if (!len) gaps.push({ field: 'indicatorLength', message: 'Enter a length.' })
   if (!i.indicatorInterval)
     gaps.push({ field: 'indicatorInterval', message: 'Choose a timeframe.' })
+  gaps.push(...smoothingSettingsGaps(i))
   if (OWN_RULE_TYPES.includes(type)) return gaps
   if (type === IndicatorEnum.tv) {
     if (!i.checkLevel)
@@ -137,12 +139,15 @@ export function conditionSettingsGaps(
     !Object.values(IndicatorStartConditionEnum).includes(indicatorCondition)
   )
     gaps.push({ field: 'indicatorCondition', message: 'Choose a condition.' })
+  // an oscillator vs its smoothed line compares two series; no value is read
+  const smoothedLine = getSmoothingMode(i) === 'line'
   if (
     type !== IndicatorEnum.ma &&
+    !smoothedLine &&
     (i.indicatorValue === undefined || isNaN(+i.indicatorValue))
   )
     gaps.push({ field: 'indicatorValue', message: 'Enter a value.' })
-  if (indicatorCondition === IndicatorStartConditionEnum.bw) {
+  if (indicatorCondition === IndicatorStartConditionEnum.bw && !smoothedLine) {
     const upper =
       i.indicatorValue2 !== undefined && i.indicatorValue2 !== ''
         ? +i.indicatorValue2

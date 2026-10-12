@@ -16,6 +16,7 @@ import {
   TradingviewAnalysisConditionEnum,
 } from '../../../types'
 import type { IndicatorConfig, SettingsIndicators } from '../../../types'
+import { smoothingConfig } from './smoothing'
 
 /**
  * The indicator length the engine uses (default 14). The engine subscribes a
@@ -32,6 +33,13 @@ export const indicatorSubscribeInterval = (
   type === IndicatorEnum.adr ? ExchangeIntervals.oneD : indicatorInterval
 
 export function buildIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
+  // A smoothable oscillator's smoothing is appended only when it is on, so
+  // the room id of an unsmoothed indicator (built from the config's values
+  // in key order) is unchanged and a smoothed one gets its own room.
+  return { ...unsmoothedIndicatorConfig(i), ...smoothingConfig(i) }
+}
+
+function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
   const {
     indicatorLength: _indicatorLength,
     type,

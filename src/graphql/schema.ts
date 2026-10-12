@@ -934,7 +934,9 @@ export const BotSchema = /* GraphQL */ `
     closeComboDeal(input: closeDCADeal!): openDCADealResponse
     changeStatus(input: changeStatusInput!): getBotResponse
     deleteBotMessage(input: deleteBotMessageInput!): deleteBotMessageResponse
-    markBotMessageRead(input: markBotMessageReadInput!): markBotMessageReadResponse
+    markBotMessageRead(
+      input: markBotMessageReadInput!
+    ): markBotMessageReadResponse
     deleteBot(input: deleteBotInput!): deleteBotResponse
     mergeDeals(input: mergeDealsInput!): mergeDealsResponse
     adoptDeals(input: adoptDealsInput!): mergeDealsResponse
@@ -3251,6 +3253,9 @@ export const BotSchema = /* GraphQL */ `
     factor: Float
     atrLength: Float
     stCondition: String
+    smoothing: String
+    smoothingLength: Int
+    smoothingCompare: String
     pcUp: String
     pcDown: String
     pcCondition: String
@@ -3459,7 +3464,9 @@ export const BotSchema = /* GraphQL */ `
     reduceToAvailableBalance: Boolean
     reduceToAvailableMinSize: String
     rejectBelowExchangeMin: Boolean
-      @deprecated(reason: "Renamed with inverted meaning; use allowRaiseToExchangeMin. Always null.")
+      @deprecated(
+        reason: "Renamed with inverted meaning; use allowRaiseToExchangeMin. Always null."
+      )
     dcaByMarket: Boolean
     terminalDealType: TerminalDealTypeEnum
     useMultiTp: Boolean
@@ -5017,6 +5024,9 @@ export const BotSchema = /* GraphQL */ `
     factor: Float
     atrLength: Float
     stCondition: String
+    smoothing: String
+    smoothingLength: Int
+    smoothingCompare: String
     pcUp: String
     pcDown: String
     pcCondition: String

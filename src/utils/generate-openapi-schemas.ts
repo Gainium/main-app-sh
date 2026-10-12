@@ -857,6 +857,21 @@ const fieldMetadata: Record<
   factor: { description: 'Supertrend multiplier factor', example: 3 },
   atrLength: { description: 'ATR period length', example: 10 },
   stCondition: { description: 'Supertrend condition', example: 'up' },
+  smoothing: {
+    description:
+      "Oscillators RSI, CCI, MFI, WR, UO, MOM, AO, ADX, BBPB, KCPB, BBW, VO and MAR only. Moving average laid over the indicator's line: none, sma, ema, wma, dema, tema, hma or rma (case-insensitive). Unset or 'none' keeps the unsmoothed line; any other value on another indicator is rejected.",
+    example: 'ema',
+  },
+  smoothingLength: {
+    description:
+      'Period of the smoothing average, a whole number from 1 to 1000. Smoothing applies only when both smoothing and this are set.',
+    example: 14,
+  },
+  smoothingCompare: {
+    description:
+      "With smoothing on. 'value' (default): the condition compares the smoothed line with indicatorValue (or its percentile). 'line': the indicator's line is compared with its smoothed line — gt / lt / cu / cd only, indicatorValue is ignored (the API still requires the field; any value), bw is rejected. Percentile mode always compares by value.",
+    example: 'value',
+  },
 
   // Price change
   pcUp: { description: 'Price change up threshold', example: '5' },

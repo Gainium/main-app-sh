@@ -38,6 +38,8 @@ import {
   TradingviewAnalysisSignalEnum,
   TradingviewAnalysisConditionEnum,
   MAEnum,
+  SMOOTHING_VALUES,
+  SmoothingCompareEnum,
   BBCrossingEnum,
   rsiValueEnum,
   rsiValue2Enum,
@@ -673,6 +675,30 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(STConditionEnum),
+  },
+  // Oscillator smoothing (smoothable indicators only). The values are matched
+  // case-insensitively, and `line` + `bw` and smoothing on other indicator
+  // types refused, by the cross-field rule in validators/logic.ts; the enum
+  // lists here are what the generated definitions and OpenAPI document.
+  smoothing: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeString],
+    enum: [...SMOOTHING_VALUES],
+  },
+  smoothingLength: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+    min: 1,
+    max: 1000,
+  },
+  smoothingCompare: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeString],
+    enum: Object.values(SmoothingCompareEnum),
   },
   pcUp: {
     required: false,
@@ -1501,7 +1527,9 @@ export const dcaBotSchemaConfig: Record<
     ],
     min: 1,
   },
-  useCloseAfterXconsecutiveWin: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  useCloseAfterXconsecutiveWin: {
+    validators: [ValidatorsEnum.shouldBeBoolean],
+  },
   closeAfterXconsecutiveWin: {
     validators: [
       ValidatorsEnum.shouldBeString,

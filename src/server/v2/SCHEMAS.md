@@ -1885,6 +1885,9 @@ SettingsIndicators configuration
 | `factor` | number | No | Supertrend multiplier factor |
 | `atrLength` | number | No | ATR period length |
 | `stCondition` | enum: `up|down|upToDown|downToUp` | No | Supertrend condition |
+| `smoothing` | enum: `none|sma|ema|wma|dema|tema|hma|rma` | No | Oscillators RSI, CCI, MFI, WR, UO, MOM, AO, ADX, BBPB, KCPB, BBW, VO and MAR only. Moving average laid over the indicator's line (case-insensitive). Unset or 'none' keeps the unsmoothed line; any other value on another indicator is rejected. |
+| `smoothingLength` | number | No | Period of the smoothing average, a whole number from 1 to 1000. Smoothing applies only when both smoothing and this are set. |
+| `smoothingCompare` | enum: `value|line` | No | With smoothing on. 'value' (default): the condition compares the smoothed line with indicatorValue (or its percentile). 'line': the indicator's line is compared with its smoothed line — gt / lt / cu / cd only, indicatorValue is ignored (the API still requires the field; any value), bw is rejected. Percentile mode always compares by value. |
 | `pcUp` | string | No | Price change up threshold |
 | `pcDown` | string | No | Price change down threshold |
 | `pcCondition` | enum: `UP|DOWN` | No | Price change direction |

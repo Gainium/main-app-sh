@@ -901,6 +901,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -927,6 +930,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -978,6 +984,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1064,6 +1073,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1090,6 +1102,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1143,6 +1158,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1197,6 +1215,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1345,6 +1366,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1397,6 +1421,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1426,6 +1453,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1535,6 +1565,9 @@ const INDICATOR_META: Record<
       'trendFilterLookback',
       'trendFilterType',
       'trendFilterValue',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1568,6 +1601,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',
@@ -1779,6 +1815,9 @@ const INDICATOR_META: Record<
       'percentile',
       'percentileLookback',
       'percentilePercentage',
+      'smoothing',
+      'smoothingLength',
+      'smoothingCompare',
     ],
     supportedActions: [
       'startDeal',

@@ -53,6 +53,7 @@ import {
   rsiValueEnum,
   timeIntervalMap,
 } from '../../../types'
+import { getSmoothingMode, smoothingLineOperands } from './smoothing'
 import type {
   IndicatorHistory,
   MAResult,
@@ -174,6 +175,10 @@ export function evaluateIndicatorCondition(
   valueInsteadof = valueInsteadof ?? 1
   let value = indicatorValue !== undefined ? +indicatorValue : 0
   let prevValue = value
+  // oscillator smoothing: 'off' (unchanged), 'value' (conditions read the
+  // smoothed line, which the indicator emits as `value`) or 'line' (the
+  // indicator's line, emitted as `raw`, against the smoothed line)
+  const smoothingMode = getSmoothingMode(find)
   if (type === IndicatorEnum.obfvg) {
     const [l, p] = [...data].sort((a, b) => b.time - a.time)
     const last = convertNullToNan(l.value as OBFVGResult) as OBFVGResult
@@ -468,7 +473,9 @@ export function evaluateIndicatorCondition(
       )
     }
   } else if (
-    (indicatorValue !== undefined || type === IndicatorEnum.ma) &&
+    (indicatorValue !== undefined ||
+      type === IndicatorEnum.ma ||
+      smoothingMode === 'line') &&
     indicatorCondition &&
     prevData
   ) {
@@ -505,6 +512,20 @@ export function evaluateIndicatorCondition(
     ) {
       last = lastData.value.value
       prev = prevData.value.value
+      if (smoothingMode === 'line') {
+        // the indicator's line (last/prev) tested against its smoothed line
+        // (value/prevValue) with the usual gt/lt/cu/cd below
+        const operands = smoothingLineOperands(lastData.value, prevData.value)
+        if (
+          !operands ||
+          indicatorCondition === IndicatorStartConditionEnum.bw
+        ) {
+          skipAction = true
+          action = false
+        } else {
+          ;({ last, prev, value, prevValue } = operands)
+        }
+      }
       if (percentile) {
         const tmpValue = lastData.value.percentile
         const tmpPrevValue = prevData.value.percentile

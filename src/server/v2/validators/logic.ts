@@ -26,6 +26,7 @@ import { Types } from 'mongoose'
 import { findPairBySymbol } from '../../../bot/utils'
 import { singlePositionSettingsError } from '../../../bot/dca/singlePosition'
 import { billableIndicators } from '../../../bot/billableIndicators'
+import { smoothingSettingsGaps } from '../../../indicators/conditions/smoothing'
 
 const indicatorsCheck: {
   condition: (input: DCABotSettings) => boolean
@@ -211,6 +212,21 @@ const betweenConditionErrors = (
     })
 
 /**
+ * Oscillator smoothing: type `none` or an allowed average (case-insensitive),
+ * a whole length 1..1000, compare `value` / `line`, no `bw` with `line`, and
+ * no smoothing on an indicator that cannot be smoothed.
+ */
+const smoothingErrors = (
+  indicators: DCABotSettings['indicators'],
+): [string, string][] =>
+  indicators.flatMap((i) =>
+    smoothingSettingsGaps(i).map((g): [string, string] => [
+      'indicators',
+      `${g.field}: ${g.message}`,
+    ]),
+  )
+
+/**
  * Cross-field indicator rules shared by bot creation and by bot updates that
  * replace `indicators` / `indicatorGroups`. `input` is the complete settings
  * object the bot will run with — for an update, the stored settings merged
@@ -233,6 +249,7 @@ export const indicatorConsistencyErrors = (
   }
   errors.push(...requiredIndicatorErrors(input))
   errors.push(...betweenConditionErrors(indicators))
+  errors.push(...smoothingErrors(indicators))
 
   if (
     indicatorsCheck.every((check) => !check.condition(input)) &&

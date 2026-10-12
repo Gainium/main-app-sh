@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.95.0] - 2026-10-12
+### Added
+- Optional smoothing of the value oscillators RSI, CCI, MFI, Williams %R, Ultimate Oscillator, Momentum, Awesome Oscillator, ADX, BB %B, KC %B, BB Width, Volume Oscillator and MA Ratio: their indicator entries accept `smoothing` (`none`, `sma`, `ema`, `wma`, `dema`, `tema`, `hma` or `rma`, case-insensitive), `smoothingLength` (a whole number from 1 to 1000) and `smoothingCompare` (`value`, the default, or `line`). With `value`, every condition of the indicator (crossings, greater / lower than, between and percentile) reads the smoothed line instead of the indicator's own. With `line`, the indicator's line is compared with its smoothed line (greater / lower than, crossing up / down; the value fields are not used and between is not available). Percentile mode always compares by value. Without smoothing an indicator behaves exactly as before and keeps its indicator subscription; smoothing on any other indicator is refused. Available for every bot type with indicators, in the bot settings API (v2 validation, OpenAPI, definitions), GraphQL and automation indicator conditions.
+
 ## [1.94.2] - 2026-10-12
 ### Fixed
 - Self-hosted: the API server now answers `GET /broker-codes`. The dashboard's Hyperliquid Web3 wallet setup reads the builder address from this route before asking the wallet to approve the builder fee; without it the request fell through to GraphQL, the wallet was never asked, and the connection timed out.
