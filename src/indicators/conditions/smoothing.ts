@@ -183,3 +183,82 @@ export function smoothingSettingsGaps(
     })
   return gaps
 }
+
+const SMOOTHING_FIELD_LABELS: Record<SmoothingSettingsGap['field'], string> = {
+  smoothing: 'smoothing',
+  smoothingLength: 'smoothing length',
+  smoothingCompare: 'smoothing compare',
+}
+
+type SmoothingEntry = Partial<
+  Pick<
+    SettingsIndicators,
+    | 'type'
+    | 'smoothing'
+    | 'smoothingLength'
+    | 'smoothingCompare'
+    | 'percentile'
+    | 'indicatorCondition'
+  >
+>
+
+/**
+ * The smoothing problems of a bot's indicator list as one refusal reason, or
+ * null when every entry passes `smoothingSettingsGaps`. Entries are numbered
+ * from 1 in the order they were sent.
+ */
+export function smoothingIndicatorsError(
+  indicators: readonly SmoothingEntry[] | null | undefined,
+): string | null {
+  const problems = (indicators ?? []).flatMap((i, n) =>
+    i && typeof i === 'object'
+      ? smoothingSettingsGaps(
+          i as Parameters<typeof smoothingSettingsGaps>[0],
+        ).map(
+          (g) =>
+            `Indicator ${n + 1} (${i.type}) ${SMOOTHING_FIELD_LABELS[g.field]}: ${g.message}`,
+        )
+      : [],
+  )
+  return problems.length ? problems.join(' ') : null
+}
+
+const SMOOTHING_FIELDS = [
+  'smoothing',
+  'smoothingLength',
+  'smoothingCompare',
+] as const
+
+/**
+ * The three smoothing fields as they are stored. Smoothing off — or a type
+ * that cannot be smoothed — drops all three, so an unsmoothed indicator is
+ * stored exactly as it was before the fields existed; smoothing on stores the
+ * lower-case average, the whole length and the effective compare mode
+ * (percentile reads as `value`). An entry carrying none of the fields is
+ * returned as it is, the same object. Run it on settings that already passed
+ * `smoothingSettingsGaps`.
+ */
+export function normalizeSmoothingFields<T extends SmoothingEntry>(i: T): T {
+  if (!i || typeof i !== 'object' || !SMOOTHING_FIELDS.some((k) => k in i)) {
+    return i
+  }
+  const {
+    smoothing: _type,
+    smoothingLength: _length,
+    smoothingCompare: _compare,
+    ...rest
+  } = i
+  const cfg = isSmoothableIndicator(i.type)
+    ? resolveSmoothing(i.smoothing, i.smoothingLength)
+    : null
+  if (!cfg) return rest as T
+  return {
+    ...rest,
+    smoothing: cfg.type,
+    smoothingLength: cfg.length,
+    smoothingCompare:
+      getSmoothingMode(i as Parameters<typeof getSmoothingMode>[0]) === 'line'
+        ? SmoothingCompareEnum.line
+        : SmoothingCompareEnum.value,
+  } as T
+}

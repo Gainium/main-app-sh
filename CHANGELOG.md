@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.1] - 2026-10-12
+### Fixed
+- The GraphQL bot mutations (`createDCABot`, `createComboBot`, `createHedgeComboBot`, `createHedgeDCABot`, `changeDCABot`, `changeComboBot`, `changeHedgeComboBot`, `changeHedgeDCABot`) now apply the same oscillator smoothing rules as the v2 bot settings API: an unknown smoothing type (including `vwma` and `price`), a length that is not a whole number from 1 to 1000, a compare mode other than `value` / `line`, `line` together with the between condition, and smoothing on an indicator that cannot be smoothed are refused with a reason naming the indicator. Previously these were stored, and a `line` + between condition could never trigger. Accepted settings are stored normalised: a lower-case type and the effective compare mode, and no smoothing fields at all when smoothing is off. Indicators sent without the fields are stored exactly as before.
+
 ## [1.96.0] - 2026-10-12
 ### Added
 - Per-group AND/OR between indicator groups: an indicator group entry accepts `join` (`and` or `or`), how it attaches to the previous group of the same action and section (ignored on the first). AND binds tighter than OR, so groups A, B (`join: and`), C (`join: or`) trigger as `(A and B) or C`. Groups without `join` use the bot-level logic (`startDealLogic`, `stopDealLogic`, `stopDealSlLogic`, `startBotLogic`, `stopBotLogic`), so existing bots behave exactly as before. Applies to deal start, take profit, stop loss and bot start / stop indicators, the wait for lower-timeframe indicators and the unrealized-P&L close check. Available in GraphQL, the v2 bot settings API (validation, OpenAPI, definitions) and its AI guide.

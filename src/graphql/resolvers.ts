@@ -58,6 +58,10 @@ import {
   HedgeDCABacktestingResult,
 } from '../../types'
 import BotInstance from '../bot'
+import {
+  checkBotSmoothing,
+  checkHedgeBotSmoothing,
+} from './handlers/indicatorSmoothing'
 import utils, { isFutures } from '../utils'
 import { isExchangeEnabled } from '../utils/adminConfig'
 import { describeUserAgent } from '../utils/userAgent'
@@ -7435,9 +7439,11 @@ const resolvers = <
         return user
       }
 
+      const smoothing = checkBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.createDCABot(
         user.data._id.toString(),
-        input,
+        smoothing.input,
         paperContext,
       )
     },
@@ -7457,9 +7463,11 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const smoothing = checkBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.createComboBot(
         user.data._id.toString(),
-        input,
+        smoothing.input,
         paperContext,
       )
     },
@@ -7483,9 +7491,11 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const smoothing = checkHedgeBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.createHedgeComboBot(
         user.data._id.toString(),
-        input,
+        smoothing.input,
         paperContext,
       )
     },
@@ -7509,9 +7519,11 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const smoothing = checkHedgeBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.createHedgeDcaBot(
         user.data._id.toString(),
-        input,
+        smoothing.input,
         paperContext,
       )
     },
@@ -7694,8 +7706,10 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const smoothing = checkBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.changeDCABot(
-        input,
+        smoothing.input,
         user.data._id.toString(),
         paperContext,
       )
@@ -7721,8 +7735,10 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const smoothing = checkHedgeBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.changeHedgeComboBot(
-        input,
+        smoothing.input,
         user.data._id.toString(),
         paperContext,
       )
@@ -7748,8 +7764,10 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const smoothing = checkHedgeBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.changeHedgeDcaBot(
-        input,
+        smoothing.input,
         user.data._id.toString(),
         paperContext,
       )
@@ -7766,8 +7784,10 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const smoothing = checkBotSmoothing(input)
+      if ('error' in smoothing) return smoothing.error
       return await Bot.changeComboBot(
-        input,
+        smoothing.input,
         user.data._id.toString(),
         paperContext,
       )
