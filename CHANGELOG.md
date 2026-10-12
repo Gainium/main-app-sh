@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.4] - 2026-10-12
+### Fixed
+- Restart deal now re-sends safety orders that were refused for insufficient funds, once the account can fund them. Earlier refusals had armed the not-enough-balance cooldown for the deal's pair. The cooldown then answered the restart itself for up to an hour, without asking the exchange, and reported "Not enough balance" next to a free balance well above the order size. A restart now clears the cooldown and the refusal counters for the deal's symbol before it re-places orders. If the exchange refuses again, the guard re-arms as it would on a first shortfall. Automatic retries keep their existing back-off. Separately, a refusal served from the cooldown no longer triggers the Coinbase / KuCoin / Bybit "not enough balance" retry loop. That loop waits out exchange balance lag, and a cached refusal cannot change between retries.
+
 ## [1.96.3] - 2026-10-12
 ### Fixed
 - The first settings save of a futures DCA or Combo bot after a bot-worker restart no longer re-applies leverage and margin to every pair. A service restart does not call the venue for them, so the bot had no record of what was already set, and that first save still made two venue round trips per pair while holding the bot's method lock. A service restart now records each pair's leverage, margin type and position side from the bot's stored settings. Changed values, new pairs and symbols the venue reports at other values are still applied on that save, and a user start still re-applies every pair.

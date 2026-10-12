@@ -3569,6 +3569,36 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Forget the not-enough-balance evidence for `symbol`, both sides, ahead of
+   * a USER-initiated re-send (restart deal). The cooldown is there to stop the
+   * engine re-asking the venue on its own; a user who has just added funds and
+   * asks for the orders again is new information. Left in place, the cooldown
+   * answered the restart from its own cache for up to `maxMs` and reported
+   * "Not enough balance" next to a free balance far above the order size.
+   * Automatic retries are untouched: if the venue still refuses, the counter
+   * re-arms the guard exactly as on a first shortfall.
+   */
+  protected async clearNotEnoughBalanceForSymbol(symbol: string) {
+    for (const side of [OrderSideEnum.buy, OrderSideEnum.sell]) {
+      const order = { symbol, side, botId: this.botId } as Order
+      const id = this.getNotEnoughOrdersIdByOrder(order)
+      const nb = this.data?.notEnoughBalance
+      if (
+        nb?.orders?.[id] !== undefined ||
+        nb?.refusedRequired?.[id] !== undefined ||
+        nb?.refusedRequiredMax?.[id] !== undefined
+      ) {
+        this.handleLog(
+          `${this.notEnoughBalanceLogPrefix} Reset not enough balance guard for ${id} on user request`,
+        )
+        await this.updateNotEnoughBalanceErrors(order, 0, true)
+      } else {
+        await notEnoughBalanceBackoff.clear([this.botId, id])
+      }
+    }
+  }
+
+  /**
    * Prepare order message
    *
    * Send it via socket to subscribers
@@ -8983,6 +9013,10 @@ class MainBot<T extends IMainBot> {
               order.exchange === ExchangeEnum.coinbase) &&
               count < 5) ||
               (order.exchange === ExchangeEnum.bybit && count < 2)) &&
+            // A refusal served from our own cooldown is not the venue's
+            // transient balance lag this retry waits out; re-asking would only
+            // replay the same cached answer.
+            !notEnoughBalanceShortCircuit &&
             request.reason.toLowerCase().indexOf('balance') !== -1 &&
             !order.clientOrderId.includes('D-SR')
           ) {

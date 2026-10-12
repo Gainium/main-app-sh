@@ -32,18 +32,31 @@ let Helper: any
 const buildBot = (status?: string) => {
   const rebuilt: string[] = []
   const errors: string[] = []
+  const cleared: string[] = []
   const deal = status
-    ? { deal: { _id: DEAL_ID, botId: BOT_ID, status } }
+    ? {
+        deal: {
+          _id: DEAL_ID,
+          botId: BOT_ID,
+          status,
+          symbol: { symbol: 'BTC-USDT' },
+        },
+      }
     : undefined
   class TestBot extends (Helper as any) {
     rebuilt = rebuilt
     errors = errors
+    cleared = cleared
     botId = BOT_ID
     getDeal(id?: string) {
       return id === DEAL_ID ? deal : undefined
     }
+    async clearNotEnoughBalanceForSymbol(symbol: string) {
+      cleared.push(symbol)
+    }
     async rebuildDealOrders(_d: any, dealId: string) {
-      rebuilt.push(dealId)
+      // Spec 150 §1.1.1: the balance guard is cleared before the re-send.
+      rebuilt.push(`${cleared.join(',')}|${dealId}`)
     }
     handleLog() {}
     handleDebug() {}
@@ -64,7 +77,7 @@ describe('restartDeal', () => {
     it(`rebuilds the orders of an ${status} deal`, async () => {
       const bot = buildBot(status)
       await bot.restartDeal(BOT_ID, DEAL_ID)
-      expect(bot.rebuilt).to.deep.equal([DEAL_ID])
+      expect(bot.rebuilt).to.deep.equal([`BTC-USDT|${DEAL_ID}`])
       expect(bot.errors).to.deep.equal([])
     })
   }
@@ -74,6 +87,7 @@ describe('restartDeal', () => {
       const bot = buildBot(status)
       await bot.restartDeal(BOT_ID, DEAL_ID)
       expect(bot.rebuilt).to.deep.equal([])
+      expect(bot.cleared).to.deep.equal([])
       expect(bot.errors).to.have.length(1)
     })
   }

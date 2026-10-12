@@ -25346,6 +25346,9 @@ function createDCABotHelper<
         )
       }
       this.handleLog(`Restart deal ${dealId}`)
+      // A restart is how the user re-sends orders refused for funds, so an
+      // earlier not-enough-balance cooldown must not answer it.
+      await this.clearNotEnoughBalanceForSymbol(findDeal.deal.symbol.symbol)
       await this.rebuildDealOrders(findDeal, dealId)
       await this.afterDealUpdate(dealId)
     }
