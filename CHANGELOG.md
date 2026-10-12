@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.91.0] - 2026-10-12
+### Changed
+- DCA by indicators counts as one indicator, however many DCA levels it has: for the bot's credit cost and for the 20-indicator limit per bot (create and API v2 validation). Each DCA indicator is one ladder level and a deal only subscribes the one of its next level, so the ladder no longer counts once per level. Every other indicator still counts once.
+
 ## [1.90.3] - 2026-10-12
 ### Fixed
 - Binance USDⓈ-M in Multi-Assets mode: USDT-quoted deals now count the account's pooled available margin when the USDT balance falls short. In that mode every collateral coin margins every contract, so an account holding USDC and no USDT was refused with "Not enough balance". On accounts that also carry a BNFCR row (EEA Credits mode), that row is the account's settled PnL and can be negative, and it was being read as the balance. Other venues keep the per-asset USDT balance.

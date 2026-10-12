@@ -11,6 +11,7 @@ import {
   IndicatorEnum,
   IndicatorSection,
   IndicatorStartConditionEnum,
+  indicatorsLimit,
   RRSlTypeEnum,
   ScaleDcaTypeEnum,
   StartConditionEnum,
@@ -24,6 +25,7 @@ import { DCA_FORM_DEFAULTS } from '../botDefaults'
 import { Types } from 'mongoose'
 import { findPairBySymbol } from '../../../bot/utils'
 import { singlePositionSettingsError } from '../../../bot/dca/singlePosition'
+import { billableIndicators } from '../../../bot/billableIndicators'
 
 const indicatorsCheck: {
   condition: (input: DCABotSettings) => boolean
@@ -221,10 +223,12 @@ export const indicatorConsistencyErrors = (
   const errors: [string, string][] = []
   const indicators = input.indicators ?? []
   const indicatorGroups = input.indicatorGroups ?? []
-  if (indicators.length > 20) {
+  // The DCA-by-indicators ladder counts as one indicator.
+  const counted = billableIndicators(input)
+  if (counted > indicatorsLimit) {
     errors.push([
       'indicators',
-      `A maximum of 20 indicators is allowed. Currently provided: ${indicators.length}`,
+      `A maximum of ${indicatorsLimit} indicators is allowed (DCA indicators count as one). Currently counted: ${counted}`,
     ])
   }
   errors.push(...requiredIndicatorErrors(input))
