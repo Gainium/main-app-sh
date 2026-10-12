@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.94.1] - 2026-10-12
+### Security
+- Updated dependencies to patched versions.
+
 ## [1.94.0] - 2026-10-12
 ### Added
 - Cooldown after deal stop can be limited to the closes that should cause it: new DCA / Combo setting `cooldownAfterDealStopTrigger` — `any` (every closed deal; the default and the behaviour when missing), `sl` (deals closed by a stop loss, including a moved or trailing stop loss, or a liquidation) or `loss` (deals closed with a negative net profit). A conditional cooldown runs from the last close that matched it, so a winning close inside the window does not shorten it. Available in the bot settings API (v1 settings change and v2), GraphQL and the API defaults.
