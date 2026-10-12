@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.3] - 2026-10-12
+### Fixed
+- The first settings save of a futures DCA or Combo bot after a bot-worker restart no longer re-applies leverage and margin to every pair. A service restart does not call the venue for them, so the bot had no record of what was already set, and that first save still made two venue round trips per pair while holding the bot's method lock. A service restart now records each pair's leverage, margin type and position side from the bot's stored settings. Changed values, new pairs and symbols the venue reports at other values are still applied on that save, and a user start still re-applies every pair.
+
 ## [1.96.2] - 2026-10-12
 ### Fixed
 - Saving a futures DCA or Combo bot's settings no longer re-applies leverage and margin to every pair, one venue round trip each, while holding the bot's method lock. On bots with large pair lists this held up every other action on the bot for minutes, manual deal closes included. A keep-orders reload now skips symbols this bot already set to the same leverage, margin type and position side. New pairs, changed values and symbols whose last attempt failed are still applied. A start or restart re-applies every pair as before.

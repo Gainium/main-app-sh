@@ -277,9 +277,118 @@ describe('spec 148 — a settings reload does not re-apply leverage per pair', (
     expect(venue.margin.map((c) => c.symbol)).to.deep.equal(PAIRS)
   })
 
-  it('§4.2 the first reload of a fresh instance still applies every pair', async () => {
+  it('§1.1.3 the first reload of an instance that never loaded still applies every pair', async () => {
     const { venue, settingsReload } = buildBot()
     await settingsReload()
     expect(venue.leverage.map((c) => c.symbol)).to.deep.equal(PAIRS)
+  })
+})
+
+describe('spec 149 — the first settings save after a restart', () => {
+  let restoreUserUpdate: any
+  let restoreBrokerRead: any
+  let restoreAuthCheck: any
+
+  beforeEach(() => {
+    resetHedgeModeCacheForTests()
+    restoreUserUpdate = dbInit.userDb.updateData
+    dbInit.userDb.updateData = async () => ({
+      status: StatusEnum.ok,
+      data: { message: 'ok' },
+      reason: null,
+    })
+    restoreBrokerRead = dbInit.brokerCodesDb.readData
+    dbInit.brokerCodesDb.readData = async () => ({
+      status: StatusEnum.ok,
+      data: { result: null },
+      reason: null,
+    })
+    restoreAuthCheck = AuthFailureGuard.check
+    AuthFailureGuard.check = async () => ({
+      failed: false,
+      reason: null,
+      until: null,
+    })
+  })
+
+  afterEach(() => {
+    dbInit.userDb.updateData = restoreUserUpdate
+    dbInit.brokerCodesDb.readData = restoreBrokerRead
+    AuthFailureGuard.check = restoreAuthCheck
+  })
+
+  /** A bot-worker restart: `serviceRestart && !secondRestart`, not a reload. */
+  const serviceRestart = async (bot: any) => {
+    bot.serviceRestart = true
+    bot.secondRestart = false
+    bot.reload = false
+    await bot.loadData()
+  }
+
+  it('§1.1.5 the restart load itself makes no venue calls', async () => {
+    const { bot, venue } = buildBot()
+    await serviceRestart(bot)
+    expect(venue.leverage).to.have.length(0)
+    expect(venue.margin).to.have.length(0)
+  })
+
+  it('§1.1.1 / §1.1.2 the first reload after a restart skips unchanged pairs', async () => {
+    const { bot, venue, settingsReload } = buildBot()
+    await serviceRestart(bot)
+    await settingsReload()
+    // The defect: 40 + 40 venue round trips on the first save after a restart.
+    expect(venue.leverage).to.have.length(0)
+    expect(venue.margin).to.have.length(0)
+  })
+
+  it('§1.1.3 the first reload after a restart applies a changed leverage to every pair', async () => {
+    const { bot, venue, settingsReload } = buildBot()
+    await serviceRestart(bot)
+    bot.data.settings.leverage = 10
+    await settingsReload()
+    expect(venue.leverage.map((c) => c.symbol)).to.deep.equal(PAIRS)
+    expect(venue.leverage.every((c) => c.leverage === 10)).to.equal(true)
+    expect(venue.margin.map((c) => c.symbol)).to.deep.equal(PAIRS)
+  })
+
+  it('§1.1.3 the first reload after a restart applies a changed margin type', async () => {
+    const { bot, venue, settingsReload } = buildBot()
+    await serviceRestart(bot)
+    bot.data.settings.marginType = 'isolated'
+    await settingsReload()
+    expect(venue.margin.map((c) => c.symbol)).to.deep.equal(PAIRS)
+    expect(venue.margin.every((c) => c.margin === 'ISOLATED')).to.equal(true)
+  })
+
+  it('§1.1.3 the first reload after a restart applies a newly added pair only', async () => {
+    const { bot, venue, settingsReload } = buildBot()
+    await serviceRestart(bot)
+    bot.data.settings.pair = [...PAIRS, 'NEWUSDT']
+    await settingsReload()
+    expect(venue.leverage).to.deep.equal([{ symbol: 'NEWUSDT', leverage: 5 }])
+    expect(venue.margin.map((c) => c.symbol)).to.deep.equal(['NEWUSDT'])
+  })
+
+  it('§1.1.4 the first reload after a restart corrects a symbol the venue reports at other values', async () => {
+    const { bot, venue, settingsReload } = buildBot()
+    await serviceRestart(bot)
+    venue.positions.push({
+      symbol: 'COIN0USDT',
+      positionAmt: '0',
+      positionSide: 'BOTH',
+      leverage: '3',
+      isolated: false,
+    })
+    await settingsReload()
+    expect(venue.leverage).to.deep.equal([{ symbol: 'COIN0USDT', leverage: 5 }])
+    expect(venue.margin).to.have.length(0)
+  })
+
+  it('§1.1.5 a user start after a restart re-applies every pair', async () => {
+    const { bot, venue, userStart } = buildBot()
+    await serviceRestart(bot)
+    await userStart()
+    expect(venue.leverage.map((c) => c.symbol)).to.deep.equal(PAIRS)
+    expect(venue.margin.map((c) => c.symbol)).to.deep.equal(PAIRS)
   })
 })

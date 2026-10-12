@@ -1013,7 +1013,8 @@ class MainBot<T extends IMainBot> {
   /**
    * Spec 148: symbol → `leverage|margin|side` this instance last set on the
    * venue successfully. A keep-orders reload (a settings save) skips symbols
-   * whose entry still matches; any other load rebuilds it from scratch.
+   * whose entry still matches; any other load rebuilds it from scratch. A
+   * service restart seeds it from the persisted settings (spec 149).
    */
   appliedFuturesSettings: Map<string, string> = new Map()
   /** pairs not found during load */
@@ -4275,12 +4276,6 @@ class MainBot<T extends IMainBot> {
                   }
                 }
               }
-              if (skipFutures) {
-                continue
-              }
-              positionsRequest =
-                positionsRequest ??
-                (await this.exchange.futures_getPositions(symbol))
               const requiredSide =
                 //@ts-ignore
                 this.data.settings.futuresStrategy === FuturesStrategyEnum.long
@@ -4292,6 +4287,31 @@ class MainBot<T extends IMainBot> {
                     : this.data.settings.strategy === StrategyEnum.long
                       ? 'LONG'
                       : 'SHORT'
+              const leverage =
+                this.data.settings.marginType !== BotMarginTypeEnum.inherit
+                  ? (this.data.settings.leverage ?? 1)
+                  : 1
+              const margin =
+                this.data.settings.marginType === BotMarginTypeEnum.cross
+                  ? MarginType.CROSSED
+                  : MarginType.ISOLATED
+              const leverageSide = !hedge?.data
+                ? PositionSide.BOTH
+                : requiredSide === 'LONG'
+                  ? PositionSide.LONG
+                  : PositionSide.SHORT
+              const appliedKey = `${leverage}|${margin}|${leverageSide}`
+              if (skipFutures) {
+                // Spec 149: the previous process applied these settings and
+                // they did not change across the restart, so the first save
+                // after it is a reload like any other. A changed value, a new
+                // pair or a venue that disagrees still forces the calls below.
+                this.appliedFuturesSettings.set(symbol, appliedKey)
+                continue
+              }
+              positionsRequest =
+                positionsRequest ??
+                (await this.exchange.futures_getPositions(symbol))
               const findPosition = (positionsRequest?.data ?? []).find(
                 (p) =>
                   p.symbol === symbol &&
@@ -4457,19 +4477,6 @@ class MainBot<T extends IMainBot> {
                         : p.positionSide)
                     : true),
               )
-              const leverage =
-                this.data.settings.marginType !== BotMarginTypeEnum.inherit
-                  ? (this.data.settings.leverage ?? 1)
-                  : 1
-              const margin =
-                this.data.settings.marginType === BotMarginTypeEnum.cross
-                  ? MarginType.CROSSED
-                  : MarginType.ISOLATED
-              const leverageSide = !hedge?.data
-                ? PositionSide.BOTH
-                : requiredSide === 'LONG'
-                  ? PositionSide.LONG
-                  : PositionSide.SHORT
               // Spec 148: a settings save on a bot with hundreds of pairs spent
               // minutes here, two venue round trips per pair, while holding the
               // bot's method lock — a manual deal close queued behind it.
@@ -4481,7 +4488,6 @@ class MainBot<T extends IMainBot> {
                 !zeroPosition ||
                 (zeroPosition.isolated && margin === MarginType.CROSSED) ||
                 (!zeroPosition.isolated && margin === MarginType.ISOLATED)
-              const appliedKey = `${leverage}|${margin}|${leverageSide}`
               if (
                 this.reload &&
                 this.appliedFuturesSettings.get(symbol) === appliedKey &&
