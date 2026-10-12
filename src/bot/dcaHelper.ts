@@ -5013,7 +5013,7 @@ function createDCABotHelper<
         action === IndicatorAction.startDca
           ? all.filter((i) => i.action === IndicatorAction.startDca)
           : []
-      const closeDealSlGroups = this.indicatorGroupsToUse.filter(
+      const closeDealSlGroups = (this.indicatorGroupsToUse ?? []).filter(
         (ig) =>
           ig.action === IndicatorAction.closeDeal &&
           ig.section === IndicatorSection.sl,
@@ -5060,7 +5060,7 @@ function createDCABotHelper<
           )
         }
       }
-      const closeDealTpGroups = this.indicatorGroupsToUse.filter(
+      const closeDealTpGroups = (this.indicatorGroupsToUse ?? []).filter(
         (ig) =>
           ig.action === IndicatorAction.closeDeal &&
           ig.section !== IndicatorSection.sl,
@@ -5107,7 +5107,7 @@ function createDCABotHelper<
           )
         }
       }
-      const stopBotGroups = this.indicatorGroupsToUse.filter(
+      const stopBotGroups = (this.indicatorGroupsToUse ?? []).filter(
         (ig) => ig.action === IndicatorAction.stopBot,
       )
       const stopBotGroupsStatus = !allStopBot.length
@@ -5168,7 +5168,7 @@ function createDCABotHelper<
           }
         }
       }
-      const startBotGroups = this.indicatorGroupsToUse.filter(
+      const startBotGroups = (this.indicatorGroupsToUse ?? []).filter(
         (ig) => ig.action === IndicatorAction.startBot,
       )
       const startBotGroupsStatus = !allStartBot.length
@@ -5216,7 +5216,7 @@ function createDCABotHelper<
           )
         }
       }
-      const openDealGroups = this.indicatorGroupsToUse.filter(
+      const openDealGroups = (this.indicatorGroupsToUse ?? []).filter(
         (ig) => ig.action === IndicatorAction.startDeal,
       )
       const openDealGroupsStatus = !allOpen.length
@@ -13885,7 +13885,7 @@ function createDCABotHelper<
             timeIntervalMap[i.indicatorInterval] <
             timeIntervalMap[indicatorInterval],
         ).length
-        const sameActionGroups = this.indicatorGroupsToUse.filter(
+        const sameActionGroups = (this.indicatorGroupsToUse ?? []).filter(
           (ig) =>
             ig.action === i.indicatorAction &&
             (i.indicatorAction !== IndicatorAction.closeDeal ||
