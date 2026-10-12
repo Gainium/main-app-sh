@@ -9939,6 +9939,8 @@ class Bot<T extends UserSchema = UserSchema> {
     type?: AddFundsTypeEnum,
     dealId?: string,
     actor?: ChangeTrailActor,
+    /** Place a resting LIMIT at this price instead of a MARKET order. */
+    price?: string,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9953,7 +9955,20 @@ class Bot<T extends UserSchema = UserSchema> {
         type,
         dealId,
         actor,
+        price,
       )
+    }
+    const funds = parseSignalFundsPrice({
+      price,
+      // One deal is one pair; only a bot-wide call can be ambiguous.
+      symbol: dealId ? dealId : symbol,
+    })
+    if (funds.error) {
+      return {
+        status: StatusEnum.notok as const,
+        reason: funds.error,
+        data: null,
+      }
     }
     let botIdToUse = botId
     if (!botIdToUse && dealId) {
@@ -9985,6 +10000,17 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
     const findBot = this.dcaBots.find((b) => b.id === botIdToUse)
+    if (
+      findBot &&
+      funds.needsSymbol &&
+      (await this.webhookBotPairCount(findBot)) !== 1
+    ) {
+      return {
+        status: StatusEnum.notok as const,
+        reason: signalFundsPriceNeedsSymbolReason,
+        data: null,
+      }
+    }
     if (findBot) {
       this.getWorkerById(findBot.worker)?.postMessage({
         do: 'method',
@@ -9997,7 +10023,7 @@ class Bot<T extends UserSchema = UserSchema> {
           symbol,
           type,
           undefined,
-          undefined,
+          funds.price,
           undefined,
           dealId,
         ],
@@ -10016,7 +10042,13 @@ class Bot<T extends UserSchema = UserSchema> {
             {
               path: 'addFunds',
               before: null,
-              after: { qty, asset, symbol, type },
+              after: {
+                qty,
+                asset,
+                symbol,
+                type,
+                ...(funds.price ? { price: funds.price } : {}),
+              },
             },
           ],
           paperContext: !!findBot.paperContext,
@@ -10107,6 +10139,8 @@ class Bot<T extends UserSchema = UserSchema> {
     type?: AddFundsTypeEnum,
     dealId?: string,
     actor?: ChangeTrailActor,
+    /** Place a resting LIMIT at this price instead of a MARKET order. */
+    price?: string,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -10121,7 +10155,20 @@ class Bot<T extends UserSchema = UserSchema> {
         type,
         dealId,
         actor,
+        price,
       )
+    }
+    const funds = parseSignalFundsPrice({
+      price,
+      // One deal is one pair; only a bot-wide call can be ambiguous.
+      symbol: dealId ? dealId : symbol,
+    })
+    if (funds.error) {
+      return {
+        status: StatusEnum.notok as const,
+        reason: funds.error,
+        data: null,
+      }
     }
     let botIdToUse = botId
     if (!botIdToUse && dealId) {
@@ -10153,6 +10200,17 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
     const findBot = this.dcaBots.find((b) => b.id === botIdToUse)
+    if (
+      findBot &&
+      funds.needsSymbol &&
+      (await this.webhookBotPairCount(findBot)) !== 1
+    ) {
+      return {
+        status: StatusEnum.notok as const,
+        reason: signalFundsPriceNeedsSymbolReason,
+        data: null,
+      }
+    }
     if (findBot) {
       this.getWorkerById(findBot.worker)?.postMessage({
         do: 'method',
@@ -10165,7 +10223,7 @@ class Bot<T extends UserSchema = UserSchema> {
           symbol,
           type,
           undefined,
-          undefined,
+          funds.price,
           undefined,
           dealId,
         ],
@@ -10184,7 +10242,13 @@ class Bot<T extends UserSchema = UserSchema> {
             {
               path: 'reduceFunds',
               before: null,
-              after: { qty, asset, symbol, type },
+              after: {
+                qty,
+                asset,
+                symbol,
+                type,
+                ...(funds.price ? { price: funds.price } : {}),
+              },
             },
           ],
           paperContext: !!findBot.paperContext,

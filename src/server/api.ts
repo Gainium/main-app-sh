@@ -16,6 +16,7 @@ import {
   UserSchema,
 } from '../../types'
 import BotInstance from '../bot'
+import { parseSignalFundsPrice } from '../bot/signalFundsPrice'
 import crypto from 'crypto'
 import { resolveApiSecret } from '../utils/credentials'
 import logger from '../utils/logger'
@@ -81,6 +82,7 @@ type UpdateBotInputType = {
 }
 
 type AddFundsInputType = {
+  price?: string | number
   botId: string
   qty: string
   asset: OrderSizeTypeEnum
@@ -1217,6 +1219,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       symbol: b_symbol,
       asset: b_asset,
       type: b_type,
+      price: b_price,
     }: AddFundsInputType = req.body
     const {
       dealId,
@@ -1225,6 +1228,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       symbol: q_symbol,
       asset: q_asset,
       type: q_type,
+      price: q_price,
     }: AddFundsInputType = req.query as any
     const botId = b_botId || q_botId
     const qty = b_qty || q_qty
@@ -1258,6 +1262,12 @@ const allAPI = <R extends UserSchema = UserSchema>(
       return
     }
 
+    const funds = parseSignalFundsPrice({ price: b_price ?? q_price })
+    if (funds.error) {
+      res.status(400).send({ status: StatusEnum.notok, reason: funds.error })
+      return
+    }
+
     Bot.addDealFundsFromPublicApi(
       user.id,
       botId,
@@ -1267,6 +1277,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       type,
       dealId,
       apiActor,
+      funds.price,
     ).then((result) => res.send(result))
   })
 
@@ -1277,6 +1288,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       symbol: b_symbol,
       asset: b_asset,
       type: b_type,
+      price: b_price,
     }: AddFundsInputType = req.body
     const {
       dealId,
@@ -1285,6 +1297,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       symbol: q_symbol,
       asset: q_asset,
       type: q_type,
+      price: q_price,
     }: AddFundsInputType = req.query as any
     const botId = b_botId || q_botId
     const qty = b_qty || q_qty
@@ -1318,6 +1331,12 @@ const allAPI = <R extends UserSchema = UserSchema>(
       return
     }
 
+    const funds = parseSignalFundsPrice({ price: b_price ?? q_price })
+    if (funds.error) {
+      res.status(400).send({ status: StatusEnum.notok, reason: funds.error })
+      return
+    }
+
     Bot.reduceDealFundsFromPublicApi(
       user.id,
       botId,
@@ -1327,6 +1346,7 @@ const allAPI = <R extends UserSchema = UserSchema>(
       type,
       dealId,
       apiActor,
+      funds.price,
     ).then((result) => res.send(result))
   })
 

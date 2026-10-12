@@ -6544,6 +6544,16 @@
           },
           {
             "in": "query",
+            "name": "price",
+            "required": false,
+            "description": "Place a resting limit order at this price instead of a market order. Rounded to the pair's price step; must be a positive number. On a bot with more than one pair, symbol is required with price. Omit for a market order.",
+            "schema": {
+              "type": "string",
+              "example": "61250.5"
+            }
+          },
+          {
+            "in": "query",
             "name": "paperContext",
             "required": false,
             "description": "Check if bot created in paper context",
@@ -6695,6 +6705,16 @@
                 "perc"
               ],
               "default": "fixed"
+            }
+          },
+          {
+            "in": "query",
+            "name": "price",
+            "required": false,
+            "description": "Place a resting limit order at this price instead of a market order. Rounded to the pair's price step; must be a positive number. On a bot with more than one pair, symbol is required with price. Omit for a market order.",
+            "schema": {
+              "type": "string",
+              "example": "61250.5"
             }
           },
           {

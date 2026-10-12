@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.93.0] - 2026-10-12
+### Added
+- Public API add / reduce funds (`POST /api/v2/deals/dca/add-funds`, `/reduce-funds`, the terminal-deal equivalents, and v1 `/api/addFunds`, `/api/reduceFunds`) accept an optional `price`: the order is placed as a resting limit order at that price instead of a market order, with the same rules as the webhook `price` — rounded to the pair's price step, a value that is not a positive number is rejected with 400, and a bot-wide call on a bot with more than one pair needs a `symbol`.
+
 ## [1.92.0] - 2026-10-12
 ### Added
 - `addFunds` / `reduceFunds` webhooks accept an optional `price`: the order is placed as a resting limit order at that price (rounded to the pair's price step) instead of a market order. Without `price` the behaviour is unchanged. A `price` that is not a positive number is rejected instead of falling back to market, and on a bot with more than one pair a `price` must come with a `symbol`.

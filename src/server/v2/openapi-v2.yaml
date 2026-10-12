@@ -304,6 +304,12 @@ components:
             - perc
           description: Funds type (default is fixed)
           example: fixed
+        price:
+          type: string
+          description: |
+            Optional. Place a resting limit order at this price instead of a market order. Rounded to the pair's price step. Omit it for a market order.
+            Must be a positive number, otherwise the request is rejected with 400. When the call targets a bot (botId, no dealId) that trades more than one pair, `symbol` is required with `price`.
+          example: "61250.5"
     BacktestCostEstimate:
       allOf:
         - $ref: "#/components/schemas/APIResponse"

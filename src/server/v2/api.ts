@@ -13,6 +13,7 @@
 import type { Request, Response } from 'express'
 import type { ChangeTrailActor } from '../../../types'
 import { openSyncStream, syncStreamMode } from './syncStream'
+import { parseSignalFundsPrice } from '../../bot/signalFundsPrice'
 import { Types, isValidObjectId } from 'mongoose'
 import {
   StatusEnum,
@@ -2705,8 +2706,9 @@ const v2API = <R extends UserSchema = UserSchema>(
     handler: async (req, res) => {
       const user = req.userData
       const { dealId } = req.params
-      const { qty, asset, symbol, type } = req.body as {
+      const { qty, asset, symbol, type, price } = req.body as {
         qty?: string
+        price?: string | number
         asset?: OrderSizeTypeEnum
         symbol?: string
         type?: AddFundsTypeEnum
@@ -2742,6 +2744,14 @@ const v2API = <R extends UserSchema = UserSchema>(
         return res.status(400).json({
           status: StatusEnum.notok,
           reason: 'Invalid parameters',
+        })
+      }
+
+      const funds = parseSignalFundsPrice({ price })
+      if (funds.error) {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: funds.error,
         })
       }
 
@@ -2782,6 +2792,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           fundsType,
           dealId,
           apiActor,
+          funds.price,
         )
 
         return res.status(200).json(result)
@@ -2815,8 +2826,9 @@ const v2API = <R extends UserSchema = UserSchema>(
     handler: async (req, res) => {
       const user = req.userData
       const { dealId } = req.params
-      const { qty, asset, symbol, type } = req.body as {
+      const { qty, asset, symbol, type, price } = req.body as {
         qty?: string
+        price?: string | number
         asset?: OrderSizeTypeEnum
         symbol?: string
         type?: AddFundsTypeEnum
@@ -2852,6 +2864,14 @@ const v2API = <R extends UserSchema = UserSchema>(
         return res.status(400).json({
           status: StatusEnum.notok,
           reason: 'Invalid parameters',
+        })
+      }
+
+      const funds = parseSignalFundsPrice({ price })
+      if (funds.error) {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: funds.error,
         })
       }
 
@@ -2892,6 +2912,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           fundsType,
           dealId,
           apiActor,
+          funds.price,
         )
 
         return res.status(200).json(result)
@@ -4076,8 +4097,9 @@ const v2API = <R extends UserSchema = UserSchema>(
     middlewares: [],
     handler: async (req, res) => {
       const user = req.userData
-      const { qty, asset, symbol, type } = req.body as {
+      const { qty, asset, symbol, type, price } = req.body as {
         qty?: string
+        price?: string | number
         asset?: OrderSizeTypeEnum
         symbol?: string
         type?: AddFundsTypeEnum
@@ -4120,6 +4142,14 @@ const v2API = <R extends UserSchema = UserSchema>(
         })
       }
 
+      const funds = parseSignalFundsPrice({ price })
+      if (funds.error) {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: funds.error,
+        })
+      }
+
       try {
         const result = await Bot.addDealFundsFromPublicApi(
           user.id,
@@ -4130,6 +4160,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           fundsType,
           dealId,
           apiActor,
+          funds.price,
         )
 
         return res.status(200).json(result)
@@ -4226,8 +4257,9 @@ const v2API = <R extends UserSchema = UserSchema>(
     middlewares: [],
     handler: async (req, res) => {
       const user = req.userData
-      const { qty, asset, symbol, type } = req.body as {
+      const { qty, asset, symbol, type, price } = req.body as {
         qty?: string
+        price?: string | number
         asset?: OrderSizeTypeEnum
         symbol?: string
         type?: AddFundsTypeEnum
@@ -4270,6 +4302,14 @@ const v2API = <R extends UserSchema = UserSchema>(
         })
       }
 
+      const funds = parseSignalFundsPrice({ price })
+      if (funds.error) {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: funds.error,
+        })
+      }
+
       try {
         const result = await Bot.reduceDealFundsFromPublicApi(
           user.id,
@@ -4280,6 +4320,7 @@ const v2API = <R extends UserSchema = UserSchema>(
           fundsType,
           dealId,
           apiActor,
+          funds.price,
         )
 
         return res.status(200).json(result)
