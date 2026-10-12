@@ -39,6 +39,7 @@ import {
   OrderSchema,
   ExcludeDoc,
   IndicatorEnum,
+  type FavoriteIndicatorPreset,
   ServerSideBacktestPayload,
   BacktestRequestStatus,
   rabbitUsersStreamKey,
@@ -194,6 +195,24 @@ import { DEAL_TOTALS_ARGS } from '../bot/dealListFilter'
  * oracle (GHSA-whmj-5f67-9f3w).
  */
 const GENERIC_LOGIN_REASON = 'Invalid email or password'
+
+const MAX_FAVORITE_PRESET_LENGTH = 4000
+
+/** Saved favorite settings must be a small JSON object. */
+const isFavoritePresetParams = (params: string): boolean => {
+  if (
+    typeof params !== 'string' ||
+    params.length > MAX_FAVORITE_PRESET_LENGTH
+  ) {
+    return false
+  }
+  try {
+    const parsed = JSON.parse(params)
+    return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
 
 const math = new MathHelper()
 
@@ -4409,7 +4428,10 @@ const resolvers = <
           }
           return {
             ...res,
-            data: { indicators: res?.data?.result?.indicators || [] },
+            data: {
+              indicators: res?.data?.result?.indicators || [],
+              presets: res?.data?.result?.presets || [],
+            },
           }
         })
     },
@@ -9654,21 +9676,42 @@ const resolvers = <
     },
     addUserFavoriteIndicator: async (
       _parent: any,
-      { input }: { input: { indicator: IndicatorEnum } },
+      {
+        input,
+      }: { input: { indicator: IndicatorEnum; params?: string | null } },
       { token, req }: InputRequest,
     ) => {
       if (token === 'demo' || !req.user?.authorized) {
         return errorAccess()
       }
-      const { indicator } = input
+      const { indicator, params } = input
       const user = await findUser(token)
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const userId = user.data._id.toString()
+      // Optional saved settings: one preset per indicator, replaced on re-save.
+      let presets: FavoriteIndicatorPreset[] | undefined
+      if (params !== undefined && params !== null) {
+        if (!isFavoritePresetParams(params)) {
+          return {
+            status: StatusEnum.notok,
+            reason: 'Invalid indicator settings',
+            data: null,
+          }
+        }
+        const current = await favoriteIndicatorsDb.readData({ userId })
+        presets = [
+          ...(current.data?.result?.presets ?? []).filter(
+            (preset) => preset.indicator !== indicator,
+          ),
+          { indicator, params },
+        ]
+      }
       const result = await favoriteIndicatorsDb.updateData(
-        { userId: user.data._id.toString() },
+        { userId },
         {
-          $set: { userId: user.data._id.toString() },
+          $set: { userId, ...(presets ? { presets } : {}) },
           $addToSet: { indicators: indicator },
         },
         true,
@@ -9680,7 +9723,10 @@ const resolvers = <
       }
       return {
         status: StatusEnum.ok,
-        data: { indicators: result.data.indicators },
+        data: {
+          indicators: result.data.indicators,
+          presets: result.data.presets ?? [],
+        },
         reason: null,
       }
     },
@@ -9702,7 +9748,7 @@ const resolvers = <
         {
           userId: user.data._id,
         },
-        { $pull: { indicators: indicator } },
+        { $pull: { indicators: indicator, presets: { indicator } } },
         true,
       )
       if (updateResult.status === StatusEnum.notok) {
@@ -9710,7 +9756,10 @@ const resolvers = <
       }
       return {
         status: StatusEnum.ok,
-        data: { indicators: updateResult.data.indicators },
+        data: {
+          indicators: updateResult.data.indicators,
+          presets: updateResult.data.presets ?? [],
+        },
         reason: null,
       }
     },

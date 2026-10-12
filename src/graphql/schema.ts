@@ -363,6 +363,8 @@ export const UserSchema = /* GraphQL */ `
   }
   input favoriteIndicatorInput {
     indicator: IndicatorsEnum!
+    "JSON object of the indicator's settings to keep with the favorite"
+    params: String
   }
   type favoritePairsResponse implements BasicResponse {
     status: Status
@@ -381,6 +383,11 @@ export const UserSchema = /* GraphQL */ `
   }
   type favoriteIndicators {
     indicators: [IndicatorsEnum]
+    presets: [favoriteIndicatorPreset]
+  }
+  type favoriteIndicatorPreset {
+    indicator: IndicatorsEnum
+    params: String
   }
   type favoritePairs {
     provider: Exchange

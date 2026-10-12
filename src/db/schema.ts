@@ -190,6 +190,13 @@ const favoritePairsSchema: Schema<FavoritePairsSchema> = new Schema({
 const favoriteIndicatorsSchema: Schema<FavoriteIndicatorsSchema> = new Schema({
   userId: RequiredString,
   indicators: [{ type: String, enum: IndicatorEnum }],
+  presets: [
+    {
+      _id: false,
+      indicator: { type: String, enum: IndicatorEnum },
+      params: String,
+    },
+  ],
   ...CreatedUpdated,
 })
 

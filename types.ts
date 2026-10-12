@@ -2011,9 +2011,16 @@ export interface FavoritePairsSchema extends SchemaI {
   pairs: string[]
 }
 
+export interface FavoriteIndicatorPreset {
+  indicator: IndicatorEnum
+  /** JSON object of the indicator's own settings, as the user saved them */
+  params: string
+}
+
 export interface FavoriteIndicatorsSchema extends SchemaI {
   userId: string
   indicators: IndicatorEnum[]
+  presets?: FavoriteIndicatorPreset[]
 }
 
 export enum APIPermission {
