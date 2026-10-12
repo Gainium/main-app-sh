@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.2] - 2026-10-12
+### Fixed
+- Saving a futures DCA or Combo bot's settings no longer re-applies leverage and margin to every pair, one venue round trip each, while holding the bot's method lock. On bots with large pair lists this held up every other action on the bot for minutes, manual deal closes included. A keep-orders reload now skips symbols this bot already set to the same leverage, margin type and position side. New pairs, changed values and symbols whose last attempt failed are still applied. A start or restart re-applies every pair as before.
+
 ## [1.96.1] - 2026-10-12
 ### Fixed
 - The GraphQL bot mutations (`createDCABot`, `createComboBot`, `createHedgeComboBot`, `createHedgeDCABot`, `changeDCABot`, `changeComboBot`, `changeHedgeComboBot`, `changeHedgeDCABot`) now apply the same oscillator smoothing rules as the v2 bot settings API: an unknown smoothing type (including `vwma` and `price`), a length that is not a whole number from 1 to 1000, a compare mode other than `value` / `line`, `line` together with the between condition, and smoothing on an indicator that cannot be smoothed are refused with a reason naming the indicator. Previously these were stored, and a `line` + between condition could never trigger. Accepted settings are stored normalised: a lower-case type and the effective compare mode, and no smoothing fields at all when smoothing is off. Indicators sent without the fields are stored exactly as before.

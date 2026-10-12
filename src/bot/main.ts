@@ -1010,6 +1010,12 @@ class MainBot<T extends IMainBot> {
   userStreamRepairPending = false
   /** Hedge mode */
   hedge = false
+  /**
+   * Spec 148: symbol → `leverage|margin|side` this instance last set on the
+   * venue successfully. A keep-orders reload (a settings save) skips symbols
+   * whose entry still matches; any other load rebuilds it from scratch.
+   */
+  appliedFuturesSettings: Map<string, string> = new Map()
   /** pairs not found during load */
   pairsNotFound: Set<string> = new Set()
   /** ignore errors */
@@ -4187,6 +4193,11 @@ class MainBot<T extends IMainBot> {
             if (allPositions) {
               this.handleLog(`Got hedge: ${hedge?.data}`)
             }
+            // Spec 148: only a keep-orders reload may trust what an earlier
+            // load of this instance already set; every other load re-applies.
+            if (!this.reload) {
+              this.appliedFuturesSettings = new Map()
+            }
             for (const symbol of [this.data.settings.pair].flat()) {
               const hedgeNull = hedge === null
               if (hedgeNull) {
@@ -4454,21 +4465,43 @@ class MainBot<T extends IMainBot> {
                 this.data.settings.marginType === BotMarginTypeEnum.cross
                   ? MarginType.CROSSED
                   : MarginType.ISOLATED
-
-              if (
+              const leverageSide = !hedge?.data
+                ? PositionSide.BOTH
+                : requiredSide === 'LONG'
+                  ? PositionSide.LONG
+                  : PositionSide.SHORT
+              // Spec 148: a settings save on a bot with hundreds of pairs spent
+              // minutes here, two venue round trips per pair, while holding the
+              // bot's method lock — a manual deal close queued behind it.
+              // A venue that reports this symbol at other values is corrected
+              // as before; the skip covers only "nothing reported" or "agrees".
+              const leverageMismatch =
+                !zeroPosition || +zeroPosition.leverage !== this.currentLeverage
+              const marginMismatch =
                 !zeroPosition ||
-                +zeroPosition.leverage !== this.currentLeverage
+                (zeroPosition.isolated && margin === MarginType.CROSSED) ||
+                (!zeroPosition.isolated && margin === MarginType.ISOLATED)
+              const appliedKey = `${leverage}|${margin}|${leverageSide}`
+              if (
+                this.reload &&
+                this.appliedFuturesSettings.get(symbol) === appliedKey &&
+                (!zeroPosition || (!leverageMismatch && !marginMismatch))
               ) {
+                this.handleDebug(
+                  `Leverage ${leverage} and margin ${margin} already set for ${symbol}`,
+                )
+                continue
+              }
+              let applied = true
+
+              if (leverageMismatch) {
                 const leverageResult = await this.exchange.changeLeverage({
                   symbol,
                   leverage,
-                  side: !hedge?.data
-                    ? PositionSide.BOTH
-                    : requiredSide === 'LONG'
-                      ? PositionSide.LONG
-                      : PositionSide.SHORT,
+                  side: leverageSide,
                 })
                 if (leverageResult.status === StatusEnum.notok) {
+                  applied = false
                   this.handleErrors(
                     `Cannot set leverage for ${symbol}: ${leverageResult.reason}`,
                     'load data',
@@ -4482,11 +4515,7 @@ class MainBot<T extends IMainBot> {
                 )
               }
 
-              if (
-                !zeroPosition ||
-                (zeroPosition.isolated && margin === MarginType.CROSSED) ||
-                (!zeroPosition.isolated && margin === MarginType.ISOLATED)
-              ) {
+              if (marginMismatch) {
                 const marginResult = await this.exchange.changeMargin({
                   symbol,
                   margin,
@@ -4498,6 +4527,7 @@ class MainBot<T extends IMainBot> {
                     -1 &&
                   marginResult.reason.indexOf('Multi-Assets') === -1
                 ) {
+                  applied = false
                   this.handleErrors(
                     `Cannot set margin for ${symbol}: ${marginResult.reason}`,
                     'load data',
@@ -4509,6 +4539,11 @@ class MainBot<T extends IMainBot> {
                 this.handleLog(
                   `No need to change margin ${margin} for ${symbol}`,
                 )
+              }
+              if (applied) {
+                this.appliedFuturesSettings.set(symbol, appliedKey)
+              } else {
+                this.appliedFuturesSettings.delete(symbol)
               }
             }
           }
