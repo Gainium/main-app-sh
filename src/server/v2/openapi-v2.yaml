@@ -3696,6 +3696,11 @@ components:
             - dca
             - controller
           example: sl
+        join:
+          type: string
+          enum:
+            - and
+            - or
       description: SettingsIndicatorGroup configuration
     SettingsIndicators:
       type: object

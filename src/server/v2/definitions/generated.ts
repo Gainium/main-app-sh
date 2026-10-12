@@ -110,6 +110,13 @@ export const indicatorGroupFieldDefinitions: FieldDefinition[] = [
     validators: ['mustBeOneOfEnum'],
     enum: ['tp', 'sl', 'dca', 'controller'],
   },
+  {
+    name: 'join',
+    type: 'enum',
+    required: false,
+    validators: ['mustBeOneOfEnum'],
+    enum: ['and', 'or'],
+  },
 ]
 
 // -----------------------------------------------------------------------

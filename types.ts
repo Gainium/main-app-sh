@@ -801,6 +801,12 @@ export type SettingsIndicatorGroup = {
   logic: IndicatorsLogicEnum
   action: IndicatorAction
   section?: IndicatorSection
+  /**
+   * How this group attaches to the previous group of the same action and
+   * section (ignored on the first). AND binds tighter than OR. Unset means
+   * the bot-level logic (startDealLogic, stopDealLogic, ...).
+   */
+  join?: IndicatorsLogicEnum
 }
 
 export enum RRSlTypeEnum {

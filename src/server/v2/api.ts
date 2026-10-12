@@ -1955,7 +1955,10 @@ const v2API = <R extends UserSchema = UserSchema>(
       "The group's 'action' must match the indicator's 'indicatorAction', and the group's 'section' " +
       "must match the indicator's 'section'. " +
       "The group's 'logic' ('and'/'or') controls how triggers are combined within that group. " +
-      'Multiple groups that share the same action+section are always ANDed together.',
+      "Groups that share the same action+section are combined in array order: each group's optional " +
+      "'join' ('and'/'or') attaches it to the previous group, AND binding tighter than OR " +
+      "(groups A, B join 'and', C join 'or' = (A and B) or C). Groups without 'join' use the " +
+      "bot-level logic for that action (startDealLogic, stopDealLogic, stopDealSlLogic, startBotLogic, stopBotLogic; default 'and').",
     rules: [
       'Every indicator must have a non-empty groupId that equals the id of an entry in settings.indicatorGroups.',
       'Never generate a groupId without first creating the corresponding group object.',
@@ -1963,7 +1966,8 @@ const v2API = <R extends UserSchema = UserSchema>(
       "A group's section must exactly equal the indicator's section (or both must be absent/undefined).",
       'Never mix indicators with different indicatorAction or section values in the same group.',
       "Indicators within a group are combined using the group's logic field ('and' = all must trigger, 'or' = any must trigger).",
-      'Multiple groups for the same action+section are ANDed: every group must trigger before the condition fires.',
+      "Groups for the same action+section combine in array order using each group's 'join' (ignored on the first group); AND binds tighter than OR.",
+      "Leave 'join' unset on every group to combine them all with the bot-level logic field instead.",
     ],
     fields: indicatorGroupFieldDefinitions,
   }

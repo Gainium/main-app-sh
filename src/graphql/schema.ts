@@ -3178,6 +3178,7 @@ export const BotSchema = /* GraphQL */ `
     logic: String
     action: String
     section: String
+    join: String
   }
   type indicatorSettingsType {
     indicatorLength: Int
@@ -4949,6 +4950,7 @@ export const BotSchema = /* GraphQL */ `
     logic: String
     action: String
     section: String
+    join: String
   }
   input indicatorSettings {
     indicatorLength: Int

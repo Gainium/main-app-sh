@@ -1195,6 +1195,7 @@ const indicatorGroup = new Schema(
     logic: { type: String, enum: IndicatorsLogicEnum },
     action: { type: String, enum: IndicatorAction },
     section: String,
+    join: { type: String, enum: IndicatorsLogicEnum },
   },
   { _id: false },
 )

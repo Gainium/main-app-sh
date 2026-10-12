@@ -1,3 +1,8 @@
+import {
+  combineIndicatorGroups,
+  groupStandsAlone,
+  groupsJoinedByAnd,
+} from '../utils/indicatorGroupLogic'
 import Big from 'big.js'
 import { withExchangeCaller } from '../exchange/requestContext'
 import { holdFromRestOnly } from '../utils/holdRefresh'
@@ -5008,30 +5013,28 @@ function createDCABotHelper<
         action === IndicatorAction.startDca
           ? all.filter((i) => i.action === IndicatorAction.startDca)
           : []
+      const closeDealSlGroups = this.indicatorGroupsToUse.filter(
+        (ig) =>
+          ig.action === IndicatorAction.closeDeal &&
+          ig.section === IndicatorSection.sl,
+      )
       const closeDealSlGroupsStatus = !allCloseSl.length
         ? []
-        : this.indicatorGroupsToUse
-            .filter(
-              (ig) =>
-                ig.action === IndicatorAction.closeDeal &&
-                ig.section === IndicatorSection.sl,
+        : closeDealSlGroups.map((ig) => {
+            const findAll = allForSymbolCloseSl.filter(
+              (i) => i.groupId === ig.id,
             )
-            .map((ig) => {
-              const findAll = allForSymbolCloseSl.filter(
-                (i) => i.groupId === ig.id,
-              )
-              const findAllStatus = allCloseSl.filter(
-                (i) => i.groupId === ig.id,
-              )
-              return !!(ig.logic === IndicatorsLogicEnum.or
-                ? findAllStatus.length > 0
-                : findAll.length && findAll.length === findAllStatus.length)
-            })
+            const findAllStatus = allCloseSl.filter((i) => i.groupId === ig.id)
+            return !!(ig.logic === IndicatorsLogicEnum.or
+              ? findAllStatus.length > 0
+              : findAll.length && findAll.length === findAllStatus.length)
+          })
       if (
-        (settings.stopDealSlLogic === IndicatorsLogicEnum.and ||
-        !settings.stopDealSlLogic
-          ? closeDealSlGroupsStatus.every((r) => !!r)
-          : closeDealSlGroupsStatus.some((r) => !!r)) &&
+        combineIndicatorGroups(
+          closeDealSlGroups,
+          closeDealSlGroupsStatus,
+          settings.stopDealSlLogic,
+        ) &&
         closeDealSlGroupsStatus.length !== 0
       ) {
         for (const ai of allForSymbolCloseSl) {
@@ -5057,30 +5060,28 @@ function createDCABotHelper<
           )
         }
       }
+      const closeDealTpGroups = this.indicatorGroupsToUse.filter(
+        (ig) =>
+          ig.action === IndicatorAction.closeDeal &&
+          ig.section !== IndicatorSection.sl,
+      )
       const closeDealTpGroupsStatus = !allCloseTp.length
         ? []
-        : this.indicatorGroupsToUse
-            .filter(
-              (ig) =>
-                ig.action === IndicatorAction.closeDeal &&
-                ig.section !== IndicatorSection.sl,
+        : closeDealTpGroups.map((ig) => {
+            const findAll = allForSymbolCloseTp.filter(
+              (i) => i.groupId === ig.id,
             )
-            .map((ig) => {
-              const findAll = allForSymbolCloseTp.filter(
-                (i) => i.groupId === ig.id,
-              )
-              const findAllStatus = allCloseTp.filter(
-                (i) => i.groupId === ig.id,
-              )
-              return !!(ig.logic === IndicatorsLogicEnum.or
-                ? findAllStatus.length > 0
-                : findAll.length && findAll.length === findAllStatus.length)
-            })
+            const findAllStatus = allCloseTp.filter((i) => i.groupId === ig.id)
+            return !!(ig.logic === IndicatorsLogicEnum.or
+              ? findAllStatus.length > 0
+              : findAll.length && findAll.length === findAllStatus.length)
+          })
       if (
-        (settings.stopDealLogic === IndicatorsLogicEnum.and ||
-        !settings.stopDealLogic
-          ? closeDealTpGroupsStatus.every((r) => !!r)
-          : closeDealTpGroupsStatus.some((r) => !!r)) &&
+        combineIndicatorGroups(
+          closeDealTpGroups,
+          closeDealTpGroupsStatus,
+          settings.stopDealLogic,
+        ) &&
         closeDealTpGroupsStatus.length !== 0
       ) {
         for (const ai of allForSymbolCloseTp) {
@@ -5106,26 +5107,26 @@ function createDCABotHelper<
           )
         }
       }
+      const stopBotGroups = this.indicatorGroupsToUse.filter(
+        (ig) => ig.action === IndicatorAction.stopBot,
+      )
       const stopBotGroupsStatus = !allStopBot.length
         ? []
-        : this.indicatorGroupsToUse
-            .filter((ig) => ig.action === IndicatorAction.stopBot)
-            .map((ig) => {
-              const findAll = allForSymbolStopBot.filter(
-                (i) => i.groupId === ig.id,
-              )
-              const findAllStatus = allStopBot.filter(
-                (i) => i.groupId === ig.id,
-              )
-              return !!(ig.logic === IndicatorsLogicEnum.or
-                ? findAllStatus.length > 0
-                : findAll.length && findAll.length === findAllStatus.length)
-            })
+        : stopBotGroups.map((ig) => {
+            const findAll = allForSymbolStopBot.filter(
+              (i) => i.groupId === ig.id,
+            )
+            const findAllStatus = allStopBot.filter((i) => i.groupId === ig.id)
+            return !!(ig.logic === IndicatorsLogicEnum.or
+              ? findAllStatus.length > 0
+              : findAll.length && findAll.length === findAllStatus.length)
+          })
       if (
-        (settings.stopBotLogic === IndicatorsLogicEnum.and ||
-        !settings.stopBotLogic
-          ? stopBotGroupsStatus.every((r) => !!r)
-          : stopBotGroupsStatus.some((r) => !!r)) &&
+        combineIndicatorGroups(
+          stopBotGroups,
+          stopBotGroupsStatus,
+          settings.stopBotLogic,
+        ) &&
         stopBotGroupsStatus.length !== 0 &&
         this.data.status !== BotStatusEnum.monitoring
       ) {
@@ -5167,28 +5168,28 @@ function createDCABotHelper<
           }
         }
       }
+      const startBotGroups = this.indicatorGroupsToUse.filter(
+        (ig) => ig.action === IndicatorAction.startBot,
+      )
       const startBotGroupsStatus = !allStartBot.length
         ? []
-        : this.indicatorGroupsToUse
-            .filter((ig) => ig.action === IndicatorAction.startBot)
-            .map((ig) => {
-              const findAll = allForSymbolStartBot.filter(
-                (i) => i.groupId === ig.id,
-              )
-              const findAllStatus = allStartBot.filter(
-                (i) => i.groupId === ig.id,
-              )
-              return !!(ig.logic === IndicatorsLogicEnum.or
-                ? findAllStatus.length > 0
-                : findAll.length &&
-                  findAll.length === findAllStatus.length &&
-                  !groupsWithMissingLeg.has(ig.id))
-            })
+        : startBotGroups.map((ig) => {
+            const findAll = allForSymbolStartBot.filter(
+              (i) => i.groupId === ig.id,
+            )
+            const findAllStatus = allStartBot.filter((i) => i.groupId === ig.id)
+            return !!(ig.logic === IndicatorsLogicEnum.or
+              ? findAllStatus.length > 0
+              : findAll.length &&
+                findAll.length === findAllStatus.length &&
+                !groupsWithMissingLeg.has(ig.id))
+          })
       if (
-        (settings.startBotLogic === IndicatorsLogicEnum.and ||
-        !settings.startBotLogic
-          ? startBotGroupsStatus.every((r) => !!r)
-          : startBotGroupsStatus.some((r) => !!r)) &&
+        combineIndicatorGroups(
+          startBotGroups,
+          startBotGroupsStatus,
+          settings.startBotLogic,
+        ) &&
         startBotGroupsStatus.length !== 0 &&
         this.data.status === BotStatusEnum.monitoring
       ) {
@@ -5215,26 +5216,26 @@ function createDCABotHelper<
           )
         }
       }
+      const openDealGroups = this.indicatorGroupsToUse.filter(
+        (ig) => ig.action === IndicatorAction.startDeal,
+      )
       const openDealGroupsStatus = !allOpen.length
         ? []
-        : this.indicatorGroupsToUse
-            .filter((ig) => ig.action === IndicatorAction.startDeal)
-            .map((ig) => {
-              const findAll = allForSymbolOpen.filter(
-                (i) => i.groupId === ig.id,
-              )
-              const findAllStatus = allOpen.filter((i) => i.groupId === ig.id)
-              return !!(ig.logic === IndicatorsLogicEnum.or
-                ? findAllStatus.length > 0
-                : findAll.length &&
-                  findAll.length === findAllStatus.length &&
-                  !groupsWithMissingLeg.has(ig.id))
-            })
+        : openDealGroups.map((ig) => {
+            const findAll = allForSymbolOpen.filter((i) => i.groupId === ig.id)
+            const findAllStatus = allOpen.filter((i) => i.groupId === ig.id)
+            return !!(ig.logic === IndicatorsLogicEnum.or
+              ? findAllStatus.length > 0
+              : findAll.length &&
+                findAll.length === findAllStatus.length &&
+                !groupsWithMissingLeg.has(ig.id))
+          })
       if (
-        (settings.startDealLogic === IndicatorsLogicEnum.and ||
-        !settings.startDealLogic
-          ? openDealGroupsStatus.every((r) => !!r)
-          : openDealGroupsStatus.some((r) => !!r)) &&
+        combineIndicatorGroups(
+          openDealGroups,
+          openDealGroupsStatus,
+          settings.startDealLogic,
+        ) &&
         openDealGroupsStatus.length !== 0 &&
         !(
           this.data?.status === BotStatusEnum.archive ||
@@ -7062,11 +7063,7 @@ function createDCABotHelper<
           value = (foundUnpnl.unpnlValue ?? this.defaultUnpnl) / 100
         }
       }
-      if (
-        section === 'tp' &&
-        (this.data.settings.stopDealLogic === IndicatorsLogicEnum.and ||
-          !this.data.settings.stopDealLogic)
-      ) {
+      if (section === 'tp') {
         const foundUnpnl =
           this.data?.settings.dealCloseCondition === CloseConditionEnum.techInd
             ? (this.data?.settings.indicators ?? []).find(
@@ -7075,7 +7072,20 @@ function createDCABotHelper<
                   i.section !== IndicatorSection.sl,
               )
             : undefined
-        if (foundUnpnl) {
+        // Applies while the P&L indicator is ANDed with others; a P&L group
+        // standing alone between ORs closes by itself instead.
+        const unpnlAnded =
+          !!foundUnpnl &&
+          !groupStandsAlone(
+            (this.data.settings.indicatorGroups ?? []).filter(
+              (g) =>
+                g.action === IndicatorAction.closeDeal &&
+                g.section !== IndicatorSection.sl,
+            ),
+            foundUnpnl.groupId,
+            this.data.settings.stopDealLogic,
+          )
+        if (foundUnpnl && unpnlAnded) {
           isGt =
             (foundUnpnl.unpnlCondition ?? this.defaultUnpnlCondition) ===
             IndicatorStartConditionEnum.gt
@@ -13875,22 +13885,24 @@ function createDCABotHelper<
             timeIntervalMap[i.indicatorInterval] <
             timeIntervalMap[indicatorInterval],
         ).length
+        const sameActionGroups = this.indicatorGroupsToUse.filter(
+          (ig) =>
+            ig.action === i.indicatorAction &&
+            (i.indicatorAction !== IndicatorAction.closeDeal ||
+              (i.section === IndicatorSection.sl) ===
+                (ig.section === IndicatorSection.sl)),
+        )
         const useAnd =
           i.indicatorAction === IndicatorAction.closeDeal
             ? i.section === IndicatorSection.sl
-              ? !settings.stopDealSlLogic ||
-                settings.stopDealSlLogic === IndicatorsLogicEnum.and
-              : !settings.stopDealLogic ||
-                settings.stopDealLogic === IndicatorsLogicEnum.and
+              ? groupsJoinedByAnd(sameActionGroups, settings.stopDealSlLogic)
+              : groupsJoinedByAnd(sameActionGroups, settings.stopDealLogic)
             : i.indicatorAction === IndicatorAction.startBot
-              ? !settings.startBotLogic ||
-                settings.startBotLogic === IndicatorsLogicEnum.and
+              ? groupsJoinedByAnd(sameActionGroups, settings.startBotLogic)
               : i.indicatorAction === IndicatorAction.startDeal
-                ? !settings.startDealLogic ||
-                  settings.startDealLogic === IndicatorsLogicEnum.and
+                ? groupsJoinedByAnd(sameActionGroups, settings.startDealLogic)
                 : i.indicatorAction === IndicatorAction.stopBot
-                  ? !settings.stopBotLogic ||
-                    settings.stopBotLogic === IndicatorsLogicEnum.and
+                  ? groupsJoinedByAnd(sameActionGroups, settings.stopBotLogic)
                   : false
         const hasLower = rrOrAr
           ? false
@@ -21344,10 +21356,17 @@ function createDCABotHelper<
         : undefined
       const slGroupLogicOr = slGroup?.logic === IndicatorsLogicEnum.or
       const tpGroupLogicOr = tpGroup?.logic === IndicatorsLogicEnum.or
-      const slLogicOr =
-        this.data?.settings.stopDealSlLogic === IndicatorsLogicEnum.or
-      const tpLogicOr =
-        this.data?.settings.stopDealLogic === IndicatorsLogicEnum.or
+      // Whether the unrealized-P&L indicator's group can close on its own.
+      const slLogicOr = groupStandsAlone(
+        slGroups ?? [],
+        slGroup?.id,
+        this.data?.settings.stopDealSlLogic,
+      )
+      const tpLogicOr = groupStandsAlone(
+        tpGroups ?? [],
+        tpGroup?.id,
+        this.data?.settings.stopDealLogic,
+      )
       const slInidcators = foundInSl
         ? (this.data?.settings.indicators ?? []).filter(
             (i) =>

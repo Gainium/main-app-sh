@@ -191,6 +191,11 @@ export const indicatorGroupConfig: Record<
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(IndicatorSection),
   },
+  join: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(IndicatorsLogicEnum),
+  },
 }
 
 // Complete field configuration for indicators
