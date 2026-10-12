@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.94.2] - 2026-10-12
+### Fixed
+- Self-hosted: the API server now answers `GET /broker-codes`. The dashboard's Hyperliquid Web3 wallet setup reads the builder address from this route before asking the wallet to approve the builder fee; without it the request fell through to GraphQL, the wallet was never asked, and the connection timed out.
+
 ## [1.94.1] - 2026-10-12
 ### Security
 - Updated dependencies to patched versions.
