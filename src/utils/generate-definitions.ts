@@ -424,6 +424,7 @@ const DCA_SECTIONS: SectionLayout[] = [
       'cooldownAfterDealStopInterval',
       'cooldownAfterDealStopUnits',
       'cooldownAfterDealStopOption',
+      'cooldownAfterDealStopTrigger',
     ],
   },
   {
@@ -669,6 +670,7 @@ const COMBO_SECTIONS: SectionLayout[] = [
       'cooldownAfterDealStopInterval',
       'cooldownAfterDealStopUnits',
       'cooldownAfterDealStopOption',
+      'cooldownAfterDealStopTrigger',
     ],
   },
   {

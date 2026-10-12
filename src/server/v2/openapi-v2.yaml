@@ -1605,6 +1605,14 @@ components:
                 - symbol
                 - bot
               example: bot
+            cooldownAfterDealStopTrigger:
+              type: string
+              description: "Which closed deals start the stop cooldown: any (every close), sl (stop loss or liquidation only) or loss (deals closed at a net loss only)"
+              enum:
+                - any
+                - sl
+                - loss
+              example: any
             moveSL:
               type: boolean
               description: Enable moving stop loss

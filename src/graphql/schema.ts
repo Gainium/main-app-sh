@@ -3414,6 +3414,7 @@ export const BotSchema = /* GraphQL */ `
     cooldownAfterDealStopInterval: Int
     cooldownAfterDealStartOption: String
     cooldownAfterDealStopOption: String
+    cooldownAfterDealStopTrigger: String
     moveSL: Boolean
     moveSLTrigger: String
     moveSLValue: String
@@ -3595,6 +3596,7 @@ export const BotSchema = /* GraphQL */ `
     cooldownAfterDealStopInterval: Int
     cooldownAfterDealStartOption: String
     cooldownAfterDealStopOption: String
+    cooldownAfterDealStopTrigger: String
     moveSL: Boolean
     moveSLTrigger: String
     moveSLValue: String
@@ -5182,6 +5184,7 @@ export const BotSchema = /* GraphQL */ `
     cooldownAfterDealStopInterval: Int
     cooldownAfterDealStartOption: String
     cooldownAfterDealStopOption: String
+    cooldownAfterDealStopTrigger: String
     moveSL: Boolean
     moveSLTrigger: String
     moveSLValue: String
@@ -5408,6 +5411,7 @@ export const BotSchema = /* GraphQL */ `
     cooldownAfterDealStopInterval: Int
     cooldownAfterDealStartOption: String
     cooldownAfterDealStopOption: String
+    cooldownAfterDealStopTrigger: String
     moveSL: Boolean
     moveSLTrigger: String
     moveSLValue: String
@@ -5604,6 +5608,7 @@ export const BotSchema = /* GraphQL */ `
     cooldownAfterDealStopInterval: Int
     cooldownAfterDealStartOption: String
     cooldownAfterDealStopOption: String
+    cooldownAfterDealStopTrigger: String
     moveSL: Boolean
     moveSLTrigger: String
     moveSLValue: String
@@ -5790,6 +5795,7 @@ export const BotSchema = /* GraphQL */ `
     cooldownAfterDealStopInterval: Int
     cooldownAfterDealStartOption: String
     cooldownAfterDealStopOption: String
+    cooldownAfterDealStopTrigger: String
     moveSL: Boolean
     moveSLTrigger: String
     moveSLValue: String

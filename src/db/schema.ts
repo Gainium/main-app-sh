@@ -93,6 +93,7 @@ import {
   ComboTpBase,
   CoinbaseKeysType,
   CooldownOptionsEnum,
+  CooldownStopTriggerEnum,
   PairPrioritizationEnum,
   ppValueEnum,
   ppValueTypeEnum,
@@ -1427,6 +1428,10 @@ const dcaBotSettings = new Schema({
   cooldownAfterDealStopInterval: Number,
   cooldownAfterDealStartOption: { type: String, enum: CooldownOptionsEnum },
   cooldownAfterDealStopOption: { type: String, enum: CooldownOptionsEnum },
+  cooldownAfterDealStopTrigger: {
+    type: String,
+    enum: CooldownStopTriggerEnum,
+  },
   moveSL: Boolean,
   moveSLTrigger: String,
   moveSLValue: String,
@@ -1636,6 +1641,10 @@ const comboBotSettings = new Schema<ComboBotSettings>({
   cooldownAfterDealStopInterval: Number,
   cooldownAfterDealStartOption: { type: String, enum: CooldownOptionsEnum },
   cooldownAfterDealStopOption: { type: String, enum: CooldownOptionsEnum },
+  cooldownAfterDealStopTrigger: {
+    type: String,
+    enum: CooldownStopTriggerEnum,
+  },
   moveSL: Boolean,
   moveSLTrigger: String,
   moveSLValue: String,
@@ -1908,6 +1917,10 @@ const comboBotSchema: Schema<ComboBotSchema> = new Schema({
   lastClosedDeal: Number,
   lastOpenedDealPerSymbol: [{ symbol: String, time: Number }],
   lastClosedDealPerSymbol: [{ symbol: String, time: Number }],
+  lastClosedDealByTrigger: { sl: Number, loss: Number },
+  lastClosedDealByTriggerPerSymbol: [
+    { symbol: String, sl: Number, loss: Number },
+  ],
   lastPricesPerSymbol: [
     { symbol: String, avg: Number, entry: Number, time: Number },
   ],
@@ -1995,6 +2008,10 @@ const dcaBotSchema: Schema<DCABotSchema> = new Schema({
   lastClosedDeal: Number,
   lastOpenedDealPerSymbol: [{ symbol: String, time: Number }],
   lastClosedDealPerSymbol: [{ symbol: String, time: Number }],
+  lastClosedDealByTrigger: { sl: Number, loss: Number },
+  lastClosedDealByTriggerPerSymbol: [
+    { symbol: String, sl: Number, loss: Number },
+  ],
   lastPricesPerSymbol: [
     { symbol: String, avg: Number, entry: Number, time: Number },
   ],

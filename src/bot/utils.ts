@@ -13,6 +13,7 @@ import {
   BaseSlOnEnum,
   ComboTpBase,
   CooldownUnits,
+  CooldownStopTriggerEnum,
   DCABotSettings,
   OrderSizeTypeEnum,
   StartConditionEnum,
@@ -325,6 +326,8 @@ const botSettingsKeyToPropertyName = (
       return 'Cooldown after deal stop interval'
     case 'cooldownAfterDealStopUnits':
       return 'Cooldown after deal stop units'
+    case 'cooldownAfterDealStopTrigger':
+      return 'Cooldown after deal stop trigger'
     case 'dealCloseCondition':
       return 'Take profit condition'
     case 'dealCloseConditionSL':
@@ -1277,6 +1280,7 @@ export const checkDCABotSettings = (
     'cooldownAfterDealStop',
     'cooldownAfterDealStopInterval',
     'cooldownAfterDealStopUnits',
+    'cooldownAfterDealStopTrigger',
     'useActiveMinigrids',
     'comboActiveMinigrids',
     'comboUseSmartGrids',
@@ -1386,6 +1390,11 @@ export const checkDCABotSettings = (
       CooldownUnits.seconds,
     ]) &&
     checkNumber(settings.cooldownAfterDealStopInterval, true) &&
+    checkStringAsEnum(settings.cooldownAfterDealStopTrigger, [
+      CooldownStopTriggerEnum.any,
+      CooldownStopTriggerEnum.sl,
+      CooldownStopTriggerEnum.loss,
+    ]) &&
     checkBoolean(settings.useActiveMinigrids) &&
     checkBoolean(settings.comboUseSmartGrids) &&
     checkStringAsNumber(settings.comboActiveMinigrids, true) &&

@@ -8,6 +8,7 @@ import {
   CloseDCATypeEnum,
   ComboTpBase,
   CooldownOptionsEnum,
+  CooldownStopTriggerEnum,
   CooldownUnits,
   DCAConditionEnum,
   DCATypeEnum,
@@ -1425,6 +1426,10 @@ export const dcaBotSchemaConfig: Record<
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(CooldownOptionsEnum),
   },
+  cooldownAfterDealStopTrigger: {
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(CooldownStopTriggerEnum),
+  },
   moveSL: { validators: [ValidatorsEnum.shouldBeBoolean] },
   moveSLTrigger: {
     validators: [
@@ -2135,6 +2140,7 @@ export const TERMINAL_DEAL_EXCLUDED_FIELDS: (keyof typeof DCA_FORM_DEFAULTS)[] =
     'cooldownAfterDealStopUnits',
     'cooldownAfterDealStopInterval',
     'cooldownAfterDealStopOption',
+    'cooldownAfterDealStopTrigger',
     'useCloseAfterX',
     'closeAfterX',
     'useCloseAfterXloss',

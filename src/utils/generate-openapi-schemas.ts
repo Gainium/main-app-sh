@@ -282,6 +282,11 @@ const fieldMetadata: Record<
     description: 'Apply stop cooldown per symbol or bot',
     example: 'bot',
   },
+  cooldownAfterDealStopTrigger: {
+    description:
+      'Which closed deals start the stop cooldown: any (every close), sl (stop loss or liquidation only) or loss (deals closed at a net loss only)',
+    example: 'any',
+  },
   useCooldown: { description: 'Enable cooldown feature', example: false },
 
   // Trailing

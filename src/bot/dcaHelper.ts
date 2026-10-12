@@ -163,6 +163,12 @@ import {
 } from './utils'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
+import {
+  cooldownTriggersForClose,
+  lastCloseForCooldown,
+  recordCooldownTriggers,
+  type ConditionalCooldownTrigger,
+} from './dca/cooldownStopTrigger'
 import { emptyBotStats } from './dca/botStatsReset'
 import { profitFactorOf } from './profitFactor'
 import {
@@ -1828,6 +1834,7 @@ function createDCABotHelper<
       type: 'opened' | 'closed',
       time: number,
       symbol: string,
+      cooldownTriggers: ConditionalCooldownTrigger[] = [],
     ) {
       if (this.data) {
         if (type === 'opened') {
@@ -1851,9 +1858,14 @@ function createDCABotHelper<
             ),
             { symbol, time },
           ]
+          const byTrigger = cooldownTriggers.length
+            ? recordCooldownTriggers(this.data, cooldownTriggers, time, symbol)
+            : {}
+          Object.assign(this.data, byTrigger)
           this.updateData({
             lastClosedDeal: time,
             lastClosedDealPerSymbol: this.data.lastClosedDealPerSymbol,
+            ...byTrigger,
           })
         }
       }
@@ -1881,12 +1893,13 @@ function createDCABotHelper<
         settings?.cooldownAfterDealStopOption && settings?.useMulti
           ? settings?.cooldownAfterDealStopOption
           : CooldownOptionsEnum.bot
-      const lastTime =
-        cooldownAfterDealStartOption === CooldownOptionsEnum.bot
-          ? this.data?.lastClosedDeal
-          : this.data?.lastClosedDealPerSymbol?.find((d) => d.symbol === symbol)
-              ?.time
-      return this.utils.checkCooldownStop(settings, lastTime ?? 0)
+      const lastTime = lastCloseForCooldown(
+        this.data,
+        settings?.cooldownAfterDealStopTrigger,
+        cooldownAfterDealStartOption,
+        symbol,
+      )
+      return this.utils.checkCooldownStop(settings, lastTime)
     }
 
     async comboBasedOn(deal?: ExcludeDoc<Deal>) {
@@ -4290,6 +4303,7 @@ function createDCABotHelper<
             'closed',
             +new Date(),
             deal.deal.symbol.symbol,
+            cooldownTriggersForClose(deal.deal),
           )
           deal.deal.closeTime = order ? order.updateTime : +new Date()
           const set = await this.getAggregatedSettings(deal.deal)

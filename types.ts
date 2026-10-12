@@ -741,6 +741,16 @@ export enum CooldownOptionsEnum {
   bot = 'bot',
 }
 
+/** Which closed deals start the cooldown after deal stop. */
+export enum CooldownStopTriggerEnum {
+  /** Every closed deal (default; also when missing). */
+  any = 'any',
+  /** Deals closed by a stop loss or a liquidation. */
+  sl = 'sl',
+  /** Deals closed with a negative net profit. */
+  loss = 'loss',
+}
+
 export enum DCAVolumeType {
   scale = 'scale',
   change = 'change',
@@ -813,6 +823,7 @@ export interface DCABotSettings extends BaseSettings {
   cooldownAfterDealStopUnits?: CooldownUnits
   cooldownAfterDealStopInterval?: number
   cooldownAfterDealStopOption?: CooldownOptionsEnum
+  cooldownAfterDealStopTrigger?: CooldownStopTriggerEnum
   moveSL?: boolean
   moveSLTrigger?: string
   moveSLValue?: string
@@ -2394,6 +2405,10 @@ export type Usage = {
 
 type LastEventPerSymbols = { symbol: string; time: number }
 
+export type LastClosesByTrigger = Partial<
+  Record<Exclude<CooldownStopTriggerEnum, CooldownStopTriggerEnum.any>, number>
+>
+
 export type LastPricesPerSymbols = {
   symbol: string
   avg: number
@@ -2590,6 +2605,11 @@ export interface DCABotSchema<
   lastClosedDeal?: number
   lastOpenedDealPerSymbol?: LastEventPerSymbols[]
   lastClosedDealPerSymbol?: LastEventPerSymbols[]
+  /** Last close that matched each conditional cooldown-after-stop trigger. */
+  lastClosedDealByTrigger?: LastClosesByTrigger
+  lastClosedDealByTriggerPerSymbol?: (LastClosesByTrigger & {
+    symbol: string
+  })[]
   lastPricesPerSymbol?: LastPricesPerSymbols[]
   symbol: Map<string, Symbols>
   initialBalances: MultiAssets
