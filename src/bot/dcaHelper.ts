@@ -14390,6 +14390,19 @@ function createDCABotHelper<
         this.handleLog(`Balance check skipped`)
         return result
       }
+      // A futures import adopts a position that is already open: its margin is
+      // already committed, so the venue has already taken it out of the free
+      // balance. Asking for it again can only refuse a valid import — and on a
+      // Binance Multi-Assets account the quote row it read was the BNFCR PnL
+      // ledger, not the collateral. Nothing is placed, so there is nothing to
+      // fund.
+      if (
+        this.futures &&
+        settings.terminalDealType === TerminalDealTypeEnum.import
+      ) {
+        this.handleLog(`Balance check skipped for a futures import`)
+        return result
+      }
       const ed = await this.getExchangeInfo(symbol)
       if (!ed) {
         return result
@@ -14422,44 +14435,22 @@ function createDCABotHelper<
         const requiredQuote =
           (requiredBase * +(settings.baseOrderPrice ?? 0)) / leverage
         const quoteBalance = balance?.get(ed.quoteAsset.name)?.free ?? 0
-        if (this.futures) {
-          if (this.coinm) {
-            if (baseBalance < requiredBase) {
-              return {
-                status: false,
-                available: baseBalance,
-                required: requiredBase,
-                price: 0,
-              }
-            }
-          } else {
-            if (quoteBalance < requiredQuote) {
-              return {
-                status: false,
-                available: quoteBalance,
-                required: requiredQuote,
-                price: 0,
-              }
+        if (this.isLong) {
+          if (baseBalance < requiredBase) {
+            return {
+              status: false,
+              available: baseBalance,
+              required: requiredBase,
+              price: 0,
             }
           }
         } else {
-          if (this.isLong) {
-            if (baseBalance < requiredBase) {
-              return {
-                status: false,
-                available: baseBalance,
-                required: requiredBase,
-                price: 0,
-              }
-            }
-          } else {
-            if (quoteBalance < requiredQuote) {
-              return {
-                status: false,
-                available: quoteBalance,
-                required: requiredQuote,
-                price: 0,
-              }
+          if (quoteBalance < requiredQuote) {
+            return {
+              status: false,
+              available: quoteBalance,
+              required: requiredQuote,
+              price: 0,
             }
           }
         }

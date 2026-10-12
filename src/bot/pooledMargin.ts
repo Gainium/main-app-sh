@@ -1,3 +1,5 @@
+import { ExchangeEnum } from '../../types'
+
 /**
  * What a pooled-collateral account can commit, in the unit the caller's funds
  * check counts in.
@@ -18,9 +20,20 @@
  * draws on the same pool: OKX Europe X-Perps are USDC-quoted and an account in
  * Multi-currency margin funds them from EUR. Only venues that report a pool
  * (`/marginAvailableUsd` non-null) are ever widened.
+ *
+ * USDT is covered on Binance USDⓈ-M only: its pool is reported in Multi-Assets
+ * mode, where every collateral coin margins every USDⓈ-M contract — an EEA
+ * Credits-mode account holds USDC and trades USDT-quoted perpetuals from it.
+ * Other venues' USDT-M behaviour in pooled mode is unverified, so they keep
+ * the per-asset USDT balance.
  */
-export const poolCoversQuote = (quoteAsset: string): boolean =>
-  quoteAsset === 'USD' || quoteAsset === 'USDC'
+export const poolCoversQuote = (
+  quoteAsset: string,
+  exchange?: ExchangeEnum,
+): boolean =>
+  quoteAsset === 'USD' ||
+  quoteAsset === 'USDC' ||
+  (quoteAsset === 'USDT' && exchange === ExchangeEnum.binanceUsdm)
 
 export const widenByPool = (
   available: number,

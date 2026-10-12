@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.90.3] - 2026-10-12
+### Fixed
+- Binance USDⓈ-M in Multi-Assets mode: USDT-quoted deals now count the account's pooled available margin when the USDT balance falls short. In that mode every collateral coin margins every contract, so an account holding USDC and no USDT was refused with "Not enough balance". On accounts that also carry a BNFCR row (EEA Credits mode), that row is the account's settled PnL and can be negative, and it was being read as the balance. Other venues keep the per-asset USDT balance.
+- Terminal: importing an existing futures position no longer runs a free-balance check. The position is already open and its margin already committed, so the check could only refuse a valid import. Spot imports still check that the imported coins are held.
+
 ## [1.90.2] - 2026-10-11
 
 ### Fixed

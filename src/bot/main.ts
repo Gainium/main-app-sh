@@ -9909,7 +9909,7 @@ class MainBot<T extends IMainBot> {
    * the common path costs no extra request. Returns `available` unchanged for
    * every non-pooled venue and on any error: a venue with no opinion must
    * never widen or block sizing. The pooled figure is USD-denominated, so it
-   * is trusted only for a USD or USDC quote (`poolCoversQuote`).
+   * is trusted only for the quotes `poolCoversQuote` allows.
    *
    * COIN-M: `available` is in the base coin, so the pool is converted at
    * `price` (exchange-connector spec 028 — a Bitget Unified account in
@@ -9922,7 +9922,11 @@ class MainBot<T extends IMainBot> {
     available: number,
     price?: number,
   ): Promise<number> {
-    if (!this.futures || !poolCoversQuote(quoteAsset) || !this.exchange) {
+    if (
+      !this.futures ||
+      !poolCoversQuote(quoteAsset, this.data?.exchange) ||
+      !this.exchange
+    ) {
       return available
     }
     if (this.coinm && !price) {
@@ -9988,7 +9992,7 @@ class MainBot<T extends IMainBot> {
     if (
       !this.futures ||
       this.coinm ||
-      !poolCoversQuote(quoteAsset) ||
+      !poolCoversQuote(quoteAsset, this.data?.exchange) ||
       !this.exchange
     ) {
       return cachedFree

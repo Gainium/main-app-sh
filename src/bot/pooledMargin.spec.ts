@@ -8,6 +8,7 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
+import { ExchangeEnum } from '../../types'
 import { poolCoversQuote, widenByPool } from './pooledMargin'
 
 describe('pooled margin — widenByPool (exchange-connector spec 028)', () => {
@@ -36,11 +37,19 @@ describe('pooled margin — widenByPool (exchange-connector spec 028)', () => {
     expect(widenByPool(2, NaN, false)).to.equal(2)
   })
 
-  it('the USD pool covers USD and USDC quotes, nothing else', () => {
+  it('the USD pool covers USD and USDC quotes, not USDT by default', () => {
     expect(poolCoversQuote('USD')).to.equal(true)
     expect(poolCoversQuote('USDC')).to.equal(true)
     expect(poolCoversQuote('USDT')).to.equal(false)
     expect(poolCoversQuote('EUR')).to.equal(false)
     expect(poolCoversQuote('BTC')).to.equal(false)
+  })
+
+  it('USDT is covered on Binance USDⓈ-M only (Multi-Assets mode)', () => {
+    expect(poolCoversQuote('USDT', ExchangeEnum.binanceUsdm)).to.equal(true)
+    expect(poolCoversQuote('USDT', ExchangeEnum.bitgetUsdm)).to.equal(false)
+    expect(poolCoversQuote('USDT', ExchangeEnum.okxLinear)).to.equal(false)
+    expect(poolCoversQuote('USDT', ExchangeEnum.binanceCoinm)).to.equal(false)
+    expect(poolCoversQuote('EUR', ExchangeEnum.binanceUsdm)).to.equal(false)
   })
 })
