@@ -17133,10 +17133,17 @@ function createDCABotHelper<
               // replacement was refused `free 110,493 / required 934,119` —
               // 110,493 plus the 824,863 that order still held being the whole
               // wallet. The deal could not close.
+              // A resting reduce-funds order is typed `dealTP` but is not the
+              // deal's take profit: `getTPOrder` already sizes the TP net of
+              // it (`getPendingReduceFunds`). Counting it here read a limit
+              // withdrawal as an undersized TP and cancelled it on the next
+              // fill.
               const tp = this.getOrdersByStatusAndDealId({
                 dealId,
                 status: ['NEW', 'PARTIALLY_FILLED'],
-              }).filter((o) => o.typeOrder === TypeOrderEnum.dealTP)
+              }).filter(
+                (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
+              )
               // Compare on what the resting order can still SELL, not on the
               // size it was created for. `getTPOrder` already subtracts the
               // executed part (via `tpHistory`) from the replacement it sizes,
@@ -26319,7 +26326,8 @@ function createDCABotHelper<
       _symbol?: string,
       type?: AddFundsTypeEnum,
       fromWebhook = false,
-      limitPrice = false,
+      /** Place a resting LIMIT order at this price; omitted = MARKET. */
+      limitPrice?: string,
       convert = true,
       dealId?: string,
     ) {
@@ -26337,7 +26345,8 @@ function createDCABotHelper<
           {
             qty,
             asset,
-            useLimitPrice: limitPrice,
+            useLimitPrice: !!limitPrice,
+            limitPrice,
             type,
           },
           fromWebhook,
@@ -26351,7 +26360,8 @@ function createDCABotHelper<
       _symbol?: string,
       type?: AddFundsTypeEnum,
       fromWebhook = false,
-      limitPrice = false,
+      /** Place a resting LIMIT order at this price; omitted = MARKET. */
+      limitPrice?: string,
       convert = true,
       dealId?: string,
     ) {
@@ -26369,7 +26379,8 @@ function createDCABotHelper<
           {
             qty,
             asset,
-            useLimitPrice: limitPrice,
+            useLimitPrice: !!limitPrice,
+            limitPrice,
             type,
           },
           fromWebhook,
@@ -26713,6 +26724,15 @@ function createDCABotHelper<
         price = +settings.limitPrice
         if (isNaN(price)) {
           price = 0
+        } else {
+          // A webhook price is computed (ATR steps, levels), not picked off
+          // the book — align it to the pair's tick or the venue rejects it.
+          const precision = (
+            await this.getExchangeInfo(deal.deal.symbol.symbol)
+          )?.priceAssetPrecision
+          if (precision !== undefined) {
+            price = this.math.round(price, precision)
+          }
         }
       }
       if (price === 0) {
@@ -26918,6 +26938,15 @@ function createDCABotHelper<
         price = +settings.limitPrice
         if (isNaN(price)) {
           price = 0
+        } else {
+          // A webhook price is computed (ATR steps, levels), not picked off
+          // the book — align it to the pair's tick or the venue rejects it.
+          const precision = (
+            await this.getExchangeInfo(deal.deal.symbol.symbol)
+          )?.priceAssetPrecision
+          if (precision !== undefined) {
+            price = this.math.round(price, precision)
+          }
         }
       }
       if (price === 0) {

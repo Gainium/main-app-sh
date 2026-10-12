@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.92.0] - 2026-10-12
+### Added
+- `addFunds` / `reduceFunds` webhooks accept an optional `price`: the order is placed as a resting limit order at that price (rounded to the pair's price step) instead of a market order. Without `price` the behaviour is unchanged. A `price` that is not a positive number is rejected instead of falling back to market, and on a bot with more than one pair a `price` must come with a `symbol`.
+### Fixed
+- A resting limit reduce-funds order was cancelled the next time the deal's take profit was re-sized (for example after a safety order or an add-funds order filled): the re-size counted it as an undersized take profit. The take profit is already sized net of pending reduce-funds orders, so they are now left in place.
+
 ## [1.91.0] - 2026-10-12
 ### Changed
 - DCA by indicators counts as one indicator, however many DCA levels it has: for the bot's credit cost and for the 20-indicator limit per bot (create and API v2 validation). Each DCA indicator is one ladder level and a deal only subscribes the one of its next level, so the ladder no longer counts once per level. Every other indicator still counts once.

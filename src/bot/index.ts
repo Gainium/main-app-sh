@@ -188,6 +188,10 @@ import {
 } from '../config'
 import { applyGridFuturesConstraints } from '../server/v2/helpers'
 import { ensureDynamicArIndicator } from '../utils/dynamicArIndicator'
+import {
+  parseSignalFundsPrice,
+  signalFundsPriceNeedsSymbolReason,
+} from './signalFundsPrice'
 
 const PER_PAGE = 20
 
@@ -203,6 +207,11 @@ export type WebhookData = {
   pairsToSetMode?: PairsToSetMode
   closeType?: 'limit' | 'market' | 'leave' | 'cancel'
   type?: AddFundsTypeEnum
+  /**
+   * `addFunds` / `reduceFunds` only: place a resting LIMIT order at this price
+   * instead of a market order. See `signalFundsPrice.ts`.
+   */
+  price?: string | number
   /**
    * `startDeal` only: this deal's own base order / TP / SL, replacing the
    * bot's. Numbers or numeric strings. See `signalDealOverrides.ts`.
@@ -9434,6 +9443,29 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * How many pairs a webhook's bot trades, read only when a funds `price`
+   * arrives without a `symbol`. Anything unreadable counts as "not one", so
+   * the signal is refused rather than priced against the wrong pair.
+   */
+  private async webhookBotPairCount(bot: {
+    id: string
+    type: BotType
+  }): Promise<number | undefined> {
+    const res =
+      bot.type === BotType.dca
+        ? await this.dcaBotDb.readData({ _id: bot.id }, { 'settings.pair': 1 })
+        : bot.type === BotType.combo
+          ? await this.comboBotDb.readData(
+              { _id: bot.id },
+              { 'settings.pair': 1 },
+            )
+          : undefined
+    return res?.status === StatusEnum.ok
+      ? res.data?.result?.settings?.pair?.length
+      : undefined
+  }
+
   @IdMute(mutex, (data?: WebhookData) => `${data?.uuid}singleWebhookProcess`)
   private async singleWebhookProcess(
     data: WebhookData,
@@ -9776,44 +9808,55 @@ class Bot<T extends UserSchema = UserSchema> {
             })
         }
         if (
-          action === WebhookActionEnum.addFunds &&
+          (action === WebhookActionEnum.addFunds ||
+            action === WebhookActionEnum.reduceFunds) &&
           qty &&
           qty !== '' &&
           asset &&
           asset !== ''
         ) {
-          event.metadata = JSON.stringify({ action, symbol, qty, asset })
-          event.symbol = symbol
-          this.handleDebug(`Received ${action} signal for ${uuid}`)
-          call = () =>
-            findBot &&
-            this.getWorkerById(findBot.worker)?.postMessage({
-              do: 'method',
-              botType: findBot.type,
-              botId: findBot.id,
-              method: 'addFundsForAllDeals',
-              args: [qty, asset as OrderSizeTypeEnum, symbol, type, true],
+          // Optional `price`: a resting limit order instead of a market one.
+          // Refused rather than downgraded to market when it is malformed, or
+          // when it cannot say which pair of a multi-pair bot it is for.
+          const funds = parseSignalFundsPrice(data)
+          if (funds.error) {
+            failReason = funds.error
+          } else if (
+            funds.needsSymbol &&
+            (await this.webhookBotPairCount(findBot)) !== 1
+          ) {
+            failReason = signalFundsPriceNeedsSymbolReason
+          } else {
+            const limitPrice = funds.price
+            event.metadata = JSON.stringify({
+              action,
+              symbol,
+              qty,
+              asset,
+              ...(limitPrice ? { price: limitPrice } : {}),
             })
-        }
-        if (
-          action === WebhookActionEnum.reduceFunds &&
-          qty &&
-          qty !== '' &&
-          asset &&
-          asset !== ''
-        ) {
-          event.metadata = JSON.stringify({ action, symbol, qty, asset })
-          event.symbol = symbol
-          this.handleDebug(`Received ${action} signal for ${uuid}`)
-          call = () =>
-            findBot &&
-            this.getWorkerById(findBot.worker)?.postMessage({
-              do: 'method',
-              botType: findBot.type,
-              botId: findBot.id,
-              method: 'reduceFundsInAllDeals',
-              args: [qty, asset as OrderSizeTypeEnum, symbol, type, true],
-            })
+            event.symbol = symbol
+            this.handleDebug(`Received ${action} signal for ${uuid}`)
+            call = () =>
+              findBot &&
+              this.getWorkerById(findBot.worker)?.postMessage({
+                do: 'method',
+                botType: findBot.type,
+                botId: findBot.id,
+                method:
+                  action === WebhookActionEnum.addFunds
+                    ? 'addFundsForAllDeals'
+                    : 'reduceFundsInAllDeals',
+                args: [
+                  qty,
+                  asset as OrderSizeTypeEnum,
+                  symbol,
+                  type,
+                  true,
+                  limitPrice,
+                ],
+              })
+          }
         }
         if (
           action === WebhookActionEnum.changePairs &&
