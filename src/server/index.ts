@@ -35,6 +35,7 @@ import swaggerDoc from './swagger.json'
 import { startAdminConfigSync } from '../utils/adminConfig'
 import { startEncryptKeyBackfill } from '../utils/encryptKeyBackfill'
 import { getClientIp, parseTrustProxy } from './clientIp'
+import { brokerCodesHandler } from './brokerCodes'
 
 swaggerDoc.servers = [{ url: `${SERVER_HOST}` }]
 
@@ -413,6 +414,7 @@ async function start() {
     app.get(r, apiLimiter, bodyMiddleware, ...fn.middlewares, fn.handler),
   )
 
+  app.get('/broker-codes', apiLimiter, brokerCodesHandler)
   app.get('/datafeed_ws', async (_req, res) => {
     const result = await methods.getWSKucoin()
     res.send(result)
