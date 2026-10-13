@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.5] - 2026-10-13
+### Fixed
+- A DCA or Combo deal created in the seconds before a bot-worker restart is no longer lost by the restart. On a service restart the bot restores its deals from the Redis deal snapshot, which is written on a short delay, and it did not read the database when the snapshot was not empty. A deal that was in the database but not yet in the snapshot was never loaded again: a base order that filled meanwhile never got its safety orders or take profit, and the bot opened another deal on the same pair. A service restart now also loads the bot's live deals that the snapshot lacks, with their orders, so they are restored like any other deal. If that read fails, the restart continues from the snapshot as before.
+
 ## [1.96.4] - 2026-10-12
 ### Fixed
 - Restart deal now re-sends safety orders that were refused for insufficient funds, once the account can fund them. Earlier refusals had armed the not-enough-balance cooldown for the deal's pair. The cooldown then answered the restart itself for up to an hour, without asking the exchange, and reported "Not enough balance" next to a free balance well above the order size. A restart now clears the cooldown and the refusal counters for the deal's symbol before it re-places orders. If the exchange refuses again, the guard re-arms as it would on a first shortfall. Automatic retries keep their existing back-off. Separately, a refusal served from the cooldown no longer triggers the Coinbase / KuCoin / Bybit "not enough balance" retry loop. That loop waits out exchange balance lag, and a cached refusal cannot change between retries.

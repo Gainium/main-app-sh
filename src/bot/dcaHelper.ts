@@ -2016,10 +2016,46 @@ function createDCABotHelper<
           )
         }
         deals = dealData.data.result
+      } else {
+        // The snapshot is written through `@RunWithDelay`, and the pending
+        // write dies with the process, so a deal created in the last seconds
+        // before a stop is in Mongo but not in Redis. Trusting the snapshot
+        // alone lost such a deal for good: never restored, never started on
+        // its filled base order, and the bot opened another deal on the pair.
+        // Load the live deals the snapshot lacks the way a Mongo load does.
+        // Spec 151.
+        const missing = await this.dealsDb.readData(
+          {
+            botId: this.botId,
+            status: {
+              $in: [
+                DCADealStatusEnum.error,
+                DCADealStatusEnum.open,
+                DCADealStatusEnum.start,
+              ],
+            },
+            _id: { $nin: [...this.deals.keys()] },
+          } as any,
+          {},
+          {},
+          true,
+        )
+        if (missing.status === StatusEnum.notok) {
+          this.handleWarn(
+            `Cannot check DB for deals missing from redis: ${missing.reason}`,
+          )
+        } else if (missing.data.result.length) {
+          deals = missing.data.result
+          this.handleLog(
+            `Found in DB ${deals.length} deals missing from redis: ${deals
+              .map((d) => `${d._id}`)
+              .join(', ')}`,
+          )
+        }
       }
       const keys = loadFromDb
         ? deals.map((d) => `${d._id}`)
-        : [...this.deals.keys()]
+        : [...this.deals.keys(), ...deals.map((d) => `${d._id}`)]
       const orders = await this._loadOrders(
         {
           $or: [
@@ -2129,7 +2165,7 @@ function createDCABotHelper<
           false,
         )
       }
-      if (loadFromDb) {
+      if (loadFromDb || deals.length) {
         deals.map((d) =>
           this.setDeal(
             {
