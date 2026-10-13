@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.12] - 2026-10-13
+### Fixed
+- A DCA deal whose take-profit closes only part of the position is no longer marked closed when the exchange refuses to sell the rest at market because the order book is in limit-only mode. The bot used to write the deal closed, with a profit that counted the unsold coins as sold, and only then try to sell them with a market order. When the exchange refused that order, the coins stayed in the account with no deal tracking them. The bot now tries that sale before it closes the deal. If the exchange answers that it only accepts limit orders, the deal stays open, the part already sold is kept as a partial take profit, and the rest is placed as a limit take-profit at the current price. It replaces any other take-profit resting on the deal. The deal closes, and its profit is booked, when that order fills. Sales the exchange accepts, and refusals for any other reason, are unchanged.
+
 ## [1.96.11] - 2026-10-13
 ### Fixed
 - A KuCoin spot safety order that is cancelled after part of it filled is no longer completed at market. KuCoin reports such a cancel as a filled order carrying only the part that traded, and the bot treated the rest as an under-fill: it bought or sold it at once with a market order and booked the safety order as filled in full. Whether the order is cancelled on the exchange, from the deal, or by lowering the number of safety orders, the deal now keeps only the part that filled and no market order is sent. KuCoin market orders that the exchange fills short are still completed as before, as are base orders, take-profits and every other exchange.

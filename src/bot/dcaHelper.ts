@@ -119,6 +119,7 @@ import MainBot, {
 import { underfilledTpQty } from './dca/partialTp'
 import { isAmbiguousOrderFailure } from '../utils/exchange'
 import {
+  isLimitOnlyReason,
   limitOnlyEntryReplacedMessage,
   normalizeReason,
   shouldFallBackToLimitEntry,
@@ -3212,6 +3213,75 @@ function createDCABotHelper<
               filledTp.reduce((acc, d) => acc + d.qty * d.price, 0)) /
             qty
 
+          // Spec `157`. A take-profit that closed only part of the position
+          // leaves the rest to the market sweep below, and that sweep used to
+          // be sent only AFTER this method had written the deal closed and
+          // booked its profit — valuing the unsold coins as if sold. A
+          // limit-only book refuses every market order, so there the deal was
+          // closed with the coins still in the account and nothing working to
+          // sell them. Send the sweep first; on that refusal keep the deal
+          // open and close the rest by LIMIT through the normal close path.
+          let sweep: { result: Order | string | void; qty: number } | void =
+            undefined
+          const preLedger = findDeal.deal.currentBalances
+          const preBase =
+            (preLedger?.base ?? NaN) +
+            qty * (tpOrder.side === OrderSideEnum.buy ? 1 : -1)
+          const preRemainder = this.isLong
+            ? preBase
+            : findDeal.deal.initialBalances.base - preBase
+          const sweepEd = await this.getExchangeInfo(
+            findDeal.deal.symbol.symbol,
+          )
+          if (
+            !profitBase &&
+            // A lost ledger is rebuilt below before the remainder is measured;
+            // leave that case to the path that rebuilds it.
+            Number.isFinite(preLedger?.quote) &&
+            Number.isFinite(preRemainder) &&
+            !(preLedger.base === 0 && preLedger.quote === 0) &&
+            sweepEd &&
+            preRemainder > sweepEd.baseAsset.minAmount &&
+            preRemainder * findDeal.deal.avgPrice > sweepEd.quoteAsset.minAmount
+          ) {
+            sweep = await this.sellRemainder(
+              dealId,
+              preRemainder,
+              findDeal.deal.avgPrice,
+              true,
+              findDeal,
+              undefined,
+              true,
+              false,
+              'send',
+            )
+            if (
+              sweep &&
+              typeof sweep.result === 'string' &&
+              isLimitOnlyReason(sweep.result)
+            ) {
+              this.handleLog(
+                `${tpOrder.symbol} book is in limit only mode, cannot sell the remaining ${sweep.qty} of deal ${dealId} at market. Deal stays open, closing the rest by limit`,
+              )
+              // This fill is a partial take profit like any other; the next
+              // close counts it from here, once.
+              findDeal.deal.tpHistory = [
+                ...(findDeal.deal.tpHistory ?? []).filter(
+                  (h) => h.id !== tpOrder.clientOrderId,
+                ),
+                { qty: orderQty, price: orderPrice, id: tpOrder.clientOrderId },
+              ]
+              this.saveDeal(findDeal, { tpHistory: findDeal.deal.tpHistory })
+              this.pendingClose.delete(dealId)
+              this.endMethod(_id)
+              // Not awaited: it shares the per-deal mutex with a close request
+              // that may still be running (the one whose cancel promoted this
+              // take-profit), so it queues behind it.
+              this.closeRemainderByLimit(this.botId, dealId, sweep.qty)
+              return
+            }
+          }
+
           findDeal.deal.status = DCADealStatusEnum.closed
           findDeal.deal.lastPrice = parseFloat(tpOrder.price)
           const dealOrders = this.getOrdersByStatusAndDealId({
@@ -3601,9 +3671,11 @@ function createDCABotHelper<
             (profitBase ? findDeal.deal.profit.total : 0)
           const ed = await this.getExchangeInfo(findDeal.deal.symbol.symbol)
           if (
-            ed &&
-            remainder > ed.baseAsset.minAmount &&
-            remainder * findDeal.deal.avgPrice > ed.quoteAsset.minAmount
+            // A sweep already sent above is booked whatever this re-reads.
+            sweep ||
+            (ed &&
+              remainder > ed.baseAsset.minAmount &&
+              remainder * findDeal.deal.avgPrice > ed.quoteAsset.minAmount)
           ) {
             await this.sellRemainder(
               dealId,
@@ -3613,6 +3685,8 @@ function createDCABotHelper<
               findDeal,
               undefined,
               true,
+              false,
+              sweep ? { result: sweep.result } : undefined,
             )
           }
           stop = await this.processDealClose(
@@ -3756,6 +3830,132 @@ function createDCABotHelper<
         if (stop) {
           this.stop()
         }
+      }
+      this.endMethod(_id)
+    }
+
+    /**
+     * Spec `157` §1.3. Close what a take-profit left behind with a LIMIT order,
+     * after the venue refused the market sweep because the book only takes
+     * limit orders.
+     *
+     * Sized from what the refused sweep carried — the deal's ledger remainder,
+     * net of fees and on the venue's step — not re-derived by `getTPOrder`: a
+     * remainder exists precisely because the take-profit sizing and the ledger
+     * disagreed, and asking the sizing again can answer "nothing to close" and
+     * close the deal with no order.
+     *
+     * Same mutex key as `closeDealById`, so a close request still in flight
+     * finishes first; any take-profit it rested is then cancelled as a re-size
+     * (its fills are a partial take profit, kept in `tpHistory`) so the deal
+     * never carries two closes. The order is an ordinary `dealTP`: its fill
+     * closes the deal through `closeDeal` like any other.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `${botId}${dealId ?? 'closeById'}`,
+    )
+    async closeRemainderByLimit(_botId: string, dealId: string, qty: number) {
+      const _id = this.startMethod('closeRemainderByLimit')
+      const findDeal = this.getDeal(dealId)
+      const symbol = findDeal?.deal.symbol?.symbol
+      const ed = symbol ? await this.getExchangeInfo(symbol) : undefined
+      if (
+        !findDeal ||
+        findDeal.deal.status !== DCADealStatusEnum.open ||
+        !symbol ||
+        !ed ||
+        !this.data
+      ) {
+        this.endMethod(_id)
+        return
+      }
+      let toSell = qty
+      let historyChanged = false
+      const resting = this.getOrdersByStatusAndDealId({
+        status: ['NEW', 'PARTIALLY_FILLED'],
+        dealId,
+      }).filter((o) => o.typeOrder === TypeOrderEnum.dealTP)
+      for (const o of resting) {
+        // Already netted out of `qty` by the close that measured it.
+        const known =
+          (findDeal.deal.tpHistory ?? []).find((h) => h.id === o.clientOrderId)
+            ?.qty ?? 0
+        const cancelled = await this.cancelOrderOnExchange(o, true, true, false)
+        if (cancelled?.status === 'FILLED') {
+          // It filled out from under the cancel, which is a close in its own
+          // right; that fill re-measures whatever is left.
+          this.handleUnknownOrder(cancelled)
+          this.endMethod(_id)
+          return
+        }
+        const executed = +(cancelled?.executedQty ?? 0) || 0
+        if (executed > known) {
+          toSell -= executed - known
+          findDeal.deal.tpHistory = [
+            ...(findDeal.deal.tpHistory ?? []).filter(
+              (h) => h.id !== o.clientOrderId,
+            ),
+            { qty: executed, price: +o.price, id: o.clientOrderId },
+          ]
+          historyChanged = true
+        }
+      }
+      if (historyChanged) {
+        this.saveDeal(findDeal, { tpHistory: findDeal.deal.tpHistory })
+      }
+      toSell = this.math.round(
+        toSell,
+        await this.baseAssetPrecision(symbol),
+        true,
+      )
+      const price = this.math.round(
+        await this.getLatestPrice(symbol),
+        ed.priceAssetPrecision,
+      )
+      if (
+        !(toSell > 0) ||
+        toSell < ed.baseAsset.minAmount ||
+        toSell * price < ed.quoteAsset.minAmount
+      ) {
+        this.handleLog(
+          `Deal ${dealId} remainder ${toSell} is below the exchange minimums, no limit close placed`,
+        )
+        this.endMethod(_id)
+        return
+      }
+      const grid: Grid = {
+        price,
+        number: 0,
+        side: this.isLong ? OrderSideEnum.sell : OrderSideEnum.buy,
+        qty: toSell,
+        type: TypeOrderEnum.dealTP,
+        newClientOrderId: this.getOrderId(`D-TP`),
+        dealId,
+      }
+      const additional: OrderAdditionalParams = {
+        dealId,
+        type: OrderTypeEnum.limit,
+        reduceOnly: !!this.futures,
+        positionSide: this.hedge
+          ? this.isLong
+            ? PositionSide.LONG
+            : PositionSide.SHORT
+          : PositionSide.BOTH,
+      }
+      const result = await this.sendGridToExchange(grid, additional, ed, true)
+      if (typeof result === 'string') {
+        const order = this.convertGridToOrder(grid, additional, ed)
+        if (order) {
+          await this.handleOrderErrors(
+            result,
+            order,
+            'limitOrders()',
+            `Send new order request ${order.clientOrderId}, qty ${order.origQty}, price ${order.price}, side ${order.side}`,
+          )
+        }
+        // Same recovery a refused close gets in `closeDealById`.
+        await this.restoreOrReportRefusedClose(dealId, ed.pair, result)
       }
       this.endMethod(_id)
     }
@@ -7626,7 +7826,18 @@ function createDCABotHelper<
       updateBalances = true,
       force = false,
       lateEntryFill = false,
-    ) {
+      /**
+       * Spec `157`. `closeDeal` sends the sweep BEFORE it commits the close, so
+       * that a refusal it cannot recover from after the fact (a limit-only
+       * book) can still keep the deal open:
+       * - `'send'`: send only, and return what the venue answered — nothing is
+       *   booked and the `sellRemainder` flag is not set. Returns nothing when
+       *   a guard below stopped it before a send.
+       * - `{ result }`: the sweep was already sent; book this answer instead
+       *   of sending a second one.
+       */
+      sweep?: 'send' | { result: Order | string | void },
+    ): Promise<{ result: Order | string | void; qty: number } | void> {
       if (
         this.data?.settings.type === DCATypeEnum.terminal &&
         this.data.settings.terminalDealType === TerminalDealTypeEnum.simple
@@ -7746,8 +7957,11 @@ function createDCABotHelper<
           sellQty >= ed.baseAsset.minAmount &&
           sellQty * price >= ed.quoteAsset.minAmount
         ) {
-          const result = await this.sendGridToExchange(
-            {
+          let result: Order | string | void
+          if (sweep && sweep !== 'send') {
+            result = sweep.result
+          } else {
+            const grid: Grid = {
               price: this.math.round(price, ed.priceAssetPrecision),
               number: 0,
               side: !long ? OrderSideEnum.buy : OrderSideEnum.sell,
@@ -7755,19 +7969,50 @@ function createDCABotHelper<
               type: TypeOrderEnum.dealTP,
               newClientOrderId: this.getOrderId(`D-SR`),
               dealId,
-            },
-            {
+            }
+            const additional: OrderAdditionalParams = {
               dealId,
-              type: 'MARKET',
+              type: OrderTypeEnum.market,
               reduceOnly: true,
               positionSide: this.hedge
                 ? this.isLong
                   ? PositionSide.LONG
                   : PositionSide.SHORT
                 : PositionSide.BOTH,
-            },
-            ed,
-          )
+            }
+            if (sweep !== 'send') {
+              result = await this.sendGridToExchange(grid, additional, ed)
+            } else {
+              // `returnError` so the caller can read the reason. That also
+              // skips the report the send makes for everyone else, so make it
+              // here — same call, `D-SR` never sets a bot error.
+              result = await this.sendGridToExchange(
+                grid,
+                additional,
+                ed,
+                true,
+              )
+              if (typeof result === 'string') {
+                const order = this.convertGridToOrder(grid, additional, ed)
+                if (order) {
+                  await this.handleOrderErrors(
+                    result,
+                    order,
+                    'limitOrders()',
+                    `Send new order request ${order.clientOrderId}, qty ${order.origQty}, price ${order.price}, side ${order.side}`,
+                    false,
+                    false,
+                  )
+                }
+              }
+              this.endMethod(_id)
+              return { result, qty: sellQty }
+            }
+          }
+          if (typeof result === 'string') {
+            // Already reported by the `'send'` call that produced it.
+            result = undefined
+          }
           if (result) {
             const srQty = +result.executedQty
             const srPrice = +result.price
