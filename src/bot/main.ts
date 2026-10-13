@@ -71,6 +71,7 @@ import {
 } from './reduceOnlyRemainder'
 import {
   isBelowVenueMinOrderValue,
+  isCancelledLimitSafetyOrder,
   isVenueCanceledRemainderFill,
 } from './remainderFill'
 import { bitgetSpotMarketBuyQty } from './bitgetMarketBuyAmount'
@@ -6680,6 +6681,13 @@ class MainBot<T extends IMainBot> {
           order.status === 'CANCELED')) &&
       !this.coinm
     ) {
+      // Cancelled, not under-filled: what filled is the order. Spec `156`.
+      if (isCancelledLimitSafetyOrder(order)) {
+        this.handleLog(
+          `Order ${order.clientOrderId} not ${order.side} full qty: executed - ${order.executedQty}, total - ${order.origQty}, the rest was cancelled on the exchange — no remainder order sent, count ${count}`,
+        )
+        return order
+      }
       const fullAmount =
         count === 1 &&
         this.botType === BotType.dca &&

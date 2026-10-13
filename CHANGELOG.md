@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.11] - 2026-10-13
+### Fixed
+- A KuCoin spot safety order that is cancelled after part of it filled is no longer completed at market. KuCoin reports such a cancel as a filled order carrying only the part that traded, and the bot treated the rest as an under-fill: it bought or sold it at once with a market order and booked the safety order as filled in full. Whether the order is cancelled on the exchange, from the deal, or by lowering the number of safety orders, the deal now keeps only the part that filled and no market order is sent. KuCoin market orders that the exchange fills short are still completed as before, as are base orders, take-profits and every other exchange.
+
 ## [1.96.10] - 2026-10-13
 ### Fixed
 - A DCA or combo bot order that was still being placed when its deal closed is no longer written off while it goes live on the exchange. This happened on exchanges where orders are cancelled by the exchange's own order id (Coinbase, Kraken, KuCoin futures). Until the exchange answered the placement, the order had no such id, and a cancel at that moment treated it as never placed. It was marked cancelled without contacting the exchange. The exchange then accepted it, and it could fill as coins that belonged to no deal. Such a cancel now waits for the placement's answer and cancels the order on the exchange by the id it returned. If a placement answer arrives for an order the bot has already marked cancelled, the bot cancels it on the exchange if it is still open, and logs an error if it has already filled. The unknown-order log line now states how many lookups were actually made.

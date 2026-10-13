@@ -1,4 +1,4 @@
-import { ExchangeEnum } from '../../types'
+import { ExchangeEnum, TypeOrderEnum } from '../../types'
 import type { RemainderOrder } from './reduceOnlyRemainder'
 
 /**
@@ -41,6 +41,30 @@ export function isVenueCanceledRemainderFill(
     return true
   }
   return exchange === ExchangeEnum.bybit && originalOrderType === 'MARKET'
+}
+
+/**
+ * Whether a short `FILLED` row is a safety order that was CANCELLED, not one the
+ * venue under-filled — so its remainder must not be bought at market.
+ *
+ * Only **kucoin** spot. Its stream reports a cancelled order that had fills
+ * (`type: 'canceled'`, `status: 'done'`, non-zero `filledSize`) as `FILLED`, and
+ * a resting LIMIT order cannot end short any other way: whoever cancelled it —
+ * the owner on the exchange, `cancelTerminalDealOrder`, an order-count
+ * reduction — the rest was never wanted. Every other venue reports the same
+ * cancel as `CANCELED`, which `buyRemainder` does not act on. MARKET orders keep
+ * their top-up, and so do the base entry and the take-profit. Spec `156`.
+ */
+export function isCancelledLimitSafetyOrder(order: {
+  exchange?: string | null
+  type?: string | null
+  typeOrder?: string | null
+}): boolean {
+  return (
+    order.exchange === ExchangeEnum.kucoin &&
+    order.type === 'LIMIT' &&
+    order.typeOrder === TypeOrderEnum.dealRegular
+  )
 }
 
 /**
