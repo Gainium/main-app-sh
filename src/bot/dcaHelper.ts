@@ -11953,6 +11953,8 @@ function createDCABotHelper<
             this.handleDebug(
               `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
             )
+            // Spec 154 §4.1: keep the exchange id the venue just named.
+            await this.adoptExchangeOrderId(o, mergedOrder.orderId)
           }
         }
         if (unresolved.length) {
@@ -12475,6 +12477,13 @@ function createDCABotHelper<
                   this.handleDebug(
                     `TP/SL order not changed ${updatedOrder.clientOrderId}`,
                   )
+                  // Unchanged status is still news when we hold no exchange id:
+                  // the venue (or the stream's cached report) just named it.
+                  // Dropping it left the order unaddressable. Spec 154 §4.1.
+                  await this.adoptExchangeOrderId(
+                    activeTPSLOrder,
+                    updatedOrder.orderId,
+                  )
                 }
               }
             }
@@ -12610,6 +12619,8 @@ function createDCABotHelper<
                       this.handleDebug(
                         `Regular order not changed ${updatedOrder.clientOrderId}`,
                       )
+                      // Spec 154 §4.1 — see the TP/SL branch above.
+                      await this.adoptExchangeOrderId(o, updatedOrder.orderId)
                     }
                   }
                 }

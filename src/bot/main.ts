@@ -1319,6 +1319,77 @@ class MainBot<T extends IMainBot> {
     return clientOrderId
   }
 
+  /**
+   * Record the venue's own id on an order that still carries the `'-1'`
+   * placeholder. Never overwrites a real id. Spec 154 §4.1.
+   *
+   * A worker restart between "the venue accepted the order" and "we processed
+   * its answer" leaves the write-ahead row at `'-1'` while the order rests on
+   * the venue. On the venues addressed by exchange id that placeholder then
+   * reads as "never placed", and the order is written off while it is live.
+   */
+  protected async adoptExchangeOrderId(
+    order: Order,
+    venueOrderId?: string | number | null,
+  ): Promise<boolean> {
+    const id = `${venueOrderId ?? ''}`
+    if (
+      `${order.orderId ?? ''}` !== noExchangeOrderId ||
+      !id ||
+      id === noExchangeOrderId
+    ) {
+      return false
+    }
+    this.handleWarn(
+      `Order ${order.clientOrderId} had no exchange order id, but ${this.data?.exchange} holds it as ${id} — recording it`,
+    )
+    order.orderId = id
+    const held = this.getOrderFromMap(order.clientOrderId)
+    if (held && held !== order) {
+      held.orderId = id
+    }
+    if (held) {
+      this.setOrder(held)
+    }
+    await this.updateOrderOnDb(held ?? order)
+    return true
+  }
+
+  /**
+   * Coinbase cannot be asked about an order by our client order id, but its
+   * open-orders list carries it. Before a `'-1'` order is treated as "never
+   * reached the venue", look for it there and adopt its real id if found.
+   * Spec 154 §4.2/§4.5.
+   *
+   * `null` = not applicable (another venue, or the order has a real id).
+   * `ok(true|false)` = the venue answered and the order was / was not open.
+   * `notok` = the lookup itself failed, so nothing is known.
+   */
+  protected async resolveNeverPlacedOrder(
+    order: Order,
+  ): Promise<BaseReturn<boolean> | null> {
+    if (
+      !this.exchange ||
+      this.data?.exchange !== ExchangeEnum.coinbase ||
+      `${order.orderId ?? ''}` !== noExchangeOrderId
+    ) {
+      return null
+    }
+    const open = await this.exchange.getAllOpenOrders(order.symbol, true)
+    if (open.status !== StatusEnum.ok || !Array.isArray(open.data)) {
+      return {
+        status: StatusEnum.notok,
+        reason: `Cannot look up open ${order.symbol} orders for ${order.clientOrderId}: ${open.reason ?? 'no data'}`,
+        data: null,
+      }
+    }
+    const live = open.data.find((o) => o.clientOrderId === order.clientOrderId)
+    const adopted = live
+      ? await this.adoptExchangeOrderId(order, live.orderId)
+      : false
+    return { status: StatusEnum.ok, reason: null, data: adopted }
+  }
+
   protected async primeReconcileBatch(orders: Order[]) {
     this.reconcileBatch = null
     if (!this.exchange || !this.data || orders.length < 2) {
@@ -5737,22 +5808,34 @@ class MainBot<T extends IMainBot> {
       // needs `orderId` to build the request.
       let local = this.getOrderFromMap(id)
       let neverReachedExchange = false
+      let lookupFailed: string | null = null
       if (byId) {
         if (!local) {
           local = (await this.ordersDb.readData({ clientOrderId: id })).data
             ?.result
         }
         if (local) {
-          neverReachedExchange = local.orderId === noExchangeOrderId
+          // Coinbase can hold an order whose row still says `'-1'`; find it by
+          // client order id before the fast path below writes it off. A failed
+          // lookup is not an answer, so it takes the ordinary retry ladder.
+          // Spec 154 §4.5.
+          const resolved = await this.resolveNeverPlacedOrder(local)
+          if (resolved?.status === StatusEnum.notok) {
+            lookupFailed = resolved.reason
+          }
+          neverReachedExchange =
+            !lookupFailed && local.orderId === noExchangeOrderId
           id = `${local.orderId}`
         }
       }
-      const request = neverReachedExchange
-        ? this.exchange.returnBad()(new Error(orderNeverReachedExchange))
-        : await this.exchange.getOrder({
-            symbol,
-            newClientOrderId: id,
-          })
+      const request = lookupFailed
+        ? this.exchange.returnBad()(new Error(lookupFailed))
+        : neverReachedExchange
+          ? this.exchange.returnBad()(new Error(orderNeverReachedExchange))
+          : await this.exchange.getOrder({
+              symbol,
+              newClientOrderId: id,
+            })
       if (request.status === StatusEnum.notok) {
         this.handleLog(
           `${request.reason}, handleUnknownOrder(), Send get order request ${origId}, ${symbol}, ${id}`,
@@ -9659,6 +9742,17 @@ class MainBot<T extends IMainBot> {
       // batched order that skipped any of them would be a subtly different
       // order. Spec `082` §4.
       this.noteOwnCancel(order.clientOrderId)
+      // On Coinbase the placeholder does NOT prove the order never reached the
+      // venue: a restart mid-placement leaves `'-1'` on an order that rests
+      // there, and writing it off left it live, locking the base asset, so no
+      // replacement take-profit could ever be funded. Look it up by client
+      // order id first; when found, the real id is now on `order` and the
+      // cancel below goes to the venue. A failed lookup is reported as a
+      // cancel failure — never as "not found" — so the order stays tracked
+      // and the next pass retries. Spec 154 §4.2–§4.4.
+      const resolved = await this.resolveNeverPlacedOrder(order)
+      const lookupFailed =
+        resolved?.status === StatusEnum.notok ? resolved : null
       const primed = this.cancelBatch?.get(`${order.orderId}`)
       if (primed) {
         this.cancelBatch?.delete(`${order.orderId}`)
@@ -9670,8 +9764,9 @@ class MainBot<T extends IMainBot> {
             ? `${order.orderId}`
             : order.clientOrderId,
         })
-      let request =
-        byExchangeId && order.orderId === noExchangeOrderId
+      let request = lookupFailed
+        ? this.exchange.returnBad()(new Error(lookupFailed.reason))
+        : byExchangeId && order.orderId === noExchangeOrderId
           ? this.exchange.returnBad()(new Error(orderNeverReachedExchange))
           : primed
             ? this.exchange.returnGood<CommonOrder>()(primed)
@@ -9686,7 +9781,7 @@ class MainBot<T extends IMainBot> {
       // "does not exist" because it is already gone — goes through the routing
       // below, so the row ends up recording the venue's state. A running bot is
       // untouched (`blockPriceCheck` is set only inside `stop()`). Spec `134`.
-      if (this.blockPriceCheck && !primed) {
+      if (this.blockPriceCheck && !primed && !lookupFailed) {
         for (const delay of this.teardownCancelRetryDelays()) {
           if (
             request.status !== StatusEnum.notok ||

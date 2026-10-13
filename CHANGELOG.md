@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.9] - 2026-10-13
+### Fixed
+- A Coinbase take-profit (or other order) that reached the exchange while the bot worker was restarting is no longer written off while still live on Coinbase. Such an order kept a placeholder in place of its Coinbase order id. The restart check read the real id back but did not keep it when the order's status had not changed. When the bot later replaced the take-profit, it treated the placeholder as "never placed" and marked the order cancelled without contacting Coinbase. The order stayed open and kept its coins locked, so every new take-profit was refused for balance and the deal could not close. The restart and reconnect checks now record the order id Coinbase reports. Before cancelling or writing off a Coinbase order that has no id, the bot now looks for it among the open orders by its client order id. If it finds the order, it adopts the real id and cancels it on Coinbase. If that lookup fails, the bot reports a cancel error and keeps the order instead of writing it off. Orders that are not open on Coinbase, and other exchanges, are unchanged.
+
 ## [1.96.8] - 2026-10-13
 ### Fixed
 - A DCA bot with "Remainder full amount" no longer sends Bybit spot a top-up order that can never fill. When a base order filled slightly short, the bot topped it up with the pair's minimum quantity, whatever that was worth. On Bybit spot a market buy is sized in quote, so such a top-up was either below the pair's minimum order value or rounded to an amount of zero, and Bybit refused it every time. The bot now skips a Bybit spot top-up worth less than the minimum order value and logs why. A Bybit, Coinbase or Bitget spot market buy whose quote amount rounds to zero is now refused locally instead of being sent. Top-ups worth at least the minimum, and every other exchange, are unchanged.

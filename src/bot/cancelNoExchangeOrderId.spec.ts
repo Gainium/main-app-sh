@@ -79,6 +79,12 @@ function botOn(
         data: null,
       }
     },
+    // Spec 154: on coinbase a `-1` order is first looked for among the open
+    // orders by client id. Nothing is open here — the order really never
+    // reached the venue, which is the world this spec describes.
+    async getAllOpenOrders() {
+      return { status: StatusEnum.ok, reason: null, data: [] }
+    },
     async getOrder(req: unknown) {
       rec.getOrder.push(req)
       return {
