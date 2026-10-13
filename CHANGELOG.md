@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.7] - 2026-10-13
+### Fixed
+- A DCA or Combo bot with the ASAP start condition no longer sits idle after its next deal is refused for balance. A refusal right after a deal closes usually reads a stored balance that does not yet include the funds the close freed: the take-profit proceeds and the cancelled safety orders. Nothing tried the pair again, so the bot waited until it was restarted. The bot now re-checks after 10 s, 30 s, 1 min, 2 min and 5 min, reading the balance from the exchange, and opens the deal as soon as it can be funded. A bot that genuinely lacks the funds still opens nothing and stops re-checking after the last attempt. The "Not enough balance" warning is still reported once. Manual opens, terminal deals and other start conditions are unchanged.
+
 ## [1.96.6] - 2026-10-13
 ### Added
 - GraphQL `botOrder.addFundsId`: lets the dashboard tell an add-funds order from a ladder (safety) order, the same distinction the engine draws, instead of guessing from the client order id.

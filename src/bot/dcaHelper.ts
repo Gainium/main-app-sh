@@ -554,6 +554,18 @@ const MAX_CLOSE_PRICE_DEVIATION = 10
 const ZERO_HELD_SETTLE_MS = 5 * 60 * 1000
 
 /**
+ * Spec 152. After an ASAP bot's new deal is refused for balance, re-check
+ * after each of these delays, reading the exchange. Nothing else re-attempts
+ * an ASAP deal after a refusal. A refusal right after a close usually reads a
+ * stored balance that does not yet include the funds the close freed, so
+ * without this the bot idled until a restart. Bounded, so a bot that really
+ * lacks the funds stops checking after about nine minutes.
+ */
+export const NEW_DEAL_BALANCE_RETRY_MS = [
+  10_000, 30_000, 60_000, 120_000, 300_000,
+]
+
+/**
  * Spec `037` §4.3 (#731). The `035` deviation test, extracted so the single
  * close order and both close-price LADDERS are judged by one rule instead of
  * three copies of it. Deliberately one-sided: a close priced away from the
@@ -721,6 +733,8 @@ function createDCABotHelper<
     allowToPlaceOrders: Map<string, boolean> = new Map()
     /** Open new deal timer */
     openNewDealTimer: Map<string, NodeJS.Timeout> = new Map()
+    /** Spec 152: pair → balance re-checks already scheduled since its refusal */
+    newDealBalanceRetries: Map<string, number> = new Map()
     /** Close deal timers */
     closeDealTimer: Map<string, NodeJS.Timeout | null> = new Map()
 
@@ -14404,7 +14418,9 @@ function createDCABotHelper<
         !holdFromRestOnly.has(exchange) &&
         exchange !== ExchangeEnum.coinbase &&
         exchange !== ExchangeEnum.ftx &&
-        !settings.reduceToAvailableBalance
+        !settings.reduceToAvailableBalance &&
+        // A spec-152 re-check: the stored figure is what refused this pair.
+        !this.newDealBalanceRetries?.has(symbol)
       if (storedUsable) {
         const stored = await this.checkBalance(symbol, 1, 'whole', 'stored')
         if (!stored.status && !stored.unknown) {
@@ -14649,6 +14665,50 @@ function createDCABotHelper<
       for (const symbol of asapSymbols) {
         this.openNewDeal(this.botId, symbol)
       }
+    }
+
+    /**
+     * Spec 152. Called on a new-deal balance refusal. An ASAP bot has no
+     * other trigger that would try the pair again, so schedule a re-check on
+     * the {@link NEW_DEAL_BALANCE_RETRY_MS} back-off. While it is pending,
+     * {@link checkBalanceGate} reads the exchange. Once the delays are used up
+     * the pair is forgotten and nothing more is armed. Manual opens are answered
+     * on the click, and other start conditions re-run the gate on their own
+     * signal.
+     */
+    retryNewDealAfterBalanceRefusal(
+      symbol: string,
+      startCondition?: StartConditionEnum,
+      trigger?: NewDealTrigger,
+    ) {
+      if (!this.newDealBalanceRetries) {
+        this.newDealBalanceRetries = new Map()
+      }
+      const attempt = this.newDealBalanceRetries.get(symbol) ?? 0
+      const delay = NEW_DEAL_BALANCE_RETRY_MS[attempt]
+      if (
+        startCondition !== StartConditionEnum.asap ||
+        trigger === 'manual' ||
+        delay === undefined
+      ) {
+        this.newDealBalanceRetries.delete(symbol)
+        return
+      }
+      this.newDealBalanceRetries.set(symbol, attempt + 1)
+      this.handleDebug(
+        `Re-check balance for a new deal ${symbol} in ${delay / 1000}s (${attempt + 1}/${NEW_DEAL_BALANCE_RETRY_MS.length})`,
+      )
+      const prev = this.openNewDealTimer.get(symbol)
+      if (prev) {
+        clearTimeout(prev)
+      }
+      this.openNewDealTimer.set(
+        symbol,
+        setTimeout(() => {
+          this.openNewDealTimer.delete(symbol)
+          void this.openNewDeal(this.botId, symbol)
+        }, delay),
+      )
     }
 
     private async checkRiskRewardCondition(
@@ -16207,6 +16267,7 @@ function createDCABotHelper<
               this.standingConditionLatch.clear(
                 standingConditionKey(notEnoughBalanceNewDeal, symbol),
               )
+              this.newDealBalanceRetries?.delete(symbol)
             }
             if (!(skip && !dynamic)) {
               const cooldownStart = await this.checkCooldownStart(
@@ -16504,6 +16565,12 @@ function createDCABotHelper<
             }
             if (settings.type === DCATypeEnum.terminal) {
               this.stop()
+            } else {
+              this.retryNewDealAfterBalanceRefusal(
+                symbol,
+                settings.startCondition,
+                trigger,
+              )
             }
           }
         } else {

@@ -5661,6 +5661,7 @@ function createComboBotHelper<
             this.standingConditionLatch.clear(
               standingConditionKey(notEnoughBalanceNewDeal, symbol),
             )
+            this.newDealBalanceRetries?.delete(symbol)
             if (!(skip && !dynamic)) {
               const cooldownStart = await this.checkCooldownStart(
                 this.botId,
@@ -5830,6 +5831,11 @@ function createComboBotHelper<
             if (cbIfNotOpened) {
               cbIfNotOpened()
             }
+            this.retryNewDealAfterBalanceRefusal(
+              symbol,
+              settings.startCondition,
+              trigger,
+            )
           }
         } else {
           if (cbIfNotOpened) {
