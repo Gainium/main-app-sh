@@ -2972,6 +2972,7 @@ export const BotSchema = /* GraphQL */ `
     _id: String
     clientOrderId: String
     reduceFundsId: String
+    addFundsId: String
     cummulativeQuoteQty: String
     executedQty: String
     fills: [orderFill]

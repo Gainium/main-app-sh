@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.6] - 2026-10-13
+### Added
+- GraphQL `botOrder.addFundsId`: lets the dashboard tell an add-funds order from a ladder (safety) order, the same distinction the engine draws, instead of guessing from the client order id.
+
 ## [1.96.5] - 2026-10-13
 ### Fixed
 - A DCA or Combo deal created in the seconds before a bot-worker restart is no longer lost by the restart. On a service restart the bot restores its deals from the Redis deal snapshot, which is written on a short delay, and it did not read the database when the snapshot was not empty. A deal that was in the database but not yet in the snapshot was never loaded again: a base order that filled meanwhile never got its safety orders or take profit, and the bot opened another deal on the same pair. A service restart now also loads the bot's live deals that the snapshot lacks, with their orders, so they are restored like any other deal. If that read fails, the restart continues from the snapshot as before.
