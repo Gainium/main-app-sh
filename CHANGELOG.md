@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.13] - 2026-10-13
+### Fixed
+- On Binance USDⓈ-M accounts in Multi-Assets mode, the account balance now counts the BNFCR balance. Binance books settled losses, fees and funding as BNFCR, usually negative, and Gainium valued it at zero, so the account balance, the futures Wallet balance and Equity left it out and came out higher than on Binance. BNFCR is now valued at 1 USD, so these figures match Binance's Wallet Balance and Margin Balance. Portfolio totals for such accounts change by the BNFCR balance from the next balance update on.
+
 ## [1.96.12] - 2026-10-13
 ### Fixed
 - A DCA deal whose take-profit closes only part of the position is no longer marked closed when the exchange refuses to sell the rest at market because the order book is in limit-only mode. The bot used to write the deal closed, with a profit that counted the unsold coins as sold, and only then try to sell them with a market order. When the exchange refused that order, the coins stayed in the account with no deal tracking them. The bot now tries that sale before it closes the deal. If the exchange answers that it only accepts limit orders, the deal stays open, the part already sold is kept as a partial take profit, and the rest is placed as a limit take-profit at the current price. It replaces any other take-profit resting on the deal. The deal closes, and its profit is booked, when that order fills. Sales the exchange accepts, and refusals for any other reason, are unchanged.

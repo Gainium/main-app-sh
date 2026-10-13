@@ -93,6 +93,7 @@ import {
   streamedFree,
 } from './balanceWrite'
 import { createHoldRefresh } from './holdRefresh'
+import { pegRateEntries } from './pegRates'
 import { withExchangeCaller } from '../exchange/requestContext'
 import {
   groupSharedKeyLegs,
@@ -1272,6 +1273,7 @@ export const priceBalancesUsd = async (
       ...rates,
       { pair: 'USDTZUSD', price, exchange: 'all' },
       ...fiatRateEntries(usdRequest.data.result?.fiatRates),
+      ...pegRateEntries,
     ]
   }
 
@@ -1420,6 +1422,7 @@ const userSnapshots = async (
         ...rates,
         { pair: 'USDTZUSD', price, exchange: 'all' },
         ...fiatRateEntries(usdRequest.data.result?.fiatRates),
+        ...pegRateEntries,
       ]
     } else {
       logger.error(`Snapshot | Cannot get user rates ${usdRequest.reason}`)
