@@ -960,6 +960,12 @@ class MainBot<T extends IMainBot> {
    */
   private unknownOrderInFlight: Map<string, Promise<null | Order>> = new Map()
   /**
+   * The venue call of each placement still waiting for its answer, by client
+   * order id, resolving to the venue's order id (null on refusal / failure).
+   * See {@link MainBot#awaitPlacementInFlight}. Spec 155 §4.1.
+   */
+  private placementsInFlight: Map<string, Promise<string | null>> = new Map()
+  /**
    * Venue-side order rows prefetched for the reconcile pass currently running,
    * keyed by the id {@link MainBot#getOrder} actually asks the venue for (the
    * translated exchange order id, not our client id). Populated by
@@ -1353,6 +1359,100 @@ class MainBot<T extends IMainBot> {
     }
     await this.updateOrderOnDb(held ?? order)
     return true
+  }
+
+  /**
+   * Run a placement's venue call and, while it is outstanding, let a cancel or
+   * the unknown-order ladder wait for its answer instead of reading the `'-1'`
+   * placeholder as "never placed". Covers the venue call only: the caller's
+   * post-processing is outside it, so a waiter cannot deadlock on a lock that
+   * processing takes. Spec 155 §4.1.
+   */
+  protected trackPlacement(
+    clientOrderId: string,
+    send: () => Promise<BaseReturn<CommonOrder>>,
+  ): Promise<BaseReturn<CommonOrder>> {
+    const request = send()
+    const venueId = request.then(
+      (r) =>
+        r.status === StatusEnum.ok &&
+        r.data?.orderId &&
+        `${r.data.orderId}` !== noExchangeOrderId
+          ? `${r.data.orderId}`
+          : null,
+      () => null,
+    )
+    const inFlight = (this.placementsInFlight ??= new Map())
+    inFlight.set(clientOrderId, venueId)
+    const done = () => {
+      if (inFlight.get(clientOrderId) === venueId) {
+        inFlight.delete(clientOrderId)
+      }
+    }
+    venueId.then(done)
+    return request
+  }
+
+  /**
+   * When `order` still carries `'-1'` because its placement is in flight, wait
+   * for the venue's answer and record the id it returned. A refused placement
+   * leaves the order as it was. Spec 155 §4.2/§4.3.
+   */
+  protected async awaitPlacementInFlight(order: Order) {
+    const pending = this.placementsInFlight?.get(order.clientOrderId)
+    if (!pending || `${order.orderId ?? ''}` !== noExchangeOrderId) {
+      return
+    }
+    this.handleLog(
+      `Order ${order.clientOrderId} is still being placed, waiting for ${this.data?.exchange}'s answer before acting on it`,
+    )
+    const venueId = await pending
+    if (venueId) {
+      await this.adoptExchangeOrderId(order, venueId)
+    }
+  }
+
+  /**
+   * A placement reply for an order the bot had already retired as CANCELED
+   * while it still had no exchange id: no cancel ever reached the venue, so the
+   * venue holds an order no deal tracks. Cancel it there if it is still open;
+   * if it has fills, say so loudly — they belong to no deal. Spec 155 §4.4.
+   */
+  protected async cancelOrphanedPlacement(order: Order, venue: CommonOrder) {
+    const filled = +venue.executedQty || 0
+    if (filled > 0) {
+      this.handleError(
+        `Order ${order.clientOrderId} (${venue.orderId}) was written off as CANCELED while it was being placed, but ${this.data?.exchange} executed ${filled} of ${order.origQty} ${order.symbol} (${venue.status}). Deal ${order.dealId} does not hold these fills`,
+      )
+    }
+    if (
+      !this.exchange ||
+      (venue.status !== 'NEW' && venue.status !== 'PARTIALLY_FILLED')
+    ) {
+      return
+    }
+    const byExchangeId =
+      this.data?.exchange === ExchangeEnum.coinbase ||
+      this.data?.exchange === ExchangeEnum.kraken ||
+      this.kucoinFullFutures
+    this.handleWarn(
+      `Order ${order.clientOrderId} was written off as CANCELED while it was being placed, and ${this.data?.exchange} has it open as ${venue.orderId}. Cancelling it there`,
+    )
+    const res = await this.exchange.cancelOrder({
+      symbol: order.symbol,
+      newClientOrderId: byExchangeId
+        ? `${venue.orderId}`
+        : order.clientOrderId,
+    })
+    if (res.status !== StatusEnum.ok) {
+      this.handleError(
+        `Order ${order.clientOrderId} (${venue.orderId}) could not be cancelled on ${this.data?.exchange} after it was written off: ${res.reason}. It may still fill outside deal ${order.dealId}`,
+      )
+    } else if (+res.data.executedQty > filled) {
+      this.handleError(
+        `Order ${order.clientOrderId} (${venue.orderId}) executed ${res.data.executedQty} of ${order.origQty} ${order.symbol} on ${this.data?.exchange} before it was cancelled. Deal ${order.dealId} does not hold these fills`,
+      )
+    }
   }
 
   /**
@@ -5753,6 +5853,8 @@ class MainBot<T extends IMainBot> {
     id: string,
     symbol: string,
     justPlaced = false,
+    /** Lookups actually made, when the fast path below cuts the ladder short. */
+    lookups = unknownOrderMaxAttempts,
   ): Promise<null | Order> {
     const origId = id
     if (this.data && this.exchange && this.orders) {
@@ -5775,7 +5877,7 @@ class MainBot<T extends IMainBot> {
         let find = get && get.status === 'NEW' ? get : undefined
         if (find && this.orders) {
           this.handleLog(
-            `Order not found after 5 attempts 2000 ms, order ${id} status set to CANCELED`,
+            `Order not found after ${lookups} lookup(s), order ${id} status set to CANCELED`,
           )
           find.status = 'CANCELED'
           this.deleteOrder(find.clientOrderId)
@@ -5818,7 +5920,9 @@ class MainBot<T extends IMainBot> {
           // Coinbase can hold an order whose row still says `'-1'`; find it by
           // client order id before the fast path below writes it off. A failed
           // lookup is not an answer, so it takes the ordinary retry ladder.
-          // Spec 154 §4.5.
+          // Spec 154 §4.5. An order still being placed waits for that answer
+          // first. Spec 155 §4.3.
+          await this.awaitPlacementInFlight(local)
           const resolved = await this.resolveNeverPlacedOrder(local)
           if (resolved?.status === StatusEnum.notok) {
             lookupFailed = resolved.reason
@@ -5874,7 +5978,12 @@ class MainBot<T extends IMainBot> {
           local?.orderId === noExchangeOrderId
         ) {
           this.canceledMap.set(origId, unknownOrderMaxAttempts)
-          return this._runUnknownOrderLadder(origId, symbol, false)
+          return this._runUnknownOrderLadder(
+            origId,
+            symbol,
+            false,
+            getCount + 1,
+          )
         }
 
         await sleep(1000 * (getCount + 1))
@@ -8710,11 +8819,14 @@ class MainBot<T extends IMainBot> {
         // re-enter this method — and the burst it belonged to is long gone.
         const batcher =
           order.type === 'LIMIT' && count === 0 ? this.openBatcher : null
+        const exchange = this.exchange
         request =
           request ??
-          (batcher?.has(requestData.newClientOrderId)
-            ? await batcher.send(requestData)
-            : await this.exchange.openOrder(requestData))
+          (await this.trackPlacement(order.clientOrderId, () =>
+            batcher?.has(requestData.newClientOrderId)
+              ? batcher.send(requestData)
+              : exchange.openOrder(requestData),
+          ))
         // Accepted, but the venue said something the user should know (a
         // Bitget Reality token with nobody on the other side of its book, so
         // the order will wait). The order stands; this is a warning only.
@@ -9568,6 +9680,15 @@ class MainBot<T extends IMainBot> {
             )
           }
         }
+        // Retired as CANCELED while it still had no exchange id, so no cancel
+        // ever reached the venue — yet the venue just accepted it. Spec 155 §4.4.
+        if (
+          ord.status === 'CANCELED' &&
+          `${ord.orderId}` === noExchangeOrderId &&
+          `${processedOrder.orderId ?? noExchangeOrderId}` !== noExchangeOrderId
+        ) {
+          await this.cancelOrphanedPlacement(orderToPush, processedOrder)
+        }
         this.setOrder(orderToPush)
         this.handleLog(`Save order ${order.clientOrderId}`)
         this.botEventDb.createData({
@@ -9750,6 +9871,12 @@ class MainBot<T extends IMainBot> {
       // cancel below goes to the venue. A failed lookup is reported as a
       // cancel failure — never as "not found" — so the order stays tracked
       // and the next pass retries. Spec 154 §4.2–§4.4.
+      //
+      // Before either: `'-1'` is also what an order carries while its own
+      // placement is still waiting for the venue's answer. A deal closing in
+      // that window wrote it off, and the venue accepted it a moment later —
+      // an order no deal tracks. Wait for that answer first. Spec 155 §4.2.
+      await this.awaitPlacementInFlight(order)
       const resolved = await this.resolveNeverPlacedOrder(order)
       const lookupFailed =
         resolved?.status === StatusEnum.notok ? resolved : null
