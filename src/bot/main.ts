@@ -69,7 +69,10 @@ import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
 } from './reduceOnlyRemainder'
-import { isVenueCanceledRemainderFill } from './remainderFill'
+import {
+  isBelowVenueMinOrderValue,
+  isVenueCanceledRemainderFill,
+} from './remainderFill'
 import { bitgetSpotMarketBuyQty } from './bitgetMarketBuyAmount'
 import { statsAfterReset } from './dca/botStatsReset'
 import ExchangeChooser from '../exchange/exchangeChooser'
@@ -6497,7 +6500,25 @@ class MainBot<T extends IMainBot> {
       let diffMore =
         diff > (ed?.baseAsset.minAmount ?? Infinity) &&
         diff * price > (ed?.quoteAsset.minAmount ?? Infinity)
-      if (!diffMore && fullAmount && ed?.baseAsset.minAmount) {
+      if (
+        !diffMore &&
+        fullAmount &&
+        ed?.baseAsset.minAmount &&
+        // Spec `153` §1.1. Bybit refuses a top-up worth less than the pair's
+        // minimum order value, so the replacement below can never fill there.
+        // It is skipped, not raised to that minimum.
+        isBelowVenueMinOrderValue(
+          order.exchange,
+          order.side,
+          ed.baseAsset.minAmount,
+          price,
+          ed.quoteAsset?.minAmount,
+        )
+      ) {
+        this.handleLog(
+          `Order ${order.clientOrderId} not ${order.side} full qty: executed - ${order.executedQty}, total - ${order.origQty}, diff - ${diff}, top-up of ${ed.baseAsset.minAmount} worth ${ed.baseAsset.minAmount * price} is below the exchange minimum order value ${ed.quoteAsset?.minAmount} and is not sent, count ${count}`,
+        )
+      } else if (!diffMore && fullAmount && ed?.baseAsset.minAmount) {
         this.handleLog(
           `Order ${order.clientOrderId} not ${order.side} full qty: executed - ${order.executedQty}, total - ${order.origQty}, diff - ${diff}, remainder is less than allowed on exchange and will be increased to exchange minimum ${ed.baseAsset.minAmount}, count ${count}`,
         )
@@ -8241,6 +8262,28 @@ class MainBot<T extends IMainBot> {
               )
             : (ed?.priceAssetPrecision ?? 0),
         )
+        // Spec `153` §1.2. The `sendQty <= 0` guard above runs on the base
+        // quantity, before this conversion. A small buy can still round to a
+        // quote amount of zero here (`0.00001 × 60.48` at 2 decimals), which
+        // Bybit refuses as `An unknown parameter was sent.`. Refuse it locally
+        // and take back the write-ahead row, as the local short-circuits do.
+        if (!(requestData.quantity > 0)) {
+          this.deleteOrder(order.clientOrderId)
+          if (count === 0) {
+            await this.deleteOrderFromDb(order.clientOrderId)
+          }
+          const reason = `Order qty must be greater than zero. Order ${order.clientOrderId} ${order.symbol} qty ${order.origQty}, price ${order.price}, side ${order.side}, quote amount ${requestData.quantity}`
+          await this.handleOrderErrors(
+            reason,
+            order,
+            'sendOrderToExchange()',
+            `Send new order request ${order.clientOrderId}`,
+            false,
+            false,
+          )
+          this.endMethod(_id)
+          return returnError ? reason : undefined
+        }
       }
       let processedOrder: CommonOrder | null = null
       if (

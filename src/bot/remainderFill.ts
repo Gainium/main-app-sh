@@ -42,3 +42,33 @@ export function isVenueCanceledRemainderFill(
   }
   return exchange === ExchangeEnum.bybit && originalOrderType === 'MARKET'
 }
+
+/**
+ * Whether a remainder top-up of `qty` at `price` is worth less than the venue's
+ * minimum order value, on a venue that is known to refuse it for that reason.
+ *
+ * Only **bybit** spot BUY. A market buy there is sized in quote, and Bybit
+ * refuses one below the pair's `minOrderAmt` (`quoteAsset.minAmount`) with
+ * `Order value exceeded lower limit.`, or with `An unknown parameter was sent.`
+ * once the amount rounds to zero. Other venues are not judged: a kucoinLinear
+ * top-up worth 0.05 USDT against a stored minimum of 1 filled. Spec `153` §1.1.
+ */
+export function isBelowVenueMinOrderValue(
+  exchange: string | undefined,
+  side: string | undefined,
+  qty: number,
+  price: number,
+  quoteMinAmount: number | undefined | null,
+): boolean {
+  if (exchange !== ExchangeEnum.bybit || side !== 'BUY') {
+    return false
+  }
+  if (
+    typeof quoteMinAmount !== 'number' ||
+    !Number.isFinite(quoteMinAmount) ||
+    quoteMinAmount <= 0
+  ) {
+    return false
+  }
+  return qty * price < quoteMinAmount
+}

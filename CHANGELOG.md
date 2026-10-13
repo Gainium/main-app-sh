@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.8] - 2026-10-13
+### Fixed
+- A DCA bot with "Remainder full amount" no longer sends Bybit spot a top-up order that can never fill. When a base order filled slightly short, the bot topped it up with the pair's minimum quantity, whatever that was worth. On Bybit spot a market buy is sized in quote, so such a top-up was either below the pair's minimum order value or rounded to an amount of zero, and Bybit refused it every time. The bot now skips a Bybit spot top-up worth less than the minimum order value and logs why. A Bybit, Coinbase or Bitget spot market buy whose quote amount rounds to zero is now refused locally instead of being sent. Top-ups worth at least the minimum, and every other exchange, are unchanged.
+
 ## [1.96.7] - 2026-10-13
 ### Fixed
 - A DCA or Combo bot with the ASAP start condition no longer sits idle after its next deal is refused for balance. A refusal right after a deal closes usually reads a stored balance that does not yet include the funds the close freed: the take-profit proceeds and the cancelled safety orders. Nothing tried the pair again, so the bot waited until it was restarted. The bot now re-checks after 10 s, 30 s, 1 min, 2 min and 5 min, reading the balance from the exchange, and opens the deal as soon as it can be funded. A bot that genuinely lacks the funds still opens nothing and stops re-checking after the last attempt. The "Not enough balance" warning is still reported once. Manual opens, terminal deals and other start conditions are unchanged.
