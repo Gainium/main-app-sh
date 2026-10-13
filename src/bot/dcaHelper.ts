@@ -20417,11 +20417,19 @@ function createDCABotHelper<
       const qty = parseFloat(order.executedQty)
       const { dealId } = order
       const findDeal = this.getDeal(dealId)
+      // A reduce-funds order `updateDeal` already booked (filled, or cancelled
+      // part filled — spec `159`) is in `reduceFunds`; a late partial-fill
+      // event must not count it again as a partial take profit.
+      const settledReduce =
+        !!order.reduceFundsId &&
+        !!dealId &&
+        !!this.dealUpdateOrders.get(dealId)?.has(order.clientOrderId)
       if (
         findDeal &&
         dealId &&
         this.orders &&
-        findDeal.deal.status === DCADealStatusEnum.open
+        findDeal.deal.status === DCADealStatusEnum.open &&
+        !settledReduce
       ) {
         findDeal.deal.tpHistory = [
           ...(findDeal.deal.tpHistory ?? []).filter(
@@ -20672,6 +20680,12 @@ function createDCABotHelper<
       if (order.typeOrder !== TypeOrderEnum.dealTP) {
         return
       }
+      if (
+        order.reduceFundsId &&
+        (await this.settleCanceledReduceFunds(order))
+      ) {
+        return
+      }
       const executed = +order.executedQty
       const original = +order.origQty
       if (!isFinite(executed) || executed <= 0) {
@@ -20711,6 +20725,100 @@ function createDCABotHelper<
         return
       }
       await this.updatePartiallyFilledTP(order)
+    }
+
+    /**
+     * A reduce-funds order that ended CANCELED. Spec `159`.
+     *
+     * The order's entry in `pendingReduceFunds` is what keeps the withdrawal
+     * out of the deal's close: `getTPOrder` sizes every close net of it. Only
+     * a FILLED reduce order used to take the entry off, so one the venue
+     * cancelled stayed pending for good — its whole quantity kept out of every
+     * later close, while the part it did sell was subtracted a second time as
+     * a partial take profit. Those coins were left with no order to sell them.
+     *
+     * The executed part is a withdrawal like a filled one, so it is booked by
+     * the same `updateDeal` branch, which also drops the entry and re-sizes the
+     * close. With nothing executed the entry is just dropped.
+     *
+     * Not when the bot cancelled an order that is still pending: that is a
+     * reload or a settings update, and `resendPendingFunds` places it again
+     * from the entry (spec `110`). A user's cancel takes the entry off first
+     * (`cancelTerminalDealOrder`), so only its executed part is left here.
+     *
+     * @returns false to leave the order to the ordinary take-profit handling.
+     */
+    private async settleCanceledReduceFunds(order: Order): Promise<boolean> {
+      const findDeal = order.dealId ? this.getDeal(order.dealId) : undefined
+      if (!findDeal || findDeal.deal.status !== DCADealStatusEnum.open) {
+        return false
+      }
+      const pending = (findDeal.deal.pendingReduceFunds ?? []).some(
+        (r) => r.id === order.reduceFundsId,
+      )
+      if (pending && this.isOwnCancel(order.clientOrderId)) {
+        return false
+      }
+      const executed = +order.executedQty
+      // Same trust rule as the partial take profit: a quantity without a usable
+      // `updateTime` is not a stream report.
+      if (isFinite(executed) && executed > 0 && order.updateTime > 0) {
+        this.handleLog(
+          `Reduce funds order ${order.clientOrderId} of deal ${order.dealId} was ${order.status} with ${order.executedQty} of ${order.origQty} filled. Booking the filled part as a reduction`,
+        )
+        await this.updateDeal(this.botId, order)
+        return true
+      }
+      if (pending) {
+        await this.dropCanceledReduceFunds(order)
+      }
+      return true
+    }
+
+    @IdMute(mutex, (order: Order) => `${order.botId}${order.dealId}update`)
+    private async dropCanceledReduceFunds(order: Order) {
+      const { dealId } = order
+      const findDeal = dealId ? this.getDeal(dealId) : undefined
+      if (
+        !dealId ||
+        !findDeal ||
+        findDeal.deal.status !== DCADealStatusEnum.open
+      ) {
+        return
+      }
+      const before = findDeal.deal.pendingReduceFunds ?? []
+      const standing = before.filter((r) => r.id !== order.reduceFundsId)
+      if (standing.length === before.length) {
+        return
+      }
+      this.handleLog(
+        `Reduce funds order ${order.clientOrderId} of deal ${dealId} was ${order.status} with nothing filled. Removing it from the deal's pending reductions`,
+      )
+      findDeal.deal.pendingReduceFunds = standing as Deal['pendingReduceFunds']
+      findDeal.previousOrders = findDeal.currentOrders
+      findDeal.currentOrders = await this.createCurrentDealOrders(
+        findDeal.deal.symbol.symbol,
+        findDeal.deal.lastPrice,
+        findDeal.initialOrders,
+        findDeal.deal.settings.avgPrice || findDeal.deal.avgPrice,
+        findDeal.deal.initialPrice,
+        findDeal.deal._id,
+        false,
+        findDeal.deal,
+        false,
+      )
+      this.saveDeal(findDeal, {
+        pendingReduceFunds: findDeal.deal.pendingReduceFunds,
+      }).then(() => {
+        this.updateUsage(dealId)
+        this.updateAssets(dealId)
+      })
+      this.placeOrders(
+        this.botId,
+        findDeal.deal.symbol.symbol,
+        dealId,
+        this.findDiff(findDeal.currentOrders, findDeal.previousOrders),
+      )
     }
 
     /**
@@ -27624,7 +27732,7 @@ function createDCABotHelper<
       if (order.typeOrder === TypeOrderEnum.dealTP) {
         deal.deal.pendingReduceFunds = (
           deal.deal.pendingReduceFunds ?? []
-        ).filter((paf) => order && paf.id !== order.addFundsId)
+        ).filter((paf) => order && paf.id !== order.reduceFundsId)
       }
       deal.initialOrders = await this.createInitialDealOrders(
         deal.deal.symbol.symbol,

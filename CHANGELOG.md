@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.14] - 2026-10-13
+### Fixed
+- A DCA deal's limit "reduce funds" order that the exchange cancels is now settled. Until it was, the deal kept counting it as pending. The take-profit was sized as if the whole reduction were still going to be sold, and any part already sold was subtracted a second time. The unsold rest of the position had no take-profit. Now the part that filled is booked as a reduction, the pending reduction is removed, and the take-profit is re-placed for everything the deal still holds. Cancelling a resting reduce funds order from the deal also removes its pending reduction now. Reduce orders the bot itself cancels and re-places, on a restart or a settings update, are unchanged.
+
 ## [1.96.13] - 2026-10-13
 ### Fixed
 - On Binance USDⓈ-M accounts in Multi-Assets mode, the account balance now counts the BNFCR balance. Binance books settled losses, fees and funding as BNFCR, usually negative, and Gainium valued it at zero, so the account balance, the futures Wallet balance and Equity left it out and came out higher than on Binance. BNFCR is now valued at 1 USD, so these figures match Binance's Wallet Balance and Margin Balance. Portfolio totals for such accounts change by the BNFCR balance from the next balance update on.
