@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.99.1] - 2026-10-14
+### Fixed
+- The part of a futures deal's position left over after a take-profit is now closed even when it is worth less than the exchange's minimum order value, on exchanges that accept a reduce-only close below that minimum: Bybit USDT/USDC perpetuals, Binance USDⓈ-M, and Bitget USDT-M in hedge mode. The bot held these closes to the minimum meant for opening orders, so a small remainder stayed open on the exchange after the deal closed. The minimum quantity still applies. Hyperliquid, Bitget USDT-M in one-way mode, coin-margined futures and spot keep the minimum value, as they apply it to closing orders too.
+
 ## [1.99.0] - 2026-10-14
 ### Changed
 - Combo bots, both sides of hedge DCA and hedge combo bots, and terminal deals now refuse a deal whose Base or DCA/Safety order the exchange minimum would raise more than 10% past its configured size, as DCA bots already did, and notify once per pair. `allowRaiseToExchangeMin` turns the raise back on; a missing value refuses.

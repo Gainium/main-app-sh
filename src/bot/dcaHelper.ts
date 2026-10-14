@@ -185,6 +185,7 @@ import {
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
 import { executedFillQty } from './dca/executedFill'
+import { closeOrderQuoteMinimum } from './closeOrderMinValue'
 import {
   baseEntryCancelSettleAttempts,
   baseEntryCancelSettleDelayMs,
@@ -3277,7 +3278,14 @@ function createDCABotHelper<
             !(preLedger.base === 0 && preLedger.quote === 0) &&
             sweepEd &&
             preRemainder > sweepEd.baseAsset.minAmount &&
-            preRemainder * findDeal.deal.avgPrice > sweepEd.quoteAsset.minAmount
+            // Spec `162`: a reduce-only close, held to the value minimum only
+            // where the venue applies it to closes.
+            preRemainder * findDeal.deal.avgPrice >
+              closeOrderQuoteMinimum(
+                this.data?.exchange,
+                this.hedge,
+                sweepEd.quoteAsset.minAmount,
+              )
           ) {
             sweep = await this.sellRemainder(
               dealId,
@@ -3710,7 +3718,12 @@ function createDCABotHelper<
             sweep ||
             (ed &&
               remainder > ed.baseAsset.minAmount &&
-              remainder * findDeal.deal.avgPrice > ed.quoteAsset.minAmount)
+              remainder * findDeal.deal.avgPrice >
+                closeOrderQuoteMinimum(
+                  this.data?.exchange,
+                  this.hedge,
+                  ed.quoteAsset.minAmount,
+                ))
           ) {
             await this.sellRemainder(
               dealId,
@@ -3951,7 +3964,13 @@ function createDCABotHelper<
       if (
         !(toSell > 0) ||
         toSell < ed.baseAsset.minAmount ||
-        toSell * price < ed.quoteAsset.minAmount
+        // Spec `162` — see `closeDeal`.
+        toSell * price <
+          closeOrderQuoteMinimum(
+            this.data.exchange,
+            this.hedge,
+            ed.quoteAsset.minAmount,
+          )
       ) {
         this.handleLog(
           `Deal ${dealId} remainder ${toSell} is below the exchange minimums, no limit close placed`,
@@ -7990,7 +8009,13 @@ function createDCABotHelper<
         if (
           sellQty > 0 &&
           sellQty >= ed.baseAsset.minAmount &&
-          sellQty * price >= ed.quoteAsset.minAmount
+          // Spec `162` — see `closeDeal`.
+          sellQty * price >=
+            closeOrderQuoteMinimum(
+              this.data?.exchange,
+              this.hedge,
+              ed.quoteAsset.minAmount,
+            )
         ) {
           let result: Order | string | void
           if (sweep && sweep !== 'send') {
