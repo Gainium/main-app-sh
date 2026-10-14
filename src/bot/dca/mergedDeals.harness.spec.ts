@@ -556,6 +556,122 @@ describe('mergeDeals — the merged deal follows the bot TP / SL on request', ()
   })
 })
 
+describe('mergeDeals — the merged deal continues the bot DCA on request', () => {
+  const originalClose = (Bot.prototype as any).closeDCADeal
+  afterEach(() => {
+    ;(Bot.prototype as any).closeDCADeal = originalClose
+  })
+
+  const merge = async (
+    settings: Record<string, unknown>,
+    options?: { useDca?: boolean; dcaOrders?: number },
+  ) => {
+    const bot = helper()
+    let created: any = null
+    bot.data = {
+      settings: { strategy: 'LONG', pair: ['BTCUSDT'], ...settings },
+      exchange: ExchangeEnum.binance,
+      exchangeUUID: 'u',
+      paperContext: true,
+    }
+    bot.getDeal = () => undefined
+    bot.dealsDb = {
+      readData: async () => ok([sourceDeal(DEAL_A), sourceDeal(DEAL_B)]),
+      createData: async (d: any) => {
+        created = d
+        return { status: StatusEnum.ok, data: { ...d, _id: MERGED } }
+      },
+      updateManyData: async () => ok(null),
+    }
+    bot.db = { readData: async () => ok([{ settings: { strategy: 'LONG' } }]) }
+    bot.ordersDb = {
+      readData: async () =>
+        ok([filled(DEAL_A, 'o1', 100), filled(DEAL_B, 'o2', 200)]),
+      updateData: async () => ok(null),
+    }
+    bot.getExchangeInfo = async () => ({
+      pair: 'BTCUSDT',
+      baseAsset: { name: 'BTC' },
+      quoteAsset: { name: 'USDT' },
+    })
+    bot.getUsdRate = async () => 1
+    bot.createInitialDealOrders = async () => []
+    bot.createCurrentDealOrders = async () => []
+    bot.checkDealSlMethods = async () => undefined
+    bot.setDeal = () => undefined
+    bot.setCloseByTimer = async () => undefined
+    bot.reloadBot = () => undefined
+    ;(Bot.prototype as any).closeDCADeal = async () => undefined
+    await bot.mergeDeals([DEAL_A, DEAL_B], options)
+    return created
+  }
+
+  const ladder = {
+    useDca: true,
+    dcaCondition: 'percentage',
+    orderSizeType: 'quote',
+    ordersCount: 5,
+    activeOrdersCount: 2,
+    orderSize: '100',
+    step: '2',
+    stepScale: '1.2',
+    volumeScale: '1.5',
+    minimumDeviation: '0',
+  }
+
+  it('omitted: no DCA, as before', async function () {
+    this.timeout(10_000)
+    const d = await merge(ladder)
+    expect(d.settings.useDca).to.equal(false)
+    expect(d.settings.ordersCount).to.equal(1)
+    expect(d.levels).to.deep.equal({ all: 1, complete: 1 })
+  })
+
+  it('useDca: the bot ladder, restarted from the merged average', async function () {
+    this.timeout(10_000)
+    const d = await merge(ladder, { useDca: true })
+    expect(d.settings).to.include({
+      useDca: true,
+      ordersCount: 5,
+      activeOrdersCount: 2,
+      orderSize: '100',
+      step: '2',
+      stepScale: '1.2',
+      volumeScale: '1.5',
+      dcaCondition: 'percentage',
+    })
+    expect(d.levels).to.deep.equal({ all: 6, complete: 1 })
+    expect(d.initialPrice).to.equal(150)
+  })
+
+  it('dcaOrders caps the ladder, never past the bot', async function () {
+    this.timeout(10_000)
+    const fewer = await merge(ladder, { useDca: true, dcaOrders: 2 })
+    expect(fewer.settings.ordersCount).to.equal(2)
+    expect(fewer.settings.activeOrdersCount).to.equal(2)
+    expect(fewer.levels.all).to.equal(3)
+    const more = await merge(ladder, { useDca: true, dcaOrders: 50 })
+    expect(more.settings.ordersCount).to.equal(5)
+  })
+
+  it('a ladder sized from the deal it opened with is not carried', async function () {
+    this.timeout(20_000)
+    for (const over of [
+      { dcaCondition: 'indicators' },
+      { dcaCondition: 'custom' },
+      { scaleDcaType: 'atr' },
+      { dcaVolumeBaseOn: 'change' },
+      { orderSizeType: 'percFree' },
+      { useRiskReward: true },
+      { useDca: false },
+    ]) {
+      const d = await merge({ ...ladder, ...over }, { useDca: true })
+      expect(d.settings.useDca, JSON.stringify(over)).to.equal(false)
+      expect(d.settings.ordersCount).to.equal(1)
+    }
+  })
+})
+
 describe('spec 138 §2.4 — combo deals are not merged', () => {
   it('the engine refuses before reading anything', async () => {
     const bot = helper({ combo: true })

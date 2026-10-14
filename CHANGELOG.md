@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.98.0] - 2026-10-14
+### Added
+- `mergeDeals` takes optional `useDca` and `dcaOrders`. With `useDca`, the merged DCA deal restarts the bot's safety-order ladder from the merged average: the bot's step, step scale, order size, volume scale and active orders, with `dcaOrders` levels (at most the bot's). Only percentage ladders sized in base or quote are carried; indicator, custom, ATR/ADR, volume-change and balance-share ladders are sized from what their deal opened with and are left off.
+
 ## [1.97.0] - 2026-10-14
 ### Added
 - `mergeDeals` takes optional `useTp` and `useSl`. When set, the merged DCA deal takes the bot's take profit and/or stop loss (including multiple targets and trailing), priced from the merged average; when false it gets none. Risk-reward and dynamic exits are never carried over, since they are sized from what their deal opened with. Omitting both keeps the previous rule, where only an indicator or webhook close carried over.

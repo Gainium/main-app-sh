@@ -387,7 +387,35 @@ if ((process.env.BOT_TP_COVERAGE_REPAIR ?? '').trim()) {
 export type MergeDealsOptions = {
   useTp?: boolean
   useSl?: boolean
+  /** Restart the bot's DCA ladder from the merged average. */
+  useDca?: boolean
+  /** Levels of that ladder; capped at the bot's. Omitted: the bot's. */
+  dcaOrders?: number
 }
+
+/**
+ * Whether a bot's DCA ladder can be carried to a merged deal: a plain
+ * percentage ladder sized in quote or base. Every other kind is sized from
+ * what its deal opened with (indicators, custom rows, ATR/ADR, volume
+ * change, a share of the balance) and has no meaning for a merged deal.
+ */
+export const mergeDcaSupported = (settings: {
+  useDca?: boolean
+  dcaCondition?: DCAConditionEnum
+  scaleDcaType?: ScaleDcaTypeEnum
+  dcaVolumeBaseOn?: DCAVolumeType
+  orderSizeType?: OrderSizeTypeEnum
+  useRiskReward?: boolean
+}) =>
+  !!settings.useDca &&
+  !settings.useRiskReward &&
+  (!settings.dcaCondition ||
+    settings.dcaCondition === DCAConditionEnum.percentage) &&
+  (!settings.scaleDcaType ||
+    settings.scaleDcaType === ScaleDcaTypeEnum.percentage) &&
+  settings.dcaVolumeBaseOn !== DCAVolumeType.change &&
+  (settings.orderSizeType === OrderSizeTypeEnum.quote ||
+    settings.orderSizeType === OrderSizeTypeEnum.base)
 
 export type FullDeal<Deal extends CleanDCADealsSchema> = {
   deal: Deal
@@ -26618,6 +26646,14 @@ function createDCABotHelper<
                   botSettings.dealCloseConditionSL ===
                     CloseConditionEnum.webhook)
               : !!(followSl && botSettings.useSl)
+          const followDca = !!options?.useDca && mergeDcaSupported(botSettings)
+          const botOrders = Math.max(1, +(botSettings.ordersCount ?? 1) || 1)
+          const dcaOrders = followDca
+            ? Math.min(
+                botOrders,
+                Math.max(1, Math.floor(options?.dcaOrders ?? botOrders)),
+              )
+            : 1
           const sourceFlags: DCADealFlags[] = deals[0].flags ?? []
           const flags = sourceFlags.filter((f) =>
             deals.every((d) => d.flags?.includes(f)),
@@ -26657,7 +26693,7 @@ function createDCABotHelper<
             createTime: time,
             updateTime: time,
             levels: {
-              all: 1,
+              all: followDca ? dcaOrders + 1 : 1,
               complete: 1,
             },
             usage: {
@@ -26685,18 +26721,23 @@ function createDCABotHelper<
             },
             settings: {
               changed: true,
-              ordersCount: 1,
+              ordersCount: dcaOrders,
               tpPerc: this.data.settings.tpPerc,
               profitCurrency: this.data.settings.profitCurrency,
               avgPrice: avgPrice,
               baseOrderSize: `${initialQuote}`,
-              orderSize: `${initialQuote}`,
+              orderSize: followDca ? botSettings.orderSize : `${initialQuote}`,
               useTp,
               useSl,
               slPerc: this.data.settings.slPerc,
-              useDca: false,
-              useSmartOrders: false,
-              activeOrdersCount: 1,
+              useDca: followDca,
+              useSmartOrders: followDca && !!botSettings.useSmartOrders,
+              activeOrdersCount: followDca
+                ? Math.min(
+                    dcaOrders,
+                    +(botSettings.activeOrdersCount ?? 1) || 1,
+                  )
+                : 1,
               orderSizePercQty: 0,
               trailingSl: !!(followSl && botSettings.trailingSl),
               moveSL: !!(followSl && botSettings.moveSL),
@@ -26713,10 +26754,13 @@ function createDCABotHelper<
               multiTp: followTp ? (botSettings.multiTp ?? []) : [],
               useLimitPrice: false,
               startOrderType: this.data.settings.startOrderType,
-              volumeScale: '1',
-              stepScale: '1',
-              minimumDeviation: '0',
-              step: '1',
+              volumeScale: followDca ? botSettings.volumeScale : '1',
+              stepScale: followDca ? botSettings.stepScale : '1',
+              minimumDeviation: followDca ? botSettings.minimumDeviation : '0',
+              step: followDca ? botSettings.step : '1',
+              ...(followDca
+                ? { dcaCondition: DCAConditionEnum.percentage }
+                : {}),
               futures: this.futures,
               coinm: this.coinm,
               marginType: this.data.settings.marginType,

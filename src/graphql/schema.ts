@@ -6087,6 +6087,10 @@ export const BotSchema = /* GraphQL */ `
     useTp: Boolean
     "Merged deal takes the bot's stop loss. Omitted: only an indicator or webhook close carries over."
     useSl: Boolean
+    "Merged deal restarts the bot's DCA ladder from the merged average (percentage ladders sized in quote or base only)."
+    useDca: Boolean
+    "Levels of that ladder, capped at the bot's. Omitted: the bot's."
+    dcaOrders: Int
   }
   input adoptDealsInput {
     botId: String!

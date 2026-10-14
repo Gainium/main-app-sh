@@ -8353,6 +8353,8 @@ const resolvers = <
           dealIds: string[]
           useTp?: boolean | null
           useSl?: boolean | null
+          useDca?: boolean | null
+          dcaOrders?: number | null
         }
       },
       { token, req }: InputRequest,
@@ -8372,6 +8374,12 @@ const resolvers = <
         {
           ...(typeof input.useTp === 'boolean' ? { useTp: input.useTp } : {}),
           ...(typeof input.useSl === 'boolean' ? { useSl: input.useSl } : {}),
+          ...(typeof input.useDca === 'boolean'
+            ? { useDca: input.useDca }
+            : {}),
+          ...(typeof input.dcaOrders === 'number'
+            ? { dcaOrders: input.dcaOrders }
+            : {}),
         },
       )
     },
