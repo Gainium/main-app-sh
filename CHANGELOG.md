@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.15] - 2026-10-14
+### Fixed
+- A DCA deal that has closed no longer places orders that were queued for it before the close. On exchanges where cancelling the closed deal's safety orders takes minutes, an order update queued earlier, for example by a safety order fill, could still run after the close and place its take-profit for the old position. On spot that take-profit sold the coins of the next deal on the same pair, and that deal's own take-profit was then refused for insufficient balance. Order placement now stops as soon as the deal is no longer active or its take-profit has filled in full, including part-way through placing a set of orders, and the dropped orders are logged. A take-profit that fills only partly still keeps the deal open, as before.
+
 ## [1.96.14] - 2026-10-13
 ### Fixed
 - A DCA deal's limit "reduce funds" order that the exchange cancels is now settled. Until it was, the deal kept counting it as pending. The take-profit was sized as if the whole reduction were still going to be sold, and any part already sold was subtracted a second time. The unsold rest of the position had no take-profit. Now the part that filled is booked as a reduction, the pending reduction is removed, and the take-profit is re-placed for everything the deal still holds. Cancelling a resting reduce funds order from the deal also removes its pending reduction now. Reduce orders the bot itself cancels and re-places, on a restart or a settings update, are unchanged.

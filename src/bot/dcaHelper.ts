@@ -17188,6 +17188,15 @@ function createDCABotHelper<
         this.endMethod(_id)
         return
       }
+      // Spec `160`. Nothing to pull here: `processDealClose` owns the sweep of
+      // a released deal's orders.
+      if (this.dealReleased(dealId)) {
+        this.handleLog(
+          `Deal ${dealId} is no longer active. Skip place orders: ${orders.new.length}`,
+        )
+        this.endMethod(_id)
+        return
+      }
       // `closeBySl` / `closeByTp` mean "a close is in flight in this worker"
       // (see the comment at the deal defaults), and placing into a deal that is
       // mid-close is how a position gets covered twice.
@@ -17614,6 +17623,20 @@ function createDCABotHelper<
                 this.handleLog('Deal already has a TP order with higher qty')
                 continue
               }
+            }
+            // Spec `160`. One send can take tens of seconds (a venue lookup),
+            // so the deal may have closed since this burst started; the check
+            // at the top of the method cannot see that. The block after the
+            // loop pulls whatever ladder is left resting.
+            if (
+              this.dealReleased(dealId) ||
+              (!opts?.afterTerminalCloseRefusal &&
+                this.dealClosedByFilledTp(dealId, settings))
+            ) {
+              this.handleLog(
+                `Deal ${dealId} closed while placing orders. Drop ${order.newClientOrderId} (${order.type}, qty ${order.qty}) and the rest`,
+              )
+              break
             }
             const sendOptions: OrderAdditionalParams = {
               dealId,
@@ -20211,6 +20234,24 @@ function createDCABotHelper<
         status: 'FILLED',
       }).find((o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId)
       return !!tp && this.underfilledTpQty(tp) === 0
+    }
+
+    /**
+     * Whether `dealId` has left this bot's deals — `processDealClose` drops a
+     * closed deal (`deleteDeal`) BEFORE its order sweep, and its order rows only
+     * after it, so for that whole window `dealClosedByFilledTp` has nothing to
+     * read. A placement queued on the deal lock meanwhile must treat the deal as
+     * gone, not unknown: its ladder was sized for a position that no longer
+     * exists (spec `160`). Simple terminal deals excluded, as above.
+     */
+    protected dealReleased(dealId: string): boolean {
+      if (
+        this.data?.settings.type === DCATypeEnum.terminal &&
+        this.data.settings.terminalDealType === TerminalDealTypeEnum.simple
+      ) {
+        return false
+      }
+      return !this.getDeal(`${dealId}`)
     }
 
     /**
