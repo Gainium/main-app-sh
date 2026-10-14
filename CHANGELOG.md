@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.99.2] - 2026-10-14
+### Fixed
+- On Hyperliquid, a deal's close (stop loss, take profit or manual close) worth less than $10 is no longer retried when it is only part of the position on the pair. Hyperliquid accepts a closing order under $10 only when it closes the whole position, so when another deal or bot on the same account holds part of it, no retry can succeed. The bot now stops after the first refusal with a message naming the deal, the close, the position on Hyperliquid and what to do, instead of retrying five times and reporting the exchange's raw text. A close that is the whole position is sent as before.
+
 ## [1.99.1] - 2026-10-14
 ### Fixed
 - The part of a futures deal's position left over after a take-profit is now closed even when it is worth less than the exchange's minimum order value, on exchanges that accept a reduce-only close below that minimum: Bybit USDT/USDC perpetuals, Binance USDⓈ-M, and Bitget USDT-M in hedge mode. The bot held these closes to the minimum meant for opening orders, so a small remainder stayed open on the exchange after the deal closed. The minimum quantity still applies. Hyperliquid, Bitget USDT-M in one-way mode, coin-margined futures and spot keep the minimum value, as they apply it to closing orders too.

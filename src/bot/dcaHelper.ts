@@ -286,6 +286,10 @@ import {
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
 import {
+  closesWholePositionOnlyBelowMinimum,
+  isPartialCloseOfSharedPosition,
+} from './dca/sharedPositionClose'
+import {
   maxPositionEntriesOf,
   planPositionsByPair,
   positionEntriesOf,
@@ -6307,6 +6311,58 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec `163`. When the venue refused a deal's close as under its minimum
+     * order value, on a venue that accepts such a close only for the whole
+     * position, ask the venue for its position once. If it holds more than
+     * this close on the deal's side, no order closing just this deal can be
+     * accepted: return the message to report instead of retrying. Otherwise,
+     * including when the venue does not answer, return nothing and the caller
+     * keeps its usual behaviour.
+     */
+    private async sharedPositionCloseRefusal(
+      deal: FullDeal<ExcludeDoc<Deal>>,
+      reason: string,
+      closeQty: number,
+      closePrice: number,
+      ed: ClearPairsSchema,
+    ): Promise<string | undefined> {
+      if (
+        !this.futures ||
+        !this.exchange ||
+        !closesWholePositionOnlyBelowMinimum(this.data?.exchange) ||
+        !this.isNotionalReason(reason)
+      ) {
+        return
+      }
+      const symbol = deal.deal.symbol.symbol
+      const positions = await this.exchange.futures_getPositions(symbol)
+      const verdict = isPartialCloseOfSharedPosition(
+        this.data?.exchange,
+        positions?.status === StatusEnum.ok && positions.data
+          ? { kind: 'positions', positions: positions.data }
+          : { kind: 'unavailable' },
+        symbol,
+        this.isLong ? 'LONG' : 'SHORT',
+        !!this.hedge,
+        closeQty,
+        ed.baseAsset.step ?? 0,
+      )
+      if (!verdict.shared) {
+        return
+      }
+      const base = deal.deal.symbol.baseAsset
+      const value = this.math.round(closeQty * closePrice, 2)
+      return (
+        `Deal ${deal.deal._id} close refused by Hyperliquid: the close of ${closeQty} ${base} ` +
+        `(about ${value} ${deal.deal.symbol.quoteAsset}) is under Hyperliquid's $10 order minimum ` +
+        `and is only part of the ${verdict.venueQty} ${base} position this account holds on ${symbol}. ` +
+        `Hyperliquid accepts a closing order under $10 only when it would close the whole position, ` +
+        `so this deal cannot be closed on its own while another deal or bot on this account holds the rest. ` +
+        `Close the position on Hyperliquid, or close the deals on ${symbol} together.`
+      )
+    }
+
+    /**
      * Spec 015 §7.2 — whether a TP rejection LOOKS shaped like "this order
      * was too small," which is what a missing fee gross-up would produce.
      * Deliberately wider than just a balance rejection: a too-small
@@ -7092,9 +7148,20 @@ function createDCABotHelper<
                 }
                 if (result) {
                   if (typeof result === 'string') {
+                    // Spec `163`: a refusal no retry can change. Only the
+                    // reported message differs; everything below still reads
+                    // the venue's own `result`.
+                    const sharedRefusal = await this.sharedPositionCloseRefusal(
+                      findDeal,
+                      result,
+                      tpOrder.qty,
+                      tpOrder.price,
+                      symbol,
+                    )
                     if (
                       this.isNotionalReason(result) &&
-                      count < this.slippageRetry
+                      count < this.slippageRetry &&
+                      !sharedRefusal
                     ) {
                       this.handleDebug(
                         `Cannot place take profit due to slippage ${
@@ -7132,7 +7199,7 @@ function createDCABotHelper<
                       return await this.closeDeal(this.botId, dealId)
                     } else {
                       this.handleOrderErrors(
-                        result,
+                        sharedRefusal ?? result,
                         {
                           symbol: symbol.pair,
                           orderId: '0',
