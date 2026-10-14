@@ -437,6 +437,125 @@ describe('spec 138 §2.3 / §2.1.4 — mergeDeals', () => {
   })
 })
 
+describe('mergeDeals — the merged deal follows the bot TP / SL on request', () => {
+  const originalClose = (Bot.prototype as any).closeDCADeal
+  afterEach(() => {
+    ;(Bot.prototype as any).closeDCADeal = originalClose
+  })
+
+  /** Merges two filled deals and returns the merged deal as created. */
+  const merge = async (
+    settings: Record<string, unknown>,
+    options?: { useTp?: boolean; useSl?: boolean },
+  ) => {
+    const bot = helper()
+    let created: any = null
+    bot.data = {
+      settings: { strategy: 'LONG', pair: ['BTCUSDT'], ...settings },
+      exchange: ExchangeEnum.binance,
+      exchangeUUID: 'u',
+      paperContext: true,
+    }
+    bot.getDeal = () => undefined
+    bot.dealsDb = {
+      readData: async () => ok([sourceDeal(DEAL_A), sourceDeal(DEAL_B)]),
+      createData: async (d: any) => {
+        created = d
+        return { status: StatusEnum.ok, data: { ...d, _id: MERGED } }
+      },
+      updateManyData: async () => ok(null),
+    }
+    bot.db = { readData: async () => ok([{ settings: { strategy: 'LONG' } }]) }
+    bot.ordersDb = {
+      readData: async () =>
+        ok([filled(DEAL_A, 'o1', 100), filled(DEAL_B, 'o2', 200)]),
+      updateData: async () => ok(null),
+    }
+    bot.getExchangeInfo = async () => ({
+      pair: 'BTCUSDT',
+      baseAsset: { name: 'BTC' },
+      quoteAsset: { name: 'USDT' },
+    })
+    bot.getUsdRate = async () => 1
+    bot.createInitialDealOrders = async () => []
+    bot.createCurrentDealOrders = async () => []
+    bot.checkDealSlMethods = async () => undefined
+    bot.setDeal = () => undefined
+    bot.setCloseByTimer = async () => undefined
+    bot.reloadBot = () => undefined
+    ;(Bot.prototype as any).closeDCADeal = async () => undefined
+    await bot.mergeDeals([DEAL_A, DEAL_B], options)
+    return created.settings
+  }
+
+  const percentExits = {
+    useTp: true,
+    dealCloseCondition: 'tp',
+    tpPerc: '2',
+    useMultiTp: true,
+    multiTp: [{ target: '1', amount: '50', uuid: 't1' }],
+    trailingTp: true,
+    useSl: true,
+    dealCloseConditionSL: 'tp',
+    slPerc: '-5',
+    trailingSl: true,
+  }
+
+  it('options omitted: a percent TP / SL does not carry over (unchanged rule)', async function () {
+    this.timeout(10_000)
+    const s = await merge(percentExits)
+    expect(s.useTp).to.equal(false)
+    expect(s.useSl).to.equal(false)
+    expect(s.useMultiTp).to.equal(false)
+    expect(s.trailingSl).to.equal(false)
+  })
+
+  it('useTp / useSl true: takes the bot TP and SL with their multi and trailing parts', async function () {
+    this.timeout(10_000)
+    const s = await merge(percentExits, { useTp: true, useSl: true })
+    expect(s.useTp).to.equal(true)
+    expect(s.tpPerc).to.equal('2')
+    expect(s.useMultiTp).to.equal(true)
+    expect(s.multiTp).to.deep.equal(percentExits.multiTp)
+    expect(s.trailingTp).to.equal(true)
+    expect(s.useSl).to.equal(true)
+    expect(s.slPerc).to.equal('-5')
+    expect(s.trailingSl).to.equal(true)
+  })
+
+  it('useTp / useSl false: no exit even where the old rule carried a webhook close', async function () {
+    this.timeout(10_000)
+    const s = await merge(
+      {
+        useTp: true,
+        dealCloseCondition: 'webhook',
+        useSl: true,
+        dealCloseConditionSL: 'webhook',
+      },
+      { useTp: false, useSl: false },
+    )
+    expect(s.useTp).to.equal(false)
+    expect(s.useSl).to.equal(false)
+  })
+
+  it('a bot without that exit, or with risk-reward exits, gives none', async function () {
+    this.timeout(10_000)
+    const off = await merge(
+      { useTp: false, useSl: false },
+      { useTp: true, useSl: true },
+    )
+    expect(off.useTp).to.equal(false)
+    expect(off.useSl).to.equal(false)
+    const rr = await merge(
+      { ...percentExits, useRiskReward: true },
+      { useTp: true, useSl: true },
+    )
+    expect(rr.useTp).to.equal(false)
+    expect(rr.useSl).to.equal(false)
+    expect(rr.useMultiTp).to.equal(false)
+  })
+})
+
 describe('spec 138 §2.4 — combo deals are not merged', () => {
   it('the engine refuses before reading anything', async () => {
     const bot = helper({ combo: true })

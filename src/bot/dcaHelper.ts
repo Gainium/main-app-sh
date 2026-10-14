@@ -383,6 +383,12 @@ if ((process.env.BOT_TP_COVERAGE_REPAIR ?? '').trim()) {
   }
 }
 
+/** What the merged deal takes from its bot (`mergeDeals`). */
+export type MergeDealsOptions = {
+  useTp?: boolean
+  useSl?: boolean
+}
+
 export type FullDeal<Deal extends CleanDCADealsSchema> = {
   deal: Deal
   initialOrders: Grid[]
@@ -26296,14 +26302,20 @@ function createDCABotHelper<
      * Merge deals (spec 138). On a single-position bot, routed to an adoption
      * when the pair already holds a position (spec 139 §5.2).
      */
-    async mergeDeals(_deals: string[]) {
+    /**
+     * @param options Whether the merged deal takes the bot's take profit and
+     * stop loss. Omitted (older callers) keeps the original rule: only an
+     * indicator or webhook close carries over. Adoption into a single-position
+     * deal ignores it — that deal keeps its own exits.
+     */
+    async mergeDeals(_deals: string[], options?: MergeDealsOptions) {
       if (this.singlePositionActive) {
         const route = await this.singlePositionMergeRoute(_deals)
         if (route) {
           return this.adoptDeals(route.target, route.sources)
         }
       }
-      return this.runPositionOp(() => this.mergeDealsBody(_deals))
+      return this.runPositionOp(() => this.mergeDealsBody(_deals, options))
     }
 
     /**
@@ -26312,7 +26324,10 @@ function createDCABotHelper<
      * @param {(botId: string, dealId: string, close?: CloseDCATypeEnum, reopen?: boolean) => Promise<{status: StatusEnum.ok, reason: null, data: string} | undefined}> closeFn Closed deal funstion
      */
 
-    private async mergeDealsBody(_deals: string[]) {
+    private async mergeDealsBody(
+      _deals: string[],
+      options?: MergeDealsOptions,
+    ) {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('merge deals'))
         return
@@ -26577,6 +26592,32 @@ function createDCABotHelper<
           }
           // Only flags every source was computed under: a flag selects how a
           // deal's numbers are booked, and the merged deal books all of them.
+          const botSettings = this.data.settings
+          // Risk-reward and dynamic-AR exits are sized from what their deal
+          // opened with, which a merged deal does not have: never followed.
+          const followTp =
+            options?.useTp &&
+            !botSettings.useRiskReward &&
+            botSettings.dealCloseCondition !== CloseConditionEnum.dynamicAr
+          const followSl =
+            options?.useSl &&
+            !botSettings.useRiskReward &&
+            botSettings.dealCloseConditionSL !== CloseConditionEnum.dynamicAr
+          const useTp =
+            options?.useTp === undefined
+              ? botSettings.useTp &&
+                (botSettings.dealCloseCondition ===
+                  CloseConditionEnum.techInd ||
+                  botSettings.dealCloseCondition === CloseConditionEnum.webhook)
+              : !!(followTp && botSettings.useTp)
+          const useSl =
+            options?.useSl === undefined
+              ? botSettings.useSl &&
+                (botSettings.dealCloseConditionSL ===
+                  CloseConditionEnum.techInd ||
+                  botSettings.dealCloseConditionSL ===
+                    CloseConditionEnum.webhook)
+              : !!(followSl && botSettings.useSl)
           const sourceFlags: DCADealFlags[] = deals[0].flags ?? []
           const flags = sourceFlags.filter((f) =>
             deals.every((d) => d.flags?.includes(f)),
@@ -26650,36 +26691,26 @@ function createDCABotHelper<
               avgPrice: avgPrice,
               baseOrderSize: `${initialQuote}`,
               orderSize: `${initialQuote}`,
-              useTp:
-                this.data.settings.useTp &&
-                (this.data.settings.dealCloseCondition ===
-                  CloseConditionEnum.techInd ||
-                  this.data.settings.dealCloseCondition ===
-                    CloseConditionEnum.webhook),
-              useSl:
-                this.data.settings.useSl &&
-                (this.data.settings.dealCloseConditionSL ===
-                  CloseConditionEnum.techInd ||
-                  this.data.settings.dealCloseConditionSL ===
-                    CloseConditionEnum.webhook),
+              useTp,
+              useSl,
               slPerc: this.data.settings.slPerc,
               useDca: false,
               useSmartOrders: false,
               activeOrdersCount: 1,
               orderSizePercQty: 0,
-              trailingSl: false,
-              moveSL: false,
+              trailingSl: !!(followSl && botSettings.trailingSl),
+              moveSL: !!(followSl && botSettings.moveSL),
               moveSLTrigger: this.data.settings.moveSLTrigger,
               moveSLValue: this.data.settings.moveSLValue,
-              trailingTp: false,
+              trailingTp: !!(followTp && botSettings.trailingTp),
               trailingTpPerc: this.data.settings.trailingTpPerc,
               useMinTP: this.data.settings.useMinTP,
               minTp: this.data.settings.minTp,
               orderSizeType: this.data.settings.orderSizeType,
-              useMultiSl: false,
-              multiSl: [],
-              useMultiTp: false,
-              multiTp: [],
+              useMultiSl: !!(followSl && botSettings.useMultiSl),
+              multiSl: followSl ? (botSettings.multiSl ?? []) : [],
+              useMultiTp: !!(followTp && botSettings.useMultiTp),
+              multiTp: followTp ? (botSettings.multiTp ?? []) : [],
               useLimitPrice: false,
               startOrderType: this.data.settings.startOrderType,
               volumeScale: '1',

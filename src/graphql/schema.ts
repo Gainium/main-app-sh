@@ -6083,6 +6083,10 @@ export const BotSchema = /* GraphQL */ `
   input mergeDealsInput {
     botId: String!
     dealIds: [String!]!
+    "Merged deal takes the bot's take profit. Omitted: only an indicator or webhook close carries over."
+    useTp: Boolean
+    "Merged deal takes the bot's stop loss. Omitted: only an indicator or webhook close carries over."
+    useSl: Boolean
   }
   input adoptDealsInput {
     botId: String!

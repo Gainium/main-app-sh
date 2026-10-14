@@ -108,6 +108,7 @@ import {
 } from './utils'
 import { statsAfterReset } from './dca/botStatsReset'
 import { oldStartDcaDealsFilter } from './dca/oldStartDealsFilter'
+import type { MergeDealsOptions } from './dcaHelper'
 import {
   pairsWithSeveralOpenDeals,
   SINGLE_POSITION_ADOPT_COMBO_REASON,
@@ -9021,6 +9022,7 @@ class Bot<T extends UserSchema = UserSchema> {
     botId: string,
     dealIds: string[],
     paperContext: boolean,
+    options?: MergeDealsOptions,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9031,6 +9033,7 @@ class Bot<T extends UserSchema = UserSchema> {
         botId,
         dealIds,
         paperContext,
+        options,
       )
     }
     const findLocal = this.dcaBots.find((d) => d.id === botId && d.userId)
@@ -9040,7 +9043,7 @@ class Bot<T extends UserSchema = UserSchema> {
         botType: BotType.dca,
         botId: findLocal.id,
         method: 'mergeDeals',
-        args: [dealIds],
+        args: [dealIds, options],
       })
 
       this.botEventDb.createData({
@@ -9076,7 +9079,7 @@ class Bot<T extends UserSchema = UserSchema> {
             botType: BotType.dca,
             botId,
             method: 'mergeDeals',
-            args: [dealIds],
+            args: [dealIds, options],
           })
         },
         paperContext,

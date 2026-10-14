@@ -8351,6 +8351,8 @@ const resolvers = <
         input: {
           botId: string
           dealIds: string[]
+          useTp?: boolean | null
+          useSl?: boolean | null
         }
       },
       { token, req }: InputRequest,
@@ -8367,6 +8369,10 @@ const resolvers = <
         input.botId,
         input.dealIds,
         !!user.data.paperContext,
+        {
+          ...(typeof input.useTp === 'boolean' ? { useTp: input.useTp } : {}),
+          ...(typeof input.useSl === 'boolean' ? { useSl: input.useSl } : {}),
+        },
       )
     },
     adoptDeals: async (

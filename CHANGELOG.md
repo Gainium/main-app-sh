@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.97.0] - 2026-10-14
+### Added
+- `mergeDeals` takes optional `useTp` and `useSl`. When set, the merged DCA deal takes the bot's take profit and/or stop loss (including multiple targets and trailing), priced from the merged average; when false it gets none. Risk-reward and dynamic exits are never carried over, since they are sized from what their deal opened with. Omitting both keeps the previous rule, where only an indicator or webhook close carried over.
+
 ## [1.96.16] - 2026-10-14
 ### Fixed
 - A DCA or combo safety order that the exchange cancels is no longer sent again under the same client order id. The bot re-placed such a level under its old id, which exchanges like Bybit refuse as a duplicate. The bot then re-sent it under a regenerated id but the level kept the old one, so a later update sent the old id again and the regenerated id a second time: the user saw a "Duplicate clientOrderId" error, and on an exchange that had accepted it the level could have filled twice. A re-placed level now gets a new id and keeps it, a level whose replacement is still open or already filled is not placed again, and a refused duplicate is never re-sent under an id the bot has already used for that order.
