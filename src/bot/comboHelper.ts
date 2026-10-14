@@ -5740,6 +5740,20 @@ function createComboBotHelper<
               }
               return
             }
+            let sizes: Sizes | undefined | null
+            if (this.useCompountReduce) {
+              sizes = await this.calculateCompoundReduce(symbol)
+            }
+            // A Base or DCA order the exchange minimum would raise past its
+            // configured size: as on the DCA path, before the approval hook.
+            if (await this.refuseDealBelowExchangeMin(symbol, 0, sizes)) {
+              this.resetPending(this.botId, symbol)
+              this.endMethod(_id)
+              if (cbIfNotOpened) {
+                cbIfNotOpened()
+              }
+              return
+            }
             // Last step before the deal exists: every gate above has passed.
             // Same hook as the DCA path (inherited `approveNewDeal`).
             const approval = await this.checkNewDealApproval(
@@ -5757,10 +5771,6 @@ function createComboBotHelper<
                 cbIfNotOpened()
               }
               return
-            }
-            let sizes: Sizes | undefined | null
-            if (this.useCompountReduce) {
-              sizes = await this.calculateCompoundReduce(symbol)
             }
             this.requestSignalBaseOrderSize(approval, settings, signalOverrides)
             // A size multiplier from the approval (checked at the scaled size).

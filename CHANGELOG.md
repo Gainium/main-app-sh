@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.99.0] - 2026-10-14
+### Changed
+- Combo bots, both sides of hedge DCA and hedge combo bots, and terminal deals now refuse a deal whose Base or DCA/Safety order the exchange minimum would raise more than 10% past its configured size, as DCA bots already did, and notify once per pair. `allowRaiseToExchangeMin` turns the raise back on; a missing value refuses.
+
 ## [1.98.1] - 2026-10-14
 ### Added
 - Combo bots and both sides of hedge DCA and hedge combo bots store `allowRaiseToExchangeMin`, and the combo create/change inputs and combo bot settings expose it. Nothing reads it for them yet.

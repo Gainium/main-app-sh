@@ -15569,9 +15569,10 @@ function createDCABotHelper<
      * refuse; every bot that existed before this default was introduced had the
      * setting written `true` explicitly, so none of them changed behaviour.<br />
      *
-     * Regular DCA bots only. Terminal deals and hedge-DCA legs run through this
-     * engine too, but their forms do not offer the switch, so they keep raising
-     * rather than getting a behaviour their users cannot turn off.<br />
+     * Every bot on this engine: DCA, combo, both sides of a hedge DCA/combo bot
+     * and terminal deals. Every combo bot, hedge side and terminal deal that
+     * existed before it reached them had the setting written `true`, as the
+     * DCA bots did.<br />
      *
      * Sizes the deal exactly as it would open — {@link getBaseOrder} and the
      * {@link createInitialDealOrders} ladder at the current price — with no
@@ -15593,9 +15594,7 @@ function createDCABotHelper<
     ): Promise<boolean> {
       const settings = await this.getAggregatedSettings()
       if (
-        settings.type === DCATypeEnum.terminal ||
-        this.data?.parentBotId ||
-        (await this.allowsRaiseToExchangeMin(settings.allowRaiseToExchangeMin))
+        await this.allowsRaiseToExchangeMin(settings.allowRaiseToExchangeMin)
       ) {
         return false
       }
@@ -16010,13 +16009,11 @@ function createDCABotHelper<
           return keep('insufficient_balance')
         }
       }
-      // Combo deals always raise an order to the exchange minimum (they have
-      // no refusal); a DCA bot refuses unless it allows the raise.
+      // A bot refuses unless it allows the raise.
       if (
-        !this.combo &&
-        (await this.refuseDealBelowExchangeMin(symbol, opts.fixSize, scaled, {
+        await this.refuseDealBelowExchangeMin(symbol, opts.fixSize, scaled, {
           quiet: true,
-        }))
+        })
       ) {
         return keep('below_exchange_min')
       }

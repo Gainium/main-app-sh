@@ -262,14 +262,29 @@ describe('exchange minimum — refuse instead of inflating BO/SO', () => {
     expect(reported).to.deep.equal([])
   })
 
-  it('leaves terminal deals raising — their form has no switch', async () => {
+  it('refuses a terminal deal like a DCA bot', async () => {
     const { bot } = buildBot({ type: DCATypeEnum.terminal })
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(true)
+  })
+
+  it('raises on a terminal deal that allows it', async () => {
+    const { bot } = buildBot({
+      type: DCATypeEnum.terminal,
+      allowRaiseToExchangeMin: true,
+    })
     expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(false)
   })
 
-  it('leaves hedge-DCA legs raising — their form has no switch', async () => {
-    const { bot } = buildBot()
-    bot.data = { ...bot.data, parentBotId: '000000000000000000000p99' }
+  it('refuses on a hedge-DCA side like on a DCA bot', async () => {
+    const { bot, reported } = buildBot()
+    bot.data = { ...bot.data, parentBotId: '000000000000000000000c99' }
+    expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(true)
+    expect(reported).to.have.length(1)
+  })
+
+  it('raises on a hedge-DCA side that allows it', async () => {
+    const { bot } = buildBot({ allowRaiseToExchangeMin: true })
+    bot.data = { ...bot.data, parentBotId: '000000000000000000000c99' }
     expect(await bot.refuseDealBelowExchangeMin(PAIR)).to.equal(false)
   })
 
