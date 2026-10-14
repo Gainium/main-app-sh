@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.96.16] - 2026-10-14
+### Fixed
+- A DCA or combo safety order that the exchange cancels is no longer sent again under the same client order id. The bot re-placed such a level under its old id, which exchanges like Bybit refuse as a duplicate. The bot then re-sent it under a regenerated id but the level kept the old one, so a later update sent the old id again and the regenerated id a second time: the user saw a "Duplicate clientOrderId" error, and on an exchange that had accepted it the level could have filled twice. A re-placed level now gets a new id and keeps it, a level whose replacement is still open or already filled is not placed again, and a refused duplicate is never re-sent under an id the bot has already used for that order.
+
 ## [1.96.15] - 2026-10-14
 ### Fixed
 - A DCA deal that has closed no longer places orders that were queued for it before the close. On exchanges where cancelling the closed deal's safety orders takes minutes, an order update queued earlier, for example by a safety order fill, could still run after the close and place its take-profit for the old position. On spot that take-profit sold the coins of the next deal on the same pair, and that deal's own take-profit was then refused for insufficient balance. Order placement now stops as soon as the deal is no longer active or its take-profit has filled in full, including part-way through placing a set of orders, and the dropped orders are logged. A take-profit that fills only partly still keeps the deal open, as before.

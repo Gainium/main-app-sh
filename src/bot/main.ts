@@ -112,6 +112,7 @@ import {
 import QuantRulesGuard, { LEVEL2_VIOLATIONS } from './quantRulesGuard'
 import { poisonedSnapshotProfitField } from './redisSnapshotGuard'
 import { mergeOpenOrdersIntoSnapshot } from './orderSnapshotMerge'
+import { isSpentStatus, siblingClientOrderIds } from './clientOrderIdReissue'
 import QtyStepGuard, {
   decimalsToStep,
   deriveAcceptedDecimals,
@@ -960,6 +961,12 @@ class MainBot<T extends IMainBot> {
    * {@link MainBot#_handleUnknownOrder}.
    */
   private unknownOrderInFlight: Map<string, Promise<null | Order>> = new Map()
+  /**
+   * A client order id the venue has already seen → the id its order was re-sent
+   * under. Lets a ladder level that still carries the spent id find the order
+   * that replaced it. See `resolveLevelClientOrderId`. Spec 161.
+   */
+  protected reissuedClientOrderIds: Map<string, string> = new Map()
   /**
    * The venue call of each placement still waiting for its answer, by client
    * order id, resolving to the venue's order id (null on refusal / failure).
@@ -2202,6 +2209,24 @@ class MainBot<T extends IMainBot> {
       return
     }
     return this.orders.get(key)
+  }
+
+  /**
+   * This bot's order under a client order id: from memory, else its stored
+   * row. A failed read answers `undefined`, as for an unknown id.
+   */
+  private async findOwnOrder(clientOrderId: string): Promise<Order | undefined> {
+    const held = this.getOrderFromMap(clientOrderId)
+    if (held) {
+      return held
+    }
+    const stored = await this.ordersDb.readData({
+      clientOrderId,
+      botId: this.botId,
+    })
+    return stored.status === StatusEnum.ok
+      ? (stored.data?.result ?? undefined)
+      : undefined
   }
 
   deleteOrder(key: string, setToRedis = true) {
@@ -9245,12 +9270,35 @@ class MainBot<T extends IMainBot> {
             this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             // Swap the last character for one it is not: a fixed `2` re-sent
             // an id already ending in `2` (incl. one regenerated here before)
-            // unchanged, and the venue refused that copy for good. Same prefix
-            // and length; `2`/`3` are valid in every id alphabet (hex for HL).
-            order.clientOrderId = `${order.clientOrderId.slice(
-              0,
-              order.clientOrderId.length - 1,
-            )}${order.clientOrderId.endsWith('2') ? '3' : '2'}`
+            // unchanged, and the venue refused that copy for good (spec 145).
+            //
+            // The sibling is derived from the refused id, so a second send of
+            // that same id lands on the same sibling — and if this bot already
+            // placed it, it is this order's replacement. Live or FILLED, it is
+            // returned instead of sent: a venue that accepted it again would
+            // fill the level twice. A sibling that is spent (cancelled) is
+            // skipped for the next one, since the venue refuses that too.
+            // Spec 161 §1.3.
+            const refusedId = order.clientOrderId
+            const siblings = siblingClientOrderIds(refusedId)
+            let resendId = siblings[0]
+            for (const candidate of siblings) {
+              const held = await this.findOwnOrder(candidate)
+              if (!held) {
+                resendId = candidate
+                break
+              }
+              if (!isSpentStatus(held.status)) {
+                this.handleLog(
+                  `Order ${refusedId} is duplicate and was already re-sent as ${candidate} (${held.status}) — not sending it again`,
+                )
+                this.reissuedClientOrderIds?.set(refusedId, candidate)
+                this.endMethod(_id)
+                return held
+              }
+            }
+            this.reissuedClientOrderIds?.set(refusedId, resendId)
+            order.clientOrderId = resendId
             this.endMethod(_id)
             return this.sendOrderToExchange(order, returnError, 1)
           }

@@ -231,6 +231,7 @@ import {
   nextLadderLevel,
   remainingLadderLevels,
 } from './dca/ladderLevels'
+import { resolveLevelClientOrderId } from './clientOrderIdReissue'
 import { splitPendingFunds } from './dca/pendingFundsResend'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
@@ -17051,6 +17052,55 @@ function createDCABotHelper<
       }
     }
     /**
+     * Give a safety-order level about to be placed an id the venue can accept.
+     * Spec 161.
+     *
+     * A level keeps the id it was built with, and the placement loop re-sends a
+     * level whose order is CANCELED. Under that same id, a venue that never
+     * reuses one (Bybit) refuses it, and the duplicate branch re-sends it as a
+     * `…2` the level never learns about — so the next pass sends the spent id
+     * again, and the level can fill twice. Here the level instead adopts a
+     * replacement that is still live or FILLED (the loop's own checks then skip
+     * it), or takes a fresh id when every id it carried is spent.
+     *
+     * The level object is updated in place, so the ladder holding it carries the
+     * live id from now on; a copy built earlier still finds it through
+     * `reissuedClientOrderIds`.
+     */
+    private reissueSpentLevelId(order: Grid): void {
+      // The loop's stop list names the level by this id; leave it to skip it.
+      if (
+        order.type !== TypeOrderEnum.dealRegular ||
+        this.stopList.has(order.newClientOrderId)
+      ) {
+        return
+      }
+      const reissued = (this.reissuedClientOrderIds ??= new Map())
+      const resolution = resolveLevelClientOrderId(
+        order.newClientOrderId,
+        reissued,
+        (id) => this.getOrderFromMap(id)?.status,
+      )
+      if (resolution.action === 'adopt') {
+        this.handleLog(
+          `Order ${order.newClientOrderId} was already re-sent as ${resolution.id}, use it`,
+        )
+        order.newClientOrderId = resolution.id
+        return
+      }
+      if (resolution.action === 'mint') {
+        const fresh = this.getOrderId(this.combo ? 'CMB-RO' : 'D-RO')
+        this.handleLog(
+          `Order ${resolution.spent} is ${
+            this.getOrderFromMap(resolution.spent)?.status ?? 'gone'
+          }, re-place its level as ${fresh}`,
+        )
+        reissued.set(order.newClientOrderId, fresh)
+        reissued.set(resolution.spent, fresh)
+        order.newClientOrderId = fresh
+      }
+    }
+    /**
      * Check new order in array of placed/pending orders
      *
      * @param {Grid} n order to find
@@ -17352,6 +17402,11 @@ function createDCABotHelper<
                 ? -1
                 : 0,
           )
+        // Spec 161: before either phase reads a level's id, so both send it
+        // under an id the venue can accept and skip it when it is already live.
+        for (const order of toPlace) {
+          this.reissueSpentLevelId(order)
+        }
         // Spec `082` §7. The plain ladder orders of this burst — and only
         // those — can share one venue call, so they are sent first, in the
         // order they are about to be walked in, and the loop below then runs

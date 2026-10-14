@@ -8,7 +8,8 @@ process.env.NODE_ENV = 'testing'
  * It must ask the venue first, keep the order when the venue has it, and only
  * regenerate when the venue definitively does not.
  *
- * Enforces specs/136 §4.1, §4.2 and §4.3. Run: `npm test` (mocha) from core/.
+ * Enforces specs/136 §4.1, §4.2 and §4.3, specs/145 and specs/161 §4.4–§4.5.
+ * Run: `npm test` (mocha) from core/.
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
@@ -45,6 +46,13 @@ const makeOrdersDb = () => {
   }
   return {
     rows,
+    readData: async (filter: Row) => ({
+      status: StatusEnum.ok,
+      reason: null,
+      data: {
+        result: [...rows.values()].find((row) => matches(row, filter)) ?? null,
+      },
+    }),
     createData: async (doc: Row) => {
       rows.set(doc.clientOrderId, { ...doc })
       return { status: StatusEnum.ok, reason: null, data: { result: doc } }
@@ -306,5 +314,70 @@ describe('a duplicate re-send never reuses the refused id (spec 145)', () => {
       CLIENT_ID,
       REGENERATED,
     ])
+  })
+})
+
+describe('a duplicate re-send never places a level twice (spec 161)', () => {
+  const BYBIT_DUPLICATE = 'Duplicate clientOrderId.'
+  // The venue has the original, cancelled with nothing filled.
+  const venueSaysCanceled = async (req: any) => ({
+    status: StatusEnum.ok,
+    reason: null,
+    data: {
+      clientOrderId: req.newClientOrderId,
+      orderId: '3000000002',
+      status: 'CANCELED',
+      executedQty: '0',
+      updateTime: Date.now(),
+    },
+  })
+  const acceptFresh = (seen: string[]) => async (req: any) =>
+    seen.includes(req.newClientOrderId)
+      ? refused(BYBIT_DUPLICATE)()
+      : {
+          status: StatusEnum.ok,
+          reason: null,
+          data: { ...makeOrder(), clientOrderId: req.newClientOrderId },
+        }
+
+  it('§4.4 returns the sibling the level already filled under, and sends nothing more', async () => {
+    const bot = makeBot(acceptFresh([CLIENT_ID, REGENERATED]), venueSaysCanceled)
+    const filled = {
+      ...makeOrder(),
+      clientOrderId: REGENERATED,
+      orderId: '3000000003',
+      status: 'FILLED',
+      executedQty: '0.007109',
+    }
+    bot.orders.set(REGENERATED, filled)
+    const shown: unknown[] = []
+    bot.handleErrors = (...a: unknown[]) => shown.push(a)
+    bot.handleOrderErrors = (...a: unknown[]) => shown.push(a)
+
+    const result = await bot.sendOrderToExchange(makeOrder())
+
+    expect(bot.venueCalls.map((c: any) => c.newClientOrderId)).to.deep.equal([
+      CLIENT_ID,
+    ])
+    expect(result?.clientOrderId).to.equal(REGENERATED)
+    expect(result?.status).to.equal('FILLED')
+    expect(shown, 'no error reaches the user').to.deep.equal([])
+  })
+
+  it('§4.5 a sibling that is spent (CANCELED in the DB) is skipped for the next free id', async () => {
+    const bot = makeBot(acceptFresh([CLIENT_ID, REGENERATED]), venueSaysCanceled)
+    bot.ordersDb.rows.set(REGENERATED, {
+      ...makeOrder(),
+      clientOrderId: REGENERATED,
+      botId: bot.botId,
+      status: 'CANCELED',
+    })
+
+    await bot.sendOrderToExchange(makeOrder())
+
+    const sent = bot.venueCalls.map((c: any) => c.newClientOrderId)
+    expect(sent).to.have.length(2)
+    expect(sent[1]).to.not.equal(REGENERATED)
+    expect(sent[1].slice(0, -1)).to.equal(CLIENT_ID.slice(0, -1))
   })
 })
