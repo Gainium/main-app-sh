@@ -3523,6 +3523,7 @@ export const BotSchema = /* GraphQL */ `
     dcaVolumeRequiredChangeRef: String
     dcaVolumeMaxValue: String
     skipBalanceCheck: Boolean
+    allowRaiseToExchangeMin: Boolean
     baseSlOn: String
     closeByTimer: Boolean
     closeByTimerValue: Float
@@ -5471,6 +5472,12 @@ export const BotSchema = /* GraphQL */ `
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
     dcaByMarket: Boolean
+    """
+    Raise a Base/DCA order below the exchange minimum instead of refusing the
+    deal. Also carries a hedge DCA side, which both hedge inputs type as a combo
+    input. See createDCABotInput.
+    """
+    allowRaiseToExchangeMin: Boolean
     terminalDealType: TerminalDealTypeEnum
     useMultiTp: Boolean
     multiTp: [inputMultiTP]
@@ -5854,6 +5861,12 @@ export const BotSchema = /* GraphQL */ `
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
     dcaByMarket: Boolean
+    """
+    Raise a Base/DCA order below the exchange minimum instead of refusing the
+    deal. Also carries a hedge DCA side, which both hedge inputs type as a combo
+    input. See createDCABotInput.
+    """
+    allowRaiseToExchangeMin: Boolean
     orderSizeType: OrderSizeTypeEnum
     useMultiTp: Boolean
     multiTp: [inputMultiTP]

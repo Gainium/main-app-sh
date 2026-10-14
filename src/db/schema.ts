@@ -1737,6 +1737,7 @@ const comboBotSettings = new Schema<ComboBotSettings>({
   maxDealsOverPerSymbol: String,
   maxDealsUnderPerSymbol: String,
   dcaByMarket: Boolean,
+  allowRaiseToExchangeMin: Boolean,
 })
 
 const botProfitChart: Schema<BotProfitChartSchema> = new Schema({

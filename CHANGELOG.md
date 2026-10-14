@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.98.1] - 2026-10-14
+### Added
+- Combo bots and both sides of hedge DCA and hedge combo bots store `allowRaiseToExchangeMin`, and the combo create/change inputs and combo bot settings expose it. Nothing reads it for them yet.
+
 ## [1.98.0] - 2026-10-14
 ### Added
 - `mergeDeals` takes optional `useDca` and `dcaOrders`. With `useDca`, the merged DCA deal restarts the bot's safety-order ladder from the merged average: the bot's step, step scale, order size, volume scale and active orders, with `dcaOrders` levels (at most the bot's). Only percentage ladders sized in base or quote are carried; indicator, custom, ATR/ADR, volume-change and balance-share ladders are sized from what their deal opened with and are left off.
