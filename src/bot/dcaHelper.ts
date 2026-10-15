@@ -232,6 +232,11 @@ import {
   nextLadderLevel,
   remainingLadderLevels,
 } from './dca/ladderLevels'
+import {
+  isDisplacementInLadder,
+  isLevelFilled,
+  percentageLadderEnd,
+} from './dca/gridBreakpoints'
 import { resolveLevelClientOrderId } from './clientOrderIdReissue'
 import { splitPendingFunds } from './dca/pendingFundsResend'
 import { backedFeeDust } from './dca/comboFeeDust'
@@ -19613,6 +19618,23 @@ function createDCABotHelper<
           let balanceUseQty = 0
 
           const ordersCount = this.dcaLadderSize(settings)
+          // Spec `164`: a stored breakpoint beyond this ladder's deepest level
+          // (a wick past the deal's whole DCA coverage) is not applied. Only a
+          // percentage ladder has a closed-form depth; on every other ladder
+          // a breakpoint must still be a positive finite price.
+          const ladderEnd =
+            settings.dcaCondition === DCAConditionEnum.percentage && !scaleAr
+              ? this.math.round(
+                  percentageLadderEnd(
+                    latestPrice,
+                    gridStep,
+                    stepScale,
+                    ordersCount ?? 0,
+                    long,
+                  ),
+                  symbol.priceAssetPrecision,
+                )
+              : undefined
           const useVolumeChange =
             settings.dcaVolumeBaseOn === DCAVolumeType.change &&
             settings.useTp &&
@@ -19761,7 +19783,11 @@ function createDCABotHelper<
             price = this.math.round(price, ed.priceAssetPrecision)
             const findBreakpoint = breakpoints
               .sort((a, b) => (long ? b.price - a.price : a.price - b.price))
-              .find((b) => price === b.price)
+              .find(
+                (b) =>
+                  price === b.price &&
+                  isDisplacementInLadder(b.displacedPrice, ladderEnd, long),
+              )
             if (findBreakpoint) {
               price = this.math.round(
                 findBreakpoint.displacedPrice,
@@ -20103,6 +20129,19 @@ function createDCABotHelper<
                 .sort((a, b) => a.price - b.price)
             }
           }
+          if (!noCheck) {
+            // Spec `164` §1.1: a level that has filled is not a current order.
+            // In a burst of fills the filled count above lags, so the slice
+            // can still hold one; it was re-sent, and with the market past it
+            // given a breakpoint at the market price.
+            const filledLevels = this.getOrdersByStatusAndDealId({
+              status: 'FILLED',
+              dealId,
+            })
+            currentOrders = currentOrders.filter(
+              (o) => !isLevelFilled(o, filledLevels),
+            )
+          }
           const [firstOrder] = currentOrders
           if (!noCheck) {
             if (
@@ -20117,13 +20156,24 @@ function createDCABotHelper<
               !isNaN(left)
             ) {
               const latestPrice = await this.getLatestPrice(symbol)
-              if (
+              const gapped =
                 firstOrder &&
                 latestPrice !== 0 &&
                 ((latestPrice < firstOrder.price && this.isLong) ||
-                  (latestPrice > firstOrder.price && !this.isLong)) &&
-                deal
-              ) {
+                  (latestPrice > firstOrder.price && !this.isLong))
+              // Spec `164` §1.2: a market past the ladder's deepest level is a
+              // wick, not a place to rest one level. The level keeps its price.
+              const ladderEnd = long
+                ? Math.min(...orders.map((o) => o.price))
+                : Math.max(...orders.map((o) => o.price))
+              const beyondLadder =
+                gapped && !isDisplacementInLadder(latestPrice, ladderEnd, long)
+              if (beyondLadder) {
+                this.handleLog(
+                  `Deal ${dealId}: no breakpoint for level ${firstOrder.price} at market ${latestPrice}: beyond the ladder's deepest level ${ladderEnd}`,
+                )
+              }
+              if (gapped && !beyondLadder && deal) {
                 const breakpoint = {
                   price: firstOrder.price,
                   displacedPrice: latestPrice,

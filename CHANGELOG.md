@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.99.3] - 2026-10-15
+### Fixed
+- A DCA deal whose safety orders filled during a sharp, momentary price spike no longer keeps safety orders parked at the spike price. A level that had just filled could be sent again and treated as one the market had skipped, and a market price beyond the deal's deepest level was used as a new level price. Every later rebuild of the ladder then moved later levels next to it, so the ladder ended there and raising the level count placed orders near zero. Neither is recorded any more, and a level price beyond the ladder's deepest level is ignored when the ladder is built, so deals already affected get their real levels back on the next settings change, fill or restart. A gap inside the ladder still moves the next level to the market price, as before.
+
 ## [1.99.2] - 2026-10-14
 ### Fixed
 - On Hyperliquid, a deal's close (stop loss, take profit or manual close) worth less than $10 is no longer retried when it is only part of the position on the pair. Hyperliquid accepts a closing order under $10 only when it closes the whole position, so when another deal or bot on the same account holds part of it, no retry can succeed. The bot now stops after the first refusal with a message naming the deal, the close, the position on Hyperliquid and what to do, instead of retrying five times and reporting the exchange's raw text. A close that is the whole position is sent as before.
