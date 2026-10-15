@@ -5590,6 +5590,15 @@ function createComboBotHelper<
         return this.handleDebug(`Bot settings does not contain ${symbol}`)
       }
       const ed = await this.getExchangeInfo(symbol)
+      if (
+        await this.refuseNewDealNearDelivery(symbol, ed, skip, dynamic, trigger)
+      ) {
+        this.endMethod(_id)
+        if (cbIfNotOpened) {
+          cbIfNotOpened()
+        }
+        return
+      }
       const skipRange = skip && !dynamic
       if (await this.checkMaxDeals(this.botId, symbol)) {
         this.handleLog('Open new deal')

@@ -17,6 +17,7 @@ import {
 } from '../../../types'
 import { classifyAssetClass, resolveUnderlying } from '../assetClass'
 import { normalizePairLeverage } from '../pairLeverage'
+import { normalizeDeliveryTime } from '../../bot/deliveryCutoff'
 import { Kraken } from 'node-kraken-api'
 import axios from 'axios'
 
@@ -102,6 +103,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 underlying?: string
                 minLeverage?: number
                 maxLeverage?: number
+                deliveryTime?: number
               }
             >
           | undefined
@@ -118,6 +120,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
               underlying: 1,
               minLeverage: 1,
               maxLeverage: 1,
+              deliveryTime: 1,
             },
             {},
             true,
@@ -133,6 +136,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   underlying: p.underlying,
                   minLeverage: p.minLeverage,
                   maxLeverage: p.maxLeverage,
+                  deliveryTime: p.deliveryTime,
                 },
               ]),
             )
@@ -175,11 +179,19 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
             const { minLeverage, maxLeverage } = normalizePairLeverage(
               paperRealMap ? (paperRealMap.get(info.pair) ?? {}) : info,
             )
+            // Delivery time of a dated futures contract (absent = perpetual /
+            // spot); paper twins mirror the real pair, like leverage.
+            const deliveryTime = normalizeDeliveryTime(
+              paperRealMap
+                ? paperRealMap.get(info.pair)?.deliveryTime
+                : info.deliveryTime,
+            )
             if (getPair) {
               if (
                 getPair.wsCode !== info.wsCode ||
                 getPair.minLeverage !== minLeverage ||
                 getPair.maxLeverage !== maxLeverage ||
+                getPair.deliveryTime !== deliveryTime ||
                 // Treat an assetCategory change as an update so existing pairs
                 // get backfilled on the next cron run.
                 getPair.assetCategory !== assetCategory ||
@@ -228,6 +240,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   underlying,
                   minLeverage,
                   maxLeverage,
+                  deliveryTime,
                   _id,
                 })
               }
@@ -241,6 +254,7 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 underlying,
                 minLeverage,
                 maxLeverage,
+                deliveryTime,
               })
             }
           }

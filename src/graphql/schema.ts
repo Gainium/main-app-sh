@@ -95,6 +95,7 @@ export const BasicSchema = /* GraphQL */ `
     source: String
     minLeverage: Float
     maxLeverage: Float
+    deliveryTime: Float
   }
   type allPairInfo {
     result: [pairDetailedInfo]

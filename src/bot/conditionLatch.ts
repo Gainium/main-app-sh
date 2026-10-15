@@ -104,6 +104,14 @@ export const baseGridBelowMinimumBudget = 'baseGridBelowMinimumBudget'
 export const orderBelowExchangeMin = 'orderBelowExchangeMin'
 
 /**
+ * An automatic new deal refused because the pair is a dated futures contract
+ * that delivers within the cutoff (`deliveryCutoff.ts`). Standing by nature:
+ * every start cycle asks again and only the calendar (or the contract leaving
+ * the pair list) changes the answer. Keyed by PAIR.
+ */
+export const newDealNearDelivery = 'newDealNearDelivery'
+
+/**
  * A deal's resting take-profit no longer covers the position it tracks
  * (issue #696, spec `013.tp-coverage-drift-after-partial-tp`).
  *

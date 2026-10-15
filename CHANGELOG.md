@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.102.0] - 2026-10-15
+### Added
+- Trading pairs carry the delivery time of dated futures contracts (Bybit, Binance and KuCoin quarterly / weekly contracts), from the exchange's own instrument info; paper pairs carry their exchange's. Exposed on the pair list (`deliveryTime`). Needs exchange connector core 1.27.16; filled on the next hourly pairs sync.
+### Changed
+- DCA, combo and hedge bots no longer open a new deal automatically (start condition, indicator, webhook, timer) on a dated futures contract within 3 days of its delivery, since the exchange settles any position still open at delivery. The bot logs a warning once per pair. Deals already open are not touched; a manual "New deal" and terminal deals still open.
+
 ## [1.101.1] - 2026-10-15
 ### Fixed
 - A futures safety order refused because the contract's risk tier is full is no longer re-sent on every ladder rebuild (on combo bots, every minigrid fill). The refused level backs off from 1 to 15 minutes, a new deal or a leverage change retries it at once, and suppressed attempts no longer raise a bot error each time. Other orders on the contract, including the minigrid and reduce-only orders, are not held back.

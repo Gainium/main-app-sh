@@ -1108,6 +1108,9 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
   // pair picker — the bot engine doesn't read them.
   minLeverage: Number,
   maxLeverage: Number,
+  // Delivery time (ms epoch) of a dated futures contract, from the exchange's
+  // instrument info. Absent = perpetual / spot. See `deliveryCutoff.ts`.
+  deliveryTime: Number,
   ...CreatedUpdated,
 })
 

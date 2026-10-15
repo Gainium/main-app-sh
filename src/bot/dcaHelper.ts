@@ -341,9 +341,14 @@ import {
   maxDealsReached,
   notEnoughBalanceNewDeal,
   orderBelowExchangeMin,
+  newDealNearDelivery,
   standingConditionKey,
   tpCoverageDrift,
 } from './conditionLatch'
+import {
+  deliveryRefusalMessage,
+  deliveryRefusingNewDeal,
+} from './deliveryCutoff'
 import {
   MinOrderFloor,
   MinOrderViolation,
@@ -15834,6 +15839,61 @@ function createDCABotHelper<
     }
 
     /**
+     * Refuse an automatic new deal on a dated futures contract that delivers
+     * within `DELIVERY_NEW_DEAL_CUTOFF_MS` (`deliveryCutoff.ts`): a
+     * deal still open at delivery is settled by the exchange. Perpetuals and
+     * spot carry no `deliveryTime` and are never refused. A manual open and a
+     * terminal deal are the user's explicit choice and go through.
+     *
+     * Reported once per pair per re-arm window as a bot warning, like the
+     * other standing refusals (spec 008) — the start condition retries every
+     * cycle and nothing but the calendar changes the answer.
+     *
+     * @returns {boolean} true when the deal was refused
+     */
+    async refuseNewDealNearDelivery(
+      symbol: string,
+      ed: ClearPairsSchema | undefined,
+      skip: boolean,
+      dynamic: boolean,
+      trigger?: NewDealTrigger,
+    ): Promise<boolean> {
+      const key = standingConditionKey(newDealNearDelivery, symbol)
+      const delivery = deliveryRefusingNewDeal(ed, +new Date())
+      if (delivery === null) {
+        this.standingConditionLatch.clear(key)
+        return false
+      }
+      const settings = await this.getAggregatedSettings()
+      if (
+        (settings as { type?: DCATypeEnum }).type === DCATypeEnum.terminal ||
+        resolveNewDealTrigger(
+          skip,
+          dynamic,
+          settings.startCondition,
+          trigger,
+        ) === 'manual'
+      ) {
+        return false
+      }
+      const message = deliveryRefusalMessage(symbol, delivery)
+      this.handleLog(message)
+      if (this.standingConditionLatch.shouldReport(key, +new Date())) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Bot warning',
+          botType: this.botType,
+          description: `Warning: ${message}`,
+          paperContext: !!this.data?.paperContext,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
+      }
+      return true
+    }
+
+    /**
      * Last-step approval of a new deal: asked after every built-in gate has
      * passed, immediately before the deal is created. The engine itself always
      * approves; a deployment may override this to add its own filter. To
@@ -16588,6 +16648,15 @@ function createDCABotHelper<
         )
       }
       const ed = await this.getExchangeInfo(symbol)
+      if (
+        await this.refuseNewDealNearDelivery(symbol, ed, skip, dynamic, trigger)
+      ) {
+        this.endMethod(_id)
+        if (cbIfNotOpened) {
+          cbIfNotOpened()
+        }
+        return
+      }
       const skipRange = skip && !dynamic
       if (await this.checkMaxDeals(this.botId, symbol)) {
         this.handleLog(`Open new deal ${symbol}`)

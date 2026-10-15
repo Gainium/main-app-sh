@@ -291,6 +291,9 @@ export type ExchangeInfo = {
   // (raw: strings on Bybit / Bitget / Hyperliquid / OKX). Danger List #1.
   minLeverage?: number | string
   maxLeverage?: number | string
+  // Delivery time (ms epoch) of a dated futures contract, from the venue's
+  // instrument info; absent for perpetuals and spot. Danger List #1.
+  deliveryTime?: number
 }
 
 export type TpSlCondition = 'valueChanged' | 'priceReached'
@@ -2955,6 +2958,14 @@ export interface PairsSchema extends SchemaI {
    */
   minLeverage?: number
   maxLeverage?: number
+  /**
+   * Delivery (expiry) time, ms epoch, of a dated futures contract, from the
+   * connector (the exchange's own instrument field). Absent = perpetual / spot
+   * / not published. Paper pairs mirror their real exchange's. The bot engine
+   * stops opening new deals on the pair near it (`deliveryCutoff.ts`); the
+   * dashboard keeps such pairs out of bulk selection.
+   */
+  deliveryTime?: number
 }
 
 export interface StoreFilesSchema extends SchemaI {
