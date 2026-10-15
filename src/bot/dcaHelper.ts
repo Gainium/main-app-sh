@@ -6,6 +6,10 @@ import {
 import Big from 'big.js'
 import { withExchangeCaller } from '../exchange/requestContext'
 import { holdFromRestOnly } from '../utils/holdRefresh'
+import {
+  isStoppedForNewDeals,
+  stoppedBotNewDealMessage,
+} from './stoppedBotNewDeal'
 import { v4 } from 'uuid'
 import type DB from '../db'
 import {
@@ -14717,6 +14721,22 @@ function createDCABotHelper<
 
     async openNewDealMan(_symbol?: string) {
       if (this.data) {
+        if (isStoppedForNewDeals(this.data.status, this.data.previousStatus)) {
+          // The deal-opening gates drop it for a stopped bot; tell the user
+          // instead of leaving the click without an answer.
+          this.handleLog('Open new deal manualy refused: bot is stopped')
+          this.handleErrors(
+            stoppedBotNewDealMessage,
+            'openNewDeal',
+            '',
+            false,
+            true,
+            true,
+            true,
+            _symbol,
+          )
+          return
+        }
         const settings = await this.getAggregatedSettings()
         const symbols = _symbol ? [_symbol] : (settings.pair ?? [])
         this.handleLog('Open new deal manualy')

@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.102.2] - 2026-10-15
+### Fixed
+- A manual "New deal" on a bot that was stopped with its deals left open is now refused with a message ("Bot is stopped, a new deal cannot be opened") instead of being reported as scheduled and then silently ignored. The bot keeps running for the deals it left open, so the request reached it, but a stopped bot does not open new deals.
+
 ## [1.102.1] - 2026-10-15
 ### Fixed
 - DCA and hedge DCA bots again open at most one deal at a time per pair: two start triggers for the same pair arriving together (for example a price update and a timer, or an indicator and a webhook) could both pass the max-deals and balance checks and open two deals. The per-pair lock had moved onto the exchange-minimum check placed next to it in 1.61.0; it is back on the deal opening, and a spec pins it there. Single-position bots still skip a second start signal while the first is handled.

@@ -12,6 +12,10 @@ import { CLOSE_SETTLE, awaitDealsClosed } from './closeSettle'
 import { parseSignalDealOverrides } from './signalDealOverrides'
 import { buyDialogEventsFor } from './buyDialogEvent'
 import {
+  isStoppedForNewDeals,
+  stoppedBotNewDealMessage,
+} from './stoppedBotNewDeal'
+import {
   resolveChangeTrailActor,
   settingsChanges,
   type ChangeTrailEntry,
@@ -8372,6 +8376,37 @@ class Bot<T extends UserSchema = UserSchema> {
     return findDCABotsData
   }
 
+  /**
+   * A bot stopped with "leave open deals" keeps its worker alive for those
+   * deals, so it is still found among the running bots — but it will not open
+   * a new one. Refuse the manual open up front instead of reporting it as
+   * scheduled and letting the worker drop it.
+   */
+  private async manualOpenRefusedForStoppedBot(
+    type: BotType.dca | BotType.combo,
+    botId: string,
+  ): Promise<BaseReturn<string> | null> {
+    const search = { _id: new Types.ObjectId(botId) }
+    const fields = { status: 1, previousStatus: 1 } as const
+    const bot =
+      type === BotType.dca
+        ? await this.dcaBotDb.readData(search, fields)
+        : await this.comboBotDb.readData(search, fields)
+    if (
+      isStoppedForNewDeals(
+        bot.data?.result?.status,
+        bot.data?.result?.previousStatus,
+      )
+    ) {
+      return {
+        status: StatusEnum.notok,
+        reason: stoppedBotNewDealMessage,
+        data: null,
+      }
+    }
+    return null
+  }
+
   public async openDCADeal(
     userId: string,
     botId: string,
@@ -8393,6 +8428,13 @@ class Bot<T extends UserSchema = UserSchema> {
       (d) => d.id === botId && d.userId === userId,
     )
     if (findLocal) {
+      const refused = await this.manualOpenRefusedForStoppedBot(
+        BotType.dca,
+        botId,
+      )
+      if (refused) {
+        return refused
+      }
       this.getWorkerById(findLocal.worker)?.postMessage({
         do: 'method',
         botType: BotType.dca,
@@ -8444,6 +8486,13 @@ class Bot<T extends UserSchema = UserSchema> {
       (d) => d.id === botId && d.userId === userId,
     )
     if (findLocal) {
+      const refused = await this.manualOpenRefusedForStoppedBot(
+        BotType.combo,
+        botId,
+      )
+      if (refused) {
+        return refused
+      }
       this.getWorkerById(findLocal.worker)?.postMessage({
         do: 'method',
         botType: BotType.combo,
