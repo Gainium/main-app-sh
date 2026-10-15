@@ -160,6 +160,10 @@ const QUANT_RULES_RETRY_JITTER_MS = 5 * 60_000
  */
 const QUANT_RULES_VIOLATION_HEADROOM = 3
 import ComplianceGuard from './complianceGuard'
+import RiskTierGuard, {
+  isRiskTierRefusal,
+  type RiskTierLevel,
+} from './riskTierGuard'
 import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
 import RetryBackoff from './retryBackoff'
 import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
@@ -6948,6 +6952,30 @@ class MainBot<T extends IMainBot> {
    * — a jurisdiction block that lifts must never leave a position stranded
    * behind a cooldown of ours. Same principle as the Quantitative Rules gate.
    */
+  /**
+   * The cooldown key for a safety order that a full risk tier can refuse, or
+   * `null` for an order the risk-tier gate must never hold back. Safety orders
+   * only: reduce-only orders are exactly what the venue still accepts, and the
+   * take-profit, stop and minigrid paths have their own retry logic.
+   */
+  protected riskTierLevel(order: Order): RiskTierLevel | null {
+    if (
+      !this.futures ||
+      order.reduceOnly ||
+      order.typeOrder !== TypeOrderEnum.dealRegular ||
+      !this.needToSendOrder(order)
+    ) {
+      return null
+    }
+    return {
+      botId: this.botId,
+      dealId: order.dealId,
+      symbol: order.symbol,
+      side: order.side,
+      price: order.price,
+      leverage: this.data?.settings.leverage,
+    }
+  }
   protected isComplianceGateable(order: Order): boolean {
     return (
       this.needToSendOrder(order) &&
@@ -8804,6 +8832,36 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
+        // Risk-tier short-circuit (see `riskTierGuard.ts`). A safety order the
+        // venue refused because the contract's risk tier is full is re-sent by
+        // every ladder rebuild — on a combo, every minigrid fill — until the
+        // position shrinks or the leverage changes. Inside the level's cooldown
+        // answer with the venue's own last refusal instead of asking again.
+        // Silent downstream, like the auth gate: the user was told on the real
+        // refusal, and replaying it would write a bot error per suppressed
+        // attempt — the flood itself.
+        let riskTierShortCircuit = false
+        const riskTierLevel = this.riskTierLevel(order)
+        if (!request && riskTierLevel) {
+          const cooldown = await RiskTierGuard.check(riskTierLevel)
+          if (cooldown.restricted && cooldown.reason) {
+            riskTierShortCircuit = true
+            this.handleDebug(
+              `Order ${order.clientOrderId} not sent: ${
+                requestData.symbol
+              } risk tier refused this level, cooldown until ${new Date(
+                cooldown.until ?? 0,
+              ).toISOString()} (attempt ${cooldown.attempt}). Exchange reason: ${
+                cooldown.reason
+              }`,
+            )
+            request = {
+              status: StatusEnum.notok,
+              reason: cooldown.reason,
+              data: null,
+            }
+          }
+        }
         // Hard exchange-auth short-circuit. The #326/#362 cooldown was wired
         // into `checkAssets()` and `getActiveOrders()` — both PER-TICK calls —
         // but order submission is a PER-ORDER loop, so a dead key was still
@@ -8933,6 +8991,21 @@ class MainBot<T extends IMainBot> {
             symbol: requestData.symbol,
             reason: request.reason,
           })
+        }
+        if (riskTierLevel && !riskTierShortCircuit) {
+          // Only a REAL venue answer moves the window: a refusal opens/widens
+          // it, an acceptance drops it so the next refusal starts at `minMs`.
+          if (
+            request.status === StatusEnum.notok &&
+            isRiskTierRefusal(
+              `${request.reason}`,
+              this.getErrorSubType(`${request.reason}`),
+            )
+          ) {
+            await RiskTierGuard.record(riskTierLevel, `${request.reason}`)
+          } else if (request.status === StatusEnum.ok) {
+            await RiskTierGuard.clear(riskTierLevel)
+          }
         }
         if (
           request.status === StatusEnum.notok &&
@@ -9404,6 +9477,7 @@ class MainBot<T extends IMainBot> {
             !notEnoughBalanceShortCircuit &&
             !complianceShortCircuit &&
             !authShortCircuit &&
+            !riskTierShortCircuit &&
             (isAmbiguousOrderFailure(request.reason) ||
               isPlacementReadBackMiss(request.reason))
           ) {
@@ -9461,7 +9535,8 @@ class MainBot<T extends IMainBot> {
             if (
               !notEnoughBalanceShortCircuit &&
               !complianceShortCircuit &&
-              !authShortCircuit
+              !authShortCircuit &&
+              !riskTierShortCircuit
             ) {
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             } else {
@@ -9489,7 +9564,7 @@ class MainBot<T extends IMainBot> {
           // actionable "API keys error" — at the backoff rate (5min → 1h)
           // instead of once per order. Same call the #362 fix made for the
           // per-tick path.
-          if (!authShortCircuit) {
+          if (!authShortCircuit && !riskTierShortCircuit) {
             this.handleOrderErrors(
               request.reason,
               order,

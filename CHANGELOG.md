@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.101.1] - 2026-10-15
+### Fixed
+- A futures safety order refused because the contract's risk tier is full is no longer re-sent on every ladder rebuild (on combo bots, every minigrid fill). The refused level backs off from 1 to 15 minutes, a new deal or a leverage change retries it at once, and suppressed attempts no longer raise a bot error each time. Other orders on the contract, including the minigrid and reduce-only orders, are not held back.
+
 ## [1.101.0] - 2026-10-15
 ### Added
 - Profit-over-time data records which exchange connection each profit was made on, and the user profit query accepts an exchange filter (`exchangeUUIDs`). Profit recorded before this release has no exchange and counts only toward the unfiltered total.

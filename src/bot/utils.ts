@@ -556,7 +556,16 @@ export const limitOnlyEntryReplaced = 'Market entry replaced with limit'
  */
 export const orderBelowExchangeMinSubType = 'Order below exchange minimum'
 
+/**
+ * The venue refused an order because position + resting orders on the contract
+ * have reached the account's risk tier. Same name as the builtin boterrorrules
+ * subType, so installs without the DB rule classify it identically. Gated per
+ * order level by `riskTierGuard.ts`.
+ */
+export const riskTierLimit = 'Risk tier limit'
+
 export const errorDict = {
+  'current risk tier': riskTierLimit,
   'Leverage cannot exceed': futuresPosition,
   'was left open on the exchange': positionLeftOpen,
   unknownOid: orderProcessing,
