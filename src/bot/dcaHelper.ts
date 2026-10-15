@@ -15657,13 +15657,6 @@ function createDCABotHelper<
       }
     }
     /**
-     * Open new deal
-     */
-    @IdMute(
-      mutex,
-      (botId: string, symbol: string) => `${botId}newDeal@${symbol}`,
-    )
-    /**
      * Refuse a new deal whose base order or safety orders the exchange minimum
      * would raise past what the user configured. The default for DCA bots: a
      * bot opts back into the old behaviour — raise the orders to the minimum
@@ -16589,6 +16582,17 @@ function createDCABotHelper<
       this.endMethod(_id)
     }
 
+    /**
+     * Open new deal. One attempt per bot and pair at a time: the gates
+     * (max deals, balance, cooldown) and the base order run under one lock,
+     * so two triggers for the same pair cannot both pass them. On the body,
+     * not on {@link openNewDeal}, so a single-position bot still skips a
+     * second start signal instead of queueing it behind the first.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, symbol: string) => `${botId}newDeal@${symbol}`,
+    )
     protected async openNewDealBody(
       _botId: string,
       symbol: string,

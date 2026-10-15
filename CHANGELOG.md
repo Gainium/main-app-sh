@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.102.1] - 2026-10-15
+### Fixed
+- DCA and hedge DCA bots again open at most one deal at a time per pair: two start triggers for the same pair arriving together (for example a price update and a timer, or an indicator and a webhook) could both pass the max-deals and balance checks and open two deals. The per-pair lock had moved onto the exchange-minimum check placed next to it in 1.61.0; it is back on the deal opening, and a spec pins it there. Single-position bots still skip a second start signal while the first is handled.
+
 ## [1.102.0] - 2026-10-15
 ### Added
 - Trading pairs carry the delivery time of dated futures contracts (Bybit, Binance and KuCoin quarterly / weekly contracts), from the exchange's own instrument info; paper pairs carry their exchange's. Exposed on the pair list (`deliveryTime`). Needs exchange connector core 1.27.16; filled on the next hourly pairs sync.
