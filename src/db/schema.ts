@@ -1103,6 +1103,11 @@ const pairsSchema: Schema<PairsSchema> = new Schema({
   // Clean equity ticker behind a tokenized-stock market (`AAPL` for `rAAPL`);
   // see `resolveUnderlying`. Absent => the base name is the ticker.
   underlying: String,
+  // Leverage limits from the exchange's instrument info (futures; see
+  // `normalizePairLeverage`). Absent = unknown. Display/filter data for the
+  // pair picker — the bot engine doesn't read them.
+  minLeverage: Number,
+  maxLeverage: Number,
   ...CreatedUpdated,
 })
 

@@ -93,6 +93,8 @@ export const BasicSchema = /* GraphQL */ `
     isCanonical: Boolean
     underlying: String
     source: String
+    minLeverage: Float
+    maxLeverage: Float
   }
   type allPairInfo {
     result: [pairDetailedInfo]

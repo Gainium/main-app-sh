@@ -287,6 +287,10 @@ export type ExchangeInfo = {
   // market as a wrapper (Bitget v3 `isReality`). Absent => base name is the
   // ticker. Danger List #1.
   underlying?: string
+  // Leverage limits from the instrument info, where the venue publishes them
+  // (raw: strings on Bybit / Bitget / Hyperliquid / OKX). Danger List #1.
+  minLeverage?: number | string
+  maxLeverage?: number | string
 }
 
 export type TpSlCondition = 'valueChanged' | 'priceReached'
@@ -2944,6 +2948,13 @@ export interface PairsSchema extends SchemaI {
    * `resolveUnderlying` in the pairs cron. Absent => the base name is the ticker.
    */
   underlying?: string
+  /**
+   * Leverage limits from the instrument info, normalised by
+   * `normalizePairLeverage` (positive numbers or absent). Paper pairs mirror
+   * their real exchange's. Display/filter data — the bot engine doesn't read it.
+   */
+  minLeverage?: number
+  maxLeverage?: number
 }
 
 export interface StoreFilesSchema extends SchemaI {

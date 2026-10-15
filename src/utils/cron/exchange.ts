@@ -16,6 +16,7 @@ import {
   OKXSource,
 } from '../../../types'
 import { classifyAssetClass, resolveUnderlying } from '../assetClass'
+import { normalizePairLeverage } from '../pairLeverage'
 import { Kraken } from 'node-kraken-api'
 import axios from 'axios'
 
@@ -99,6 +100,8 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 assetCategory?: AssetClass
                 isCanonical?: boolean
                 underlying?: string
+                minLeverage?: number
+                maxLeverage?: number
               }
             >
           | undefined
@@ -108,7 +111,14 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
             realName.slice(1)) as ExchangeEnum
           const realPairs = await pairDb.readData<ClearPairsSchema>(
             { exchange: realExchange },
-            { pair: 1, assetCategory: 1, isCanonical: 1, underlying: 1 },
+            {
+              pair: 1,
+              assetCategory: 1,
+              isCanonical: 1,
+              underlying: 1,
+              minLeverage: 1,
+              maxLeverage: 1,
+            },
             {},
             true,
             true,
@@ -121,6 +131,8 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   assetCategory: p.assetCategory,
                   isCanonical: p.isCanonical,
                   underlying: p.underlying,
+                  minLeverage: p.minLeverage,
+                  maxLeverage: p.maxLeverage,
                 },
               ]),
             )
@@ -158,9 +170,16 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   baseAsset: info.baseAsset.name,
                   connectorUnderlying: info.underlying,
                 })
+            // Leverage limits from the instrument info (absent = unknown);
+            // paper twins carry none of their own and mirror the real pair.
+            const { minLeverage, maxLeverage } = normalizePairLeverage(
+              paperRealMap ? (paperRealMap.get(info.pair) ?? {}) : info,
+            )
             if (getPair) {
               if (
                 getPair.wsCode !== info.wsCode ||
+                getPair.minLeverage !== minLeverage ||
+                getPair.maxLeverage !== maxLeverage ||
                 // Treat an assetCategory change as an update so existing pairs
                 // get backfilled on the next cron run.
                 getPair.assetCategory !== assetCategory ||
@@ -207,6 +226,8 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   assetCategory,
                   isCanonical,
                   underlying,
+                  minLeverage,
+                  maxLeverage,
                   _id,
                 })
               }
@@ -218,6 +239,8 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                 assetCategory,
                 isCanonical,
                 underlying,
+                minLeverage,
+                maxLeverage,
               })
             }
           }
@@ -371,12 +394,15 @@ async function reconcileEuPairs(
       quoteAsset: item.quoteAsset.name,
       connectorAssetClass: item.assetClass,
     })
+    const leverage = normalizePairLeverage(item)
     const doc = {
       ...item,
       exchange,
       source: OKXSource.my,
       assetCategory,
       approx,
+      minLeverage: leverage.minLeverage,
+      maxLeverage: leverage.maxLeverage,
     }
     const found = dbByPair.get(item.pair)
     if (!found) {
@@ -389,6 +415,8 @@ async function reconcileEuPairs(
     // size); it's undefined for spot so this stays a no-op there.
     const changed =
       found.wsCode !== item.wsCode ||
+      found.minLeverage !== leverage.minLeverage ||
+      found.maxLeverage !== leverage.maxLeverage ||
       found.code !== item.code ||
       found.assetCategory !== assetCategory ||
       Boolean(found.approx) !== approx ||
