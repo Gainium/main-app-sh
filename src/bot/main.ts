@@ -1858,6 +1858,9 @@ class MainBot<T extends IMainBot> {
           : this.botType,
         terminal,
         paperContext: !!this.data?.paperContext,
+        ...(this.data?.exchangeUUID
+          ? { exchangeUUID: this.data.exchangeUUID }
+          : {}),
       },
       { $inc: { profitUsd: usd } },
       undefined,

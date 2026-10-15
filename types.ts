@@ -5672,6 +5672,8 @@ export interface UserProfitByHour extends SchemaI {
   botType: BotType
   terminal?: boolean
   paperContext: boolean
+  /** Exchange connection the profit was made on. Missing on rows written before 1.101.0. */
+  exchangeUUID?: string
 }
 
 export const rabbitIndicatorsKey = 'indicatorsActions'

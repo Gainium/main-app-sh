@@ -3074,6 +3074,7 @@ const userProfitByHour = new Schema<UserProfitByHour>({
   botType: { type: String, enum: BotType },
   terminal: Boolean,
   paperContext: Boolean,
+  exchangeUUID: String,
   ...CreatedUpdated,
 })
 

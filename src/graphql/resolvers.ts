@@ -2928,6 +2928,7 @@ const resolvers = <
           timeframe?: number
           botType?: BotType
           terminal?: boolean
+          exchangeUUIDs?: string[]
         }
       },
       { token, paperContext }: InputRequest,
@@ -2940,6 +2941,11 @@ const resolvers = <
 
       const timeframe = input?.timeframe || 0
       const botType = input?.botType
+      // Rows written before exchangeUUID was recorded have none, so they only
+      // count toward the unfiltered total.
+      const exchangeMatch = input?.exchangeUUIDs?.length
+        ? { exchangeUUID: { $in: input.exchangeUUIDs } }
+        : {}
       if (timeframe === 3) {
         if (botType === BotType.grid) {
           const transactionsAggr: PipelineStage[] = [
@@ -2948,6 +2954,7 @@ const resolvers = <
                 userId: `${user.data._id}`,
                 // @ts-ignore
                 paperContext: paperContext ? { $eq: true } : { $ne: true },
+                ...exchangeMatch,
                 botType: BotType.grid,
               },
             },
@@ -2976,6 +2983,7 @@ const resolvers = <
             userId: `${user.data._id}`,
             // @ts-ignore
             paperContext: paperContext ? { $eq: true } : { $ne: true },
+            ...exchangeMatch,
             botType: BotType.dca,
           }
           if (typeof input?.terminal !== 'undefined') {
@@ -3014,6 +3022,7 @@ const resolvers = <
                 userId: user.data._id.toString(),
                 // @ts-ignore
                 paperContext: paperContext ? { $eq: true } : { $ne: true },
+                ...exchangeMatch,
                 botType: BotType.combo,
               },
             },
@@ -3044,6 +3053,7 @@ const resolvers = <
                 userId: user.data._id.toString(),
                 // @ts-ignore
                 paperContext: paperContext ? { $eq: true } : { $ne: true },
+                ...exchangeMatch,
                 botType: BotType.hedgeCombo,
               },
             },
@@ -3074,6 +3084,7 @@ const resolvers = <
                 userId: user.data._id.toString(),
                 // @ts-ignore
                 paperContext: paperContext ? { $eq: true } : { $ne: true },
+                ...exchangeMatch,
                 botType: BotType.hedgeDca,
               },
             },
@@ -3104,6 +3115,7 @@ const resolvers = <
                 userId: `${user.data._id}`,
                 // @ts-ignore
                 paperContext: paperContext ? { $eq: true } : { $ne: true },
+                ...exchangeMatch,
               },
             },
             {
@@ -3274,6 +3286,7 @@ const resolvers = <
               userId: `${user.data._id}`,
               // @ts-ignore
               paperContext: paperContext ? { $eq: true } : { $ne: true },
+              ...exchangeMatch,
               time: { $gte: startTime },
             },
           },

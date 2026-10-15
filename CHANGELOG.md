@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.101.0] - 2026-10-15
+### Added
+- Profit-over-time data records which exchange connection each profit was made on, and the user profit query accepts an exchange filter (`exchangeUUIDs`). Profit recorded before this release has no exchange and counts only toward the unfiltered total.
+
 ## [1.100.0] - 2026-10-15
 ### Added
 - Trading pairs carry their minimum and maximum leverage where the exchange publishes them (Bybit, Bitget, Hyperliquid, OKX and KuCoin futures), and paper pairs carry their exchange's. Exposed on the pair list for the dashboard's pair picker.
