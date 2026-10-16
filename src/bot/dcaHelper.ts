@@ -10050,6 +10050,72 @@ function createDCABotHelper<
     }
 
     /**
+     * A remainder entry's order, when it is recorded as ended (`CANCELED` or
+     * `EXPIRED`) — the order map first, then the stored row.
+     *
+     * The tick otherwise learns of the end only from its own cancel answer. A
+     * venue whose answer still reads the order as open (Coinbase answers with
+     * a read made right after the cancel) leaves the end on the user stream
+     * alone, and `cancelOrderOnExchange` has already dropped the unfilled row
+     * from the map; the stored row keeps the stream's `CANCELED`. Spec `166`.
+     *
+     * `minAgeMs`: an order this tick did not just cancel itself counts only
+     * once it ended that long ago. A deal close and a settings rebuild cancel
+     * the remainder with the deal still `open` and own what happens next (the
+     * close, or the spec `110` re-send); the tick must not re-place in their
+     * stead. An end that cannot be dated is left alone for the same reason.
+     */
+    async findEndedBaseRemainderOrder(
+      dealId: string,
+      addFundsId: string,
+      minAgeMs = 0,
+    ): Promise<Order | null> {
+      const ended = ['CANCELED', 'EXPIRED']
+      const oldEnough = (o: { updateTime?: number }) =>
+        !minAgeMs ||
+        (+(o.updateTime ?? 0) > 0 && Date.now() - +o.updateTime! >= minAgeMs)
+      const held = this.getOrdersByStatusAndDealId({
+        dealId,
+        status: ['CANCELED', 'EXPIRED'],
+      }).find((o) => o.addFundsId === addFundsId)
+      if (held) {
+        return oldEnough(held) ? held : null
+      }
+      const stored = await this.ordersDb.readData({
+        botId: this.botId,
+        dealId,
+        addFundsId,
+        status: { $in: ended },
+      })
+      const row = stored.status === StatusEnum.ok ? stored.data?.result : null
+      if (
+        !row ||
+        row.addFundsId !== addFundsId ||
+        !ended.includes(row.status) ||
+        !oldEnough(row)
+      ) {
+        return null
+      }
+      return { ...row, _id: `${row._id}` }
+    }
+
+    /**
+     * Book what an ended remainder order filled, through the add-funds fill
+     * path, and return that quantity. Same rule as a terminal cancel answer in
+     * `settleBaseEntryRemainderOrder`: only a fill that can be dated. Spec `166`.
+     */
+    async bookEndedBaseRemainderOrder(order: Order): Promise<number> {
+      const fill = settledBaseEntryFill(order, order)
+      if (fill && +fill.executedQty > 0) {
+        await this.handleUnknownOrder(
+          this.promoteEndedBaseEntry({ ...order, ...fill }),
+        )
+        return +fill.executedQty
+      }
+      return 0
+    }
+
+    /**
      * The reposition tick of a resting base-order remainder.
      *
      * The spec `103` rule, applied to the remainder: at an unchanged price it
@@ -10080,8 +10146,28 @@ function createDCABotHelper<
       }
       const order = this.findBaseRemainderOrder(dealId, entry.id)
       if (!order) {
-        // Not on the book yet, or gone; the reload re-send owns a missing
-        // entry (spec 110). §4.3.5.
+        // An order that ended without this tick hearing of it (spec 166 §4.2):
+        // book what it filled and place the rest again.
+        const ended = await this.findEndedBaseRemainderOrder(
+          dealId,
+          entry.id,
+          Math.max(60_000, this.orderLimitRepositionTimeout),
+        )
+        if (ended) {
+          this.handleLog(
+            `Deal ${dealId} base order remainder ${ended.clientOrderId} is ${ended.status} on the exchange. Placing the rest again`,
+          )
+          await this.replaceBaseEntryRemainder(
+            deal,
+            entry,
+            ended,
+            symbol,
+            await this.bookEndedBaseRemainderOrder(ended),
+          )
+          return
+        }
+        // Not on the book yet; the reload re-send owns a missing entry (spec
+        // 110). §4.3.5.
         this.armBaseRemainderTick(dealId, symbol)
         return
       }
@@ -10110,15 +10196,36 @@ function createDCABotHelper<
       this.handleLog(
         `Deal ${dealId} base order remainder ${order.clientOrderId} rests at ${restingPrice}, price is now ${repositionPrice}. Re-placing it`,
       )
-      const requested = this.baseRemainderRequestedQty(order, entry)
-      const executed = await this.settleBaseEntryRemainderOrder(order)
+      let executed = await this.settleBaseEntryRemainderOrder(order)
       if (executed === null) {
-        this.handleWarn(
-          `Deal ${dealId} base order remainder ${order.clientOrderId} could not be cancelled. Leaving it`,
-        )
-        this.armBaseRemainderTick(dealId, symbol)
-        return
+        // The answer did not say the order ended; the user stream may have.
+        // Spec 166 §4.1.
+        const ended = await this.findEndedBaseRemainderOrder(dealId, entry.id)
+        if (!ended) {
+          this.handleWarn(
+            `Deal ${dealId} base order remainder ${order.clientOrderId} could not be cancelled. Leaving it`,
+          )
+          this.armBaseRemainderTick(dealId, symbol)
+          return
+        }
+        executed = await this.bookEndedBaseRemainderOrder(ended)
       }
+      await this.replaceBaseEntryRemainder(deal, entry, order, symbol, executed)
+    }
+
+    /**
+     * Take an ended remainder's entry off the deal and place what it did not
+     * fill again at the current price. Spec `111` §4.3.3, spec `166`.
+     */
+    async replaceBaseEntryRemainder(
+      deal: FullDeal<ExcludeDoc<Deal>>,
+      entry: { id: string; qty: string; baseTotal?: string },
+      order: Order,
+      symbol: string,
+      executed: number,
+    ) {
+      const dealId = `${deal.deal._id}`
+      const requested = this.baseRemainderRequestedQty(order, entry)
       const live = this.getDeal(dealId) ?? deal
       this.dropBaseRemainderEntry(live, entry.id)
       if (requested > executed && live.deal.status === DCADealStatusEnum.open) {

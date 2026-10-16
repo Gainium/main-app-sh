@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.102.4] - 2026-10-16
+### Fixed
+- The resting remainder of a part-filled LIMIT base order is placed again when it is moved to a new price even if the exchange's cancel answer still reads the order as open and only the user stream reports it cancelled. Before, the remainder was left as a pending entry with no order behind it and the deal kept running on the part of the base order that filled first. The reposition tick now also recovers a remainder whose order ended without it (including after a restart): it books what that order filled and places the rest again.
+
 ## [1.102.3] - 2026-10-15
 ### Fixed
 - The fill of a part-filled base order's resting remainder is now recorded on the deal's `funds` entry with its add-funds id and `baseRemainder: true` (exposed on the GraphQL `dealFunds` type), so a dashboard can show it as the rest of the base order instead of funds the user added. Placement, sizing and accounting of the remainder are unchanged.

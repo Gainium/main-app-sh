@@ -980,5 +980,147 @@ describe('a part-filled LIMIT base entry rests its remainder (spec 111)', () => 
       expect(bot.deal.deal.status).to.equal(DCADealStatusEnum.closed)
       expect(calls).to.deep.equal(['processDealClose'])
     })
+
+    describe('spec 166: an end only the stream reports', () => {
+      /**
+       * The production race: the venue's cancel answer still reads the order
+       * as open (`NEW`), `cancelOrderOnExchange` drops the unfilled row from
+       * the map, and the stored row holds the stream's `CANCELED`.
+       */
+      const staleCancelAnswer = (b: any) => {
+        b.cancelOrderOnExchange = async (o: any) => {
+          b.raised.cancelled.push({ ...o })
+          b.orders.delete(o.clientOrderId)
+          return { ...o, status: 'NEW' }
+        }
+      }
+      const streamCanceled = (over: Record<string, unknown> = {}) =>
+        remainderRow({
+          status: 'CANCELED',
+          updateTime: Date.now() - 1_000,
+          ...over,
+        })
+
+      it('§4.1 a cancel answer that still reads NEW, ended on the stream: the rest is re-placed', async () => {
+        bot = buildBot({
+          pending: [remainderEntry()],
+          orders: [remainderRow()],
+          latestPrice: 0.29441,
+          stored: streamCanceled(),
+        })
+        staleCancelAnswer(bot)
+        await bot.checkBaseEntryRemainder(BOT_ID, DEAL_ID, SYMBOL)
+        const raised = bot.raised as Raised
+        expect(raised.cancelled).to.have.length(1)
+        expect(raised.warns, 'no "could not be cancelled"').to.have.length(0)
+        expect(raised.booked, 'nothing had filled').to.have.length(0)
+        expect(bot.deal.deal.pendingAddFunds, 'old entry removed').to.have.length(
+          0,
+        )
+        expect(raised.added).to.have.length(1)
+        expect(raised.added[0]).to.include({
+          qty: '337.1',
+          useLimitPrice: true,
+          limitPrice: '0.2944',
+          baseRemainder: true,
+          baseTotal: '341.2',
+        })
+      })
+
+      it('§4.1 a fill the stream CANCELED states is booked and only the rest re-placed', async () => {
+        bot = buildBot({
+          pending: [remainderEntry()],
+          orders: [remainderRow()],
+          latestPrice: 0.29441,
+          stored: streamCanceled({ executedQty: '100' }),
+        })
+        staleCancelAnswer(bot)
+        await bot.checkBaseEntryRemainder(BOT_ID, DEAL_ID, SYMBOL)
+        const raised = bot.raised as Raised
+        expect(raised.booked).to.have.length(1)
+        expect(raised.booked[0]).to.include({
+          status: 'FILLED',
+          executedQty: '100',
+          addFundsId: ENTRY_ID,
+        })
+        expect(raised.added).to.have.length(1)
+        expect(raised.added[0].qty).to.equal('237.1')
+      })
+
+      it('§4.1 still no recorded end: nothing re-placed, entry kept, tick re-armed', async () => {
+        bot = buildBot({
+          pending: [remainderEntry()],
+          orders: [remainderRow()],
+          latestPrice: 0.29441,
+          stored: remainderRow(),
+        })
+        staleCancelAnswer(bot)
+        await bot.checkBaseEntryRemainder(BOT_ID, DEAL_ID, SYMBOL)
+        const raised = bot.raised as Raised
+        expect(raised.added).to.have.length(0)
+        expect(raised.warns).to.have.length(1)
+        expect(bot.deal.deal.pendingAddFunds).to.have.length(1)
+        expect(bot.baseRemainderTimers.has(DEAL_ID)).to.equal(true)
+      })
+
+      /** An end a close or a rebuild would long have acted on. */
+      const endedLongAgo = (over: Record<string, unknown> = {}) =>
+        streamCanceled({ updateTime: Date.now() - 2 * 3_600_000, ...over })
+
+      it('§4.2/§4.3 a later tick (or the first after a restore) re-places a remainder whose order ended', async () => {
+        for (const held of [[], [endedLongAgo()]]) {
+          bot = buildBot({
+            pending: [remainderEntry()],
+            orders: held,
+            latestPrice: 0.29441,
+            stored: endedLongAgo(),
+          })
+          await bot.checkBaseEntryRemainder(BOT_ID, DEAL_ID, SYMBOL)
+          const raised = bot.raised as Raised
+          expect(raised.cancelled, 'nothing to cancel').to.have.length(0)
+          expect(bot.deal.deal.pendingAddFunds).to.have.length(0)
+          expect(raised.added, `held ${held.length}`).to.have.length(1)
+          expect(raised.added[0]).to.include({
+            qty: '337.1',
+            limitPrice: '0.2944',
+            baseRemainder: true,
+          })
+          clearTimers(bot)
+        }
+      })
+
+      it('§4.2 an EXPIRED remainder is re-placed the same way', async () => {
+        bot = buildBot({
+          pending: [remainderEntry()],
+          latestPrice: 0.29441,
+          stored: endedLongAgo({ status: 'EXPIRED' }),
+        })
+        await bot.checkBaseEntryRemainder(BOT_ID, DEAL_ID, SYMBOL)
+        expect((bot.raised as Raised).added).to.have.length(1)
+      })
+
+      it('§4.2 a stored order of another entry, or one not ended, changes nothing', async () => {
+        for (const stored of [
+          endedLongAgo({ addFundsId: 'another-entry' }),
+          remainderRow({ orderId: '-1' }),
+          endedLongAgo({ status: 'FILLED' }),
+          // Just cancelled by a deal close or a settings rebuild, which own
+          // what happens next; and an end that cannot be dated.
+          streamCanceled(),
+          endedLongAgo({ updateTime: -1 }),
+        ]) {
+          bot = buildBot({
+            pending: [remainderEntry()],
+            latestPrice: 0.29441,
+            stored,
+          })
+          await bot.checkBaseEntryRemainder(BOT_ID, DEAL_ID, SYMBOL)
+          expect((bot.raised as Raised).added).to.have.length(0)
+          expect(bot.deal.deal.pendingAddFunds).to.have.length(1)
+          expect(bot.baseRemainderTimers.has(DEAL_ID)).to.equal(true)
+          clearTimers(bot)
+        }
+      })
+    })
   })
 })
