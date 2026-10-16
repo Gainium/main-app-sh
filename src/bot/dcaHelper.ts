@@ -8510,7 +8510,14 @@ function createDCABotHelper<
           findDeal.deal.pendingAddFunds = (
             findDeal.deal.pendingAddFunds ?? []
           ).filter((s) => s.id !== order.addFundsId)
-          findDeal.deal.funds = [...(findDeal.deal.funds ?? []), { price, qty }]
+          // Spec 165: a base-remainder fill keeps its marker, so the deal can
+          // show it as the rest of the base order rather than added funds.
+          findDeal.deal.funds = [
+            ...(findDeal.deal.funds ?? []),
+            baseRemainderFill
+              ? { price, qty, id: order.addFundsId, baseRemainder: true }
+              : { price, qty },
+          ]
           const avgPrice = await this.getAvgPrice(dealId)
           findDeal.deal.avgPrice = avgPrice.avg
           findDeal.deal.displayAvg = avgPrice.display

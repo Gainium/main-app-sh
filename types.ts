@@ -1515,6 +1515,10 @@ export interface DCADealsSchema extends SchemaI {
   funds?: {
     price: number
     qty: number
+    /** Spec 165: the add-funds entry id of a base-order remainder fill. */
+    id?: string
+    /** Spec 165: this fill is the rest of a part-filled base order. */
+    baseRemainder?: boolean
   }[]
   reduceFunds?: {
     price: number

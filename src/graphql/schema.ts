@@ -4563,6 +4563,8 @@ export const BotSchema = /* GraphQL */ `
   type dealFunds {
     price: Float
     qty: Float
+    id: String
+    baseRemainder: Boolean
   }
   type comboDeal {
     startBlocked: dealStartBlock

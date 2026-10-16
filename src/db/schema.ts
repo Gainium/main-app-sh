@@ -2081,6 +2081,9 @@ const filledFunds = [
   {
     price: Number,
     qty: Number,
+    // Spec 165: set on the fill of a base-order remainder (spec 111).
+    id: String,
+    baseRemainder: Boolean,
   },
 ]
 

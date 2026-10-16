@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.102.3] - 2026-10-15
+### Fixed
+- The fill of a part-filled base order's resting remainder is now recorded on the deal's `funds` entry with its add-funds id and `baseRemainder: true` (exposed on the GraphQL `dealFunds` type), so a dashboard can show it as the rest of the base order instead of funds the user added. Placement, sizing and accounting of the remainder are unchanged.
+
 ## [1.102.2] - 2026-10-15
 ### Fixed
 - A manual "New deal" on a bot that was stopped with its deals left open is now refused with a message ("Bot is stopped, a new deal cannot be opened") instead of being reported as scheduled and then silently ignored. The bot keeps running for the deals it left open, so the request reached it, but a stopped bot does not open new deals.

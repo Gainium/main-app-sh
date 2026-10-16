@@ -331,3 +331,40 @@ describe('spec 122: an add-funds fill in the same tick as a safety order', () =>
     expect(book).to.have.length(4)
   })
 })
+
+describe('spec 165: a filled base remainder is recorded as the base order rest', () => {
+  before(function () {
+    this.timeout(180000)
+    Helper ??= loadModule('../dcaHelper').default(FakeBase as any)
+  })
+
+  it('§4.1 the remainder fill books its entry id and the baseRemainder marker', async () => {
+    io = micro
+    const { bot, book } = makeBot()
+    await bot.fill(REMAINDER)
+    await settle()
+    expect(bot.live().funds).to.deep.equal([
+      {
+        price: 0.06938,
+        qty: 211.64024,
+        id: ENTRY_ID,
+        baseRemainder: true,
+      },
+    ])
+    expect(bot.live().pendingAddFunds).to.deep.equal([])
+    // §4.3: what the fill does to the deal is unchanged.
+    expectMatchesFills(bot, book)
+  })
+
+  it('§4.1 a user add-funds fill is still booked as price and qty only', async () => {
+    io = micro
+    const { bot, book } = makeBot()
+    delete bot.live().pendingAddFunds[0].baseRemainder
+    await bot.fill(REMAINDER)
+    await settle()
+    expect(bot.live().funds).to.deep.equal([
+      { price: 0.06938, qty: 211.64024 },
+    ])
+    expectMatchesFills(bot, book)
+  })
+})
