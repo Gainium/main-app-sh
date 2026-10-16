@@ -10070,7 +10070,7 @@ function createDCABotHelper<
       addFundsId: string,
       minAgeMs = 0,
     ): Promise<Order | null> {
-      const ended = ['CANCELED', 'EXPIRED']
+      const ended: OrderStatusType[] = ['CANCELED', 'EXPIRED']
       const oldEnough = (o: { updateTime?: number }) =>
         !minAgeMs ||
         (+(o.updateTime ?? 0) > 0 && Date.now() - +o.updateTime! >= minAgeMs)
