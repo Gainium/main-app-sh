@@ -39,7 +39,8 @@ import { brokerCodesHandler } from './brokerCodes'
 
 swaggerDoc.servers = [{ url: `${SERVER_HOST}` }]
 
-const cors_origin = CORS_ORIGIN?.split(' ')
+// Origins separated by commas and/or whitespace (same format as admin-sh)
+const cors_origin = CORS_ORIGIN?.split(/[\s,]+/).filter(Boolean)
 
 const Bot = BotInstance.getInstance()
 
