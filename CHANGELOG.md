@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.102.5] - 2026-10-16
+### Fixed
+- Deals opened while a bot closed by indicator keep closing by their own close indicator and minimum profit after the bot is switched to a percentage take profit without applying it to open deals. Before, the bot stopped following its close-deal indicators as soon as its own close condition changed, so those deals, which rest no take-profit order, were left open with nothing able to close them. Deals opened under the percentage take profit are unchanged.
+
 ## [1.102.4] - 2026-10-16
 ### Fixed
 - The resting remainder of a part-filled LIMIT base order is placed again when it is moved to a new price even if the exchange's cancel answer still reads the order as open and only the user stream reports it cancelled. Before, the remainder was left as a pending entry with no order behind it and the deal kept running on the part of the base order that filled first. The reposition tick now also recovers a remainder whose order ended without it (including after a restart): it books what that order filled and places the rest again.

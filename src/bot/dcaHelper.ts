@@ -7413,10 +7413,23 @@ function createDCABotHelper<
       symbol: string,
       section: 'sl' | 'tp',
     ) {
-      if (!this.data || !this.allowedMethods.has('checkMinTp')) {
+      if (!this.data) {
         return true
       }
       const settings = await this.getAggregatedSettings(d.deal)
+      // `allowedMethods` is derived from the bot's current settings; a deal
+      // that still closes by signal under its own settings keeps its own
+      // minimum profit after the bot moved to another close. Spec 167.
+      const dealClosesBySignal =
+        section === 'sl'
+          ? settings.dealCloseConditionSL === CloseConditionEnum.techInd
+          : !!settings.dealCloseCondition &&
+            [CloseConditionEnum.techInd, CloseConditionEnum.webhook].includes(
+              settings.dealCloseCondition,
+            )
+      if (!this.allowedMethods.has('checkMinTp') && !dealClosesBySignal) {
+        return true
+      }
       let value: number | undefined
       let isGt = true
       if (
@@ -7433,8 +7446,7 @@ function createDCABotHelper<
       }
       if (section === 'sl') {
         const foundUnpnl =
-          this.data?.settings.dealCloseConditionSL ===
-          CloseConditionEnum.techInd
+          settings.dealCloseConditionSL === CloseConditionEnum.techInd
             ? (this.data?.settings.indicators ?? []).find(
                 (i) =>
                   i.type === IndicatorEnum.unpnl &&
@@ -7450,7 +7462,7 @@ function createDCABotHelper<
       }
       if (section === 'tp') {
         const foundUnpnl =
-          this.data?.settings.dealCloseCondition === CloseConditionEnum.techInd
+          settings.dealCloseCondition === CloseConditionEnum.techInd
             ? (this.data?.settings.indicators ?? []).find(
                 (i) =>
                   i.type === IndicatorEnum.unpnl &&
@@ -13323,8 +13335,37 @@ function createDCABotHelper<
       return keepConditionBarsMultiplier(keepConditionBars)
     }
 
+    /**
+     * Symbols of open deals whose OWN settings close by indicator. A deal keeps
+     * the close conditions it was opened with, so after the bot moves from
+     * indicator close to a percentage take profit (not applied to open deals)
+     * those deals still need the close-deal indicators the bot no longer does.
+     * Spec 167.
+     */
+    private async getDealCloseIndicatorSymbols() {
+      const tp = new Set<string>()
+      const sl = new Set<string>()
+      for (const d of this.getOpenDeals()) {
+        const settings = await this.getAggregatedSettings(d.deal)
+        if (
+          settings.useTp &&
+          settings.dealCloseCondition === CloseConditionEnum.techInd
+        ) {
+          tp.add(d.deal.symbol.symbol)
+        }
+        if (
+          settings.useSl &&
+          settings.dealCloseConditionSL === CloseConditionEnum.techInd
+        ) {
+          sl.add(d.deal.symbol.symbol)
+        }
+      }
+      return { tp, sl }
+    }
+
     private async isIndicator(serviceRestart: boolean, activeDeals: number) {
       const settings = await this.getAggregatedSettings()
+      const dealClose = await this.getDealCloseIndicatorSymbols()
       return (
         this.data &&
         ((settings.startCondition === StartConditionEnum.ti &&
@@ -13341,14 +13382,16 @@ function createDCABotHelper<
               (i) => i.indicatorAction === IndicatorAction.startDca,
             ).length > 0) ||
           ((settings.dealCloseCondition === CloseConditionEnum.techInd ||
-            this.tpAr) &&
+            this.tpAr ||
+            dealClose.tp.size > 0) &&
             (settings.indicators ?? []).filter(
               (i) =>
                 i.indicatorAction === IndicatorAction.closeDeal &&
                 i.section !== IndicatorSection.sl,
             ).length > 0) ||
           ((settings.dealCloseConditionSL === CloseConditionEnum.techInd ||
-            this.slAr) &&
+            this.slAr ||
+            dealClose.sl.size > 0) &&
             (settings.indicators ?? []).filter(
               (i) =>
                 i.indicatorAction === IndicatorAction.closeDeal &&
@@ -14123,6 +14166,7 @@ function createDCABotHelper<
           ...this.getOpenDeals().map((d) => d.deal.symbol.symbol),
         ])
         const dueDca = this.dueDcaIndicatorKeys(settings)
+        const dealCloseSymbols = await this.getDealCloseIndicatorSymbols()
         const copySymbols = new Set([...symbols])
         if (saveIndicators) {
           ;[...this.indicators.values()].forEach((i) => {
@@ -14204,6 +14248,7 @@ function createDCABotHelper<
                   filteredIndicators,
                   serviceRestart,
                   previous: _indicators,
+                  dealCloseSymbols,
                 }),
               ),
           )
@@ -14358,12 +14403,15 @@ function createDCABotHelper<
         serviceRestart,
         previous: _indicators,
         armDcaLevel,
+        dealCloseSymbols,
       }: {
         settings: Schema['settings']
         filteredIndicators: SettingsIndicators[]
         serviceRestart?: boolean
         previous: Map<string, LocalIndicators>
         armDcaLevel?: boolean
+        /** symbols with open deals that close by indicator themselves */
+        dealCloseSymbols?: { tp: Set<string>; sl: Set<string> }
       },
     ) {
       if (!this.data) {
@@ -14400,12 +14448,14 @@ function createDCABotHelper<
           (settings.dealCloseCondition !==
             CloseConditionEnum.techInd &&
             !this.tpAr)) &&
+          !dealCloseSymbols?.tp.has(symbol) &&
           indicatorAction === IndicatorAction.closeDeal &&
           section !== IndicatorSection.sl) ||
         ((!settings.useSl ||
           (settings.dealCloseConditionSL !==
             CloseConditionEnum.techInd &&
             !this.slAr)) &&
+          !dealCloseSymbols?.sl.has(symbol) &&
           indicatorAction === IndicatorAction.closeDeal &&
           section === IndicatorSection.sl) ||
         ((!settings.useDca ||
