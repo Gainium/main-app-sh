@@ -67,6 +67,7 @@ import { isExchangeEnabled } from '../utils/adminConfig'
 import { describeUserAgent } from '../utils/userAgent'
 import userUtils, { checkLicenseKey, updateUserSteps } from '../utils/user'
 import { getBalances } from './handlers/balance.handler'
+import { usableFiatRates } from '../utils/fiatRates'
 import {
   deleteBotMessage,
   getBotMessage,
@@ -3714,6 +3715,25 @@ const resolvers = <
         return rate
       } else {
         return { ...rate, data: rate.data.result?.usdRate ?? 1 }
+      }
+    },
+    getFiatRates: async (_parent: any, {}, {}: InputRequest) => {
+      const rate = await rateDb.readData(
+        {},
+        undefined,
+        {
+          limit: 1,
+          sort: { created: -1 },
+        },
+        false,
+        false,
+      )
+      if (rate.status === StatusEnum.notok) {
+        return rate
+      }
+      return {
+        ...rate,
+        data: usableFiatRates(rate.data.result?.fiatRates),
       }
     },
     getPairInfo: async (

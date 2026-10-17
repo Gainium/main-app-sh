@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.102.6] - 2026-10-17
+### Added
+- GraphQL `getFiatRates` returns the latest cached fiat rates (EUR, GBP, AUD, CHF, JPY, CAD) as `{ asset, usdRate }`, so the dashboard can convert USD values into a chosen display currency at live rates instead of a fixed table.
+
 ## [1.102.5] - 2026-10-16
 ### Fixed
 - Deals opened while a bot closed by indicator keep closing by their own close indicator and minimum profit after the bot is switched to a percentage take profit without applying it to open deals. Before, the bot stopped following its close-deal indicators as soon as its own close condition changed, so those deals, which rest no take-profit order, were left open with nothing able to close them. Deals opened under the percentage take profit are unchanged.

@@ -1,5 +1,6 @@
 import ExchangeChooser from '../exchange/exchangeChooser'
 import { paperExchanges } from '../exchange/paper/utils'
+import { usableFiatRates } from './fiatRates'
 import {
   Prices,
   RateSchema,
@@ -1209,13 +1210,11 @@ const usablePrice = (p: { price: number }) =>
  * rate already rides on. Rates are stored pre-normalized to "1 unit = X USD".
  */
 const fiatRateEntries = (fiatRates: RateSchema['fiatRates']): Prices =>
-  (fiatRates ?? [])
-    .filter((f) => f?.asset && f.usdRate > 0)
-    .map((f) => ({
-      pair: `${f.asset}USD`,
-      price: f.usdRate,
-      exchange: 'all',
-    }))
+  usableFiatRates(fiatRates).map((f) => ({
+    pair: `${f.asset}USD`,
+    price: f.usdRate,
+    exchange: 'all',
+  }))
 
 /**
  * Value a set of balances in USD using the SAME authoritative path the portfolio

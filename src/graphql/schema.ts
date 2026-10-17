@@ -18,6 +18,7 @@ export const BasicSchema = /* GraphQL */ `
   }
   type Query {
     getUsdRate: getUsdRateResponse
+    getFiatRates: getFiatRatesResponse
     getPairInfo(input: getPairInput!): getPairResponse
     getAllPairs: getAllPairsResponse
   }
@@ -25,6 +26,16 @@ export const BasicSchema = /* GraphQL */ `
     status: Status
     reason: String
     data: Float
+  }
+  # Latest cached fiat rates, as "1 unit of asset = usdRate USD".
+  type fiatRate {
+    asset: String
+    usdRate: Float
+  }
+  type getFiatRatesResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: [fiatRate]
   }
   input getPairInput {
     pair: String!
