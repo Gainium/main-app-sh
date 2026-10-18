@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.102.7] - 2026-10-18
+### Fixed
+- Hedge take profit / stop loss is judged per pair. On a multi-pair hedge bot the combined TP/SL summed every open deal of every pair and closed them all at once, so a pair past its target stayed open while the rest lagged. Each pair's long and short deals are now one hedge: when that pair's combined P&L reaches the TP or SL, only its deals close. A pair with one leg open is judged on that leg alone. Single-pair hedges are unchanged.
+
 ## [1.102.6] - 2026-10-17
 ### Added
 - GraphQL `getFiatRates` returns the latest cached fiat rates (EUR, GBP, AUD, CHF, JPY, CAD) as `{ asset, usdRate }`, so the dashboard can convert USD values into a chosen display currency at live rates instead of a fixed table.

@@ -102,6 +102,7 @@ function createHedgeBotHelper<
         usage: number
         botId: string
         maxUsage: number
+        symbol?: string
       }[]
     > {
       if (!strategy) {
@@ -126,6 +127,7 @@ function createHedgeBotHelper<
               usage: number
               botId: string
               maxUsage: number
+              symbol?: string
             }[]
           }>([
             {
@@ -144,6 +146,7 @@ function createHedgeBotHelper<
                     usage: '$stats.usage',
                     botId: '$botId',
                     maxUsage: '$stats.maxUsage',
+                    symbol: '$symbol.symbol',
                   },
                 },
               },
@@ -163,56 +166,66 @@ function createHedgeBotHelper<
         this.handleDebug(`TP/SL not used, skip check`)
         return
       }
-      const deals = await this.getDeals()
-      const totalUnrealized = deals.reduce(
-        (acc, v) => acc + v.unrealizedProfit,
-        0,
-      )
-
-      const usage = deals.reduce((acc, v) => acc + v.usage, 0)
-      const maxUsage = deals.reduce((acc, v) => acc + v.maxUsage, 0)
-      const totalUsage =
-        this.options.botType === BotType.hedgeCombo
-          ? !this.data?.sharedSettings?.comboTpBase ||
-            this.data?.sharedSettings?.comboTpBase === ComboTpBase.full
-            ? maxUsage
-            : usage
-          : usage
-
-      let total = (totalUnrealized / totalUsage) * 100
-      const prevTotal = total
-      if (isNaN(total) || !isFinite(total)) {
-        total = 0
+      // Judged per pair: a pair's long and short deals are one hedge, and
+      // only that pair's deals close when it triggers (a pair with one leg
+      // open is judged on that leg alone).
+      const allDeals = await this.getDeals()
+      const byPair = new Map<string, typeof allDeals>()
+      for (const deal of allDeals) {
+        const key = deal.symbol ?? ''
+        byPair.set(key, [...(byPair.get(key) ?? []), deal])
       }
-      const slTrigger =
-        this.data?.sharedSettings?.useSl && this.data.sharedSettings.slPerc
-          ? total <= +this.data.sharedSettings.slPerc
-          : false
-      const tpTrigger =
-        this.data?.sharedSettings?.useTp && this.data.sharedSettings.tpPerc
-          ? total >= +this.data.sharedSettings.tpPerc
-          : false
-      const msg = `Total deal ${deals.length}, unrealized ${totalUnrealized}, usage ${totalUsage}, total ${total} (${prevTotal}), slTrigger ${slTrigger}, tpTrigger ${tpTrigger}`
-      this.handleDebug(msg)
-      if (slTrigger || tpTrigger) {
-        this.handleLog(msg)
-        deals.forEach((deal) => {
-          this.sendMessageToBotService(
-            this.options.botType === BotType.hedgeCombo
-              ? 'closeComboDeal'
-              : 'closeDCADeal',
-            this.options.botType === BotType.hedgeCombo
-              ? BotType.combo
-              : BotType.dca,
-            this.data?.userId,
-            deal.botId,
-            deal.id,
-            CloseDCATypeEnum.closeByMarket,
-            undefined,
-            this.data?.paperContext,
-            DCACloseTriggerEnum.combined,
-          )
-        })
+      for (const [pair, deals] of byPair) {
+        const totalUnrealized = deals.reduce(
+          (acc, v) => acc + v.unrealizedProfit,
+          0,
+        )
+
+        const usage = deals.reduce((acc, v) => acc + v.usage, 0)
+        const maxUsage = deals.reduce((acc, v) => acc + v.maxUsage, 0)
+        const totalUsage =
+          this.options.botType === BotType.hedgeCombo
+            ? !this.data?.sharedSettings?.comboTpBase ||
+              this.data?.sharedSettings?.comboTpBase === ComboTpBase.full
+              ? maxUsage
+              : usage
+            : usage
+
+        let total = (totalUnrealized / totalUsage) * 100
+        const prevTotal = total
+        if (isNaN(total) || !isFinite(total)) {
+          total = 0
+        }
+        const slTrigger =
+          this.data?.sharedSettings?.useSl && this.data.sharedSettings.slPerc
+            ? total <= +this.data.sharedSettings.slPerc
+            : false
+        const tpTrigger =
+          this.data?.sharedSettings?.useTp && this.data.sharedSettings.tpPerc
+            ? total >= +this.data.sharedSettings.tpPerc
+            : false
+        const msg = `Pair ${pair}: deals ${deals.length}, unrealized ${totalUnrealized}, usage ${totalUsage}, total ${total} (${prevTotal}), slTrigger ${slTrigger}, tpTrigger ${tpTrigger}`
+        this.handleDebug(msg)
+        if (slTrigger || tpTrigger) {
+          this.handleLog(msg)
+          deals.forEach((deal) => {
+            this.sendMessageToBotService(
+              this.options.botType === BotType.hedgeCombo
+                ? 'closeComboDeal'
+                : 'closeDCADeal',
+              this.options.botType === BotType.hedgeCombo
+                ? BotType.combo
+                : BotType.dca,
+              this.data?.userId,
+              deal.botId,
+              deal.id,
+              CloseDCATypeEnum.closeByMarket,
+              undefined,
+              this.data?.paperContext,
+              DCACloseTriggerEnum.combined,
+            )
+          })
+        }
       }
     }
 
