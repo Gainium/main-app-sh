@@ -13905,6 +13905,27 @@ function createDCABotHelper<
               )
               continue
             }
+            // An entry restored from the Redis snapshot at `'-1'` with no row
+            // was never sent (the write-ahead row precedes the send), yet it
+            // made `placeBaseOrder` below refuse with "already have and active
+            // base order" at every restart. Drop it only on the venue's
+            // definitive not-found; anything else keeps today's refusal.
+            // Spec 174 §1.1.1–§1.1.4.
+            if (serviceRestart) {
+              for (const o of this.getOrdersByStatusAndDealId({
+                dealId: d.deal._id,
+                defaultStatuses: true,
+              }).filter(
+                (o) =>
+                  o.typeOrder === TypeOrderEnum.dealStart &&
+                  `${o.orderId ?? ''}` === '-1',
+              )) {
+                const venue = await this.getOrderForReconcile(o)
+                if (isDefinitiveOrderNotFound(venue)) {
+                  await this.retireUnsentOrder(o, `${venue?.reason}`)
+                }
+              }
+            }
             this.handleLog(
               `${d.deal._id} not started yet. Place base order again`,
             )

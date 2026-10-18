@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.8] - 2026-10-18
+
+### Fixed
+
+- A DCA deal whose opening order was restored after a worker restart but had never been sent now places that order. If the order has no exchange id and no saved record, and the exchange confirms it does not exist, the restart drops it and places the entry again. Before, the restart treated the order as already active and the deal waited with nothing bought. An order the exchange knows about, or one with a saved record, is never re-sent.
+
 ## [1.106.7] - 2026-10-18
 
 ### Fixed
