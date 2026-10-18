@@ -3580,13 +3580,14 @@ export const registerIndexes = () => {
   comboDealSchema.index({ userId: 1 })
   comboDealSchema.index({ botId: 1 })
   // Spec 044 §8.13 reservation reads (FundingReservation): only deals stamped
-  // `baseFundingBeta` ever hold funds, and the reads always carry that stamp,
-  // so this index holds beta deals only. Without it the read scanned every
-  // deal of the collection on each spot balance check (2026-10-18 incident).
-  comboDealSchema.index(
-    { userId: 1, status: 1 },
-    { partialFilterExpression: { baseFundingBeta: true } },
-  )
+  // `baseFundingBeta` ever hold funds; the reads filter by account and status.
+  // Without it the read scanned every deal of the collection on each spot
+  // balance check (2026-10-18 incident).
+  // Already built on the cloud database by hand (2026-10-18 16:18Z) under its
+  // default name `exchangeUUID_1_status_1`: keep the keys, their order and the
+  // absence of options exactly as they are, or `syncIndexes()` drops and
+  // rebuilds it on the next start.
+  comboDealSchema.index({ exchangeUUID: 1, status: 1 })
 
   comboMinigrid.index({ botId: 1 })
 
@@ -3656,13 +3657,14 @@ export const registerIndexes = () => {
   // rebuilds it on the next start.
   dcaDealSchema.index({ userId: 1, status: 1, createTime: -1 })
   // Spec 044 §8.13 reservation reads (FundingReservation): only deals stamped
-  // `baseFundingBeta` ever hold funds, and the reads always carry that stamp,
-  // so this index holds beta deals only. Without it the read scanned every
-  // deal of the collection on each spot balance check (2026-10-18 incident).
-  dcaDealSchema.index(
-    { userId: 1, status: 1 },
-    { partialFilterExpression: { baseFundingBeta: true } },
-  )
+  // `baseFundingBeta` ever hold funds; the reads filter by account and status.
+  // Without it the read scanned every deal of the collection on each spot
+  // balance check (2026-10-18 incident).
+  // Already built on the cloud database by hand (2026-10-18 16:18Z) under its
+  // default name `exchangeUUID_1_status_1`: keep the keys, their order and the
+  // absence of options exactly as they are, or `syncIndexes()` drops and
+  // rebuilds it on the next start.
+  dcaDealSchema.index({ exchangeUUID: 1, status: 1 })
 
   favoritePairsSchema.index({ userId: 1 })
 

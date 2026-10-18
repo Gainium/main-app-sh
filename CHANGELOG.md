@@ -2,7 +2,7 @@
 
 ## [1.106.3] - 2026-10-19
 ### Fixed
-- Spot balance checks no longer read the deals collections for funds held by bot-funded deals unless the user has a deal that can hold them (stamped `baseFundingBeta`, found through a new partial index on DCA and combo deals and cached briefly). Every other account answers 0 without a deals read. The reservation reads are limited to stamped deals, served by that index, and bounded with `maxTimeMS`; a read that fails or times out counts nothing and is logged.
+- Spot balance checks no longer read the deals collections for funds held by bot-funded deals unless the account has a deal that can hold them (stamped `baseFundingBeta`; the check reads only that account's open deals and is cached briefly). Every other account answers 0 without the full read. DCA and combo deals get an `{ exchangeUUID, status }` index that serves both reads, which are limited to stamped deals and bounded with `maxTimeMS`; a read that fails or times out counts nothing and is logged.
 
 ## [1.106.2] - 2026-10-18
 ### Fixed

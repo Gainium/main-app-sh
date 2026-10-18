@@ -36,7 +36,7 @@ const logPrefix = 'FundingReservation'
 const TTL_MS = 5_000
 
 /**
- * How long "this user has no stamped deal holding funds" is trusted. Only
+ * How long "this account has no stamped deal holding funds" is trusted. Only
  * stamped deals (`baseFundingBeta`, spec 044 §8.13) ever reserve or hold, so
  * every other account answers 0 without reading the deals collections.
  */
@@ -83,20 +83,26 @@ export class FundingReservation {
   private stamped = new Map<string, { at: number; value: boolean }>()
 
   /**
-   * Whether the user has a stamped deal that could hold funds. Served by the
-   * partial indexes `{ userId, status }` where `baseFundingBeta: true`, which
-   * only hold beta deals — for every other user this is an empty index probe.
-   * A failed read answers true: the full read then decides (and is bounded).
+   * Whether the account has a stamped deal that could hold funds. Served by
+   * the `{ exchangeUUID, status }` index: it reads only this account's
+   * holding deals and stops at the first stamped one. A failed read answers
+   * true: the full read then decides (and is bounded).
    */
-  private async hasStampedDeals(userId: string, fresh: boolean) {
-    const hit = this.stamped.get(userId)
+  private async hasStampedDeals(
+    userId: string,
+    exchangeUUID: string,
+    fresh: boolean,
+  ) {
+    const stampKey = `${userId}:${exchangeUUID}`
+    const hit = this.stamped.get(stampKey)
     if (!fresh && hit && Date.now() - hit.at < STAMPED_TTL_MS) {
       return hit.value
     }
     const filter = {
+      exchangeUUID,
+      status: { $in: HOLDING_STATUSES },
       userId,
       baseFundingBeta: true,
-      status: { $in: HOLDING_STATUSES },
     }
     const options = { maxTimeMS: MAX_TIME_MS }
     const reads = await Promise.all([
@@ -107,7 +113,7 @@ export class FundingReservation {
     for (const res of reads) {
       if (res.status !== StatusEnum.ok) {
         logger.error(
-          `${logPrefix} | cannot check stamped deals for ${userId}: ${res.reason}`,
+          `${logPrefix} | cannot check stamped deals for ${stampKey}: ${res.reason}`,
         )
         value = true
         continue
@@ -122,7 +128,7 @@ export class FundingReservation {
         this.stamped.delete(oldest)
       }
     }
-    this.stamped.set(userId, { at: Date.now(), value })
+    this.stamped.set(stampKey, { at: Date.now(), value })
     return value
   }
 
@@ -145,15 +151,15 @@ export class FundingReservation {
     if (!fresh && hit && Date.now() - hit.at < TTL_MS) {
       return hit.value
     }
-    if (!(await this.hasStampedDeals(`${userId}`, fresh))) {
+    if (!(await this.hasStampedDeals(`${userId}`, exchangeUUID, fresh))) {
       this.cache.set(key, { at: Date.now(), value: 0 })
       return 0
     }
     const f = FIELDS[side]
-    // `userId` leads the filter for the index, not for scope: an account
-    // belongs to one user, so it selects the same deals. Without it no index
-    // serves this read and it scans the whole deals collection — minutes on
-    // the cloud database, on every new-deal balance check (spec 171).
+    // Served by `{ exchangeUUID, status }` (the account's holding deals).
+    // `userId` stays as a scope guard; `baseFundingBeta` because only stamped
+    // deals hold funds. Without an index this scanned the whole deals
+    // collection on every new-deal balance check (spec 171, 2026-10-18).
     const filter = {
       userId: `${userId}`,
       baseFundingBeta: true,

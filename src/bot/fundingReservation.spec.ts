@@ -93,7 +93,11 @@ describe('FundingReservation read (spec 171)', () => {
       expect(options.maxTimeMS).to.be.a('number').and.to.be.at.most(5000)
     }
     for (const { filter, options } of probes) {
-      expect(filter).to.deep.include({ userId: 'u1', baseFundingBeta: true })
+      expect(filter).to.deep.include({
+        exchangeUUID: 'acc-1',
+        userId: 'u1',
+        baseFundingBeta: true,
+      })
       expect(options.maxTimeMS).to.be.a('number')
     }
   })
