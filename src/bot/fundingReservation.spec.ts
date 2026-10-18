@@ -18,13 +18,32 @@ const dbInit = load('../db/dbInit')
 const { FundingReservation } = load('./fundingReservation')
 
 let saved: Record<string, any> = {}
-let filters: { coll: string; filter: any }[] = []
+let filters: { coll: string; filter: any; options: any }[] = []
+let probes: { coll: string; filter: any; options: any }[] = []
 const dealsOf: Record<string, any[]> = { dca: [], combo: [] }
+/** Whether the stamped-deal probe finds one, per collection. */
+const stampedIn: Record<string, boolean> = { dca: true, combo: false }
+let probeFails = false
 
-const answer = (coll: string) => async (filter: any) => {
-  filters.push({ coll, filter })
-  return { status: StatusEnum.ok, data: { result: dealsOf[coll] } }
-}
+const answer =
+  (coll: string) =>
+  async (filter: any, _fields: any, options: any, isArray?: boolean) => {
+    if (!isArray) {
+      probes.push({ coll, filter, options })
+      if (probeFails) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'operation exceeded time limit',
+        }
+      }
+      return {
+        status: StatusEnum.ok,
+        data: { result: stampedIn[coll] ? { _id: `${coll}-1` } : undefined },
+      }
+    }
+    filters.push({ coll, filter, options })
+    return { status: StatusEnum.ok, data: { result: dealsOf[coll] } }
+  }
 
 describe('FundingReservation read (spec 171)', () => {
   before(() => {
@@ -47,6 +66,10 @@ describe('FundingReservation read (spec 171)', () => {
   })
   beforeEach(() => {
     filters = []
+    probes = []
+    stampedIn.dca = true
+    stampedIn.combo = false
+    probeFails = false
     dealsOf.dca = []
     dealsOf.combo = []
   })
@@ -60,6 +83,57 @@ describe('FundingReservation read (spec 171)', () => {
       expect(filter['symbol.quoteAsset']).to.equal('USDT')
       expect(filter.status).to.have.property('$in')
     }
+  })
+
+  it('reads only stamped deals, bounded by maxTimeMS (2026-10-18 incident)', async () => {
+    await new FundingReservation().reservedQuote('u1', 'acc-1', 'USDT', true)
+    expect(filters).to.have.length(2)
+    for (const { filter, options } of filters) {
+      expect(filter.baseFundingBeta).to.equal(true)
+      expect(options.maxTimeMS).to.be.a('number').and.to.be.at.most(5000)
+    }
+    for (const { filter, options } of probes) {
+      expect(filter).to.deep.include({ userId: 'u1', baseFundingBeta: true })
+      expect(options.maxTimeMS).to.be.a('number')
+    }
+  })
+
+  it('a user with no stamped deal answers 0 without the full read', async () => {
+    stampedIn.dca = false
+    stampedIn.combo = false
+    const r = new FundingReservation()
+    expect(await r.reservedQuote('u2', 'acc-2', 'USDT')).to.equal(0)
+    expect(await r.reservedBase('u2', 'acc-2', 'BTC')).to.equal(0)
+    expect(filters).to.have.length(0)
+    // The "no stamped deals" answer is cached: the second side did not probe.
+    expect(probes).to.have.length(2)
+  })
+
+  it('a failed probe falls through to the bounded full read', async () => {
+    probeFails = true
+    dealsOf.dca = [
+      { _id: 'd1', botFunding: { virtualEntry: { quoteReserved: 12 } } },
+    ]
+    const v = await new FundingReservation().reservedQuote(
+      'u1',
+      'acc-1',
+      'USDT',
+      true,
+    )
+    expect(v).to.equal(12)
+    expect(filters).to.have.length(2)
+  })
+
+  it('invalidate() forgets the cached "no stamped deals" answer', async () => {
+    stampedIn.dca = false
+    const r = new FundingReservation()
+    expect(await r.reservedQuote('u3', 'acc-3', 'USDT')).to.equal(0)
+    stampedIn.dca = true
+    dealsOf.dca = [
+      { _id: 'd1', botFunding: { virtualEntry: { quoteReserved: 5 } } },
+    ]
+    r.invalidate('acc-3', 'USDT')
+    expect(await r.reservedQuote('u3', 'acc-3', 'USDT')).to.equal(5)
   })
 
   it('§4.1 scopes both deal reads to the account owner (base side)', async () => {

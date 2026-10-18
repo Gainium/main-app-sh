@@ -35,6 +35,21 @@ const logPrefix = 'FundingReservation'
 /** Short enough that a deal opened by another worker is seen within a tick. */
 const TTL_MS = 5_000
 
+/**
+ * How long "this user has no stamped deal holding funds" is trusted. Only
+ * stamped deals (`baseFundingBeta`, spec 044 §8.13) ever reserve or hold, so
+ * every other account answers 0 without reading the deals collections.
+ */
+const STAMPED_TTL_MS = 10_000
+
+/**
+ * Upper bound for one reservation read. The reads are index-backed (the
+ * partial `baseFundingBeta` indexes); a slower answer is a database in
+ * trouble, and a balance check must not wait on it. A timed-out read counts
+ * nothing (logged), like any other failed read here.
+ */
+const MAX_TIME_MS = 3_000
+
 const HOLDING_STATUSES = [
   DCADealStatusEnum.start,
   DCADealStatusEnum.open,
@@ -65,6 +80,52 @@ export class FundingReservation {
 
   private cache = new Map<string, { at: number; value: number }>()
 
+  private stamped = new Map<string, { at: number; value: boolean }>()
+
+  /**
+   * Whether the user has a stamped deal that could hold funds. Served by the
+   * partial indexes `{ userId, status }` where `baseFundingBeta: true`, which
+   * only hold beta deals — for every other user this is an empty index probe.
+   * A failed read answers true: the full read then decides (and is bounded).
+   */
+  private async hasStampedDeals(userId: string, fresh: boolean) {
+    const hit = this.stamped.get(userId)
+    if (!fresh && hit && Date.now() - hit.at < STAMPED_TTL_MS) {
+      return hit.value
+    }
+    const filter = {
+      userId,
+      baseFundingBeta: true,
+      status: { $in: HOLDING_STATUSES },
+    }
+    const options = { maxTimeMS: MAX_TIME_MS }
+    const reads = await Promise.all([
+      dcaDealsDb.readData(filter as any, { _id: 1 }, options),
+      comboDealsDb.readData(filter as any, { _id: 1 }, options),
+    ])
+    let value = false
+    for (const res of reads) {
+      if (res.status !== StatusEnum.ok) {
+        logger.error(
+          `${logPrefix} | cannot check stamped deals for ${userId}: ${res.reason}`,
+        )
+        value = true
+        continue
+      }
+      if (res.data.result) {
+        value = true
+      }
+    }
+    if (this.stamped.size >= 50_000) {
+      const oldest = this.stamped.keys().next().value
+      if (oldest !== undefined) {
+        this.stamped.delete(oldest)
+      }
+    }
+    this.stamped.set(userId, { at: Date.now(), value })
+    return value
+  }
+
   private key(side: Side, exchangeUUID: string, asset: string) {
     return `${side}:${exchangeUUID}@${asset}`
   }
@@ -84,6 +145,10 @@ export class FundingReservation {
     if (!fresh && hit && Date.now() - hit.at < TTL_MS) {
       return hit.value
     }
+    if (!(await this.hasStampedDeals(`${userId}`, fresh))) {
+      this.cache.set(key, { at: Date.now(), value: 0 })
+      return 0
+    }
     const f = FIELDS[side]
     // `userId` leads the filter for the index, not for scope: an account
     // belongs to one user, so it selects the same deals. Without it no index
@@ -91,6 +156,7 @@ export class FundingReservation {
     // the cloud database, on every new-deal balance check (spec 171).
     const filter = {
       userId: `${userId}`,
+      baseFundingBeta: true,
       exchangeUUID,
       [f.asset]: asset,
       status: { $in: HOLDING_STATUSES },
@@ -102,9 +168,18 @@ export class FundingReservation {
     const projection = { _id: 1, [f.entry]: 1, fundingHold: 1 }
     let value = 0
     const reads = await Promise.all([
-      dcaDealsDb.readData(filter as any, projection, {}, true),
-
-      comboDealsDb.readData(filter as any, projection, {}, true),
+      dcaDealsDb.readData(
+        filter as any,
+        projection,
+        { maxTimeMS: MAX_TIME_MS },
+        true,
+      ),
+      comboDealsDb.readData(
+        filter as any,
+        projection,
+        { maxTimeMS: MAX_TIME_MS },
+        true,
+      ),
     ])
     const entries = new Map<string, number>()
     let held = 0
@@ -290,6 +365,9 @@ export class FundingReservation {
    * of the pair: a hedge leg's funding moves one asset and reserves the other.
    */
   invalidate(exchangeUUID: string, quoteAsset: string, baseAsset?: string) {
+    // A first funded deal turns a user's "no stamped deals" true; rare, so
+    // dropping every user's answer is cheaper than tracking whose it was.
+    this.stamped.clear()
     this.cache.delete(this.key('quote', exchangeUUID, quoteAsset))
     if (baseAsset) {
       this.cache.delete(this.key('base', exchangeUUID, baseAsset))

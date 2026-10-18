@@ -3579,6 +3579,14 @@ export const registerIndexes = () => {
 
   comboDealSchema.index({ userId: 1 })
   comboDealSchema.index({ botId: 1 })
+  // Spec 044 §8.13 reservation reads (FundingReservation): only deals stamped
+  // `baseFundingBeta` ever hold funds, and the reads always carry that stamp,
+  // so this index holds beta deals only. Without it the read scanned every
+  // deal of the collection on each spot balance check (2026-10-18 incident).
+  comboDealSchema.index(
+    { userId: 1, status: 1 },
+    { partialFilterExpression: { baseFundingBeta: true } },
+  )
 
   comboMinigrid.index({ botId: 1 })
 
@@ -3647,6 +3655,14 @@ export const registerIndexes = () => {
   // absence of options exactly as they are, or `syncIndexes()` drops and
   // rebuilds it on the next start.
   dcaDealSchema.index({ userId: 1, status: 1, createTime: -1 })
+  // Spec 044 §8.13 reservation reads (FundingReservation): only deals stamped
+  // `baseFundingBeta` ever hold funds, and the reads always carry that stamp,
+  // so this index holds beta deals only. Without it the read scanned every
+  // deal of the collection on each spot balance check (2026-10-18 incident).
+  dcaDealSchema.index(
+    { userId: 1, status: 1 },
+    { partialFilterExpression: { baseFundingBeta: true } },
+  )
 
   favoritePairsSchema.index({ userId: 1 })
 

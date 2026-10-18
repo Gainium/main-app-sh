@@ -1,12 +1,12 @@
 # Changelog
 
+## [1.106.3] - 2026-10-19
+### Fixed
+- Spot balance checks no longer read the deals collections for funds held by bot-funded deals unless the user has a deal that can hold them (stamped `baseFundingBeta`, found through a new partial index on DCA and combo deals and cached briefly). Every other account answers 0 without a deals read. The reservation reads are limited to stamped deals, served by that index, and bounded with `maxTimeMS`; a read that fails or times out counts nothing and is logged.
+
 ## [1.106.2] - 2026-10-18
 ### Fixed
 - The new-deal balance check on spot bots no longer stalls for minutes. The read of funds held by bot-funded deals is now scoped to the account owner, so the deals collections' user indexes serve it instead of a full scan. A bot whose deal closes opens the next one on the first check that sees the freed funds, rather than minutes later after a "not enough balance" warning. The figures are unchanged.
-
-## [1.106.1] - 2026-10-18
-### Fixed
-- When the exchange refuses to cancel an order while a deal is closing or the bot is stopping, the cancel is sent once more and the order's real state is then fetched from the exchange (straight away for orders the exchange can never cancel, such as RFQ fills). An order the exchange still holds open stays tracked after its deal closes, so a later fill reaches the bot and is sold like other late fills, instead of the order being forgotten while it stays live on the exchange.
 
 ## [1.106.0] - 2026-10-18
 ### Changed
