@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.10] - 2026-10-18
+
+### Fixed
+
+- A combo minigrid whose price range is narrower than its number of grid levels in price ticks no longer puts two levels on the same price. Before, after a level filled, its twin at the same price stayed on the ladder and filled again on the next trade there, so the minigrid bought back more than it had sold. The minigrid now uses the most levels whose prices stay apart, and the bot log says when it reduced them. Ladders whose levels are already on different prices are built exactly as before.
+
 ## [1.106.9] - 2026-10-18
 
 ### Fixed

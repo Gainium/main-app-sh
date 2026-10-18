@@ -80,6 +80,7 @@ import {
 } from './combo/tpSolve'
 import type { ComboTpSolveInput } from './combo/tpSolve'
 import { levelOf, reanchorLevelAfterFill } from './combo/reanchorAfterFill'
+import { hasCollapsedLevels, maxDistinctLevels } from './combo/subTickLadder'
 import {
   baseGridBelowMinimumBudget,
   notEnoughBalanceNewDeal,
@@ -336,7 +337,7 @@ function createComboBotHelper<
       const topPrice = this.isLong ? startPrice + gridStep : startPrice
       const pair = deal.symbol.symbol
       const ed = await this.getExchangeInfo(pair)
-      const levels = Math.floor(
+      let levels = Math.floor(
         +(baseOrder
           ? (settings.baseGridLevels ?? settings.gridLevel)
           : settings.gridLevel),
@@ -365,15 +366,35 @@ function createComboBotHelper<
         : settings.profitCurrency === 'quote'
           ? ('base' as const)
           : ('quote' as const)
-      const initialGrids: InitialGrid[] =
+      const buildLevels = async (n: number): Promise<InitialGrid[]> =>
         (await this.generateBasicGrids({
           pair,
           topPrice,
           lowPrice,
           sellDisplacement,
           gridType: 'arithmetic',
-          levels,
+          levels: n,
         })) ?? []
+      let initialGrids = await buildLevels(levels)
+      /**
+       * Spec 176. A range narrower than `levels` price ticks rounds several
+       * levels onto one price, and the twin of a filled level then trades
+       * again at the fill price with nothing on the other side. Take the most
+       * levels whose prices stay apart; a ladder already apart is untouched.
+       */
+      if (levels > 1 && hasCollapsedLevels(initialGrids) && ed) {
+        const requested = levels
+        while (levels > 1 && hasCollapsedLevels(initialGrids)) {
+          levels = Math.min(
+            levels - 1,
+            maxDistinctLevels(lowPrice, topPrice, ed.priceAssetPrecision),
+          )
+          initialGrids = await buildLevels(levels)
+        }
+        this.handleLog(
+          `Minigrid for ${order.clientOrderId}: grid levels reduced from ${requested} to ${levels}, the range ${lowPrice}-${topPrice} is narrower than ${requested} price ticks`,
+        )
+      }
       const precision = await this.baseAssetPrecision(pair)
       let budget =
         order.minigridBudget ??
