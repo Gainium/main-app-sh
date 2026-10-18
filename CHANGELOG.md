@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.5] - 2026-10-18
+
+### Fixed
+
+- A KuCoin order reported FILLED with nothing executed and no fills is no longer booked at its requested size. KuCoin always reports the executed size, so that answer means the venue closed the order unexecuted; booking the requested size made the deal count coins it never bought.
+
 ## [1.106.4] - 2026-10-19
 ### Fixed
 - The deals index backing the funding-reservation reads is the partial `{ userId, status }` index of `baseFundingBeta` deals (the one 1.106.3's first build created), declared again so the next start keeps it instead of rebuilding a different one. The resting-order and grid reads behind the reservation are bounded with `maxTimeMS` too.
