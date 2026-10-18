@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.7] - 2026-10-18
+
+### Fixed
+
+- A combo deal that closes while its bot is reloading now closes its grid ladders too. The reload cleared the in-memory ladder list mid-close, so the close found none and the ladders stayed active on the closed deal.
+
 ## [1.106.6] - 2026-10-18
 
 ### Fixed

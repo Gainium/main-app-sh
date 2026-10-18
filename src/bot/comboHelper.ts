@@ -3204,6 +3204,30 @@ function createComboBotHelper<
         await this.processCloseMinigrid(m.schema._id)
         this.deleteMinigrid(m.schema._id, false)
       }
+      // Spec `173`. A reload that lands while this close is in flight wipes
+      // the minigrid maps (`clearClassProperties`) before `loadMinigrids`
+      // refills them, and refills them only for deals still held — so the
+      // lookup above comes back empty and the deal's ladders stay `active`
+      // in the database for good. Close them there instead.
+      if (!mingrids.length && this.shouldProceed()) {
+        const closed = await this.minigridDb.updateManyData(
+          {
+            botId: this.botId,
+            dealId,
+            status: { $ne: ComboMinigridStatusEnum.closed },
+          } as any,
+          { $set: { status: ComboMinigridStatusEnum.closed } },
+        )
+        if (closed.status === StatusEnum.notok) {
+          this.handleWarn(
+            `Error closing minigrids of deal ${dealId}: ${closed.reason}`,
+          )
+        } else {
+          this.handleDebug(
+            `Minigrids of deal ${dealId} not in memory, closed in DB: ${closed.reason}`,
+          )
+        }
+      }
       this.saveMinigridToRedis(
         this.botId,
         this.serviceRestart && !this.secondRestart,
