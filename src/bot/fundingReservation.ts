@@ -84,8 +84,8 @@ export class FundingReservation {
 
   /**
    * Whether the account has a stamped deal that could hold funds. Served by
-   * the `{ exchangeUUID, status }` index: it reads only this account's
-   * holding deals and stops at the first stamped one. A failed read answers
+   * the partial `{ userId, status }` index of stamped deals: for every user
+   * without one it is an empty index probe. A failed read answers
    * true: the full read then decides (and is bounded).
    */
   private async hasStampedDeals(
@@ -156,9 +156,8 @@ export class FundingReservation {
       return 0
     }
     const f = FIELDS[side]
-    // Served by `{ exchangeUUID, status }` (the account's holding deals).
-    // `userId` stays as a scope guard; `baseFundingBeta` because only stamped
-    // deals hold funds. Without an index this scanned the whole deals
+    // Served by the partial `{ userId, status }` index of stamped deals (only
+    // stamped deals hold funds). Without an index this scanned the whole deals
     // collection on every new-deal balance check (spec 171, 2026-10-18).
     const filter = {
       userId: `${userId}`,
@@ -247,7 +246,7 @@ export class FundingReservation {
         typeOrder: 1,
         minigridId: 1,
       },
-      {},
+      { maxTimeMS: MAX_TIME_MS },
       true,
     )
     if (res.status !== StatusEnum.ok) {
@@ -302,7 +301,7 @@ export class FundingReservation {
     const grids = await minigridDb.readData(
       { _id: { $in: ids } } as any,
       { dcaOrderId: 1 },
-      {},
+      { maxTimeMS: MAX_TIME_MS },
       true,
     )
     if (grids.status !== StatusEnum.ok) {
@@ -329,7 +328,7 @@ export class FundingReservation {
         typeOrder: TypeOrderEnum.dealStart,
       } as any,
       { clientOrderId: 1 },
-      {},
+      { maxTimeMS: MAX_TIME_MS },
       true,
     )
     if (starts.status !== StatusEnum.ok) {

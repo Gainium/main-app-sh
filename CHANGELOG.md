@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.106.4] - 2026-10-19
+### Fixed
+- The deals index backing the funding-reservation reads is the partial `{ userId, status }` index of `baseFundingBeta` deals (the one 1.106.3's first build created), declared again so the next start keeps it instead of rebuilding a different one. The resting-order and grid reads behind the reservation are bounded with `maxTimeMS` too.
+
 ## [1.106.3] - 2026-10-19
 ### Fixed
 - Spot balance checks no longer read the deals collections for funds held by bot-funded deals unless the account has a deal that can hold them (stamped `baseFundingBeta`; the check reads only that account's open deals and is cached briefly). Every other account answers 0 without the full read. DCA and combo deals get an `{ exchangeUUID, status }` index that serves both reads, which are limited to stamped deals and bounded with `maxTimeMS`; a read that fails or times out counts nothing and is logged.
