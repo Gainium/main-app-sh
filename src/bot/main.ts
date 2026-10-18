@@ -9380,6 +9380,16 @@ class MainBot<T extends IMainBot> {
             }
             this.reissuedClientOrderIds?.set(refusedId, resendId)
             order.clientOrderId = resendId
+            // The sibling is a placement of its own (spec 169). The ladder above
+            // flipped this object to the venue's CANCELED in place; carried into
+            // the re-send, that reads as "written off while being placed" and
+            // the fill is reported as one the deal does not hold. And the
+            // re-send runs at `count === 1`, which skips the write-ahead insert
+            // while `updateOrderOnDb` never upserts, so without this row the
+            // sibling — FILLED or not — is never stored at all.
+            order.status = 'NEW'
+            const { _id: _refusedRowId, ...sibling } = order
+            await this.saveOrderToDb(sibling)
             this.endMethod(_id)
             return this.sendOrderToExchange(order, returnError, 1)
           }

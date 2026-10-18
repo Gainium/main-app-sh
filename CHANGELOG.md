@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.105.1] - 2026-10-18
+### Fixed
+- An order re-sent under a sibling client order id after the exchange refused its id as a duplicate is stored as its own order row, so a re-sent safety order or take profit that fills shows as filled instead of leaving only the cancelled original. It is also sent as a fresh placement: it no longer inherits the original's cancelled status, so a re-sent order that rests on the book is no longer cancelled on the exchange right after it was placed, and one that fills is no longer reported as filled outside its deal.
+
 ## [1.105.0] - 2026-10-18
 ### Added
 - Hedge DCA and hedge combo legs on spot started with "buy difference" / "buy for all" (short leg) or "sell difference" / "sell for all" (long leg), with DCA on, fund themselves the way a bot-funded short does. The leg's base order is recorded filled at the latest price without a trade. Short leg: the quote that entry stands for is reserved for the take profit, and the safety orders' base is bought upfront (difference: free base first). Long leg, the mirror: the entry is backed by base the account holds, which is reserved for the take profit (`botFunding.virtualEntry.baseReserved`), and the safety orders' quote is raised by selling base upfront (difference: free quote first). A "difference" leg whose own free funds already cover its base order and safety orders trades nothing and starts with a real base order. A leg the account cannot cover is refused, its deal cancelled, and the user gets a bot warning.

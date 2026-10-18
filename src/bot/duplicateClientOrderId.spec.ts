@@ -381,3 +381,131 @@ describe('a duplicate re-send never places a level twice (spec 161)', () => {
     expect(sent[1].slice(0, -1)).to.equal(CLIENT_ID.slice(0, -1))
   })
 })
+
+describe('a duplicate re-sent under a sibling id keeps its own record (spec 169)', () => {
+  const BYBIT_DUPLICATE = 'Duplicate clientOrderId.'
+  const VENUE_ID = '2328519267584319232'
+  // The venue holds the original, cancelled with nothing filled; the sibling
+  // it has never seen is accepted and fills at once.
+  const makeResendBot = () => {
+    const bot = makeBot(
+      async (req: any) =>
+        req.newClientOrderId === CLIENT_ID
+          ? refused(BYBIT_DUPLICATE)()
+          : {
+              status: StatusEnum.ok,
+              reason: null,
+              data: {
+                ...makeOrder(),
+                clientOrderId: req.newClientOrderId,
+                orderId: VENUE_ID,
+                status: 'FILLED',
+                executedQty: '0.007109',
+                updateTime: Date.now(),
+              },
+            },
+      async (req: any) => ({
+        status: StatusEnum.ok,
+        reason: null,
+        data: {
+          clientOrderId: req.newClientOrderId,
+          orderId: '3000000002',
+          status: 'CANCELED',
+          executedQty: '0',
+          updateTime: Date.now(),
+        },
+      }),
+    )
+    const errors: string[] = []
+    bot.handleError = (msg: string) => errors.push(msg)
+    return { bot, errors }
+  }
+
+  it('§2.1 the sibling that filled is persisted as its own FILLED row', async () => {
+    const { bot } = makeResendBot()
+
+    await bot.sendOrderToExchange(makeOrder())
+    await new Promise((r) => setImmediate(r))
+
+    expect(bot.venueCalls.map((c: any) => c.newClientOrderId)).to.deep.equal([
+      CLIENT_ID,
+      REGENERATED,
+    ])
+    const row = bot.ordersDb.rows.get(REGENERATED)
+    expect(row, 'a row for the order the venue filled').to.not.equal(undefined)
+    expect(row?.status).to.equal('FILLED')
+    expect(row?.orderId).to.equal(VENUE_ID)
+    expect(bot.ordersDb.rows.get(CLIENT_ID)?.status).to.equal('CANCELED')
+  })
+
+  it('§2.2 the sibling is not reported as a placement written off while in flight', async () => {
+    const { bot, errors } = makeResendBot()
+
+    const result = await bot.sendOrderToExchange(makeOrder())
+
+    expect(result?.clientOrderId).to.equal(REGENERATED)
+    expect(result?.status).to.equal('FILLED')
+    expect(
+      errors.filter((e) => e.includes('written off as CANCELED')),
+    ).to.deep.equal([])
+  })
+
+  it('§2.3 a sibling write-ahead row never reuses the original row _id', async () => {
+    const { bot } = makeResendBot()
+    const created: any[] = []
+    const create = bot.ordersDb.createData
+    bot.ordersDb.createData = async (doc: any) => {
+      created.push(doc)
+      return create(doc)
+    }
+
+    await bot.sendOrderToExchange({ ...makeOrder(), _id: 'row-of-original' })
+
+    const sibling = created.find((d) => d.clientOrderId === REGENERATED)
+    expect(sibling, 'write-ahead row for the sibling').to.not.equal(undefined)
+    expect(sibling?._id).to.equal(undefined)
+    expect(sibling?.status).to.equal('NEW')
+  })
+  it('§2.4 a sibling that rests on the book stays live and is not cancelled on the venue', async () => {
+    const bot = makeBot(
+      async (req: any) =>
+        req.newClientOrderId === CLIENT_ID
+          ? refused(BYBIT_DUPLICATE)()
+          : {
+              status: StatusEnum.ok,
+              reason: null,
+              data: {
+                ...makeOrder(),
+                clientOrderId: req.newClientOrderId,
+                orderId: VENUE_ID,
+                status: 'NEW',
+                executedQty: '0',
+                updateTime: Date.now(),
+              },
+            },
+      async (req: any) => ({
+        status: StatusEnum.ok,
+        reason: null,
+        data: {
+          clientOrderId: req.newClientOrderId,
+          orderId: '3000000002',
+          status: 'CANCELED',
+          executedQty: '0',
+          updateTime: Date.now(),
+        },
+      }),
+    )
+    const cancels: any[] = []
+    bot.exchange.cancelOrder = async (req: any) => {
+      cancels.push(req)
+      return { status: StatusEnum.ok, reason: null, data: { executedQty: '0' } }
+    }
+    bot.handleError = () => undefined
+
+    const result = await bot.sendOrderToExchange(makeOrder())
+
+    expect(result?.status).to.equal('NEW')
+    expect(bot.orders.get(REGENERATED)?.status).to.equal('NEW')
+    expect(cancels, 'no cancel sent for the live sibling').to.deep.equal([])
+  })
+})
