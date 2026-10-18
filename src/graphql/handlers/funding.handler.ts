@@ -123,10 +123,12 @@ const loadFundingContext = async (
   const makerFee =
     fee.status === StatusEnum.ok ? (fee.data.result?.maker ?? 0) : 0
   const reservedQuote = await FundingReservation.getInstance().reservedQuote(
+    userId,
     input.exchangeUUID,
     quoteAsset.name,
   )
   const reservedBase = await FundingReservation.getInstance().reservedBase(
+    userId,
     input.exchangeUUID,
     baseAsset.name,
   )

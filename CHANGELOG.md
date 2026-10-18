@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.106.2] - 2026-10-18
+### Fixed
+- The new-deal balance check on spot bots no longer stalls for minutes. The read of funds held by bot-funded deals is now scoped to the account owner, so the deals collections' user indexes serve it instead of a full scan. A bot whose deal closes opens the next one on the first check that sees the freed funds, rather than minutes later after a "not enough balance" warning. The figures are unchanged.
+
+## [1.106.1] - 2026-10-18
+### Fixed
+- When the exchange refuses to cancel an order while a deal is closing or the bot is stopping, the cancel is sent once more and the order's real state is then fetched from the exchange (straight away for orders the exchange can never cancel, such as RFQ fills). An order the exchange still holds open stays tracked after its deal closes, so a later fill reaches the bot and is sold like other late fills, instead of the order being forgotten while it stays live on the exchange.
+
 ## [1.106.0] - 2026-10-18
 ### Changed
 - Bot base funding (short spot DCA / combo `baseFunding`, and hedge legs funding themselves on spot) is now a beta, available only to users holding the user role `BaseFundingBeta`. The role is read when a deal is created (cached up to 60 s per process, a failed read keeps the last answer) and stamped on the deal (`baseFundingBeta`); everything the engine later does for that deal follows the stamp, so removing the role never strands a funded deal. Every other user, self-hosted included, gets the behaviour from before base funding: `baseFunding` is ignored (and stored as `require` when set), hedge legs start as they did (the previous funding order, a DCA leg records no start action), and no funding lock, reservation or restart resume applies to their deals.

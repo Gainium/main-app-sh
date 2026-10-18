@@ -955,6 +955,8 @@ function createDCABotHelper<
     private afterIndicatorsConnected: (() => void | Promise<void>)[] = []
     ordersInBetweenUpdates: Set<string> = new Set()
     private pendingClose: Set<string> = new Set()
+    /** Deals whose close sweep is cancelling their orders right now. Spec `170`. */
+    private closingDeals: Set<string> = new Set()
     /**
      * Prepare DB instaces
      *
@@ -4319,11 +4321,48 @@ function createDCABotHelper<
       return
     }
 
+    /**
+     * Drop a closed deal's orders from memory. An order still live after the
+     * close sweep is one whose cancel the venue never confirmed: it stays, so
+     * it stays on the user stream and its later fill or cancel still reaches
+     * the bot. Spec `170`.
+     */
     removeOrdersByDeal(dealId: string) {
       const get = this.getOrdersByStatusAndDealId({ dealId })
       for (const o of get) {
+        if (o.status === 'NEW' || o.status === 'PARTIALLY_FILLED') {
+          this.handleWarn(
+            `Order ${o.clientOrderId} of closed deal ${dealId} is still ${o.status} on the exchange. Keep tracking it`,
+          )
+          continue
+        }
         this.deleteOrder(o.clientOrderId)
       }
+    }
+
+    protected override cancelIsTeardown(order: Order): boolean {
+      return (
+        super.cancelIsTeardown(order) ||
+        (!!order.dealId && !!this.closingDeals?.has(order.dealId))
+      )
+    }
+
+    /**
+     * The close sweep of `processDealClose`: cancel every resting order of the
+     * deal, then drop the ones that are finished. Runs as a teardown, so a
+     * refused cancel is re-sent and looked up (spec `170`).
+     */
+    async cancelDealOrdersOnClose(dealId: string, lastPrice: number) {
+      this.closingDeals.add(dealId)
+      try {
+        await this.cancelAllOrder(lastPrice, dealId, true)
+      } finally {
+        this.closingDeals.delete(dealId)
+      }
+      for (const o of this.getOrdersByStatusAndDealId({ dealId })) {
+        this.partiallyFilledFilledSet.delete(o.clientOrderId)
+      }
+      this.removeOrdersByDeal(dealId)
     }
 
     /**
@@ -4672,11 +4711,7 @@ function createDCABotHelper<
           this.checkNotEnoughBalanceErrors(this.botId)
         }
         if (cancel) {
-          await this.cancelAllOrder(deal.deal.lastPrice, dealId, true)
-          for (const o of this.getOrdersByStatusAndDealId({ dealId })) {
-            this.partiallyFilledFilledSet.delete(o.clientOrderId)
-          }
-          this.removeOrdersByDeal(dealId)
+          await this.cancelDealOrdersOnClose(dealId, deal.deal.lastPrice)
         }
         if (
           this.data.status === BotStatusEnum.error &&
@@ -20607,6 +20642,7 @@ function createDCABotHelper<
      */
     async reservedFundingQuote(quoteAsset: string, fresh = false) {
       return FundingReservation.getInstance().reservedQuote(
+        this.userId,
         this.data?.exchangeUUID ?? '',
         quoteAsset,
         fresh,
@@ -20619,6 +20655,7 @@ function createDCABotHelper<
      */
     async reservedFundingBase(baseAsset: string, fresh = false) {
       return FundingReservation.getInstance().reservedBase(
+        this.userId,
         this.data?.exchangeUUID ?? '',
         baseAsset,
         fresh,

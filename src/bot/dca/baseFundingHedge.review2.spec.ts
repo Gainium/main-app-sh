@@ -608,6 +608,7 @@ describe('Spec 044 phase 3 — adversarial review pass 2', () => {
     ]
     try {
       const reserved = await FundingReservation.getInstance().reservedQuote(
+        'user',
         account.uuid,
         'USDT',
         true,

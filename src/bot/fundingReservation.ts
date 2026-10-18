@@ -71,11 +71,12 @@ export class FundingReservation {
 
   private async reserved(
     side: Side,
+    userId: string | null | undefined,
     exchangeUUID: string,
     asset: string,
     fresh = false,
   ) {
-    if (!exchangeUUID || !asset) {
+    if (!userId || !exchangeUUID || !asset) {
       return 0
     }
     const key = this.key(side, exchangeUUID, asset)
@@ -84,7 +85,12 @@ export class FundingReservation {
       return hit.value
     }
     const f = FIELDS[side]
+    // `userId` leads the filter for the index, not for scope: an account
+    // belongs to one user, so it selects the same deals. Without it no index
+    // serves this read and it scans the whole deals collection — minutes on
+    // the cloud database, on every new-deal balance check (spec 171).
     const filter = {
+      userId: `${userId}`,
       exchangeUUID,
       [f.asset]: asset,
       status: { $in: HOLDING_STATUSES },
@@ -256,14 +262,27 @@ export class FundingReservation {
     return out
   }
 
-  /** Σ quote this account's funded deals hold, in `quoteAsset`. */
-  async reservedQuote(exchangeUUID: string, quoteAsset: string, fresh = false) {
-    return this.reserved('quote', exchangeUUID, quoteAsset, fresh)
+  /**
+   * Σ quote this account's funded deals hold, in `quoteAsset`. `userId` is
+   * the account's owner (spec 171); without it the answer is 0.
+   */
+  async reservedQuote(
+    userId: string | null | undefined,
+    exchangeUUID: string,
+    quoteAsset: string,
+    fresh = false,
+  ) {
+    return this.reserved('quote', userId, exchangeUUID, quoteAsset, fresh)
   }
 
   /** Σ base this account's funded deals hold, in `baseAsset` (phase 3). */
-  async reservedBase(exchangeUUID: string, baseAsset: string, fresh = false) {
-    return this.reserved('base', exchangeUUID, baseAsset, fresh)
+  async reservedBase(
+    userId: string | null | undefined,
+    exchangeUUID: string,
+    baseAsset: string,
+    fresh = false,
+  ) {
+    return this.reserved('base', userId, exchangeUUID, baseAsset, fresh)
   }
 
   /**

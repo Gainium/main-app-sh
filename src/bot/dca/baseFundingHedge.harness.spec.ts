@@ -1194,11 +1194,11 @@ for (const combo of [false, true]) {
         try {
           // 100 reserved for the entry; the TP locks 50 of it.
           expect(
-            await reservation.reservedQuote(account.uuid, 'USDT', true),
+            await reservation.reservedQuote('user', account.uuid, 'USDT', true),
           ).to.equal(50)
           tp.origQty = '5'
           expect(
-            await reservation.reservedQuote(account.uuid, 'USDT', true),
+            await reservation.reservedQuote('user', account.uuid, 'USDT', true),
           ).to.equal(0)
         } finally {
           restingOrders = []
@@ -1250,7 +1250,7 @@ for (const combo of [false, true]) {
         ]
         try {
           expect(
-            await reservation.reservedQuote(account.uuid, 'USDT', true),
+            await reservation.reservedQuote('user', account.uuid, 'USDT', true),
           ).to.be.closeTo(70, 1e-9)
         } finally {
           restingOrders = []
@@ -1304,7 +1304,7 @@ for (const combo of [false, true]) {
           '../fundingReservation',
         ).FundingReservation.getInstance()
         expect(
-          await reservation.reservedBase(account.uuid, 'SOL', true),
+          await reservation.reservedBase('user', account.uuid, 'SOL', true),
         ).to.equal(0)
       })
     })
