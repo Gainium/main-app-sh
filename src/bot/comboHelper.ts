@@ -145,6 +145,8 @@ function createComboBotHelper<
     private closesRunning: Map<string, number> = new Map()
     /** Spec `120`: deals a close was requested for that are still open. */
     private closeRequested: Set<string> = new Set()
+    /** Spec `175`: deals whose venue position is being asked about right now. */
+    private flatProbeRunning: Set<string> = new Set()
     private feeOrderReasons: Map<string, string[]> = new Map()
     private lastFilledOrderMap: Map<string, Order> = new Map()
 
@@ -3314,6 +3316,100 @@ function createComboBotHelper<
         !!this.closesRunning.get(dealId) ||
         (this.closeRequested.has(dealId) && this.hasLiveCloseOrder(dealId))
       )
+    }
+    /**
+     * Spec `175`. A closing-side grid level the venue refuses as un-reducible
+     * says the deal may hold nothing on the venue at all. A flat deal re-sends
+     * that level on every grid event and never closes, because the base
+     * minigrid still has its closing levels. The refusal is reported as
+     * before. Then, only for that refusal, the venue is asked.
+     */
+    override async handleOrderErrors(
+      e: Error | string,
+      order: Order,
+      method: string,
+      step?: string,
+      setError = true,
+      sendError = true,
+    ): Promise<void> {
+      await super.handleOrderErrors(e, order, method, step, setError, sendError)
+      // Not awaited: the refusal arrives from inside `placeOrders`, which
+      // holds the `${botId}${dealId}` lock that `closeDealById` takes.
+      this.settleFlatDealAfterGridRefusal(
+        order,
+        typeof e === 'string' ? e : e.message,
+      ).catch((err: unknown) =>
+        this.handleWarn(
+          `Deal ${order.dealId} flat-position check after ${order.clientOrderId} failed: ${err}`,
+        ),
+      )
+    }
+
+    /**
+     * Spec `175` §1.1. Uses spec 005's probe: one reading per cooldown, and
+     * two agreeing readings before anything is settled. A flat deal then
+     * closes the way a completed base minigrid closes it.
+     */
+    private async settleFlatDealAfterGridRefusal(order: Order, reason: string) {
+      const dealId = order.dealId
+      const closingSide = this.isLong ? 'SELL' : 'BUY'
+      if (
+        !this.futures ||
+        !dealId ||
+        order.typeOrder !== TypeOrderEnum.dealGrid ||
+        order.side !== closingSide ||
+        !this.isPositionAlreadyClosedReason(reason) ||
+        this.flatProbeRunning.has(dealId)
+      ) {
+        return
+      }
+      const deal = this.getDeal(dealId)
+      if (
+        !deal ||
+        deal.deal.status !== DCADealStatusEnum.open ||
+        deal.closeBySl ||
+        this.isDealClosing(dealId)
+      ) {
+        return
+      }
+      this.flatProbeRunning.add(dealId)
+      try {
+        await this.reconcileDealPosition(
+          deal,
+          `refused for grid order ${order.clientOrderId} (${reason})`,
+          'had a grid order refused because there was no position left to reduce',
+          async () => {
+            const d = this.getDeal(dealId)
+            if (
+              !d ||
+              d.deal.status !== DCADealStatusEnum.open ||
+              d.closeBySl ||
+              this.isDealClosing(dealId)
+            ) {
+              return
+            }
+            d.closeBySl = true
+            this.handleLog(
+              `Close deal ${dealId}: no venue position left for its grid orders`,
+            )
+            await this.closeDealById(
+              this.botId,
+              dealId,
+              CloseDCATypeEnum.closeByMarket,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              DCACloseTriggerEnum.base,
+            )
+          },
+        )
+      } finally {
+        this.flatProbeRunning.delete(dealId)
+      }
     }
     override clearClassProperties(clearRedis = false, start = false) {
       super.clearClassProperties(clearRedis, start)

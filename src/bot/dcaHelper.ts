@@ -6664,7 +6664,7 @@ function createDCABotHelper<
       return { result: resendResult ?? undefined }
     }
 
-    private isPositionAlreadyClosedReason(text: string): boolean {
+    protected isPositionAlreadyClosedReason(text: string): boolean {
       const haystack = normalizeReason(text)
       for (const r of positionAlreadyClosedReasons) {
         if (haystack.indexOf(normalizeReason(r)) !== -1) {
@@ -26539,13 +26539,17 @@ function createDCABotHelper<
      *
      * @param trigger what the deal was doing when the probe ran, for the
      *   user-facing event. Defaults to `checkTPLevel`'s wording.
+     * @param settle how to close the deal once the venue has agreed twice that
+     *   its position is gone. Defaults to `closeDeal`, which books it closed
+     *   with no order. Combo passes its base-trigger close (spec `175`).
      * @returns true when the deal was booked closed and the caller must stop
      *   working it.
      */
-    private async reconcileDealPosition(
+    protected async reconcileDealPosition(
       deal: FullDeal<ExcludeDoc<Deal>>,
       outcome: string,
       trigger?: string,
+      settle?: () => Promise<unknown>,
     ): Promise<boolean> {
       const dealId = `${deal.deal._id}`
       const symbol = deal.deal.symbol.symbol
@@ -26650,6 +26654,10 @@ function createDCABotHelper<
         })
       }
       await positionProbeBackoff.clear([this.botId, dealId])
+      if (settle) {
+        await settle()
+        return true
+      }
       // The same primitive `closeDealById` uses for this condition: books the
       // deal closed keeping the P&L the filled targets already realised, with
       // no closing order — there is nothing to send one for.

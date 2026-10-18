@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.9] - 2026-10-18
+
+### Fixed
+
+- A futures combo deal whose grid levels bought back its whole position now closes. Before, the exchange refused every remaining closing-side grid order because nothing was left to reduce, the deal re-sent those orders on every grid event, and it stayed open. After such a refusal the bot now asks the exchange for the position. When two readings a few minutes apart agree that it is flat, the deal closes the same way a completed base grid closes it. A deal whose position is still on the exchange keeps trading as before.
+
 ## [1.106.8] - 2026-10-18
 
 ### Fixed
