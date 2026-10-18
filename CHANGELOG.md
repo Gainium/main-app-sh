@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.104.0] - 2026-10-18
+### Added
+- DCA timer start on selected weekdays: new bot setting `hodlWeekdays` (0 = Sunday … 6 = Saturday, in the user's profile timezone). A timer run on an unselected day opens no deal and the next run moves to the next selected day — a daily timer keeps its set time, an hourly one restarts at the first hour of that day. Empty, missing or all seven keeps every day, as before. Exposed on GraphQL (`DCABotSettings`, create/change inputs) and on the v2 API bot settings; matches `@gainium/backtester` 1.16.0.
+
 ## [1.103.0] - 2026-10-18
 ### Added
 - Short spot DCA and combo bots can fund a deal themselves when the free base does not cover it: new bot setting `baseFunding` (`require` — default, the deal is skipped as before; `auto` — use the free base and buy only what is missing; `botOnly` — never use the free base). The base order is recorded filled at the current price without a trade, and its quote stays reserved until the deal closes, because the take profit spends it to buy the base back; only the safety orders' base is bought, once, at market when the deal opens. Market base orders sized in base, quote or USD only; hedge legs and terminal deals are unchanged. The purchase is recorded in `fundinglots`, and the deal carries `botFunding`.

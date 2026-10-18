@@ -540,6 +540,7 @@ const DCA_SECTIONS: SectionLayout[] = [
       'hodlAt',
       'hodlNextBuy',
       'hodlHourly',
+      'hodlWeekdays',
     ],
   },
   {

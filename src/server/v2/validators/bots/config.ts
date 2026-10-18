@@ -1867,6 +1867,7 @@ export const dcaBotSchemaConfig: Record<
   },
   useLimitPrice: { validators: [ValidatorsEnum.shouldBeBoolean] },
   hodlHourly: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  hodlWeekdays: { validators: [ValidatorsEnum.shouldBeArray] },
   notUseLimitReposition: { validators: [ValidatorsEnum.shouldBeBoolean] },
   stopStatus: {
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
@@ -2138,6 +2139,7 @@ export const COMBO_EXCLUDED_FIELDS: (keyof typeof COMBO_FORM_DEFAULTS)[] = [
   'dcaVolumeMaxValue',
   'dcaCustom',
   'hodlHourly',
+  'hodlWeekdays',
   'terminalDealType',
   'useFixedTPPrices',
   'useFixedSLPrices',
@@ -2243,6 +2245,7 @@ export const TERMINAL_DEAL_EXCLUDED_FIELDS: (keyof typeof DCA_FORM_DEFAULTS)[] =
     'useNoOverlapDeals',
     'dcaCustom',
     'hodlHourly',
+    'hodlWeekdays',
     'stopStatus',
     'comboSlLimit',
     'comboTpLimit',

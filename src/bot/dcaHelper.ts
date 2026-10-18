@@ -180,6 +180,7 @@ import {
   positionLeftOpen,
   trailingCloseFailed,
 } from './utils'
+import { isTimerRunAllowed, shiftToAllowedWeekday } from './timerWeekdays'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
 import {
@@ -12207,7 +12208,7 @@ function createDCABotHelper<
         const timeZone = (await this.getUser())?.timezone ?? 'UTC'
         const hour = 60 * 60 * 1000
         const day = 24 * hour
-        const { hodlDay, hodlAt, hodlNextBuy, hodlHourly } =
+        const { hodlDay, hodlAt, hodlNextBuy, hodlHourly, hodlWeekdays } =
           await this.getAggregatedSettings()
         if (hodlDay && hodlAt && hodlNextBuy) {
           let add = parseFloat(hodlDay) * (hodlHourly ? hour : day)
@@ -12243,6 +12244,13 @@ function createDCABotHelper<
 
             add = date - hodlNextBuy
           }
+          add =
+            shiftToAllowedWeekday(
+              hodlNextBuy + add,
+              !!hodlHourly,
+              timeZone,
+              hodlWeekdays,
+            ) - hodlNextBuy
           this.data.settings.hodlNextBuy += add
           this.updateData({ settings: { ...this.data.settings } })
         }
@@ -12254,13 +12262,28 @@ function createDCABotHelper<
 
     async openDealByTimer() {
       if (this.data) {
+        // the run firing now; one on a weekday that is not selected opens
+        // nothing (updateNextBuy moves its successor to a selected day)
+        const { hodlNextBuy, hodlHourly, hodlWeekdays } =
+          await this.getAggregatedSettings()
+        const runAllowed = isTimerRunAllowed(
+          hodlNextBuy,
+          !!hodlHourly,
+          (await this.getUser())?.timezone ?? 'UTC',
+          hodlWeekdays,
+        )
         await this.updateNextBuy()
         const diff = await this.findTimeDiff()
         if (diff && diff > 0) {
           if (this.timer) {
             clearTimeout(this.timer)
           }
-          for (const symbol of await this.getSymbolsToOpenAsapDeals()) {
+          if (!runAllowed) {
+            this.handleLog('Timer run skipped: not a selected weekday')
+          }
+          for (const symbol of runAllowed
+            ? await this.getSymbolsToOpenAsapDeals()
+            : []) {
             this.openNewDeal(
               this.botId,
               symbol,

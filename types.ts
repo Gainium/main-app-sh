@@ -893,6 +893,8 @@ export interface DCABotSettings extends BaseSettings {
   hodlDay: string
   hodlAt: string
   hodlHourly?: boolean
+  /** Timer weekdays, 0 = Sunday … 6 = Saturday in the user's timezone; empty = every day */
+  hodlWeekdays?: number[]
   hodlNextBuy: number
   maxNumberOfOpenDeals?: string
   indicators: SettingsIndicators[]

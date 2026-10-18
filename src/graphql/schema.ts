@@ -3474,6 +3474,7 @@ export const BotSchema = /* GraphQL */ `
     useDca: Boolean
     hodlAt: String
     hodlHourly: Boolean
+    hodlWeekdays: [Int]
     hodlDay: String
     hodlNextBuy: Float
     maxNumberOfOpenDeals: String
@@ -3661,6 +3662,7 @@ export const BotSchema = /* GraphQL */ `
     useDca: Boolean
     hodlAt: String
     hodlHourly: Boolean
+    hodlWeekdays: [Int]
     hodlDay: String
     hodlNextBuy: Float
     maxNumberOfOpenDeals: String
@@ -5254,6 +5256,7 @@ export const BotSchema = /* GraphQL */ `
     useDca: Boolean!
     hodlAt: String
     hodlHourly: Boolean
+    hodlWeekdays: [Int]
     hodlDay: String
     hodlNextBuy: Float
     exchange: Exchange
@@ -5483,6 +5486,7 @@ export const BotSchema = /* GraphQL */ `
     useDca: Boolean!
     hodlAt: String
     hodlHourly: Boolean
+    hodlWeekdays: [Int]
     hodlDay: String
     hodlNextBuy: Float
     exchange: Exchange
@@ -5692,6 +5696,7 @@ export const BotSchema = /* GraphQL */ `
     useDca: Boolean
     hodlAt: String
     hodlHourly: Boolean
+    hodlWeekdays: [Int]
     hodlDay: String
     hodlNextBuy: Float
     maxNumberOfOpenDeals: String
@@ -5881,6 +5886,7 @@ export const BotSchema = /* GraphQL */ `
     useDca: Boolean
     hodlAt: String
     hodlHourly: Boolean
+    hodlWeekdays: [Int]
     hodlDay: String
     hodlNextBuy: Float
     maxNumberOfOpenDeals: String

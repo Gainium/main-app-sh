@@ -5034,6 +5034,15 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           default: false,
           example: false,
         },
+        {
+          name: 'hodlWeekdays',
+          type: 'array',
+          required: false,
+          validators: ['mustBeArray'],
+          itemType: 'object',
+          default: [],
+          example: [],
+        },
       ],
     },
     {

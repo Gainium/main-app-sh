@@ -206,6 +206,7 @@ export const DCA_FORM_DEFAULTS: DCABotSettings = {
   baseOrderPrice: '0',
   useLimitPrice: false,
   hodlHourly: false,
+  hodlWeekdays: [],
   notUseLimitReposition: false,
   stopStatus: BotStatusEnum.closed,
   terminalDealType: TerminalDealTypeEnum.smart,

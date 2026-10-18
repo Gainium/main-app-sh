@@ -372,6 +372,11 @@ const fieldMetadata: Record<
   hodlDay: { description: 'Days between opening new deal', example: '7' },
   hodlAt: { description: 'Time to open new deal', example: '23:59' },
   hodlHourly: { description: 'Hold on hourly basis', example: false },
+  hodlWeekdays: {
+    description:
+      'Weekdays the timer may open deals on, 0 = Sunday to 6 = Saturday, in the user timezone. Empty means every day; a run on another day moves to the next selected one.',
+    example: [1, 2, 3, 4, 5],
+  },
   hodlNextBuy: { description: 'Next buy time in hours', example: 24 },
 
   // Indicators
