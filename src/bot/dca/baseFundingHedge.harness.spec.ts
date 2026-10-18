@@ -136,6 +136,8 @@ const dbInit = loadModule('../../db/dbInit')
 let saved: Record<string, any> = {}
 
 type Setup = {
+  /** Spec 044 beta gate: a user without the BaseFundingBeta role. */
+  nonBeta?: boolean
   account: Account
   long?: boolean
   combo?: boolean
@@ -165,6 +167,8 @@ const buildBot = (o: Setup) => {
   const account = o.account
   const findDeal: any = {
     deal: {
+      // Spec 044 beta gate: deals are created stamped for a beta user.
+      ...(o.nonBeta ? {} : { baseFundingBeta: true }),
       _id: dealId,
       botId: `${dealId}-bot`,
       exchangeUUID: account.uuid,
@@ -225,6 +229,10 @@ const buildBot = (o: Setup) => {
           ? [status].flat()
           : undefined
       return rows.filter((r) => !wanted || wanted.includes(r.status))
+    }
+    // Spec 044 beta gate: the user's role, asked live (no DB here).
+    async baseFundingAllowed() {
+      return !o.nonBeta
     }
     async getAggregatedSettings(deal?: any) {
       return { ...settings, ...(deal?.settings ?? {}) }
@@ -1505,6 +1513,205 @@ for (const combo of [false, true]) {
           price: `${PRICE}`,
           fundingSource: 'virtual',
         })
+      })
+    })
+
+    describe('beta gate (spec 044): deals created without base funding', () => {
+      it('hedge funding action: the phase-1 send (dealStart + deal id), no lot, no re-price', async () => {
+        const account = newAccount(0, 1000)
+        const { bot, findDeal, dealId } = buildBot({
+          account,
+          combo,
+          nonBeta: true,
+        })
+        if (!combo) {
+          // A non-beta DCA deal never records the action (it was always
+          // dropped on DCA deals): exercise the phase-1 path as combo has it.
+          findDeal.deal.action = ActionsEnum.buyDiff
+        }
+        const lotsBefore = lots.length
+        let funded = 0
+        bot.fundHedgeLegEntry = async () => {
+          funded++
+          return 'virtual'
+        }
+        await bot.placeBaseOrder(bot.botId, SYMBOL)
+        expect(funded).to.equal(0)
+        expect(fundingSent(bot)).to.have.length(0)
+        const [send] = bot.sent
+        expect(send).to.deep.include({
+          typeOrder: TypeOrderEnum.dealStart,
+          dealId,
+          side: OrderSideEnum.buy,
+          type: 'MARKET',
+        })
+        expect(send.clientOrderId).to.match(/^CMB-H/)
+        expect(lots.length).to.equal(lotsBefore)
+        expect(bot.started).to.have.length(1)
+        // The virtual entry keeps the price it was built with.
+        expect(bot.started[0].order).to.deep.include({
+          status: 'FILLED',
+          fundingSource: 'virtual',
+          price: '97',
+        })
+        expect(findDeal.deal.botFunding).to.equal(undefined)
+        expect(findDeal.deal.fundingHold).to.equal(undefined)
+      })
+
+      it('a DCA deal records no hedge action (plain base order), combo keeps it', async () => {
+        const account = newAccount(0, 1000)
+        const { bot } = buildBot({ account, combo, nonBeta: true })
+        bot.data.action = ActionsEnum.buyDiff
+        expect(bot.dealStartAction(false)).to.equal(
+          combo ? ActionsEnum.buyDiff : undefined,
+        )
+        expect(bot.dealStartAction(true)).to.equal(ActionsEnum.buyDiff)
+        bot.data.settings = { ...bot.data.settings, futures: true }
+        expect(bot.dealStartAction(true)).to.equal(undefined)
+      })
+
+      it('a DCA hedge deal without an action sends its real base order', async () => {
+        const account = newAccount(5, 1000)
+        const { bot, findDeal } = buildBot({ account, combo, nonBeta: true })
+        findDeal.deal.action = undefined
+        await bot.placeBaseOrder(bot.botId, SYMBOL)
+        expect(fundingSent(bot)).to.have.length(0)
+        expect(bot.sent[0]?.typeOrder).to.equal(TypeOrderEnum.dealStart)
+        expect(bot.sent[0]?.clientOrderId).to.equal('D-BO-x')
+      })
+
+      it('baseFunding auto is treated as require', async () => {
+        const account = newAccount(0, 1000)
+        const { bot, dealId } = buildBot({
+          account,
+          combo,
+          nonBeta: true,
+          plain: true,
+          settings: { strategy: 'SHORT', baseFunding: BaseFundingEnum.auto },
+        })
+        bot.data.action = undefined
+        expect(
+          await bot.fundShortSpotEntry(
+            SYMBOL,
+            dealId,
+            marketBase(dealId, false),
+          ),
+        ).to.equal('held')
+        expect(
+          bot.shortSpotFundingMode(await bot.getAggregatedSettings(), false),
+        ).to.equal(null)
+        expect(bot.sent).to.have.length(0)
+      })
+
+      it('a restored start deal never resumes or funds; it sends its base order as before', async () => {
+        const account = newAccount(5, 1000)
+        const { bot, dealId } = buildBot({
+          account,
+          combo,
+          nonBeta: true,
+          botFunding: {
+            mode: BaseFundingEnum.auto,
+            virtualEntry: { qty: 1, price: PRICE, quoteReserved: 100 },
+            lotIds: [],
+            sourcedByBot: true,
+            pendingTrade: {
+              clientOrderId: 'D-FND-nb',
+              side: OrderSideEnum.buy,
+              qty: 2,
+              at: 1,
+            },
+          },
+        })
+        let entered = 0
+        bot.resumeFundedEntry = async () => {
+          entered++
+          return 'none'
+        }
+        bot.fundHedgeLegEntry = async () => {
+          entered++
+          return 'virtual'
+        }
+        await bot.placeBaseOrder(bot.botId, SYMBOL, dealId)
+        expect(entered).to.equal(0)
+        expect(bot.sent[0]?.typeOrder).to.equal(TypeOrderEnum.dealStart)
+      })
+
+      it('add DCA on a hedge leg created without base funding never funds', async () => {
+        const account = newAccount(0, 1000)
+        const { bot, findDeal, dealId } = buildBot({
+          account,
+          combo,
+          nonBeta: true,
+          status: 'open',
+          botFunding: {
+            mode: BaseFundingEnum.auto,
+            virtualEntry: { qty: 1, price: PRICE, quoteReserved: 100 },
+            lotIds: [],
+            sourcedByBot: true,
+          },
+        })
+        expect(
+          await bot.fundAddedSafetyOrders(findDeal, dealId, { ordersCount: 4 }),
+        ).to.equal(true)
+        expect(bot.sent).to.have.length(0)
+      })
+    })
+
+    describe('beta gate (spec 044): the stamp outlives the role', () => {
+      it('a stamped deal is funded after the role was removed', async () => {
+        const account = newAccount(0, 1000)
+        const { bot } = buildBot({ account, combo })
+        bot.baseFundingAllowed = async () => false
+        await bot.placeBaseOrder(bot.botId, SYMBOL)
+        expect(fundingSent(bot)).to.have.length(1)
+        expect(bot.started).to.have.length(1)
+      })
+
+      it('a stamped deal resumes after the role was removed', async () => {
+        const account = newAccount(2, 900)
+        const { bot, dealId } = buildBot({
+          account,
+          combo,
+          botFunding: {
+            mode: BaseFundingEnum.auto,
+            virtualEntry: { qty: 1, price: PRICE, quoteReserved: 100 },
+            lotIds: [],
+            sourcedByBot: true,
+          },
+        })
+        bot.baseFundingAllowed = async () => false
+        await bot.placeBaseOrder(bot.botId, SYMBOL, dealId)
+        expect(bot.sent).to.have.length(0)
+        expect(bot.started).to.have.length(1)
+      })
+
+      it('add DCA on a stamped funded leg still funds after the role was removed', async () => {
+        const account = newAccount(0, 1000)
+        const { bot, findDeal, dealId } = buildBot({
+          account,
+          combo,
+          status: 'open',
+          botFunding: {
+            mode: BaseFundingEnum.auto,
+            virtualEntry: { qty: 1, price: PRICE, quoteReserved: 100 },
+            lotIds: [],
+            sourcedByBot: true,
+          },
+          resting: [101, 102].map((price, i) => ({
+            clientOrderId: `D-RO-${i}`,
+            typeOrder: TypeOrderEnum.dealRegular,
+            side: OrderSideEnum.sell,
+            status: 'NEW',
+            origQty: '1',
+            executedQty: '0',
+            price: `${price}`,
+          })),
+        })
+        bot.baseFundingAllowed = async () => false
+        expect(
+          await bot.fundAddedSafetyOrders(findDeal, dealId, { ordersCount: 4 }),
+        ).to.equal(true)
+        expect(fundingSent(bot)).to.have.length(1)
       })
     })
 

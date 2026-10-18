@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.0] - 2026-10-18
+### Changed
+- Bot base funding (short spot DCA / combo `baseFunding`, and hedge legs funding themselves on spot) is now a beta, available only to users holding the user role `BaseFundingBeta`. The role is read when a deal is created (cached up to 60 s per process, a failed read keeps the last answer) and stamped on the deal (`baseFundingBeta`); everything the engine later does for that deal follows the stamp, so removing the role never strands a funded deal. Every other user, self-hosted included, gets the behaviour from before base funding: `baseFunding` is ignored (and stored as `require` when set), hedge legs start as they did (the previous funding order, a DCA leg records no start action), and no funding lock, reservation or restart resume applies to their deals.
+### Added
+- GraphQL `baseFundingAccess { available }`: whether base funding is on for the session user. `previewFunding` and `previewHedgeFunding` answer "Base funding is not available for your account yet." for users without it.
+
 ## [1.105.1] - 2026-10-18
 ### Fixed
 - An order re-sent under a sibling client order id after the exchange refused its id as a duplicate is stored as its own order row, so a re-sent safety order or take profit that fills shows as filled instead of leaving only the cancelled original. It is also sent as a fresh placement: it no longer inherits the original's cancelled status, so a re-sent order that rests on the book is no longer cancelled on the exchange right after it was placed, and one that fills is no longer reported as filled outside its deal.

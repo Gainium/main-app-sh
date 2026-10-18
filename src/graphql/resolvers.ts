@@ -72,6 +72,7 @@ import {
   PreviewFundingInput,
   previewHedgeFunding,
   PreviewHedgeFundingInput,
+  baseFundingAccess,
 } from './handlers/funding.handler'
 import { usableFiatRates } from '../utils/fiatRates'
 import {
@@ -2534,6 +2535,24 @@ const resolvers = <
         return user
       }
       return previewHedgeFunding(user.data, input, paperContext)
+    },
+    baseFundingAccess: async (
+      _parent: any,
+      _args: unknown,
+      { token, req }: InputRequest,
+    ) => {
+      try {
+        if (token === 'demo' || !req.user?.authorized) {
+          return { available: false }
+        }
+        const user = await findUser(token)
+        if (user.status === StatusEnum.notok) {
+          return { available: false }
+        }
+        return await baseFundingAccess(`${user.data._id}`)
+      } catch {
+        return { available: false }
+      }
     },
     getProfitByBot: async (
       _parent: any,

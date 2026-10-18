@@ -3,10 +3,12 @@ import {
   HEDGE_FUNDING_ACTIONS,
   planFunding,
   planHedgeLegDealFunding,
+  planHedgeLegFunding,
   planShortSpotDealFunding,
   ShortSpotFundingDecision,
 } from './baseFunding'
 import { FundingReservation } from './fundingReservation'
+import { BaseFundingGate } from './baseFundingGate'
 import {
   FUNDING_FILL_TOLERANCE,
   FUNDING_QUOTE_SIZED_BUY_HEADROOM,
@@ -2538,6 +2540,15 @@ function createDCABotHelper<
       }
       const _id = this.startMethod('createDeal')
       const time = new Date().getTime()
+      // Spec 044 beta gate: asked once, stamped on the deal — only when base
+      // funding could apply to it (a spot deal with a hedge start action or
+      // a base-funding mode), so no other deal ever reads the user's roles.
+      const baseFundingBeta =
+        !this.data?.settings.futures &&
+        (!!this.data?.action ||
+          this.shortSpotFundingMode(await this.getAggregatedSettings(), true) !==
+            null) &&
+        (await this.baseFundingAllowed())
       let symbolData: Symbols | undefined
       try {
         const ed = await this.getExchangeInfo(symbol)
@@ -2703,7 +2714,8 @@ function createDCABotHelper<
           fixSize,
           orderSizeType,
           parentBotId: this.data.parentBotId,
-          action: this.data.settings.futures ? undefined : this.data.action,
+          action: this.dealStartAction(baseFundingBeta),
+          ...(baseFundingBeta ? { baseFundingBeta: true } : {}),
           // Funding cursor starts at deal creation so we never backfill funding
           // from before the deal existed.
           funding: { total: 0, totalUsd: 0, offset: time, lastTime: 0 },
@@ -11013,7 +11025,12 @@ function createDCABotHelper<
             avg: +baseOrder.price,
             time: this.getDeal(dealId)?.deal.createTime,
           })
-          if (!this.data.settings.futures && dealId) {
+          if (
+            !this.data.settings.futures &&
+            dealId &&
+            // Spec 044 beta gate: only a deal created with base funding.
+            this.isBaseFundingDeal(this.getDeal(dealId)?.deal)
+          ) {
             // Spec 044 §8: a deal funded (or being funded) before a restart
             // never gets a real base order.
             const resumed = await this.resumeFundedEntry(
@@ -11077,7 +11094,53 @@ function createDCABotHelper<
                   false,
                 )
               }
-              if (deal.deal.action) {
+              if (deal.deal.action && !this.isBaseFundingDeal(deal.deal)) {
+                // Spec 044 beta gate: a deal created without base funding
+                // starts exactly as before phases 2–3 (phase-1 hedge funding).
+                if (deal.deal.action !== ActionsEnum.useBalance) {
+                  if (deal.deal.action === ActionsEnum.noAction) {
+                    this.resetPending(this.botId, symbol)
+                    this.endMethod(_id)
+                    return this.handleErrors(
+                      `Cannot place base order. Action is noAction`,
+                      'placeBaseOrder',
+                    )
+                  }
+                  let proceedBaseOrder = false
+                  if (
+                    HEDGE_FUNDING_ACTIONS.includes(deal.deal.action) &&
+                    deal.deal.settings.useDca
+                  ) {
+                    this.handleDebug(`Action ${deal.deal.action} detected`)
+                    if (
+                      !(await this.placeHedgeFundingOrder(
+                        symbol,
+                        dealId,
+                        deal.deal,
+                        deal.deal.action,
+                      ))
+                    ) {
+                      this.endMethod(_id)
+                      return
+                    }
+                    proceedBaseOrder = true
+                  }
+                  if (deal.deal.action === ActionsEnum.useOppositeBalance) {
+                    this.handleDebug(`Action ${deal.deal.action} detected`)
+                    proceedBaseOrder = true
+                  }
+                  if (proceedBaseOrder) {
+                    baseOrder.status = 'FILLED'
+                    baseOrder.executedQty = baseOrder.origQty
+                    // main-app spec 044 §3.3: no venue trade behind this fill.
+                    baseOrder.fundingSource = 'virtual'
+                    this.setOrder(baseOrder)
+                    this.ordersDb.createData(baseOrder)
+                    this.endMethod(_id)
+                    return this.startDeal(baseOrder)
+                  }
+                }
+              } else if (deal.deal.action) {
                 if (deal.deal.action === ActionsEnum.noAction) {
                   this.resetPending(this.botId, symbol)
                   this.endMethod(_id)
@@ -13731,8 +13794,9 @@ function createDCABotHelper<
             // restart. Resume or retire it (`resumeFundedEntry`, which links
             // any funding lot); a stale-trigger cancel here would drop the lot.
             if (
-              d.deal.botFunding?.pendingTrade ||
-              d.deal.botFunding?.virtualEntry
+              this.isBaseFundingDeal(d.deal) &&
+              (d.deal.botFunding?.pendingTrade ||
+                d.deal.botFunding?.virtualEntry)
             ) {
               this.handleLog(
                 `${d.deal._id} was funded before the restart: resuming it`,
@@ -15269,7 +15333,13 @@ function createDCABotHelper<
       // Main-app spec 044: a short spot deal the bot may fund itself. The
       // requirement is every configured safety order, not only the ones rested
       // in advance — they are funded once, upfront.
-      const fundingMode = this.shortSpotFundingMode(settings)
+      // Before the deal exists: the beta gate, asked live — and only when a
+      // funding mode would otherwise apply.
+      const fundingMode =
+        this.shortSpotFundingMode(settings, true) &&
+        (await this.baseFundingAllowed())
+          ? this.shortSpotFundingMode(settings, true)
+          : null
       if (fundingMode) {
         const safetyQty =
           (await this.fundedSafetyQty(initialGrids, symbol)) *
@@ -19806,6 +19876,119 @@ function createDCABotHelper<
       return deal.gridBreakpoints
     }
 
+
+    /**
+     * Spec 044 beta gate — the PHASE-1 hedge funding send, kept verbatim for
+     * deals created WITHOUT base funding (non-beta users): what production
+     * ran before phases 2–3, including its known defect (a `dealStart` row
+     * with the deal id, §6.6). Beta deals use {@link fundHedgeLegEntry}.
+     *
+     * Main-app spec 044 §6.5 — the funding trade a hedge leg's `buyDiff` /
+     * `buyForAll` / `sellDiff` / `sellForAll` action places at deal open,
+     * before the leg's base order is filled virtually. Sized by
+     * {@link planHedgeLegFunding}: the safety orders only, against the balance
+     * of the asset they consume.
+     *
+     * @returns true when the deal may proceed (traded, or nothing to trade);
+     *   false once the failure has been reported.
+     */
+    async placeHedgeFundingOrder(
+      symbol: string,
+      dealId: string,
+      deal: ExcludeDoc<Deal>,
+      action: ActionsEnum,
+    ): Promise<boolean> {
+      if (!this.data) {
+        return false
+      }
+      const lp = await this.getLatestPrice(symbol)
+      const orders = await this.createInitialDealOrders(
+        symbol,
+        lp,
+        dealId,
+        deal,
+      )
+      const ei = await this.getExchangeInfo(symbol)
+      const balances = await this.checkAssets(true, true)
+      const fee = await this.getUserFee(symbol)
+      const basePrecision = await this.baseAssetPrecision(symbol)
+      const funding = planHedgeLegFunding({
+        isLong: this.isLong,
+        action,
+        orders,
+        price: lp,
+        freeBase: balances?.get(ei?.baseAsset.name ?? '')?.free ?? 0,
+        freeQuote: balances?.get(ei?.quoteAsset.name ?? '')?.free ?? 0,
+        feeRate: fee?.taker ?? 0,
+        minNotional: ei?.quoteAsset.minAmount,
+        minBase: ei?.baseAsset.minAmount,
+        basePrecision,
+      })
+      this.handleDebug(
+        `Hedge funding ${action}: required ${funding?.plan.required} ${funding?.plan.needAsset}, held ${funding?.plan.held}, shortfall ${funding?.plan.shortfall}, price ${lp}`,
+      )
+      const trade = funding?.trade
+      if (!trade) {
+        return true
+      }
+      this.handleDebug(
+        `Hedge funding order ${trade.side} ${trade.baseQty}${trade.raisedToMin ? ' (raised to exchange minimum)' : ''}`,
+      )
+      const price = `${this.math.round(lp, ei?.priceAssetPrecision)}`
+      const qty = `${trade.baseQty}`
+      const r = await this.sendOrderToExchange(
+        {
+          clientOrderId: this.getOrderId('CMB-H'),
+          status: 'NEW',
+          executedQty: '0',
+          price: price,
+          origPrice: price,
+          cummulativeQuoteQty: `${+price * +qty}`,
+          orderId: '-1',
+          origQty: qty,
+          side: trade.side,
+          symbol,
+          type: OrderTypeEnum.market,
+          updateTime: new Date().getTime(),
+          transactTime: new Date().getTime(),
+          exchange: this.data.exchange,
+          exchangeUUID: this.data.exchangeUUID,
+          typeOrder: TypeOrderEnum.dealStart,
+          botId: this.botId,
+          userId: this.userId,
+          dealId,
+          fills: [],
+          baseAsset: ei?.baseAsset.name ?? '',
+          quoteAsset: ei?.quoteAsset.name ?? '',
+        },
+        true,
+      )
+      if (typeof r === 'string') {
+        this.handleErrors(
+          `Error placing order: ${r}`,
+          'placeBaseOrder',
+          '',
+          false,
+          false,
+          false,
+        )
+        return false
+      }
+      if (!r) {
+        this.handleErrors(
+          `Error placing order`,
+          'placeBaseOrder',
+          '',
+          false,
+          false,
+          false,
+        )
+        return false
+      }
+      this.handleDebug(`Order ${r.clientOrderId} filled`)
+      return true
+    }
+
     /**
      * Main-app spec 044 §8 (phase 3) — how a hedge leg on spot starts, for
      * every start action that uses the account's funds, decided and recorded
@@ -20338,6 +20521,34 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec 044 beta gate, asked live: may this bot's user's NEW deals (and
+     * pre-deal checks) use base funding? A deal follows its own stamp
+     * ({@link isBaseFundingDeal}) instead.
+     */
+    async baseFundingAllowed(): Promise<boolean> {
+      return BaseFundingGate.getInstance()
+        .isAllowed(this.userId)
+        .catch(() => false)
+    }
+
+    /**
+     * The hedge start action a new DCA deal records. Spec 044 beta gate: only
+     * on a beta deal — before the schema kept `action`, mongoose dropped it on
+     * every DCA deal, and a non-beta deal must behave exactly as then. Combo
+     * deals always kept it (combo's own `createDeal`).
+     */
+    dealStartAction(baseFundingBeta: boolean): ActionsEnum | undefined {
+      return this.data?.settings.futures || (!baseFundingBeta && !this.combo)
+        ? undefined
+        : this.data?.action
+    }
+
+    /** Spec 044 beta gate: the deal was created with base funding on. */
+    isBaseFundingDeal(deal?: { baseFundingBeta?: boolean } | null): boolean {
+      return !!deal?.baseFundingBeta
+    }
+
+    /**
      * Main-app spec 044 §3.4 — the base-funding mode that applies to this
      * bot's next deal, or null when the deal runs on the account's own base as
      * before. Only a regular short spot DCA / combo bot with a market base
@@ -20357,9 +20568,16 @@ function createDCABotHelper<
           | 'useRiskReward'
         >
       >,
+      /**
+       * Spec 044 beta gate: base funding is on for this deal (its stamp) or,
+       * before a deal exists, for this bot's user (asked live). Off ⇒ null:
+       * the `baseFunding` setting is ignored, as `require`.
+       */
+      enabled: boolean,
     ): BaseFundingEnum | null {
       const mode = settings.baseFunding
       if (
+        !enabled ||
         (mode !== BaseFundingEnum.auto && mode !== BaseFundingEnum.botOnly) ||
         this.futures ||
         this.isLong ||
@@ -20755,8 +20973,11 @@ function createDCABotHelper<
       baseOrder: Order,
     ): Promise<'held' | 'virtual' | 'refused'> {
       const settings = await this.getAggregatedSettings()
-      const mode = this.shortSpotFundingMode(settings)
       const deal = this.getDeal(dealId)
+      const mode = this.shortSpotFundingMode(
+        settings,
+        this.isBaseFundingDeal(deal?.deal),
+      )
       if (!mode || !deal || baseOrder.type !== OrderTypeEnum.market) {
         return 'held'
       }
@@ -27368,8 +27589,10 @@ function createDCABotHelper<
       }
       const settings = await this.getAggregatedSettings(findDeal.deal)
       const mode =
-        this.shortSpotFundingMode(settings) ??
-        this.hedgeLegFundingMode(findDeal.deal)
+        this.shortSpotFundingMode(
+          settings,
+          this.isBaseFundingDeal(findDeal.deal),
+        ) ?? this.hedgeLegFundingMode(findDeal.deal)
       if (!mode) {
         return true
       }
@@ -27415,7 +27638,11 @@ function createDCABotHelper<
      * action's mapping was stored on the deal.
      */
     hedgeLegFundingMode(deal: ExcludeDoc<Deal>): BaseFundingEnum | null {
-      if (this.futures || !this.data?.parentBotId) {
+      if (
+        this.futures ||
+        !this.data?.parentBotId ||
+        !this.isBaseFundingDeal(deal)
+      ) {
         return null
       }
       const mode = deal.botFunding?.virtualEntry ? deal.botFunding.mode : null

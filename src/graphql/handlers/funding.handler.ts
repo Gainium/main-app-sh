@@ -26,6 +26,10 @@ import {
   planShortSpotDealFunding,
 } from '../../bot/baseFunding'
 import { FundingReservation } from '../../bot/fundingReservation'
+import {
+  BASE_FUNDING_NOT_AVAILABLE,
+  BaseFundingGate,
+} from '../../bot/baseFundingGate'
 import { FUNDING_QUOTE_SIZED_BUY_HEADROOM } from '../../bot/fundingLock'
 import { getBalances } from './balance.handler'
 
@@ -74,6 +78,10 @@ const loadFundingContext = async (
   paperContext?: boolean,
 ) => {
   const userId = user._id.toString()
+  // Spec 044 beta gate: no preview (never data) for a user without access.
+  if (!(await BaseFundingGate.getInstance().isAllowed(userId))) {
+    return fail(BASE_FUNDING_NOT_AVAILABLE)
+  }
   if (!user.exchanges.some((e) => e.uuid === input.exchangeUUID)) {
     return fail('Exchange not found')
   }
@@ -421,3 +429,14 @@ export const previewHedgeFunding = async (
     },
   }
 }
+
+/**
+ * `baseFundingAccess` (spec 044 beta gate) — whether base funding is on for
+ * the session user; the dashboard's switch for every base-funding control.
+ * Never an error: anything that fails reads as not available.
+ */
+export const baseFundingAccess = async (userId?: string | null) => ({
+  available: await BaseFundingGate.getInstance()
+    .isAllowed(userId)
+    .catch(() => false),
+})

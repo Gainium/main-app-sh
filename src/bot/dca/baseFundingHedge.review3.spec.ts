@@ -136,6 +136,8 @@ const dbInit = loadModule('../../db/dbInit')
 let saved: Record<string, any> = {}
 
 type Setup = {
+  /** Spec 044 beta gate: a user without the BaseFundingBeta role. */
+  nonBeta?: boolean
   account: Account
   long?: boolean
   combo?: boolean
@@ -165,6 +167,8 @@ const buildBot = (o: Setup) => {
   const account = o.account
   const findDeal: any = {
     deal: {
+      // Spec 044 beta gate: deals are created stamped for a beta user.
+      ...(o.nonBeta ? {} : { baseFundingBeta: true }),
       _id: dealId,
       botId: `${dealId}-bot`,
       exchangeUUID: account.uuid,
@@ -225,6 +229,10 @@ const buildBot = (o: Setup) => {
           ? [status].flat()
           : undefined
       return rows.filter((r) => !wanted || wanted.includes(r.status))
+    }
+    // Spec 044 beta gate: the user's role, asked live (no DB here).
+    async baseFundingAllowed() {
+      return !o.nonBeta
     }
     async getAggregatedSettings(deal?: any) {
       return { ...settings, ...(deal?.settings ?? {}) }
@@ -413,88 +421,84 @@ const newAccount = (base: number, quote: number) => {
 const fundingSent = (bot: any) =>
   bot.sent.filter((s: any) => s.typeOrder === TypeOrderEnum.funding)
 
-
 /*
  * Adversarial review, PASS 3 (spec 044 phase 3, fix round 2 — 2026-10-18).
  * Harness above copied from `baseFundingHedge.harness.spec.ts`. `[BUG]` cases
  * FAIL on purpose (phase3-review.md, "Pass 3").
  */
 describe('Spec 044 phase 3 — adversarial review pass 3', () => {
-    before(function () {
-      this.timeout(240000)
-      if (!DcaHelper) {
-        DcaHelper = loadModule('../dcaHelper').default(FakeBase as any)
-        ComboHelper = loadModule('../comboHelper').default(DcaHelper)
-      }
-      saved = {
-        dcaRead: dbInit.dcaDealsDb.readData,
-        comboRead: dbInit.comboDealsDb.readData,
-        lot: dbInit.fundingLotDb.createData,
-        lotRead: dbInit.fundingLotDb.readData,
-        orderRead: dbInit.orderDb.readData,
-      }
-      // Fix round 2 plumbing: the lot writer first looks a lot up by its
-      // client id (restart after the lot was written) — read the same `lots`.
-      dbInit.fundingLotDb.readData = async (filter: any) => {
-        const i = lots.findIndex(
-          (l) => l.clientOrderId === filter.clientOrderId,
-        )
-        return {
-          status: StatusEnum.ok,
-          data: {
-            result: i < 0 ? undefined : { ...lots[i], _id: `lot${i + 1}` },
-          },
-        }
-      }
-      dbInit.fundingLotDb.createData = async (lot: any) => {
-        lots.push(lot)
-        return {
-          status: StatusEnum.ok,
-          data: { ...lot, _id: `lot${lots.length}` },
-        }
-      }
-      // The REAL FundingReservation reads the deals collections: answer from
-      // the fake accounts' deals.
-      const read = async (filter: any) => {
-        const acc = accounts.find((a) => a.uuid === filter.exchangeUUID)
-        const result = acc
-          ? [...acc.deals.entries()]
-              .map(([_id, d]) => ({ _id, ...d }))
-              .filter((d) => filter.status.$in.includes(d.status))
-          : []
-        return { status: StatusEnum.ok, data: { result } }
-      }
-      dbInit.dcaDealsDb.readData = read
-      dbInit.comboDealsDb.readData = async () => ({
-        status: StatusEnum.ok,
-        data: { result: [] },
-      })
-      // E3: resting orders that already lock a deal's reserved asset, and
-      // the base-order rows minigrids are built on.
-      dbInit.orderDb.readData = async (filter: any) => ({
+  before(function () {
+    this.timeout(240000)
+    if (!DcaHelper) {
+      DcaHelper = loadModule('../dcaHelper').default(FakeBase as any)
+      ComboHelper = loadModule('../comboHelper').default(DcaHelper)
+    }
+    saved = {
+      dcaRead: dbInit.dcaDealsDb.readData,
+      comboRead: dbInit.comboDealsDb.readData,
+      lot: dbInit.fundingLotDb.createData,
+      lotRead: dbInit.fundingLotDb.readData,
+      orderRead: dbInit.orderDb.readData,
+    }
+    // Fix round 2 plumbing: the lot writer first looks a lot up by its
+    // client id (restart after the lot was written) — read the same `lots`.
+    dbInit.fundingLotDb.readData = async (filter: any) => {
+      const i = lots.findIndex((l) => l.clientOrderId === filter.clientOrderId)
+      return {
         status: StatusEnum.ok,
         data: {
-          result: filter.clientOrderId
-            ? baseStarts
-                .filter((c) => filter.clientOrderId.$in.includes(c))
-                .map((clientOrderId) => ({ clientOrderId }))
-            : restingOrders.filter(
-                (r) =>
-                  filter.dealId.$in.includes(r.dealId) &&
-                  r.side === filter.side,
-              ),
+          result: i < 0 ? undefined : { ...lots[i], _id: `lot${i + 1}` },
         },
-      })
-      FundingLock.getInstance().setStore(lockStore)
+      }
+    }
+    dbInit.fundingLotDb.createData = async (lot: any) => {
+      lots.push(lot)
+      return {
+        status: StatusEnum.ok,
+        data: { ...lot, _id: `lot${lots.length}` },
+      }
+    }
+    // The REAL FundingReservation reads the deals collections: answer from
+    // the fake accounts' deals.
+    const read = async (filter: any) => {
+      const acc = accounts.find((a) => a.uuid === filter.exchangeUUID)
+      const result = acc
+        ? [...acc.deals.entries()]
+            .map(([_id, d]) => ({ _id, ...d }))
+            .filter((d) => filter.status.$in.includes(d.status))
+        : []
+      return { status: StatusEnum.ok, data: { result } }
+    }
+    dbInit.dcaDealsDb.readData = read
+    dbInit.comboDealsDb.readData = async () => ({
+      status: StatusEnum.ok,
+      data: { result: [] },
     })
-    after(() => {
-      dbInit.dcaDealsDb.readData = saved.dcaRead
-      dbInit.comboDealsDb.readData = saved.comboRead
-      dbInit.fundingLotDb.readData = saved.lotRead
-      dbInit.fundingLotDb.createData = saved.lot
-      dbInit.orderDb.readData = saved.orderRead
-      accounts = []
+    // E3: resting orders that already lock a deal's reserved asset, and
+    // the base-order rows minigrids are built on.
+    dbInit.orderDb.readData = async (filter: any) => ({
+      status: StatusEnum.ok,
+      data: {
+        result: filter.clientOrderId
+          ? baseStarts
+              .filter((c) => filter.clientOrderId.$in.includes(c))
+              .map((clientOrderId) => ({ clientOrderId }))
+          : restingOrders.filter(
+              (r) =>
+                filter.dealId.$in.includes(r.dealId) && r.side === filter.side,
+            ),
+      },
     })
+    FundingLock.getInstance().setStore(lockStore)
+  })
+  after(() => {
+    dbInit.dcaDealsDb.readData = saved.dcaRead
+    dbInit.comboDealsDb.readData = saved.comboRead
+    dbInit.fundingLotDb.readData = saved.lotRead
+    dbInit.fundingLotDb.createData = saved.lot
+    dbInit.orderDb.readData = saved.orderRead
+    accounts = []
+  })
 
   describe('restoreWork — non-ASAP start deal funded before the restart (fix round 2, item 6)', () => {
     /** Thin harness: only what `restoreWork` touches on the start-deal path. */
@@ -534,7 +538,12 @@ describe('Spec 044 phase 3 — adversarial review pass 3', () => {
           virtualEntry: { qty: 1, price: PRICE, quoteReserved: 100 },
           lotIds: [],
           sourcedByBot: true,
-          pendingTrade: { clientOrderId, side: OrderSideEnum.buy, qty: 2, at: 1 },
+          pendingTrade: {
+            clientOrderId,
+            side: OrderSideEnum.buy,
+            qty: 2,
+            at: 1,
+          },
         },
       })
       const filled = {
@@ -550,7 +559,14 @@ describe('Spec 044 phase 3 — adversarial review pass 3', () => {
       // No dealStart row (the restore's own read), the funding row by client id.
       bot.ordersDb.readData = async (filter: any) => ({
         status: StatusEnum.ok,
-        data: { result: filter?.clientOrderId === clientOrderId ? filled : filter?.typeOrder ? [] : null },
+        data: {
+          result:
+            filter?.clientOrderId === clientOrderId
+              ? filled
+              : filter?.typeOrder
+                ? []
+                : null,
+        },
       })
       await bot.restoreWork()
       expect(bot.closed).to.have.length(0)
@@ -562,7 +578,10 @@ describe('Spec 044 phase 3 — adversarial review pass 3', () => {
 
     it('an action but no funding record (crash before the intent): cancelled as stale, nothing sent', async () => {
       const account = newAccount(1.5, 1000)
-      const { bot } = restoreBot({ account, startCondition: 'TradingviewSignals' })
+      const { bot } = restoreBot({
+        account,
+        startCondition: 'TradingviewSignals',
+      })
       bot.ordersDb.readData = async () => ({
         status: StatusEnum.ok,
         data: { result: [] },
@@ -575,22 +594,23 @@ describe('Spec 044 phase 3 — adversarial review pass 3', () => {
 
   describe('partial funding fills (fix round 2, item 7)', () => {
     /** A quote-sized market buy (Bybit / Coinbase / Bitget spot: main.ts sends `qty × price` in quote). */
-    const quoteSizedFill = (askOverLast: number) => async function (this: any, order: any) {
-      this.sent.push(order)
-      if (order.typeOrder !== TypeOrderEnum.funding) {
-        return { ...order, status: 'FILLED', executedQty: order.origQty }
+    const quoteSizedFill = (askOverLast: number) =>
+      async function (this: any, order: any) {
+        this.sent.push(order)
+        if (order.typeOrder !== TypeOrderEnum.funding) {
+          return { ...order, status: 'FILLED', executedQty: order.origQty }
+        }
+        const quote = +order.origQty * PRICE
+        const ask = PRICE * askOverLast
+        const executed = Math.floor((quote / ask) * 1000) / 1000
+        return {
+          ...order,
+          status: 'FILLED',
+          orderId: '42',
+          executedQty: `${executed}`,
+          cummulativeQuoteQty: `${executed * ask}`,
+        }
       }
-      const quote = +order.origQty * PRICE
-      const ask = PRICE * askOverLast
-      const executed = Math.floor((quote / ask) * 1000) / 1000
-      return {
-        ...order,
-        status: 'FILLED',
-        orderId: '42',
-        executedQty: `${executed}`,
-        cummulativeQuoteQty: `${executed * ask}`,
-      }
-    }
 
     it('a quote-sized market buy filled 0.1% above the last price retires the deal (false retirement, bought base orphaned)', async () => {
       const account = newAccount(0, 1000)

@@ -64,7 +64,7 @@ import {
   DCACloseTriggerEnum,
 } from '../../types'
 import { observedFeeOnSide, observedFeeSplit } from './orderFee'
-import { comboFeeOrderQty } from './baseFunding'
+import { HEDGE_FUNDING_ACTIONS, comboFeeOrderQty } from './baseFunding'
 import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import utils from '../utils'
@@ -4558,7 +4558,13 @@ function createComboBotHelper<
       // DCA levels sell base the account must hold: the base order is a
       // virtual entry, and its minigrid lies below the entry, so it only buys,
       // with the entry's reserved quote.
-      const fundingMode = this.shortSpotFundingMode(settings)
+      // Before the deal exists: the beta gate, asked live — and only when a
+      // funding mode would otherwise apply.
+      const fundingMode =
+        this.shortSpotFundingMode(settings, true) &&
+        (await this.baseFundingAllowed())
+          ? this.shortSpotFundingMode(settings, true)
+          : null
       if (fundingMode && ex) {
         const decision = await this.planShortSpotFunding(
           symbol,
@@ -5146,6 +5152,15 @@ function createComboBotHelper<
       }
       const _id = this.startMethod('createDeal')
       const time = new Date().getTime()
+      // Spec 044 beta gate: asked once, stamped on the deal — only when base
+      // funding could apply to it (a spot deal with a hedge start action or
+      // a base-funding mode), so no other deal ever reads the user's roles.
+      const baseFundingBeta =
+        !this.data?.settings.futures &&
+        (!!this.data?.action ||
+          this.shortSpotFundingMode(await this.getAggregatedSettings(), true) !==
+            null) &&
+        (await this.baseFundingAllowed())
       let symbolData: Symbols | undefined
       try {
         const ed = await this.getExchangeInfo(symbol)
@@ -5301,6 +5316,7 @@ function createComboBotHelper<
           flags,
           parentBotId: this.data.parentBotId,
           action: this.data.settings.futures ? undefined : this.data.action,
+          ...(baseFundingBeta ? { baseFundingBeta: true } : {}),
         } as any)
         if (record.status === StatusEnum.notok) {
           this.handleErrors(
@@ -5440,7 +5456,12 @@ function createComboBotHelper<
             avg: +baseOrder.price,
             time: this.getDeal(dealId)?.deal.createTime,
           })
-          if (!this.data.settings.futures && dealId) {
+          if (
+            !this.data.settings.futures &&
+            dealId &&
+            // Spec 044 beta gate: only a deal created with base funding.
+            this.isBaseFundingDeal(this.getDeal(dealId)?.deal)
+          ) {
             // Spec 044 §8: a deal funded (or being funded) before a restart
             // never gets a real base order.
             const resumed = await this.resumeFundedEntry(
@@ -5504,7 +5525,53 @@ function createComboBotHelper<
                   false,
                 )
               }
-              if (deal.deal.action) {
+              if (deal.deal.action && !this.isBaseFundingDeal(deal.deal)) {
+                // Spec 044 beta gate: a deal created without base funding
+                // starts exactly as before phases 2–3 (phase-1 hedge funding).
+                if (deal.deal.action !== ActionsEnum.useBalance) {
+                  if (deal.deal.action === ActionsEnum.noAction) {
+                    this.resetPending(this.botId, symbol)
+                    this.endMethod(_id)
+                    return this.handleErrors(
+                      `Cannot place base order. Action is noAction`,
+                      'placeBaseOrder',
+                    )
+                  }
+                  let proceedBaseOrder = false
+                  if (
+                    HEDGE_FUNDING_ACTIONS.includes(deal.deal.action) &&
+                    deal.deal.settings.useDca
+                  ) {
+                    this.handleDebug(`Action ${deal.deal.action} detected`)
+                    if (
+                      !(await this.placeHedgeFundingOrder(
+                        symbol,
+                        dealId,
+                        deal.deal,
+                        deal.deal.action,
+                      ))
+                    ) {
+                      this.endMethod(_id)
+                      return
+                    }
+                    proceedBaseOrder = true
+                  }
+                  if (deal.deal.action === ActionsEnum.useOppositeBalance) {
+                    this.handleDebug(`Action ${deal.deal.action} detected`)
+                    proceedBaseOrder = true
+                  }
+                  if (proceedBaseOrder) {
+                    baseOrder.status = 'FILLED'
+                    baseOrder.executedQty = baseOrder.origQty
+                    // main-app spec 044 §3.3: no venue trade behind this fill.
+                    baseOrder.fundingSource = 'virtual'
+                    this.setOrder(baseOrder)
+                    this.ordersDb.createData(baseOrder)
+                    this.endMethod(_id)
+                    return this.startDeal(baseOrder)
+                  }
+                }
+              } else if (deal.deal.action) {
                 if (deal.deal.action === ActionsEnum.noAction) {
                   this.resetPending(this.botId, symbol)
                   this.endMethod(_id)

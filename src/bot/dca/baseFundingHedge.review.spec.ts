@@ -133,6 +133,8 @@ const dbInit = loadModule('../../db/dbInit')
 let saved: Record<string, any> = {}
 
 type Setup = {
+  /** Spec 044 beta gate: a user without the BaseFundingBeta role. */
+  nonBeta?: boolean
   account: Account
   long?: boolean
   combo?: boolean
@@ -161,6 +163,8 @@ const buildBot = (o: Setup) => {
   const account = o.account
   const findDeal: any = {
     deal: {
+      // Spec 044 beta gate: deals are created stamped for a beta user.
+      ...(o.nonBeta ? {} : { baseFundingBeta: true }),
       _id: dealId,
       botId: `${dealId}-bot`,
       exchangeUUID: account.uuid,
@@ -219,6 +223,10 @@ const buildBot = (o: Setup) => {
           ? [status].flat()
           : undefined
       return rows.filter((r) => !wanted || wanted.includes(r.status))
+    }
+    // Spec 044 beta gate: the user's role, asked live (no DB here).
+    async baseFundingAllowed() {
+      return !o.nonBeta
     }
     async getAggregatedSettings(deal?: any) {
       return { ...settings, ...(deal?.settings ?? {}) }

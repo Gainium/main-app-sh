@@ -1623,6 +1623,12 @@ export interface DCADealsSchema extends SchemaI {
   /** main-app spec 044 — absent unless the bot funded the deal itself. */
   botFunding?: DealFunding
   fundingHold?: DealFundingHold
+  /**
+   * Spec 044 beta gate: base funding (phases 2–3) was available to the user
+   * when this deal was created. Everything the engine does for the deal
+   * follows this stamp, never a later role read.
+   */
+  baseFundingBeta?: boolean
   fullFee?: number
   fixSize?: number
   /**

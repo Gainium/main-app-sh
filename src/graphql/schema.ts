@@ -223,6 +223,8 @@ export const UserSchema = /* GraphQL */ `
     previewHedgeFunding(
       input: previewHedgeFundingInput!
     ): previewHedgeFundingResponse
+    # Spec 044 beta gate: is base funding on for the session user? Never an error.
+    baseFundingAccess: baseFundingAccess!
     updateBalance(input: updateBalanceInput): getPortfolioResponse
     updateStatus: updateStatusResponse
     getUserPeriods: getUserPeriodsResponse
@@ -863,6 +865,9 @@ export const UserSchema = /* GraphQL */ `
     reservedQuote: Float!
     reservedBase: Float!
     legs: [previewHedgeFundingLeg!]!
+  }
+  type baseFundingAccess {
+    available: Boolean!
   }
   type previewHedgeFundingResponse {
     status: Status!

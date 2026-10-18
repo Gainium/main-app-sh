@@ -93,6 +93,8 @@ let Helper: any
 const lots: any[] = []
 
 type Setup = {
+  /** Spec 044 beta gate: a user without the BaseFundingBeta role. */
+  nonBeta?: boolean
   settings?: any
   freeBase?: number
   freeQuote?: number
@@ -107,6 +109,8 @@ const buildBot = (o: Setup = {}) => {
   const settings = { ...SHORT, ...(o.settings ?? {}) }
   const findDeal: any = {
     deal: {
+      // Spec 044 beta gate: deals are created stamped for a beta user.
+      ...(o.nonBeta ? {} : { baseFundingBeta: true }),
       _id: DEAL_ID,
       symbol: { symbol: SYMBOL, baseAsset: 'SOL', quoteAsset: 'USDT' },
       status: o.status ?? 'start',
@@ -145,6 +149,10 @@ const buildBot = (o: Setup = {}) => {
           ? [status].flat()
           : undefined
       return rows.filter((r) => !wanted || wanted.includes(r.status))
+    }
+    // Spec 044 beta gate: the user's role, asked live (no DB here).
+    async baseFundingAllowed() {
+      return !o.nonBeta
     }
     async getAggregatedSettings(deal?: any) {
       return { ...settings, ...(deal?.settings ?? {}) }
@@ -392,11 +400,11 @@ describe('Short spot deal funded by the bot (main-app spec 044 phase 2)', () => 
       })
       bot.combo = true
       expect(
-        bot.shortSpotFundingMode(await bot.getAggregatedSettings()),
+        bot.shortSpotFundingMode(await bot.getAggregatedSettings(), true),
       ).to.equal(BaseFundingEnum.auto)
       bot.combo = false
       expect(
-        bot.shortSpotFundingMode(await bot.getAggregatedSettings()),
+        bot.shortSpotFundingMode(await bot.getAggregatedSettings(), true),
       ).to.equal(null)
     })
 
@@ -443,6 +451,21 @@ describe('Short spot deal funded by the bot (main-app spec 044 phase 2)', () => 
         price: PRICE,
         asset: 'USDT',
       })
+    })
+
+    it('beta gate: a user without the role is checked as require (needs its base)', async () => {
+      const { bot } = buildBot({ freeBase: 0, freeQuote: 1000, nonBeta: true })
+      const r = await bot.checkBalance(SYMBOL)
+      expect(r.status).to.equal(false)
+      expect(r.asset).to.equal(undefined)
+    })
+
+    it('beta gate: a deal created without the role opens on held base', async () => {
+      const { bot } = buildBot({ freeBase: 0, freeQuote: 1000, nonBeta: true })
+      expect(
+        await bot.fundShortSpotEntry(SYMBOL, DEAL_ID, marketBase()),
+      ).to.equal('held')
+      expect(bot.sent).to.have.length(0)
     })
 
     it('without a funding mode a short still needs its base', async () => {

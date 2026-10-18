@@ -1,3 +1,4 @@
+import { coerceBaseFundingSetting } from './baseFundingGate'
 import DB from '../db'
 import { v4 } from 'uuid'
 import { Worker, isMainThread, threadId } from 'worker_threads'
@@ -3868,6 +3869,8 @@ class Bot<T extends UserSchema = UserSchema> {
     },
     paperContext: boolean,
   ) {
+    // Spec 044 beta gate.
+    await coerceBaseFundingSetting(userId, _settings)
     const { vars, ...rest } = _settings
     // Same invariant as changeDCABot: a bot that scales DCA on atr/adr needs
     // the startDca indicator that prices its ladder, or it can never open a
@@ -4007,6 +4010,8 @@ class Bot<T extends UserSchema = UserSchema> {
     _settings: CreateComboBotInput,
     paperContext: boolean,
   ) {
+    // Spec 044 beta gate.
+    await coerceBaseFundingSetting(userId, _settings)
     // Combo settings extend DCA settings and comboHelper extends dcaHelper, so
     // the atr/adr ladder — and its silent-no-deal failure — applies here too.
     const { vars, ...rest } = _settings
@@ -4935,6 +4940,8 @@ class Bot<T extends UserSchema = UserSchema> {
       )
     }
     const { id, vars, adoptOpenDeals, ...settings } = input
+    // Spec 044 beta gate.
+    await coerceBaseFundingSetting(userId, settings)
     const bot = await this.dcaBotDb.readData({
       _id: id,
       userId,
@@ -5254,6 +5261,8 @@ class Bot<T extends UserSchema = UserSchema> {
       )
     }
     const { id, vars, ...settings } = input
+    // Spec 044 beta gate.
+    await coerceBaseFundingSetting(userId, settings)
     // Spec 139 §2.4: combo bots do not take single position.
     delete settings.singlePosition
     delete settings.maxPositionEntries

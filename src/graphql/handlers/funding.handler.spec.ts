@@ -7,7 +7,7 @@ process.env.NODE_ENV = 'testing'
  *
  * Run: `npm test` (mocha).
  */
-import { describe, it, before, after } from 'mocha'
+import { describe, it, before, after, afterEach } from 'mocha'
 import { expect } from 'chai'
 import { createRequire } from 'module'
 import { StatusEnum } from '../../../types'
@@ -16,7 +16,12 @@ const load = createRequire(__filename)
 const dbInit = load('../../db/dbInit')
 const balanceHandler = load('./balance.handler')
 const { FundingReservation } = load('../../bot/fundingReservation')
-const { previewHedgeFunding } = load('./funding.handler')
+const { previewHedgeFunding, previewFunding, baseFundingAccess } =
+  load('./funding.handler')
+const { BaseFundingGate } = load('../../bot/baseFundingGate')
+const { createRoleReader } = load('../../utils/roleGate')
+// Spec 044 beta gate: the session user holds the role unless a test says not.
+let roles: Record<string, string[]> = { u1: ['BaseFundingBeta'] }
 
 // Captured in `before`, not at load: other specs install root-level stubs
 // (e.g. on `pairDb.readData`) that must be put back as they were.
@@ -84,6 +89,9 @@ describe('previewHedgeFunding (main-app spec 044 §8)', () => {
         { asset: 'USDT', free: `${free.USDT}` },
       ],
     })
+    BaseFundingGate.getInstance().setRoleReader(
+      createRoleReader(async (id: string) => roles[id], 0),
+    )
     FundingReservation.prototype.reservedQuote = async () => reserved.quote
     FundingReservation.prototype.reservedBase = async () => reserved.base
   })
@@ -191,5 +199,41 @@ describe('previewHedgeFunding (main-app spec 044 §8)', () => {
         })) as any
       ).status,
     ).to.equal(StatusEnum.notok)
+  })
+
+  describe('beta gate', () => {
+    afterEach(() => {
+      roles = { u1: ['BaseFundingBeta'] }
+    })
+
+    it('previews refuse a user without the role, with no data', async () => {
+      roles = { u1: ['Alpha'] }
+      const hedge: any = await previewHedgeFunding(user, input())
+      expect(hedge).to.deep.equal({
+        status: StatusEnum.notok,
+        reason: 'Base funding is not available for your account yet.',
+        data: null,
+      })
+      const single: any = await previewFunding(user, {
+        exchangeUUID: 'acc-1',
+        exchange: 'binance',
+        pair: 'SOLUSDT',
+        mode: 'auto',
+        baseOrderQty: 1,
+        safetyQty: 2,
+        price: 100,
+      })
+      expect(single.status).to.equal(StatusEnum.notok)
+      expect(single.data).to.equal(null)
+    })
+
+    it('baseFundingAccess answers per role and never fails', async () => {
+      expect(await baseFundingAccess('u1')).to.deep.equal({ available: true })
+      roles = { u1: [] }
+      expect(await baseFundingAccess('u1')).to.deep.equal({ available: false })
+      expect(await baseFundingAccess(undefined)).to.deep.equal({
+        available: false,
+      })
+    })
   })
 })

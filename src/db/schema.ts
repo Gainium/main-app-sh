@@ -2385,6 +2385,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   },
   botFunding: dealFunding,
   fundingHold: dealFundingHold,
+  baseFundingBeta: Boolean,
   tags: [String],
   ac: {
     before: Number,
@@ -2570,6 +2571,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   },
   botFunding: dealFunding,
   fundingHold: dealFundingHold,
+  baseFundingBeta: Boolean,
   tags: [String],
   flags: [String],
   ac: {
