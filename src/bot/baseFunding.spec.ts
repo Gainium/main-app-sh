@@ -7,8 +7,17 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import { planFunding, planHedgeLegFunding } from './baseFunding'
-import { ActionsEnum, OrderSideEnum, TypeOrderEnum } from '../../types'
+import {
+  planFunding,
+  planHedgeLegFunding,
+  planShortSpotDealFunding,
+} from './baseFunding'
+import {
+  ActionsEnum,
+  BaseFundingEnum,
+  OrderSideEnum,
+  TypeOrderEnum,
+} from '../../types'
 
 describe('planFunding (main-app spec 044)', () => {
   const base = {
@@ -185,5 +194,127 @@ describe('planHedgeLegFunding (main-app spec 044 §6.5)', () => {
         }),
       ).to.equal(null)
     }
+  })
+})
+
+describe('planShortSpotDealFunding (main-app spec 044 §2.1)', () => {
+  // Base order 1, safety orders 2, at 100: the reserve is 100 quote.
+  const deal = {
+    baseOrderQty: 1,
+    safetyQty: 2,
+    price: 100,
+    basePrecision: 3,
+  }
+
+  it('require (or missing) leaves the deal to the old balance check', () => {
+    for (const mode of [BaseFundingEnum.require, undefined as any]) {
+      expect(
+        planShortSpotDealFunding({
+          ...deal,
+          mode,
+          freeBase: 0,
+          freeQuote: 1e6,
+        }).kind,
+      ).to.equal('held')
+    }
+  })
+
+  it('auto with enough base for the whole deal sells it as before', () => {
+    expect(
+      planShortSpotDealFunding({
+        ...deal,
+        mode: BaseFundingEnum.auto,
+        freeBase: 3,
+        freeQuote: 0,
+      }).kind,
+    ).to.equal('held')
+  })
+
+  it('auto with no base: virtual base order, buys every safety order', () => {
+    const d = planShortSpotDealFunding({
+      ...deal,
+      mode: BaseFundingEnum.auto,
+      freeBase: 0,
+      freeQuote: 1000,
+    })
+    expect(d.kind).to.equal('fund')
+    if (d.kind !== 'fund') return
+    expect(d.virtualEntryQty).to.equal(1)
+    expect(d.quoteReserved).to.equal(100)
+    expect(d.trade?.side).to.equal(OrderSideEnum.buy)
+    expect(d.trade?.baseQty).to.equal(2)
+    expect(d.quoteNeeded).to.equal(300)
+    expect(d.sourcedByBot).to.equal(true)
+  })
+
+  it('auto with some base: it goes to the safety orders, the rest is bought', () => {
+    const d = planShortSpotDealFunding({
+      ...deal,
+      mode: BaseFundingEnum.auto,
+      freeBase: 1.5,
+      freeQuote: 1000,
+    })
+    if (d.kind !== 'fund') throw new Error(d.kind)
+    expect(d.heldUsed).to.equal(1.5)
+    expect(d.trade?.baseQty).to.equal(0.5)
+    expect(d.sourcedByBot).to.equal(false)
+  })
+
+  it('auto with base covering the safety orders only: no trade, virtual entry', () => {
+    const d = planShortSpotDealFunding({
+      ...deal,
+      mode: BaseFundingEnum.auto,
+      freeBase: 2,
+      freeQuote: 100,
+    })
+    if (d.kind !== 'fund') throw new Error(d.kind)
+    expect(d.trade).to.equal(null)
+    expect(d.quoteNeeded).to.equal(100)
+  })
+
+  it('botOnly never counts the free base', () => {
+    const d = planShortSpotDealFunding({
+      ...deal,
+      mode: BaseFundingEnum.botOnly,
+      freeBase: 50,
+      freeQuote: 1000,
+    })
+    if (d.kind !== 'fund') throw new Error(d.kind)
+    expect(d.heldUsed).to.equal(0)
+    expect(d.trade?.baseQty).to.equal(2)
+    expect(d.sourcedByBot).to.equal(true)
+  })
+
+  it('refuses when the quote cannot cover the reserve plus the buy', () => {
+    const d = planShortSpotDealFunding({
+      ...deal,
+      mode: BaseFundingEnum.auto,
+      freeBase: 0,
+      freeQuote: 299,
+    })
+    expect(d).to.deep.equal({ kind: 'refuse', required: 300, available: 299 })
+  })
+
+  it('quote other funded deals reserve is not available', () => {
+    const d = planShortSpotDealFunding({
+      ...deal,
+      mode: BaseFundingEnum.auto,
+      freeBase: 0,
+      freeQuote: 1000,
+      reservedQuote: 800,
+    })
+    expect(d).to.deep.equal({ kind: 'refuse', required: 300, available: 200 })
+  })
+
+  it('a zero price is not this planner’s call', () => {
+    expect(
+      planShortSpotDealFunding({
+        ...deal,
+        price: 0,
+        mode: BaseFundingEnum.auto,
+        freeBase: 0,
+        freeQuote: 0,
+      }).kind,
+    ).to.equal('held')
   })
 })

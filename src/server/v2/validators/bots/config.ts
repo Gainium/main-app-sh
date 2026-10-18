@@ -6,6 +6,7 @@ import {
   LWConditionEnum,
   CloseConditionEnum,
   CloseDCATypeEnum,
+  BaseFundingEnum,
   ComboTpBase,
   CooldownOptionsEnum,
   CooldownStopTriggerEnum,
@@ -2036,6 +2037,11 @@ export const dcaBotSchemaConfig: Record<
   },
   allowRaiseToExchangeMin: { validators: [ValidatorsEnum.shouldBeBoolean] },
   reduceToAvailableBalance: { validators: [ValidatorsEnum.shouldBeBoolean] },
+  // main-app spec 044 — short spot only; ignored elsewhere.
+  baseFunding: {
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(BaseFundingEnum),
+  },
   reduceToAvailableMinSize: {
     validators: [
       ValidatorsEnum.shouldBeString,
@@ -2153,6 +2159,7 @@ export const COMBO_EXCLUDED_FIELDS: (keyof typeof COMBO_FORM_DEFAULTS)[] = [
 export const TERMINAL_DEAL_EXCLUDED_FIELDS: (keyof typeof DCA_FORM_DEFAULTS)[] =
   [
     'gridLevel',
+    'baseFunding',
     'comboSmartGridsCount',
     'type',
     'comboUseSmartGrids',

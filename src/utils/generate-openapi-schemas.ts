@@ -168,6 +168,11 @@ const fieldMetadata: Record<
       'Smallest base order a reduced deal may open with, in the base order size unit. Below it the deal is skipped. Empty or 0: no floor beyond the exchange minimum',
     example: '20',
   },
+  baseFunding: {
+    description:
+      'Short spot DCA / combo bots: what to do when the free base does not cover the deal. require (default): skip the deal. auto: use the free base and buy only the shortfall for the safety orders at market; the base order is recorded at the current price without a trade, and its quote stays reserved until the deal closes. botOnly: never use the free base; the bot buys what the safety orders need',
+    example: 'require',
+  },
 
   // Start conditions
   startCondition: {

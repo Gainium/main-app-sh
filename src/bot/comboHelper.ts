@@ -1678,7 +1678,11 @@ function createComboBotHelper<
               status: { $in: ['FILLED', 'PARTIALLY_FILLED'] },
               typeOrder: {
                 //@ts-ignore
-                $nin: [TypeOrderEnum.br, TypeOrderEnum.rebalance],
+                $nin: [
+                  TypeOrderEnum.br,
+                  TypeOrderEnum.rebalance,
+                  TypeOrderEnum.funding,
+                ],
               },
             },
           },
@@ -4319,6 +4323,19 @@ function createComboBotHelper<
       }
       return []
     }
+    /**
+     * Main-app spec 044: base a short combo deal's DCA levels sell, with the
+     * same per-level step padding {@link checkBalance} requires.
+     */
+    override async fundedSafetyQty(ladder: Grid[], symbol: string) {
+      const ex = await this.getExchangeInfo(symbol)
+      const pad = this.futures
+        ? 0
+        : (ex?.baseAsset.step ?? 0) * +(this.data?.settings.gridLevel ?? '1')
+      return ladder
+        .filter((g) => g.type === TypeOrderEnum.dealRegular)
+        .reduce((acc, g) => acc + g.qty + pad, 0)
+    }
     override async checkBalance(
       symbol: string,
       sizeMultiplier = 1,
@@ -4336,6 +4353,8 @@ function createComboBotHelper<
        * the account holds — callers must not price a shortfall off it.
        */
       unknown?: boolean
+      /** See `dcaHelper.checkBalance`. */
+      asset?: string
     }> {
       const result = {
         status: true,
@@ -4484,11 +4503,41 @@ function createComboBotHelper<
                     this.data?.settings.gridLevel ||
                     '1'
                   ))
-      const scaledAmount =
-        requiredAmount *
-        (Number.isFinite(sizeMultiplier) && sizeMultiplier > 0
+      const multiplier =
+        Number.isFinite(sizeMultiplier) && sizeMultiplier > 0
           ? sizeMultiplier
-          : 1)
+          : 1
+      const scaledAmount = requiredAmount * multiplier
+      // Main-app spec 044: a short spot deal the bot may fund itself. Only the
+      // DCA levels sell base the account must hold: the base order is a
+      // virtual entry, and its minigrid lies below the entry, so it only buys,
+      // with the entry's reserved quote.
+      const fundingMode = this.shortSpotFundingMode(settings)
+      if (fundingMode && ex) {
+        const decision = await this.planShortSpotFunding(
+          symbol,
+          fundingMode,
+          (+base.origQty + additionalValue) * multiplier,
+          (await this.fundedSafetyQty(initialGrids, symbol)) * multiplier,
+          latestPrice,
+          balance,
+        )
+        if (decision?.kind === 'fund') {
+          this.handleDebug(
+            `Balance check: deal funded by the bot (${fundingMode}), quote needed ${decision.quoteNeeded}`,
+          )
+          return result
+        }
+        if (decision?.kind === 'refuse') {
+          return {
+            status: false,
+            required: decision.required,
+            available: decision.available,
+            price: latestPrice,
+            asset: ed.quoteAsset.name,
+          }
+        }
+      }
 
       let available =
         (this.futures
@@ -4498,6 +4547,13 @@ function createComboBotHelper<
           : this.isLong
             ? (balance?.get(ed.quoteAsset.name)?.free ?? 0)
             : balance?.get(ed.baseAsset.name)?.free) ?? 0
+      if (!this.futures && this.isLong) {
+        // Spec 044 §5: quote a bot-funded short's take profit will spend.
+        const reserved = await this.reservedFundingQuote(ed.quoteAsset.name)
+        if (reserved > 0) {
+          available = Math.max(0, available - reserved)
+        }
+      }
       if (scaledAmount / leverage > available) {
         available = await this.pooledMarginOrKeep(
           ed.quoteAsset.name,
@@ -5404,6 +5460,23 @@ function createComboBotHelper<
                   baseOrder.fundingSource = 'virtual'
                   this.setOrder(baseOrder)
                   this.ordersDb.createData(baseOrder)
+                  this.endMethod(_id)
+                  return this.startDeal(baseOrder)
+                }
+              }
+              if (!deal.deal.action) {
+                // Main-app spec 044: a short spot deal the bot funds itself.
+                const funded = await this.fundShortSpotEntry(
+                  symbol,
+                  dealId,
+                  baseOrder,
+                )
+                if (funded === 'refused') {
+                  // Reported and the deal retired, like an unbuilt entry.
+                  this.endMethod(_id)
+                  return
+                }
+                if (funded === 'virtual') {
                   this.endMethod(_id)
                   return this.startDeal(baseOrder)
                 }

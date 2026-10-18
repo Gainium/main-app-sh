@@ -17,7 +17,13 @@
  * Pure, so `baseFunding.spec.ts` can pin it.
  */
 import { MathHelper } from '../utils/math'
-import { ActionsEnum, Grid, OrderSideEnum, TypeOrderEnum } from '../../types'
+import {
+  ActionsEnum,
+  BaseFundingEnum,
+  Grid,
+  OrderSideEnum,
+  TypeOrderEnum,
+} from '../../types'
 
 const math = new MathHelper()
 
@@ -216,4 +222,105 @@ export function planHedgeLegFunding(
     input.action === ActionsEnum.buyDiff ||
     input.action === ActionsEnum.sellDiff
   return { plan, trade: diffAction ? plan.diff : plan.all }
+}
+
+export type ShortSpotFundingInput = {
+  mode: BaseFundingEnum
+  /** The deal's base order, in base. */
+  baseOrderQty: number
+  /** Every safety order (and minigrid sell level) the deal commits to, in base. */
+  safetyQty: number
+  price: number
+  freeBase: number
+  freeQuote: number
+  /** Quote other open deals of this account hold for their virtual entries. */
+  reservedQuote?: number
+  feeRate?: number
+  minNotional?: number
+  minBase?: number
+  basePrecision: number
+}
+
+export type ShortSpotFundingDecision =
+  /** Run on the account's own base, as before (or not this deal's call). */
+  | { kind: 'held' }
+  | {
+      kind: 'fund'
+      /** The base order, recorded filled at `price` with no trade. */
+      virtualEntryQty: number
+      /** Quote the virtual entry holds until the deal closes. */
+      quoteReserved: number
+      /** The upfront buy for the safety orders; null when held base covers them. */
+      trade: FundingTrade | null
+      /** Free base counted toward the safety orders. */
+      heldUsed: number
+      /** Quote the deal needs free: the reserve plus the buy. */
+      quoteNeeded: number
+      /** No base of the account's own is sold by this deal. */
+      sourcedByBot: boolean
+    }
+  /** The account's free quote cannot cover the reserve plus the buy. */
+  | { kind: 'refuse'; required: number; available: number }
+
+/**
+ * Main-app spec 044 §2.1 — how a short spot deal opens when the free base does
+ * not cover it. Never buys base only to sell it straight back: the base order
+ * becomes a virtual entry backed by reserved quote, and only the safety orders
+ * — which rest and sell later — are funded, upfront, with real base. `auto`
+ * counts the free base toward them; `botOnly` never touches it.
+ */
+export function planShortSpotDealFunding(
+  input: ShortSpotFundingInput,
+): ShortSpotFundingDecision {
+  if (
+    input.mode !== BaseFundingEnum.auto &&
+    input.mode !== BaseFundingEnum.botOnly
+  ) {
+    return { kind: 'held' }
+  }
+  const price = finiteOrZero(input.price)
+  if (!price) {
+    return { kind: 'held' }
+  }
+  const baseOrderQty = finiteOrZero(input.baseOrderQty)
+  const safetyQty = finiteOrZero(input.safetyQty)
+  const freeBase = finiteOrZero(input.freeBase)
+  const availableQuote = Math.max(
+    0,
+    finiteOrZero(input.freeQuote) - finiteOrZero(input.reservedQuote),
+  )
+  if (
+    input.mode === BaseFundingEnum.auto &&
+    freeBase >= baseOrderQty + safetyQty
+  ) {
+    return { kind: 'held' }
+  }
+  const heldUsed =
+    input.mode === BaseFundingEnum.auto ? Math.min(freeBase, safetyQty) : 0
+  const plan = planFunding({
+    needAsset: 'base',
+    required: safetyQty,
+    held: heldUsed,
+    price,
+    feeRate: input.feeRate,
+    minNotional: input.minNotional,
+    minBase: input.minBase,
+    basePrecision: input.basePrecision,
+    spendable: availableQuote,
+  })
+  const trade = plan.diff
+  const quoteReserved = baseOrderQty * price
+  const quoteNeeded = quoteReserved + (trade?.quoteValue ?? 0)
+  if (quoteNeeded > availableQuote) {
+    return { kind: 'refuse', required: quoteNeeded, available: availableQuote }
+  }
+  return {
+    kind: 'fund',
+    virtualEntryQty: baseOrderQty,
+    quoteReserved,
+    trade,
+    heldUsed,
+    quoteNeeded,
+    sourcedByBot: heldUsed === 0,
+  }
 }

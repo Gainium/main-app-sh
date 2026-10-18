@@ -17,6 +17,7 @@ import {
   BotStartTypeEnum,
   BotStatusEnum,
   CloseDCATypeEnum,
+  BaseFundingEnum,
   ComboBotSettings,
   ComboTpBase,
   CooldownOptionsEnum,
@@ -247,6 +248,7 @@ export const DCA_FORM_DEFAULTS: DCABotSettings = {
   allowRaiseToExchangeMin: false,
   reduceToAvailableBalance: false,
   reduceToAvailableMinSize: '',
+  baseFunding: BaseFundingEnum.require,
   dcaByMarket: false,
   // Spec 139: off unless asked for; '' = no entry limit.
   singlePosition: false,

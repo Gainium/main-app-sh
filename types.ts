@@ -170,6 +170,44 @@ export enum TypeOrderEnum {
   br = 'br',
   rebalance = 'rebalance',
   hedge = 'hedge',
+  /**
+   * A market order the bot places to acquire an asset its committed orders
+   * consume (main-app spec 044). Carries the deal id for the funding lot, but
+   * is not one of the deal's orders: it starts nothing and stays out of the
+   * deal's ledger and fee ledger.
+   */
+  funding = 'funding',
+}
+
+/**
+ * What a short spot DCA / combo deal does when the free base does not cover
+ * its orders (main-app spec 044 §3.4). Missing means `require`.
+ */
+export enum BaseFundingEnum {
+  /** Refuse (or reduce, with reduceToAvailableBalance) — as before. */
+  require = 'require',
+  /** Use the free base, buy only the shortfall. */
+  auto = 'auto',
+  /** Never use the free base; the bot buys all it needs. */
+  botOnly = 'botOnly',
+}
+
+/**
+ * How a deal was funded by the bot (main-app spec 044). Absent on a deal that
+ * ran on the account's own balance.
+ */
+export type DealFunding = {
+  mode: BaseFundingEnum
+  /**
+   * The base order recorded filled at this price with no trade. Its quote is
+   * the account's own and stays reserved until the deal closes, because the
+   * take profit spends it to buy the base back.
+   */
+  virtualEntry?: { qty: number; price: number; quoteReserved: number }
+  /** `fundinglots` rows this deal's funding trades wrote. */
+  lotIds: string[]
+  /** Every base unit the deal sells came from a lot or the virtual entry. */
+  sourcedByBot: boolean
 }
 
 export enum BalancesAction {
@@ -207,6 +245,7 @@ export type TypeOrder =
   | typeof TypeOrderEnum.br
   | typeof TypeOrderEnum.rebalance
   | typeof TypeOrderEnum.hedge
+  | typeof TypeOrderEnum.funding
 export const BUY = 'BUY'
 export const SELL = 'SELL'
 export const OK = 'OK'
@@ -1012,6 +1051,11 @@ export interface DCABotSettings extends BaseSettings {
    * exchange minimum.
    */
   reduceToAvailableMinSize?: string
+  /**
+   * Short spot DCA / combo: what to do when the free base does not cover the
+   * deal (main-app spec 044). Missing means `require`.
+   */
+  baseFunding?: BaseFundingEnum
   dcaByMarket?: boolean
   /**
    * At most one open deal per pair (spec 139). A start signal on a pair that
@@ -1538,6 +1582,8 @@ export interface DCADealsSchema extends SchemaI {
   moveSlArmed?: boolean
   newBalance?: boolean
   sizes?: Sizes
+  /** main-app spec 044 — absent unless the bot funded the deal itself. */
+  botFunding?: DealFunding
   fullFee?: number
   fixSize?: number
   /**

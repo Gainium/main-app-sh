@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.103.0] - 2026-10-18
+### Added
+- Short spot DCA and combo bots can fund a deal themselves when the free base does not cover it: new bot setting `baseFunding` (`require` — default, the deal is skipped as before; `auto` — use the free base and buy only what is missing; `botOnly` — never use the free base). The base order is recorded filled at the current price without a trade, and its quote stays reserved until the deal closes, because the take profit spends it to buy the base back; only the safety orders' base is bought, once, at market when the deal opens. Market base orders sized in base, quote or USD only; hedge legs and terminal deals are unchanged. The purchase is recorded in `fundinglots`, and the deal carries `botFunding`.
+- Adding DCA levels to such a deal buys the base the new levels need beyond its resting sell orders (and the free base, in `auto`) before the change is applied; if the quote cannot cover it the change is refused and the deal is left as it was.
+- Quote reserved by bot-funded deals is no longer counted as available by long spot DCA / combo balance checks on the same account.
+- GraphQL `previewFunding` returns what a bot-funded deal (or an add-DCA edit) would buy, reserve or refuse, for the dashboard.
+- Order type `funding` for these purchases: placed without a deal id and kept out of every deal ledger.
+
 ## [1.102.8] - 2026-10-18
 ### Added
 - Base-funding planner (`bot/baseFunding.ts`): one pure calculation of how much of an asset a bot must buy or sell before placing the orders it commits to, covering use-held, buy-the-difference and buy-for-all, with fee gross-up, the exchange minimum and rounding. A `fundinglots` collection for the purchase price of assets a bot buys itself, and an `Order.fundingSource: 'virtual'` marker for order rows recorded filled without an exchange trade. No writer or reader of either yet.

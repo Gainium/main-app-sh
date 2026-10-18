@@ -67,6 +67,10 @@ import { isExchangeEnabled } from '../utils/adminConfig'
 import { describeUserAgent } from '../utils/userAgent'
 import userUtils, { checkLicenseKey, updateUserSteps } from '../utils/user'
 import { getBalances } from './handlers/balance.handler'
+import {
+  previewFunding,
+  PreviewFundingInput,
+} from './handlers/funding.handler'
 import { usableFiatRates } from '../utils/fiatRates'
 import {
   deleteBotMessage,
@@ -2500,6 +2504,20 @@ const resolvers = <
         paperContext,
         includeUsdValues,
       )
+    },
+    previewFunding: async (
+      _parent: any,
+      { input }: { input: PreviewFundingInput },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return previewFunding(user.data, input, paperContext)
     },
     getProfitByBot: async (
       _parent: any,

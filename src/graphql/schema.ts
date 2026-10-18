@@ -217,6 +217,8 @@ export const UserSchema = /* GraphQL */ `
     userFee(input: userFeeInput!): userFeeResponse
     multipleUserFees(input: multipleUserFeesInput!): multipleUserFeesResponse
     getBalances(input: getBalancesInput!): getBalancesResponse
+    # What a short spot deal the bot funds itself will do (main-app spec 044).
+    previewFunding(input: previewFundingInput!): previewFundingResponse
     updateBalance(input: updateBalanceInput): getPortfolioResponse
     updateStatus: updateStatusResponse
     getUserPeriods: getUserPeriodsResponse
@@ -756,6 +758,52 @@ export const UserSchema = /* GraphQL */ `
     status: Status
     reason: String
     data: [getBalancesResponseData]
+  }
+  input previewFundingInput {
+    exchangeUUID: String!
+    exchange: Exchange!
+    pair: String!
+    # require | auto | botOnly
+    mode: String!
+    # The deal's base order in base; 0 for an add-DCA preview.
+    baseOrderQty: Float!
+    # Safety orders the deal commits to, in base (add-DCA: its unfilled levels after the edit).
+    safetyQty: Float!
+    price: Float!
+    # Add-DCA preview: the deal whose resting sells already cover part of it.
+    dealId: String
+  }
+  type previewFundingData {
+    # held: runs on the account's own base | fund: the bot buys / records a virtual entry | refuse: not enough quote
+    kind: String
+    baseAsset: String
+    quoteAsset: String
+    freeBase: Float
+    freeQuote: Float
+    # Quote other bot-funded deals of this account hold.
+    reservedQuote: Float
+    # Deal open: base order recorded at the current price without a trade, and the quote it holds.
+    virtualEntryQty: Float
+    quoteReserved: Float
+    # Free base counted toward the safety orders.
+    heldUsed: Float
+    quoteNeeded: Float
+    # The upfront market buy.
+    buyQty: Float
+    buyQuote: Float
+    raisedToMin: Boolean
+    sourcedByBot: Boolean
+    # refuse: quote required and available. Add-DCA: base required by the levels.
+    required: Float
+    available: Float
+    # Add-DCA: base already resting in the deal's sell orders, and what is still missing.
+    inOrders: Float
+    shortfall: Float
+  }
+  type previewFundingResponse {
+    status: Status
+    reason: String
+    data: previewFundingData
   }
   input userSettingsInput {
     timezone: String
@@ -3353,6 +3401,8 @@ export const BotSchema = /* GraphQL */ `
     dcaVolumeRequiredChangeRef: String
     dcaVolumeMaxValue: String
     skipBalanceCheck: Boolean
+    # Short spot when free base is short: require (refuse, default) | auto (use free base, buy the shortfall) | botOnly (always buy). main-app spec 044
+    baseFunding: String
     baseSlOn: String
     closeByTimer: Boolean
     closeByTimerValue: Float
@@ -3537,6 +3587,8 @@ export const BotSchema = /* GraphQL */ `
     dcaVolumeRequiredChangeRef: String
     dcaVolumeMaxValue: String
     skipBalanceCheck: Boolean
+    # Short spot when free base is short: require (refuse, default) | auto (use free base, buy the shortfall) | botOnly (always buy). main-app spec 044
+    baseFunding: String
     allowRaiseToExchangeMin: Boolean
     baseSlOn: String
     closeByTimer: Boolean
@@ -5128,6 +5180,8 @@ export const BotSchema = /* GraphQL */ `
     dcaVolumeRequiredChangeRef: String
     dcaVolumeMaxValue: String
     skipBalanceCheck: Boolean
+    # Short spot when free base is short: require (refuse, default) | auto (use free base, buy the shortfall) | botOnly (always buy). main-app spec 044
+    baseFunding: String
     baseSlOn: String
     closeByTimer: Boolean
     closeByTimerValue: Float
@@ -5355,6 +5409,8 @@ export const BotSchema = /* GraphQL */ `
     dcaVolumeRequiredChangeRef: String
     dcaVolumeMaxValue: String
     skipBalanceCheck: Boolean
+    # Short spot when free base is short: require (refuse, default) | auto (use free base, buy the shortfall) | botOnly (always buy). main-app spec 044
+    baseFunding: String
     baseSlOn: String
     closeByTimer: Boolean
     closeByTimerValue: Float
@@ -5562,6 +5618,8 @@ export const BotSchema = /* GraphQL */ `
     dcaVolumeRequiredChangeRef: String
     dcaVolumeMaxValue: String
     skipBalanceCheck: Boolean
+    # Short spot when free base is short: require (refuse, default) | auto (use free base, buy the shortfall) | botOnly (always buy). main-app spec 044
+    baseFunding: String
     baseSlOn: String
     closeByTimer: Boolean
     closeByTimerValue: Float
@@ -5749,6 +5807,8 @@ export const BotSchema = /* GraphQL */ `
     dcaVolumeRequiredChangeRef: String
     dcaVolumeMaxValue: String
     skipBalanceCheck: Boolean
+    # Short spot when free base is short: require (refuse, default) | auto (use free base, buy the shortfall) | botOnly (always buy). main-app spec 044
+    baseFunding: String
     baseSlOn: String
     closeByTimer: Boolean
     closeByTimerValue: Float

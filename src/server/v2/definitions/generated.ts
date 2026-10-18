@@ -4929,6 +4929,15 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           example: '',
         },
         {
+          name: 'baseFunding',
+          type: 'enum',
+          required: false,
+          validators: ['mustBeOneOfEnum'],
+          enum: ['require', 'auto', 'botOnly'],
+          default: 'require',
+          example: 'require',
+        },
+        {
           name: 'dcaCustom',
           type: 'array',
           required: false,

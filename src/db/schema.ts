@@ -74,6 +74,7 @@ import {
   TradingviewAnalysisConditionEnum,
   TradingviewAnalysisSignalEnum,
   TypeOrderEnum,
+  BaseFundingEnum,
   CooldownUnits,
   BuyTypeEnum,
   TrailingModeEnum,
@@ -1532,6 +1533,7 @@ const dcaBotSettings = new Schema({
   allowRaiseToExchangeMin: Boolean,
   reduceToAvailableBalance: Boolean,
   reduceToAvailableMinSize: String,
+  baseFunding: { type: String, enum: BaseFundingEnum },
   dcaByMarket: Boolean,
   singlePosition: Boolean,
   maxPositionEntries: String,
@@ -1609,6 +1611,7 @@ const dcaBotSettings = new Schema({
 const comboBotSettings = new Schema<ComboBotSettings>({
   ...botSettingsCommon,
   skipBalanceCheck: Boolean,
+  baseFunding: { type: String, enum: BaseFundingEnum },
   dcaCondition: { type: String, enum: DCAConditionEnum },
   dcaVolumeBaseOn: String,
   dcaVolumeRequiredChange: String,
@@ -2166,6 +2169,18 @@ const trailingClose = {
   required: false,
 }
 
+// main-app spec 044 — how the bot funded a deal itself.
+const dealFunding = {
+  mode: { type: String, enum: BaseFundingEnum },
+  virtualEntry: {
+    qty: Number,
+    price: Number,
+    quoteReserved: Number,
+  },
+  lotIds: [String],
+  sourcedByBot: Boolean,
+}
+
 const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   startBlocked,
   trailingClose,
@@ -2347,6 +2362,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     multiplier: Number,
     multiplierScope: String,
   },
+  botFunding: dealFunding,
   tags: [String],
   ac: {
     before: Number,
@@ -2530,6 +2546,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     multiplier: Number,
     multiplierScope: String,
   },
+  botFunding: dealFunding,
   tags: [String],
   flags: [String],
   ac: {

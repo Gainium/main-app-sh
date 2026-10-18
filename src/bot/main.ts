@@ -6699,7 +6699,12 @@ class MainBot<T extends IMainBot> {
     ) {
       return order
     }
-    if (order.typeOrder === TypeOrderEnum.rebalance) {
+    if (
+      order.typeOrder === TypeOrderEnum.rebalance ||
+      // main-app spec 044: a funding trade has no remainder to chase; what
+      // filled is what the lot records.
+      order.typeOrder === TypeOrderEnum.funding
+    ) {
       return order
     }
     if (

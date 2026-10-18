@@ -530,6 +530,7 @@ const DCA_SECTIONS: SectionLayout[] = [
       'allowRaiseToExchangeMin',
       'reduceToAvailableBalance',
       'reduceToAvailableMinSize',
+      'baseFunding',
       'dcaCustom',
       'useSmartOrders',
       'gridLevel',
