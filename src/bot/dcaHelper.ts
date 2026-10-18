@@ -1,11 +1,20 @@
 import {
   FundingTrade,
+  HEDGE_FUNDING_ACTIONS,
   planFunding,
-  planHedgeLegFunding,
+  planHedgeLegDealFunding,
   planShortSpotDealFunding,
   ShortSpotFundingDecision,
 } from './baseFunding'
 import { FundingReservation } from './fundingReservation'
+import {
+  FUNDING_FILL_TOLERANCE,
+  FUNDING_QUOTE_SIZED_BUY_HEADROOM,
+  FUNDING_TRADE_TIMEOUT_MS,
+  FundingLease,
+  FundingLock,
+  FundingLockResult,
+} from './fundingLock'
 import {
   combineIndicatorGroups,
   groupStandsAlone,
@@ -168,6 +177,7 @@ import {
   CleanComboDealsSchema,
   DCACloseTriggerEnum,
   TrailingCloseRetry,
+  DealFunding,
 } from '../../types'
 import { ExchangeIntervals } from '../../types'
 import {
@@ -11003,6 +11013,48 @@ function createDCABotHelper<
             avg: +baseOrder.price,
             time: this.getDeal(dealId)?.deal.createTime,
           })
+          if (!this.data.settings.futures && dealId) {
+            // Spec 044 §8: a deal funded (or being funded) before a restart
+            // never gets a real base order.
+            const resumed = await this.resumeFundedEntry(
+              symbol,
+              dealId,
+              baseOrder,
+            )
+            if (resumed !== 'none') {
+              this.endMethod(_id)
+              return
+            }
+            // Fix round 2: a restored `start` deal whose hedge action spends
+            // the account's funds (a restart while it waited for the lock or
+            // planned, before any funding record) is decided under the lock
+            // like a new one — never an unplanned real base order.
+            const restored = oldDealId ? this.getDeal(dealId) : undefined
+            const restoredAction = restored?.deal.action
+            if (
+              restored &&
+              restored.deal.status === DCADealStatusEnum.start &&
+              restoredAction &&
+              restoredAction !== ActionsEnum.noAction &&
+              restoredAction !== ActionsEnum.useOppositeBalance
+            ) {
+              const started = await this.fundHedgeLegEntry(
+                symbol,
+                dealId,
+                baseOrder,
+                restoredAction,
+              )
+              if (started === 'refused') {
+                this.endMethod(_id)
+                return
+              }
+              if (started === 'virtual') {
+                this.endMethod(_id)
+                return this.startFundedDeal(baseOrder)
+              }
+              // `held`: the real base order below, checked and held.
+            }
+          }
           if (!this.data.settings.futures) {
             if (this.data?.action) {
               this.db?.updateData(
@@ -11025,10 +11077,7 @@ function createDCABotHelper<
                   false,
                 )
               }
-              if (
-                deal.deal.action &&
-                deal.deal.action !== ActionsEnum.useBalance
-              ) {
+              if (deal.deal.action) {
                 if (deal.deal.action === ActionsEnum.noAction) {
                   this.resetPending(this.botId, symbol)
                   this.endMethod(_id)
@@ -11037,35 +11086,10 @@ function createDCABotHelper<
                     'placeBaseOrder',
                   )
                 }
-                let proceedBaseOrder = false
-                if (
-                  [
-                    ActionsEnum.buyDiff,
-                    ActionsEnum.buyForAll,
-                    ActionsEnum.sellDiff,
-                    ActionsEnum.sellForAll,
-                  ].includes(deal.deal.action) &&
-                  deal.deal.settings.useDca
-                ) {
-                  this.handleDebug(`Action ${deal.deal.action} detected`)
-                  if (
-                    !(await this.placeHedgeFundingOrder(
-                      symbol,
-                      dealId,
-                      deal.deal,
-                      deal.deal.action,
-                    ))
-                  ) {
-                    this.endMethod(_id)
-                    return
-                  }
-                  proceedBaseOrder = true
-                }
+                this.handleDebug(`Action ${deal.deal.action} detected`)
                 if (deal.deal.action === ActionsEnum.useOppositeBalance) {
-                  this.handleDebug(`Action ${deal.deal.action} detected`)
-                  proceedBaseOrder = true
-                }
-                if (proceedBaseOrder) {
+                  // Unchanged: virtual base order, virtual levels — nothing
+                  // of the account's is spent at start.
                   baseOrder.status = 'FILLED'
                   baseOrder.executedQty = baseOrder.origQty
                   // main-app spec 044 §3.3: no venue trade behind this fill.
@@ -11075,6 +11099,25 @@ function createDCABotHelper<
                   this.endMethod(_id)
                   return this.startDeal(baseOrder)
                 }
+                // Main-app spec 044 §8: every other hedge start action uses
+                // the account's funds and is decided — and funded, or its need
+                // held — under the account's funding lock.
+                const started = await this.fundHedgeLegEntry(
+                  symbol,
+                  dealId,
+                  baseOrder,
+                  deal.deal.action,
+                )
+                if (started === 'refused') {
+                  this.endMethod(_id)
+                  return
+                }
+                if (started === 'virtual') {
+                  this.endMethod(_id)
+                  return this.startFundedDeal(baseOrder)
+                }
+                // `held`: `useBalance`, a funding action without DCA, or a
+                // `*Diff` leg its own funds cover — the real base order below.
               }
               if (!deal.deal.action) {
                 // Main-app spec 044: a short spot deal the bot funds itself.
@@ -11090,7 +11133,7 @@ function createDCABotHelper<
                 }
                 if (funded === 'virtual') {
                   this.endMethod(_id)
-                  return this.startDeal(baseOrder)
+                  return this.startFundedDeal(baseOrder)
                 }
               }
             }
@@ -11109,6 +11152,10 @@ function createDCABotHelper<
             },
             true,
           )
+          if (dealId && this.getDeal(dealId)?.deal.fundingHold) {
+            // Spec 044 §8.4: the base order no longer needs holding.
+            await this.syncFundingHold(dealId)
+          }
           if (result) {
             if (
               typeof result !== 'string' &&
@@ -13680,6 +13727,32 @@ function createDCABotHelper<
             // deal into a long the strategy had since flipped short on. Only
             // ASAP carries no timing, so only ASAP replays.
             const dealSettings = await this.getAggregatedSettings(d.deal)
+            // Spec 044 §8 (fix round 2): funded — or being funded — before the
+            // restart. Resume or retire it (`resumeFundedEntry`, which links
+            // any funding lot); a stale-trigger cancel here would drop the lot.
+            if (
+              d.deal.botFunding?.pendingTrade ||
+              d.deal.botFunding?.virtualEntry
+            ) {
+              this.handleLog(
+                `${d.deal._id} was funded before the restart: resuming it`,
+              )
+              await this.placeBaseOrder(
+                this.botId,
+                d.deal.symbol.symbol,
+                d.deal._id,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                d.deal.fixSize,
+                undefined,
+                d.deal.sizes,
+                d.deal.orderSizeType,
+              )
+              continue
+            }
             if (dealSettings.startCondition !== StartConditionEnum.asap) {
               this.handleLog(
                 `${d.deal._id} (${d.deal.symbol.symbol}) never started and its ${dealSettings.startCondition} trigger has passed. Cancelling the stale deal instead of replaying it`,
@@ -15233,9 +15306,12 @@ function createDCABotHelper<
           : this.isLong
             ? (balance?.get(ed.quoteAsset.name)?.free ?? 0)
             : balance?.get(ed.baseAsset.name)?.free) ?? 0
-      if (!this.futures && this.isLong) {
+      if (!this.futures) {
         // Spec 044 §5: quote a bot-funded short's take profit will spend.
-        const reserved = await this.reservedFundingQuote(ed.quoteAsset.name)
+        // §8: base a funded long hedge leg's take profit will sell.
+        const reserved = this.isLong
+          ? await this.reservedFundingQuote(ed.quoteAsset.name)
+          : await this.reservedFundingBase(ed.baseAsset.name)
         if (reserved > 0) {
           available = Math.max(0, available - reserved)
         }
@@ -17597,12 +17673,19 @@ function createDCABotHelper<
       dealId: string,
       orders: { new: Grid[]; cancel: Grid[] },
     ): Promise<void | Order> {
-      return await this.placeOrdersHoldingDealLock(
+      const placed = await this.placeOrdersHoldingDealLock(
         _botId,
         symbol,
         dealId,
         orders,
       )
+      if (this.getDeal(dealId)?.deal.fundingHold) {
+        // Spec 044 §8.4: release what the just-placed orders held.
+        await this.syncFundingHold(dealId).catch((e: unknown) =>
+          this.handleWarn(`Cannot update funding hold of ${dealId}: ${e}`),
+        )
+      }
+      return placed
     }
 
     /**
@@ -19724,110 +19807,534 @@ function createDCABotHelper<
     }
 
     /**
-     * Main-app spec 044 §6.5 — the funding trade a hedge leg's `buyDiff` /
-     * `buyForAll` / `sellDiff` / `sellForAll` action places at deal open,
-     * before the leg's base order is filled virtually. Sized by
-     * {@link planHedgeLegFunding}: the safety orders only, against the balance
-     * of the asset they consume.
+     * Main-app spec 044 §8 (phase 3) — how a hedge leg on spot starts, for
+     * every start action that uses the account's funds, decided and recorded
+     * under the account's funding lock so the other leg of the same hedge
+     * plans after this one is recorded.
      *
-     * @returns true when the deal may proceed (traded, or nothing to trade);
-     *   false once the failure has been reported.
+     * - `buyDiff` / `buyForAll` / `sellDiff` / `sellForAll` with DCA: the base
+     *   order is a virtual entry re-priced to the latest price with its
+     *   reserve; the safety orders' asset is acquired upfront by one funding
+     *   trade (`TypeOrderEnum.funding`, no deal id). Short: buy base, reserve
+     *   the entry's quote. Long: sell base for quote, reserve the held base
+     *   the entry stands for. A `*Diff` leg whose own free funds cover the
+     *   whole deal trades nothing and runs on them (`held`).
+     * - `useBalance`, a funding action without DCA: the account's own funds
+     *   must cover the leg's real orders (`held`). (`useOppositeBalance`
+     *   spends nothing and does not come here.)
+     *
+     * What a `held` or funded leg's own orders need is held for it
+     * (`deal.fundingHold`) until they are on the book.
+     *
+     * @returns `virtual` — the base order is filled, start the deal; `held`
+     *   — send the base order as before; `refused` — reported, deal retired
+     *   or already gone.
      */
-    async placeHedgeFundingOrder(
+    async fundHedgeLegEntry(
       symbol: string,
       dealId: string,
-      deal: ExcludeDoc<Deal>,
+      baseOrder: Order,
       action: ActionsEnum,
-    ): Promise<boolean> {
-      if (!this.data) {
-        return false
-      }
-      const lp = await this.getLatestPrice(symbol)
-      const orders = await this.createInitialDealOrders(
-        symbol,
-        lp,
-        dealId,
-        deal,
+    ): Promise<'virtual' | 'held' | 'refused'> {
+      const locked = await this.runFundingSerialised((lease) =>
+        this.fundHedgeLegEntryLocked(symbol, dealId, baseOrder, action, lease),
+      ).catch(
+        // Thrown mid-plan or mid-save (the lock is already released): the
+        // deal must not stay in `start` holding nothing (D6).
+        (e: unknown) => ({
+          acquired: false as const,
+          reason: `${(e as Error)?.message ?? e}`,
+        }),
       )
-      const ei = await this.getExchangeInfo(symbol)
+      if (!locked.acquired) {
+        this.handleErrors(
+          `Cannot fund this hedge leg: ${locked.reason}`,
+          'placeBaseOrder',
+          '',
+          false,
+          true,
+          true,
+        )
+        await this.retireUnfundedDeal(dealId)
+        return 'refused'
+      }
+      return locked.value
+    }
+
+    /**
+     * Extra the deal trades out of the account at open beyond its ladder, in
+     * base (combo: its fee order). 0 for DCA.
+     */
+    async dealOpenExtraNeed(
+      _symbol: string,
+      _ladder: Grid[],
+      _baseOrderQty: number,
+      _deal?: ExcludeDoc<Deal>,
+    ): Promise<number> {
+      return 0
+    }
+
+    /** {@link fundHedgeLegEntry} once the account's funding lock is held. */
+    async fundHedgeLegEntryLocked(
+      symbol: string,
+      dealId: string,
+      baseOrder: Order,
+      action: ActionsEnum,
+      lease: FundingLease,
+    ): Promise<'virtual' | 'held' | 'refused'> {
+      const refuse = async (message: string) => {
+        // Shown to the user as a bot warning (E4); the bot is not set in error.
+        this.handleErrors(message, 'placeBaseOrder', '', false, true, true)
+        await this.retireUnfundedDeal(dealId)
+        return 'refused' as const
+      }
+      // Read after the lock is held: the deal may have moved meanwhile.
+      const deal = this.getDeal(dealId)
+      if (!deal || !this.data) {
+        return refuse(`Cannot fund hedge leg deal ${dealId}: deal not found`)
+      }
+      if (deal.deal.status !== DCADealStatusEnum.start) {
+        this.handleWarn(
+          `Hedge leg deal ${dealId} is ${deal.deal.status}, not start: not funded`,
+        )
+        return 'refused'
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      const price = await this.getLatestPrice(symbol)
+      if (!ed || !price) {
+        return refuse(
+          `Cannot fund this hedge leg: no ${!ed ? 'exchange info' : 'price'} for ${symbol}`,
+        )
+      }
+      const ladder = await this.createInitialDealOrders(
+        symbol,
+        price,
+        dealId,
+        deal.deal,
+      )
       const balances = await this.checkAssets(true, true)
+      if (!balances) {
+        return refuse(`Cannot fund this hedge leg: balances could not be read`)
+      }
       const fee = await this.getUserFee(symbol)
-      const basePrecision = await this.baseAssetPrecision(symbol)
-      const funding = planHedgeLegFunding({
+      const useDca = !!deal.deal.settings?.useDca
+      const extra = useDca
+        ? await this.dealOpenExtraNeed(
+            symbol,
+            ladder,
+            +baseOrder.origQty,
+            deal.deal,
+          )
+        : 0
+      const decision = planHedgeLegDealFunding({
         isLong: this.isLong,
         action,
-        orders,
-        price: lp,
-        freeBase: balances?.get(ei?.baseAsset.name ?? '')?.free ?? 0,
-        freeQuote: balances?.get(ei?.quoteAsset.name ?? '')?.free ?? 0,
+        useDca,
+        baseOrderQty: +baseOrder.origQty,
+        safetyQty: this.isLong
+          ? 0
+          : (await this.fundedSafetyQty(ladder, symbol)) + extra,
+        safetyQuote: this.isLong
+          ? (await this.fundedSafetyQuote(ladder, symbol)) + extra * price
+          : 0,
+        price,
+        freeBase: balances.get(ed.baseAsset.name)?.free ?? 0,
+        freeQuote: balances.get(ed.quoteAsset.name)?.free ?? 0,
+        // Fresh: the other leg may have just saved its reservation. A
+        // restored deal's own hold is for exactly these orders: not counted
+        // against itself.
+        reservedQuote: Math.max(
+          0,
+          (await this.reservedFundingQuote(ed.quoteAsset.name, true)) -
+            (deal.deal.fundingHold?.asset === 'quote'
+              ? deal.deal.fundingHold.remaining
+              : 0),
+        ),
+        reservedBase: Math.max(
+          0,
+          (await this.reservedFundingBase(ed.baseAsset.name, true)) -
+            (deal.deal.fundingHold?.asset === 'base'
+              ? deal.deal.fundingHold.remaining
+              : 0),
+        ),
         feeRate: fee?.taker ?? 0,
-        minNotional: ei?.quoteAsset.minAmount,
-        minBase: ei?.baseAsset.minAmount,
-        basePrecision,
+        buyHeadroom: this.fundingBuyHeadroom(),
+        minNotional: ed.quoteAsset.minAmount,
+        minBase: ed.baseAsset.minAmount,
+        basePrecision: await this.baseAssetPrecision(symbol),
       })
-      this.handleDebug(
-        `Hedge funding ${action}: required ${funding?.plan.required} ${funding?.plan.needAsset}, held ${funding?.plan.held}, shortfall ${funding?.plan.shortfall}, price ${lp}`,
-      )
-      const trade = funding?.trade
-      if (!trade) {
-        return true
+      if (decision.kind === 'none') {
+        return refuse(`Cannot start this hedge leg: action ${action}`)
+      }
+      if (decision.kind === 'refuse') {
+        const asset =
+          decision.asset === 'base' ? ed.baseAsset.name : ed.quoteAsset.name
+        return refuse(
+          `Not enough ${asset} to ${HEDGE_FUNDING_ACTIONS.includes(action) && useDca ? 'fund' : 'start'} this hedge leg: required ${this.math.round(decision.required, 8)}, available ${this.math.round(decision.available, 8)} after what other bot-funded deals hold`,
+        )
+      }
+      const hold = (asset: 'base' | 'quote', need: number) =>
+        need > 0 ? { asset, committed: need, remaining: need } : undefined
+      const invalidate = () =>
+        FundingReservation.getInstance().invalidate(
+          this.data?.exchangeUUID ?? '',
+          ed.quoteAsset.name,
+          ed.baseAsset.name,
+        )
+      if (decision.kind === 'held') {
+        // Runs on its own funds: hold what its orders need until placed.
+        const fundingHold = hold(decision.needAsset, decision.required)
+        if (fundingHold) {
+          if (!(await lease.owned())) {
+            return refuse(
+              `Cannot start this hedge leg: the account's funding lock was lost`,
+            )
+          }
+          const current = this.getDeal(dealId) ?? deal
+          current.deal.fundingHold = fundingHold
+          await this.saveDeal(current, { fundingHold })
+          invalidate()
+        }
+        this.handleLog(
+          `Hedge leg deal ${dealId} (${action}) runs on the account's own funds: ${this.math.round(decision.required, 8)} ${decision.needAsset === 'base' ? ed.baseAsset.name : ed.quoteAsset.name} held for its orders`,
+        )
+        return 'held'
       }
       this.handleDebug(
-        `Hedge funding order ${trade.side} ${trade.baseQty}${trade.raisedToMin ? ' (raised to exchange minimum)' : ''}`,
+        `Hedge funding ${action}: ${decision.mode}, safety orders need ${decision.required} ${decision.needAsset}, held ${decision.held}, used ${decision.heldUsed}, price ${price}`,
       )
-      const price = `${this.math.round(lp, ei?.priceAssetPrecision)}`
-      const qty = `${trade.baseQty}`
-      const r = await this.sendOrderToExchange(
-        {
-          clientOrderId: this.getOrderId('CMB-H'),
-          status: 'NEW',
-          executedQty: '0',
-          price: price,
-          origPrice: price,
-          cummulativeQuoteQty: `${+price * +qty}`,
-          orderId: '-1',
-          origQty: qty,
-          side: trade.side,
+      const entryPrice = +this.math.round(price, ed.priceAssetPrecision)
+      const qty = +baseOrder.origQty
+      const planned: DealFunding = {
+        mode: decision.mode,
+        virtualEntry: this.isLong
+          ? { qty, price: entryPrice, quoteReserved: 0, baseReserved: qty }
+          : { qty, price: entryPrice, quoteReserved: entryPrice * qty },
+        lotIds: [],
+        sourcedByBot: decision.sourcedByBot,
+      }
+      let fundingHold = hold(decision.needAsset, decision.required)
+      const lotIds: string[] = []
+      if (decision.trade) {
+        const clientOrderId = this.getOrderId('D-FND')
+        // The reservation and the intent are recorded BEFORE the order goes
+        // out: a restart in between finds `pendingTrade` and resumes or
+        // retires the deal instead of sending a real base order.
+        const before = this.getDeal(dealId)
+        if (!before || before.deal.status !== DCADealStatusEnum.start) {
+          this.handleWarn(`Hedge leg deal ${dealId} left start: not funded`)
+          return 'refused'
+        }
+        if (!(await lease.owned())) {
+          return refuse(
+            `Cannot fund this hedge leg: the account's funding lock was lost before the trade`,
+          )
+        }
+        before.deal.botFunding = {
+          ...planned,
+          pendingTrade: {
+            clientOrderId,
+            side: decision.trade.side,
+            qty: decision.trade.baseQty,
+            at: Date.now(),
+          },
+        }
+        before.deal.fundingHold = fundingHold
+        await this.saveDeal(before, {
+          botFunding: before.deal.botFunding,
+          fundingHold,
+        })
+        invalidate()
+        const traded = await this.placeFundingTradeDetailed(
           symbol,
-          type: OrderTypeEnum.market,
-          updateTime: new Date().getTime(),
-          transactTime: new Date().getTime(),
-          exchange: this.data.exchange,
-          exchangeUUID: this.data.exchangeUUID,
-          typeOrder: TypeOrderEnum.dealStart,
-          botId: this.botId,
-          userId: this.userId,
           dealId,
-          fills: [],
-          baseAsset: ei?.baseAsset.name ?? '',
-          quoteAsset: ei?.quoteAsset.name ?? '',
-        },
-        true,
+          decision.trade,
+          price,
+          clientOrderId,
+        )
+        if (traded === null) {
+          await this.retireUnfundedDeal(dealId)
+          return 'refused'
+        }
+        if (traded.lotId) {
+          lotIds.push(traded.lotId)
+        }
+        // Fix round 3: what the safety orders can count on is what executed.
+        fundingHold = hold(
+          decision.needAsset,
+          this.fundedNeedAfterFill(
+            decision.required,
+            decision.heldUsed,
+            traded.executed,
+            decision.needAsset,
+            price,
+            fee?.taker ?? 0,
+          ),
+        )
+      }
+      // Re-read: the funding trade awaited its fill.
+      const current = this.getDeal(dealId)
+      if (!current || current.deal.status !== DCADealStatusEnum.start) {
+        this.handleWarn(
+          `Hedge leg deal ${dealId} was ${current ? current.deal.status : 'removed'} while its funding trade filled: not started. Funding lot ${lotIds[0] ?? '(none)'} records the purchase`,
+        )
+        return 'refused'
+      }
+      if (!(await lease.owned())) {
+        // The trade is done; recording it is the lesser evil.
+        this.handleErrors(
+          `Funding lock on this account was lost while deal ${dealId}'s funding trade ran; recording it anyway — another funding may have planned on the same balance`,
+          'placeBaseOrder',
+          '',
+          false,
+          true,
+          true,
+        )
+      }
+      current.deal.botFunding = { ...planned, lotIds }
+      current.deal.fundingHold = fundingHold
+      await this.saveDeal(current, {
+        botFunding: current.deal.botFunding,
+        fundingHold,
+      })
+      invalidate()
+      this.recordVirtualEntry(baseOrder, qty, entryPrice)
+      this.handleLog(
+        `Hedge leg deal ${dealId} funded by the bot (${action}): base order ${baseOrder.origQty} recorded at ${entryPrice} without a trade, ${this.isLong ? `${qty} ${ed.baseAsset.name}` : `${this.math.round(entryPrice * qty, 8)} ${ed.quoteAsset.name}`} reserved for it`,
       )
-      if (typeof r === 'string') {
-        this.handleErrors(
-          `Error placing order: ${r}`,
-          'placeBaseOrder',
-          '',
-          false,
-          false,
-          false,
-        )
-        return false
+      return 'virtual'
+    }
+
+    /** The base order recorded filled at `price` with no venue trade. */
+    recordVirtualEntry(baseOrder: Order, qty: number, price: number) {
+      baseOrder.price = `${price}`
+      baseOrder.origPrice = `${price}`
+      baseOrder.origQty = `${qty}`
+      baseOrder.status = 'FILLED'
+      baseOrder.executedQty = `${qty}`
+      baseOrder.cummulativeQuoteQty = `${price * qty}`
+      // main-app spec 044 §3.3: no venue trade behind this fill.
+      baseOrder.fundingSource = 'virtual'
+      this.setOrder(baseOrder)
+      this.ordersDb.createData(baseOrder)
+    }
+
+    /**
+     * Restart safety (spec 044 §8, decision 8). A deal still in `start` that
+     * carries a funding record was funded (or was being funded) before a
+     * restart: it must never get a real base order. With `pendingTrade`, the
+     * funding order is looked up by client id (DB, then the exchange): filled
+     * ⇒ its lot is recorded and the deal resumes; otherwise (or not found) the
+     * deal is retired. With the record complete, the virtual entry is
+     * rebuilt from it and the deal starts.
+     *
+     * @returns `none` — not such a deal; `started` / `retired` — handled.
+     */
+    async resumeFundedEntry(
+      symbol: string,
+      dealId: string,
+      baseOrder: Order,
+    ): Promise<'none' | 'started' | 'retired'> {
+      const deal = this.getDeal(dealId)
+      const bf = deal?.deal.botFunding
+      if (
+        !deal ||
+        deal.deal.status !== DCADealStatusEnum.start ||
+        (!bf?.virtualEntry && !bf?.pendingTrade)
+      ) {
+        return 'none'
       }
-      if (!r) {
-        this.handleErrors(
-          `Error placing order`,
-          'placeBaseOrder',
-          '',
-          false,
-          false,
-          false,
-        )
-        return false
+      const retire = async (why: string) => {
+        this.handleWarn(`Deal ${dealId}: ${why}. Retiring it`)
+        await this.retireUnfundedDeal(dealId)
+        return 'retired' as const
       }
-      this.handleDebug(`Order ${r.clientOrderId} filled`)
-      return true
+      if (bf.pendingTrade) {
+        const { clientOrderId } = bf.pendingTrade
+        let found: Order | undefined
+        const stored = await this.ordersDb
+          .readData({ clientOrderId } as any)
+          .catch(() => undefined)
+        if (stored?.status === StatusEnum.ok && stored.data?.result) {
+          found = stored.data.result as Order
+        }
+        if (!found || +found.executedQty <= 0) {
+          const venue = await this.getOrder(clientOrderId, symbol, false).catch(
+            () => undefined,
+          )
+          if (venue?.status === StatusEnum.ok && venue.data) {
+            found = venue.data as Order
+          }
+        }
+        if (!found || !(+found.executedQty > 0)) {
+          return retire(
+            `its funding order ${clientOrderId} was not found filled after a restart (${found?.status ?? 'not found'}); if it fills later, the base it bought stays on the account`,
+          )
+        }
+        // Linked when the lot was already written before the restart.
+        const lotId = await this.recordFundingLot(
+          symbol,
+          dealId,
+          found,
+          bf.virtualEntry?.price ?? +found.price,
+        )
+        const current = this.getDeal(dealId) ?? deal
+        const { pendingTrade: _done, ...rest } = current.deal.botFunding ?? bf
+        current.deal.botFunding = {
+          ...rest,
+          lotIds: [
+            ...(rest.lotIds ?? []).filter((l) => l !== lotId),
+            ...(lotId ? [lotId] : []),
+          ],
+        }
+        await this.saveDeal(current, { botFunding: current.deal.botFunding })
+        const ed = await this.getExchangeInfo(symbol)
+        const executed = this.fundingExecutedQty(found)
+        if (
+          bf.pendingTrade.qty - executed >
+          (ed?.baseAsset.step ?? 0) + 1e-12
+        ) {
+          return retire(
+            `its funding order ${clientOrderId} filled ${executed} of ${bf.pendingTrade.qty} (funding lot ${lotId || 'not recorded'})`,
+          )
+        }
+        this.handleWarn(
+          `Deal ${dealId}: resumed after a restart; funding order ${clientOrderId} had filled`,
+        )
+      }
+      const entry = (this.getDeal(dealId) ?? deal).deal.botFunding?.virtualEntry
+      if (!entry) {
+        return retire('its funding record has no entry to resume')
+      }
+      FundingReservation.getInstance().invalidate(
+        this.data?.exchangeUUID ?? '',
+        deal.deal.symbol.quoteAsset,
+        deal.deal.symbol.baseAsset,
+      )
+      this.recordVirtualEntry(baseOrder, entry.qty, entry.price)
+      await this.startFundedDeal(baseOrder)
+      return 'started'
+    }
+
+    /**
+     * Start a deal whose base order was filled virtually, then bring its
+     * `fundingHold` down to what its unplaced orders still need.
+     */
+    async startFundedDeal(baseOrder: Order) {
+      try {
+        return await this.startDeal(baseOrder)
+      } finally {
+        await this.syncFundingHold(baseOrder.dealId)
+      }
+    }
+
+    /**
+     * Spec 044 §8.4 — `deal.fundingHold.remaining` = what the deal's own
+     * orders committed at open (or after an add-DCA edit) still need, net of
+     * the ones placed (resting or filled: either way the venue has the funds).
+     * Called after `startDeal`, after every `placeOrders` of the deal and
+     * after a held leg's base order is sent. A closed deal's hold no longer
+     * counts (the reservation reads open deals only).
+     */
+    async syncFundingHold(dealId?: string) {
+      const current = dealId ? this.getDeal(dealId) : undefined
+      const hold = current?.deal.fundingHold
+      if (!current || !hold || !dealId) {
+        return
+      }
+      const remaining = await this.fundingHoldRemaining(
+        dealId,
+        hold.asset,
+        hold.committed,
+      )
+      if (Math.abs(remaining - hold.remaining) <= 1e-12) {
+        return
+      }
+      current.deal.fundingHold = { ...hold, remaining }
+      await this.saveDeal(current, { fundingHold: current.deal.fundingHold })
+      FundingReservation.getInstance().invalidate(
+        this.data?.exchangeUUID ?? '',
+        current.deal.symbol.quoteAsset,
+        current.deal.symbol.baseAsset,
+      )
+    }
+
+    /** `committed` minus the need of the deal's placed orders, ≥ 0. */
+    async fundingHoldRemaining(
+      dealId: string,
+      asset: 'base' | 'quote',
+      committed: number,
+    ) {
+      const deal = this.getDeal(dealId)
+      const side = asset === 'base' ? OrderSideEnum.sell : OrderSideEnum.buy
+      // A cancelled / expired row counts by what it executed (fix round 2):
+      // a level part-filled then cancelled and re-placed for the rest is
+      // fully placed, not half held forever.
+      const placed = this.getOrdersByStatusAndDealId({
+        dealId,
+        status: ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'EXPIRED'],
+      }).filter(
+        (o) =>
+          o.side === side &&
+          o.fundingSource !== 'virtual' &&
+          [
+            TypeOrderEnum.dealStart,
+            TypeOrderEnum.dealRegular,
+            TypeOrderEnum.fee,
+          ].includes(o.typeOrder),
+      )
+      const symbol = deal?.deal.symbol.symbol ?? ''
+      const closed = (o: Order) =>
+        o.status === 'CANCELED' || o.status === 'EXPIRED'
+      const qtyOf = (o: Order) =>
+        closed(o) ? Math.max(0, +(o.executedQty ?? 0) || 0) : +o.origQty
+      const live = placed.filter((o) => !closed(o) || qtyOf(o) > 0)
+      const asGrids = live
+        .filter((o) => o.typeOrder === TypeOrderEnum.dealRegular && !closed(o))
+        .map(
+          (o) =>
+            ({
+              qty: +o.origQty,
+              price: +o.price,
+              type: TypeOrderEnum.dealRegular,
+            }) as Grid,
+        )
+      // Executed parts of cancelled levels and the other rows, unpadded.
+      const others = live.filter(
+        (o) => o.typeOrder !== TypeOrderEnum.dealRegular || closed(o),
+      )
+      const placedNeed =
+        asset === 'base'
+          ? (await this.fundedSafetyQty(asGrids, symbol)) +
+            others.reduce((acc, o) => acc + qtyOf(o), 0)
+          : (await this.fundedSafetyQuote(asGrids, symbol)) +
+            others.reduce((acc, o) => acc + qtyOf(o) * +o.price, 0)
+      const left = committed - placedNeed
+      return left > Math.max(1e-12, committed * 1e-9) ? left : 0
+    }
+
+    /** A deal whose funding was refused or failed: retired, never left in `start`. */
+    async retireUnfundedDeal(dealId: string) {
+      await this.closeDealById(
+        this.botId,
+        dealId,
+        CloseDCATypeEnum.cancel,
+        false,
+      )
+    }
+
+    /**
+     * Run a plan → trade → save funding section under this account's funding
+     * lock (spec 044 §8 D5), across processes.
+     */
+    async runFundingSerialised<T>(
+      fn: (lease: FundingLease) => Promise<T>,
+    ): Promise<FundingLockResult<T>> {
+      return FundingLock.getInstance().run(
+        this.data?.exchangeUUID ?? '',
+        fn,
+        this.botId,
+      )
     }
 
     /**
@@ -19845,7 +20352,6 @@ function createDCABotHelper<
           DCABotSchema['settings'],
           | 'baseFunding'
           | 'type'
-          | 'terminalDealType'
           | 'startOrderType'
           | 'orderSizeType'
           | 'useRiskReward'
@@ -19859,10 +20365,13 @@ function createDCABotHelper<
         this.isLong ||
         this.data?.parentBotId ||
         this.data?.action ||
+        // `type`, not `terminalDealType`: the dashboard stores
+        // `terminalDealType: 'smart'` on regular bots too.
         settings.type === DCATypeEnum.terminal ||
-        settings.terminalDealType ||
         settings.useRiskReward ||
-        settings.startOrderType !== OrderTypeEnum.market ||
+        // Combo always enters at market (`comboHelper.getBaseOrder`),
+        // whatever `startOrderType` the bot carries.
+        (!this.combo && settings.startOrderType !== OrderTypeEnum.market) ||
         ![
           OrderSizeTypeEnum.base,
           OrderSizeTypeEnum.quote,
@@ -19878,10 +20387,23 @@ function createDCABotHelper<
      * Quote this account's other bot-funded deals hold for their virtual
      * entries (spec 044 §5) — subtracted from the free quote of every check.
      */
-    async reservedFundingQuote(quoteAsset: string) {
+    async reservedFundingQuote(quoteAsset: string, fresh = false) {
       return FundingReservation.getInstance().reservedQuote(
         this.data?.exchangeUUID ?? '',
         quoteAsset,
+        fresh,
+      )
+    }
+
+    /**
+     * Base this account's funded deals hold (spec 044 §8): a long hedge leg's
+     * virtual entry, and base committed to safety orders not yet placed.
+     */
+    async reservedFundingBase(baseAsset: string, fresh = false) {
+      return FundingReservation.getInstance().reservedBase(
+        this.data?.exchangeUUID ?? '',
+        baseAsset,
+        fresh,
       )
     }
 
@@ -19895,6 +20417,17 @@ function createDCABotHelper<
         .reduce((acc, g) => acc + g.qty, 0)
     }
 
+    /**
+     * Quote a long deal's safety orders spend — what a funded long hedge leg
+     * raises upfront by selling base (spec 044 §8). No combo padding: the
+     * padding is base the short side's levels sell.
+     */
+    async fundedSafetyQuote(ladder: Grid[], _symbol: string) {
+      return ladder
+        .filter((g) => g.type === TypeOrderEnum.dealRegular)
+        .reduce((acc, g) => acc + g.qty * g.price, 0)
+    }
+
     /** {@link planShortSpotDealFunding} against `balance` (or a live read). */
     async planShortSpotFunding(
       symbol: string,
@@ -19903,6 +20436,8 @@ function createDCABotHelper<
       safetyQty: number,
       price: number,
       balance?: Map<string, { free: number }>,
+      /** Inside the funding lock: read reservations past the cache. */
+      fresh = false,
     ): Promise<ShortSpotFundingDecision | null> {
       const ed = await this.getExchangeInfo(symbol)
       const balances = balance ?? (await this.checkAssets(true, true))
@@ -19917,8 +20452,13 @@ function createDCABotHelper<
         price,
         freeBase: balances.get(ed.baseAsset.name)?.free ?? 0,
         freeQuote: balances.get(ed.quoteAsset.name)?.free ?? 0,
-        reservedQuote: await this.reservedFundingQuote(ed.quoteAsset.name),
+        reservedQuote: await this.reservedFundingQuote(
+          ed.quoteAsset.name,
+          fresh,
+        ),
+        reservedBase: await this.reservedFundingBase(ed.baseAsset.name, fresh),
         feeRate: fee?.taker ?? 0,
+        buyHeadroom: this.fundingBuyHeadroom(),
         minNotional: ed.quoteAsset.minAmount,
         minBase: ed.baseAsset.minAmount,
         basePrecision: await this.baseAssetPrecision(symbol),
@@ -19929,65 +20469,244 @@ function createDCABotHelper<
      * Place a funding trade (spec 044 §3.1–§3.2) and record its lot. The order
      * carries no deal id on purpose: it is not one of the deal's orders, so no
      * deal-scoped ledger, fee ledger or fill handler can count it. The lot
-     * names the deal. Returns the lot id, or null once the failure has been
-     * reported.
+     * names the deal. Returns the lot id ('' when only its record failed), or
+     * null once the failure has been reported.
      */
     async placeFundingTrade(
       symbol: string,
       dealId: string,
       trade: FundingTrade,
       price: number,
+      /** Pre-assigned when the intent was persisted first (restart safety). */
+      clientOrderId?: string,
     ): Promise<string | null> {
+      const r = await this.placeFundingTradeDetailed(
+        symbol,
+        dealId,
+        trade,
+        price,
+        clientOrderId,
+      )
+      return r ? r.lotId : null
+    }
+
+    /**
+     * {@link placeFundingTrade}, also returning what the order actually
+     * traded, in base (fix round 3).
+     *
+     * - A MARKET order the venue acknowledges as NEW / PARTIALLY_FILLED is not
+     *   judged yet: it is re-queried (`getOrder`) with backoff until it is
+     *   final, all inside {@link fundingTradeTimeoutMs}; still open at the
+     *   timeout ⇒ the timeout path.
+     * - A final fill within {@link FUNDING_FILL_TOLERANCE} (plus one base
+     *   step) of the planned quantity funds the deal with what executed (info
+     *   line naming the shortfall); further short ⇒ reported, `null` (the
+     *   caller retires the deal), the lot stays as the record.
+     */
+    async placeFundingTradeDetailed(
+      symbol: string,
+      dealId: string,
+      trade: FundingTrade,
+      price: number,
+      clientOrderId?: string,
+    ): Promise<{ lotId: string; executed: number } | null> {
       if (!this.data) {
         return null
       }
       const ed = await this.getExchangeInfo(symbol)
       const orderPrice = `${this.math.round(price, ed?.priceAssetPrecision)}`
       const qty = `${trade.baseQty}`
+      const id = clientOrderId ?? this.getOrderId('D-FND')
       this.handleLog(
         `Funding trade for deal ${dealId}: ${trade.side} ${qty} ${ed?.baseAsset.name} at market (≈ ${this.math.round(trade.quoteValue, 8)} ${ed?.quoteAsset.name})${trade.raisedToMin ? ', raised to the exchange minimum' : ''}`,
       )
-      const r = await this.sendOrderToExchange(
-        {
-          clientOrderId: this.getOrderId('D-FND'),
-          status: 'NEW',
-          executedQty: '0',
-          price: orderPrice,
-          origPrice: orderPrice,
-          cummulativeQuoteQty: `${+orderPrice * +qty}`,
-          orderId: '-1',
-          origQty: qty,
-          side: trade.side,
-          symbol,
-          type: OrderTypeEnum.market,
-          updateTime: new Date().getTime(),
-          transactTime: new Date().getTime(),
-          exchange: this.data.exchange,
-          exchangeUUID: this.data.exchangeUUID,
-          typeOrder: TypeOrderEnum.funding,
-          botId: this.botId,
-          userId: this.userId,
-          fills: [],
-          baseAsset: ed?.baseAsset.name ?? '',
-          quoteAsset: ed?.quoteAsset.name ?? '',
-        },
-        true,
-      )
-      if (typeof r === 'string' || !r) {
+      const what =
+        trade.side === OrderSideEnum.buy
+          ? `buy the ${ed?.baseAsset.name ?? 'base'}`
+          : `sell ${ed?.baseAsset.name ?? 'base'} for the ${ed?.quoteAsset.name ?? 'quote'}`
+      const report = (why: string) => {
         this.handleErrors(
-          `Cannot buy the ${ed?.baseAsset.name ?? 'base'} this deal's safety orders need: ${typeof r === 'string' ? r : 'the order was not placed'}`,
+          `Cannot ${what} this deal's safety orders need: ${why}`,
           'placeBaseOrder',
           '',
           false,
-          false,
-          false,
+          true,
+          true,
         )
         return null
       }
-      const executed = +r.executedQty > 0 ? +r.executedQty : +r.origQty
+      const timeoutMs = this.fundingTradeTimeoutMs
+      const deadline = Date.now() + timeoutMs
+      // Bounded (fix round 2): the account's funding lock is held across
+      // these awaits, and nothing may hold it forever.
+      const beforeDeadline = async <T>(p: Promise<T>) => {
+        let timer: NodeJS.Timeout | undefined
+        const left = Math.max(0, deadline - Date.now())
+        const timedOut = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), left)
+        })
+        return Promise.race([p, timedOut]).finally(() => clearTimeout(timer))
+      }
+      const timeoutWhy = `the order did not complete within ${Math.round(timeoutMs / 1000)} s. If it fills later, what it traded stays on the account`
+      let r: Order | string | void | 'timeout' = await beforeDeadline(
+        this.sendOrderToExchange(
+          {
+            clientOrderId: id,
+            status: 'NEW',
+            executedQty: '0',
+            price: orderPrice,
+            origPrice: orderPrice,
+            cummulativeQuoteQty: `${+orderPrice * +qty}`,
+            orderId: '-1',
+            origQty: qty,
+            side: trade.side,
+            symbol,
+            type: OrderTypeEnum.market,
+            updateTime: new Date().getTime(),
+            transactTime: new Date().getTime(),
+            exchange: this.data.exchange,
+            exchangeUUID: this.data.exchangeUUID,
+            typeOrder: TypeOrderEnum.funding,
+            botId: this.botId,
+            userId: this.userId,
+            fills: [],
+            baseAsset: ed?.baseAsset.name ?? '',
+            quoteAsset: ed?.quoteAsset.name ?? '',
+          },
+          true,
+        ),
+      )
+      if (r === 'timeout') {
+        return report(timeoutWhy)
+      }
+      if (typeof r === 'string' || !r) {
+        return report(typeof r === 'string' ? r : 'the order was not placed')
+      }
+      // (a) Not final yet: ask the venue again until it is.
+      let delay = this.fundingPollMs
+      while (r.status === 'NEW' || r.status === 'PARTIALLY_FILLED') {
+        if (Date.now() + delay >= deadline) {
+          return report(timeoutWhy)
+        }
+        await sleep(delay)
+        delay = Math.min(delay * 2, 10_000)
+        const q = await beforeDeadline(this.getOrder(id, symbol, false))
+        if (q === 'timeout') {
+          return report(timeoutWhy)
+        }
+        if (q?.status === StatusEnum.ok && q.data) {
+          r = { ...r, ...(q.data as Order) }
+        }
+      }
+      const executed = this.fundingExecutedQty(r)
+      const lotId =
+        executed > 0 ? await this.recordFundingLot(symbol, dealId, r, price) : ''
+      // (b) A fill short within the tolerance funds the deal as executed.
+      const step = ed?.baseAsset.step ?? 0
+      const shortfall = Math.max(0, trade.baseQty - executed)
+      if (shortfall > trade.baseQty * FUNDING_FILL_TOLERANCE + step + 1e-12) {
+        return report(
+          `the order filled ${executed} of ${trade.baseQty}${lotId ? ` (recorded in funding lot ${lotId})` : ''}`,
+        )
+      }
+      if (shortfall > 1e-12) {
+        this.handleLog(
+          `Funding trade ${id} filled ${executed} of ${trade.baseQty} ${ed?.baseAsset.name ?? ''} (short ${this.math.round(shortfall, 12)}, within tolerance): the deal is funded with what executed`,
+        )
+      }
+      return { lotId, executed }
+    }
+
+    /**
+     * The safety-order need a funding fill actually covers (fix round 3):
+     * held funds counted + what the trade acquired net of the fee, capped at
+     * the need. A fill inside the tolerance may leave the top level short by
+     * a hair; the hold must not claim funds the account does not have.
+     */
+    fundedNeedAfterFill(
+      required: number,
+      heldUsed: number,
+      executedBase: number,
+      needAsset: 'base' | 'quote',
+      price: number,
+      feeRate: number,
+    ) {
+      const net = 1 - Math.min(Math.max(feeRate, 0), 0.5)
+      const acquired =
+        needAsset === 'base' ? executedBase * net : executedBase * price * net
+      return Math.max(0, Math.min(required, heldUsed + acquired))
+    }
+
+    /** Funding trades (fix round 2): how long one may take before it fails. */
+    fundingTradeTimeoutMs = FUNDING_TRADE_TIMEOUT_MS
+    /** First re-query delay for a funding order not final yet (fix round 3). */
+    fundingPollMs = 500
+
+    /**
+     * Fix round 3 (c): venues that size a MARKET buy in quote at the plan
+     * price (`main.ts`: Bybit, Coinbase, Bitget spot) fill it `quote ÷ ask`
+     * — short by the spread. Funding buys there are grossed up by this
+     * fraction so the levels they fund are covered.
+     */
+    fundingBuyHeadroom() {
+      return !this.futures &&
+        [ExchangeEnum.bybit, ExchangeEnum.coinbase, ExchangeEnum.bitget].includes(
+          this.data?.exchange as ExchangeEnum,
+        )
+        ? FUNDING_QUOTE_SIZED_BUY_HEADROOM
+        : 0
+    }
+
+    /**
+     * What a funding order actually traded, in base. FILLED without an
+     * executed quantity is taken as the whole order; anything else counts
+     * only what it reports executed.
+     */
+    fundingExecutedQty(r: Order) {
+      const executed = +r.executedQty
+      if (Number.isFinite(executed) && executed > 0) {
+        return executed
+      }
+      return r.status === 'FILLED' ? +r.origQty || 0 : 0
+    }
+
+    /**
+     * The `fundinglots` row of a filled funding order. Returns the lot id, ''
+     * when the write failed (warned; the trade stands).
+     */
+    async recordFundingLot(
+      symbol: string,
+      dealId: string,
+      r: Order,
+      price: number,
+    ): Promise<string> {
+      if (!this.data) {
+        return ''
+      }
+      // Fix round 2: a restart may come after the lot was written — link it.
+      const existing = await fundingLotDb
+        .readData({ clientOrderId: r.clientOrderId } as any)
+        .catch(() => undefined)
+      if (existing?.status === StatusEnum.ok && existing.data?.result?._id) {
+        return `${existing.data.result._id}`
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      const trade = {
+        side:
+          r.side === OrderSideEnum.buy ? OrderSideEnum.buy : OrderSideEnum.sell,
+      }
+      const executed = this.fundingExecutedQty(r)
       const quote = +(r.cummulativeQuoteQty ?? 0)
       const avg =
         quote > 0 && +r.executedQty > 0 ? quote / +r.executedQty : +r.price
+      const lotPrice = Number.isFinite(avg) && avg > 0 ? avg : price
+      // A lot counts the asset it acquired: base for a buy, quote for a sell.
+      const acquired =
+        trade.side === OrderSideEnum.buy
+          ? executed
+          : quote > 0
+            ? quote
+            : executed * lotPrice
       const lot = await fundingLotDb.createData({
         userId: this.userId,
         exchange: this.data.exchange,
@@ -20001,13 +20720,13 @@ function createDCABotHelper<
             ? (ed?.baseAsset.name ?? '')
             : (ed?.quoteAsset.name ?? ''),
         side: trade.side,
-        qty: executed,
-        price: Number.isFinite(avg) && avg > 0 ? avg : price,
+        qty: acquired,
+        price: lotPrice,
         fee: r.feePaid !== undefined ? +r.feePaid : undefined,
         feeAsset: r.feeAsset,
         orderId: `${r.orderId}`,
         clientOrderId: r.clientOrderId,
-        remaining: executed,
+        remaining: acquired,
         consumed: [],
         paperContext: !!this.data.paperContext,
       })
@@ -20041,6 +20760,50 @@ function createDCABotHelper<
       if (!mode || !deal || baseOrder.type !== OrderTypeEnum.market) {
         return 'held'
       }
+      // A first look without the lock: a deal the account's own base covers
+      // never waits for it (phase 3, D5).
+      const probe = await this.planShortSpotEntry(
+        symbol,
+        dealId,
+        baseOrder,
+        mode,
+      )
+      if (!probe || probe.decision.kind === 'held') {
+        return 'held'
+      }
+      const locked = await this.runFundingSerialised((lease) =>
+        this.fundShortSpotEntryLocked(symbol, dealId, baseOrder, mode, lease),
+      ).catch((e: unknown) => ({
+        acquired: false as const,
+        reason: `${(e as Error)?.message ?? e}`,
+      }))
+      if (!locked.acquired) {
+        this.handleErrors(
+          `Cannot fund this deal: ${locked.reason}`,
+          'placeBaseOrder',
+          '',
+          false,
+          true,
+          true,
+        )
+        await this.retireUnfundedDeal(dealId)
+        return 'refused'
+      }
+      return locked.value
+    }
+
+    /** The {@link fundShortSpotEntry} plan over the deal's real ladder. */
+    async planShortSpotEntry(
+      symbol: string,
+      dealId: string,
+      baseOrder: Order,
+      mode: BaseFundingEnum,
+      fresh = false,
+    ) {
+      const deal = this.getDeal(dealId)
+      if (!deal) {
+        return null
+      }
       const price = await this.getLatestPrice(symbol)
       const ladder = await this.createInitialDealOrders(
         symbol,
@@ -20048,80 +20811,173 @@ function createDCABotHelper<
         dealId,
         deal.deal,
       )
-      const safetyQty = await this.fundedSafetyQty(ladder, symbol)
+      // Combo: its fee order sells base at open too.
+      const safetyQty =
+        (await this.fundedSafetyQty(ladder, symbol)) +
+        (await this.dealOpenExtraNeed(
+          symbol,
+          ladder,
+          +baseOrder.origQty,
+          deal.deal,
+        ))
       const decision = await this.planShortSpotFunding(
         symbol,
         mode,
         +baseOrder.origQty,
         safetyQty,
         price,
+        undefined,
+        fresh,
       )
-      if (!decision || decision.kind === 'held') {
-        return 'held'
+      return decision ? { decision, price, safetyQty, deal } : null
+    }
+
+    /** {@link fundShortSpotEntry} once the account's funding lock is held. */
+    async fundShortSpotEntryLocked(
+      symbol: string,
+      dealId: string,
+      baseOrder: Order,
+      mode: BaseFundingEnum,
+      lease: FundingLease,
+    ): Promise<'held' | 'virtual' | 'refused'> {
+      const refuse = async (message: string) => {
+        // Shown to the user as a bot warning (E4); the bot is not set in error.
+        this.handleErrors(message, 'placeBaseOrder', '', false, true, true)
+        await this.retireUnfundedDeal(dealId)
+        return 'refused' as const
       }
-      const ed = await this.getExchangeInfo(symbol)
-      if (decision.kind === 'refuse') {
-        this.handleErrors(
-          `Not enough ${ed?.quoteAsset.name ?? 'quote'} to fund this deal: required ${this.math.round(decision.required, 8)}, available ${this.math.round(decision.available, 8)} after the quote other bot-funded deals hold`,
-          'placeBaseOrder',
-          '',
-          false,
-          false,
-          false,
-        )
-        await this.closeDealById(
-          this.botId,
-          dealId,
-          CloseDCATypeEnum.cancel,
-          false,
-        )
+      if (this.getDeal(dealId)?.deal.status !== DCADealStatusEnum.start) {
+        this.handleWarn(`Deal ${dealId} left start: not funded`)
         return 'refused'
       }
+      // Re-planned fresh: another deal of this account may have just funded.
+      const planned = await this.planShortSpotEntry(
+        symbol,
+        dealId,
+        baseOrder,
+        mode,
+        true,
+      )
+      if (!planned || planned.decision.kind === 'held') {
+        return 'held'
+      }
+      const { decision, price, safetyQty } = planned
+      const ed = await this.getExchangeInfo(symbol)
+      if (decision.kind === 'refuse') {
+        return refuse(
+          `Not enough ${ed?.quoteAsset.name ?? 'quote'} to fund this deal: required ${this.math.round(decision.required, 8)}, available ${this.math.round(decision.available, 8)} after the quote other bot-funded deals hold`,
+        )
+      }
+      const entryPrice = +this.math.round(price, ed?.priceAssetPrecision)
+      const qty = +baseOrder.origQty
+      const record: DealFunding = {
+        mode,
+        virtualEntry: {
+          qty,
+          price: entryPrice,
+          quoteReserved: entryPrice * qty,
+        },
+        lotIds: [],
+        sourcedByBot: decision.sourcedByBot,
+      }
+      let fundingHold =
+        safetyQty > 0
+          ? {
+              asset: 'base' as const,
+              committed: safetyQty,
+              remaining: safetyQty,
+            }
+          : undefined
+      const invalidate = () =>
+        FundingReservation.getInstance().invalidate(
+          this.data?.exchangeUUID ?? '',
+          ed?.quoteAsset.name ?? '',
+          ed?.baseAsset.name,
+        )
       const lotIds: string[] = []
       if (decision.trade) {
-        const lotId = await this.placeFundingTrade(
+        const clientOrderId = this.getOrderId('D-FND')
+        const before = this.getDeal(dealId)
+        if (!before || before.deal.status !== DCADealStatusEnum.start) {
+          this.handleWarn(`Deal ${dealId} left start: not funded`)
+          return 'refused'
+        }
+        if (!(await lease.owned())) {
+          return refuse(
+            `Cannot fund this deal: the account's funding lock was lost before the trade`,
+          )
+        }
+        // Intent and reservation first (restart safety, spec 044 §8).
+        before.deal.botFunding = {
+          ...record,
+          pendingTrade: {
+            clientOrderId,
+            side: decision.trade.side,
+            qty: decision.trade.baseQty,
+            at: Date.now(),
+          },
+        }
+        before.deal.fundingHold = fundingHold
+        await this.saveDeal(before, {
+          botFunding: before.deal.botFunding,
+          fundingHold,
+        })
+        invalidate()
+        const traded = await this.placeFundingTradeDetailed(
           symbol,
           dealId,
           decision.trade,
           price,
+          clientOrderId,
         )
-        if (lotId === null) {
-          await this.closeDealById(
-            this.botId,
-            dealId,
-            CloseDCATypeEnum.cancel,
-            false,
-          )
+        if (traded === null) {
+          await this.retireUnfundedDeal(dealId)
           return 'refused'
         }
-        if (lotId) {
-          lotIds.push(lotId)
+        if (traded.lotId) {
+          lotIds.push(traded.lotId)
         }
+        // Fix round 3: what the safety orders can count on is what executed.
+        const fee = await this.getUserFee(symbol)
+        const covered = this.fundedNeedAfterFill(
+          safetyQty,
+          decision.heldUsed,
+          traded.executed,
+          'base',
+          price,
+          fee?.taker ?? 0,
+        )
+        fundingHold =
+          covered > 0
+            ? { asset: 'base' as const, committed: covered, remaining: covered }
+            : undefined
       }
-      const entryPrice = `${this.math.round(price, ed?.priceAssetPrecision)}`
-      baseOrder.price = entryPrice
-      baseOrder.origPrice = entryPrice
-      baseOrder.status = 'FILLED'
-      baseOrder.executedQty = baseOrder.origQty
-      baseOrder.cummulativeQuoteQty = `${+entryPrice * +baseOrder.origQty}`
-      baseOrder.fundingSource = 'virtual'
-      this.setOrder(baseOrder)
-      this.ordersDb.createData(baseOrder)
-      deal.deal.botFunding = {
-        mode,
-        virtualEntry: {
-          qty: +baseOrder.origQty,
-          price: +entryPrice,
-          quoteReserved: +entryPrice * +baseOrder.origQty,
-        },
-        lotIds,
-        sourcedByBot: decision.sourcedByBot,
+      // Re-read: the funding trade awaited its fill (see updateDealSettings).
+      const current = this.getDeal(dealId)
+      if (!current || current.deal.status !== DCADealStatusEnum.start) {
+        this.handleWarn(
+          `Deal ${dealId} was ${current ? current.deal.status : 'removed'} while its funding trade filled: not started. Funding lot ${lotIds[0] ?? '(none)'} records the purchase`,
+        )
+        return 'refused'
       }
-      await this.saveDeal(deal, { botFunding: deal.deal.botFunding })
-      FundingReservation.getInstance().invalidate(
-        this.data?.exchangeUUID ?? '',
-        ed?.quoteAsset.name ?? '',
-      )
+      if (!(await lease.owned())) {
+        this.handleErrors(
+          `Funding lock on this account was lost while deal ${dealId}'s funding trade ran; recording it anyway — another funding may have planned on the same balance`,
+          'placeBaseOrder',
+          '',
+          false,
+          true,
+          true,
+        )
+      }
+      current.deal.botFunding = { ...record, lotIds }
+      current.deal.fundingHold = fundingHold
+      await this.saveDeal(current, {
+        botFunding: current.deal.botFunding,
+        fundingHold,
+      })
+      invalidate()
+      this.recordVirtualEntry(baseOrder, qty, entryPrice)
       this.handleLog(
         `Deal ${dealId} funded by the bot (${mode}): base order ${baseOrder.origQty} recorded at ${entryPrice} without a trade, ${decision.heldUsed} free base used for the safety orders`,
       )
@@ -26489,8 +27345,15 @@ function createDCABotHelper<
      * orders need beyond what the account's free base (in `auto`) and the
      * deal's own resting sells already cover.
      *
-     * @returns false when the account's quote cannot fund it (reported; the
-     *   patch must not be applied), true otherwise.
+     * Phase 3 (§8, D7): a funded hedge leg (`deal.botFunding` on a hedge child
+     * bot) goes through here too, both sides — a long leg's added levels spend
+     * quote, raised by selling base. Planned first without the lock: an edit
+     * that needs no trade (a cut, or an increase the held funds cover) never
+     * touches the lock store. A trade is re-planned and placed under the
+     * account's funding lock.
+     *
+     * @returns false when the account cannot fund it (reported; the patch
+     *   must not be applied), true otherwise.
      */
     async fundAddedSafetyOrders(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
@@ -26504,40 +27367,107 @@ function createDCABotHelper<
         return true
       }
       const settings = await this.getAggregatedSettings(findDeal.deal)
-      const mode = this.shortSpotFundingMode(settings)
+      const mode =
+        this.shortSpotFundingMode(settings) ??
+        this.hedgeLegFundingMode(findDeal.deal)
       if (!mode) {
         return true
       }
+      const probe = await this.planAddedSafetyOrders(
+        findDeal,
+        dealId,
+        patch,
+        mode,
+        false,
+      )
+      if (!probe) {
+        // Nothing to size against; leave it to the order placement as before.
+        return true
+      }
+      if (!probe.trade) {
+        await this.holdAddedSafetyOrders(dealId, probe.committedDelta)
+        return true
+      }
+      const locked = await this.runFundingSerialised((lease) =>
+        this.fundAddedSafetyOrdersLocked(dealId, patch, mode, lease),
+      ).catch((e: unknown) => ({
+        acquired: false as const,
+        reason: `${(e as Error)?.message ?? e}`,
+      }))
+      if (!locked.acquired) {
+        this.handleErrors(
+          `Cannot fund the new DCA levels: ${locked.reason}. The deal was not changed`,
+          'updateDealSettings',
+          '',
+          false,
+          true,
+          true,
+          true,
+        )
+        return false
+      }
+      return locked.value
+    }
+
+    /**
+     * The funding mode of a hedge leg's deal the bot funded at open (spec 044
+     * §8), or null. The leg's settings carry no `baseFunding`; its start
+     * action's mapping was stored on the deal.
+     */
+    hedgeLegFundingMode(deal: ExcludeDoc<Deal>): BaseFundingEnum | null {
+      if (this.futures || !this.data?.parentBotId) {
+        return null
+      }
+      const mode = deal.botFunding?.virtualEntry ? deal.botFunding.mode : null
+      return mode === BaseFundingEnum.auto || mode === BaseFundingEnum.botOnly
+        ? mode
+        : null
+    }
+
+    /**
+     * The add-DCA funding plan (§7.5, §8 D7). Need = the patched ladder's
+     * unfilled levels; covered = the deal's resting levels + free funds net
+     * of OTHER deals' reservations (`auto`) — this deal's own hold is for
+     * exactly these levels, so it is not subtracted from itself.
+     */
+    async planAddedSafetyOrders(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      dealId: string,
+      patch: Partial<Deal['settings']>,
+      mode: BaseFundingEnum,
+      fresh: boolean,
+    ) {
       const symbol = findDeal.deal.symbol.symbol
       const ed = await this.getExchangeInfo(symbol)
       const balances = await this.checkAssets(true, true)
       const price = await this.getLatestPrice(symbol)
       if (!ed || !balances || !price) {
-        // Nothing to size against; leave it to the order placement as before.
-        return true
+        return null
       }
-      const probe = {
-        ...findDeal.deal,
-        settings: { ...findDeal.deal.settings, ...patch },
-      }
-      const ladder = (
-        await this.createInitialDealOrders(
-          symbol,
-          findDeal.deal.initialPrice,
-          dealId,
-          probe,
+      const long = this.isLong
+      const ladderOf = async (dealSettings: Deal['settings']) =>
+        (
+          await this.createInitialDealOrders(
+            symbol,
+            findDeal.deal.initialPrice,
+            dealId,
+            { ...findDeal.deal, settings: dealSettings },
+          )
         )
-      )
-        .filter((o) => o.type === TypeOrderEnum.dealRegular)
-        .sort((a, b) => a.number - b.number)
+          .filter((o) => o.type === TypeOrderEnum.dealRegular)
+          .sort((a, b) => a.number - b.number)
+      const needOf = async (grids: Grid[]) =>
+        long
+          ? await this.fundedSafetyQuote(grids, symbol)
+          : await this.fundedSafetyQty(grids, symbol)
+      const ladder = await ladderOf({ ...findDeal.deal.settings, ...patch })
+      const before = await ladderOf(findDeal.deal.settings)
       const filledLevels = this.getOrdersByStatusAndDealId({
         dealId,
         status: ['FILLED', 'PARTIALLY_FILLED'],
       }).filter((o) => isLadderOrder(o)).length
-      const needed = await this.fundedSafetyQty(
-        ladder.slice(filledLevels),
-        symbol,
-      )
+      const needed = await needOf(ladder.slice(filledLevels))
+      // The deal's own resting safety orders already hold their funds.
       const resting = this.getOrdersByStatusAndDealId({
         dealId,
         defaultStatuses: true,
@@ -26545,41 +27475,137 @@ function createDCABotHelper<
         .filter(
           (o) =>
             o.typeOrder === TypeOrderEnum.dealRegular &&
-            o.side === OrderSideEnum.sell,
+            o.side === (long ? OrderSideEnum.buy : OrderSideEnum.sell),
         )
-        .reduce(
-          (acc, o) => acc + Math.max(0, +o.origQty - +(o.executedQty ?? 0)),
-          0,
-        )
-      const freeBase =
+        .reduce((acc, o) => {
+          const left = Math.max(0, +o.origQty - +(o.executedQty ?? 0))
+          return acc + (long ? left * +o.price : left)
+        }, 0)
+      const own = findDeal.deal.fundingHold
+      const ownHold = (asset: 'base' | 'quote') =>
+        own?.asset === asset ? Math.max(0, own.remaining ?? 0) : 0
+      const reservedQuote = Math.max(
+        0,
+        (await this.reservedFundingQuote(ed.quoteAsset.name, fresh)) -
+          ownHold('quote'),
+      )
+      const reservedBase = Math.max(
+        0,
+        (await this.reservedFundingBase(ed.baseAsset.name, fresh)) -
+          ownHold('base'),
+      )
+      const freeBase = balances.get(ed.baseAsset.name)?.free ?? 0
+      const freeQuote = balances.get(ed.quoteAsset.name)?.free ?? 0
+      const availableBase = Math.max(0, freeBase - reservedBase)
+      const availableQuote = Math.max(0, freeQuote - reservedQuote)
+      const held =
         mode === BaseFundingEnum.auto
-          ? (balances.get(ed.baseAsset.name)?.free ?? 0)
+          ? long
+            ? availableQuote
+            : availableBase
           : 0
       const fee = await this.getUserFee(symbol)
-      const reserved = await this.reservedFundingQuote(ed.quoteAsset.name)
       const plan = planFunding({
-        needAsset: 'base',
+        needAsset: long ? 'quote' : 'base',
         required: needed,
-        held: freeBase,
+        held,
         inOrders: resting,
         price,
         feeRate: fee?.taker ?? 0,
+        buyHeadroom: this.fundingBuyHeadroom(),
         minNotional: ed.quoteAsset.minAmount,
         minBase: ed.baseAsset.minAmount,
         basePrecision: await this.baseAssetPrecision(symbol),
-        spendable: Math.max(
-          0,
-          (balances.get(ed.quoteAsset.name)?.free ?? 0) - reserved,
-        ),
+        spendable: long ? availableBase : availableQuote,
       })
-      const trade = plan.diff
+      return {
+        symbol,
+        ed,
+        price,
+        long,
+        needed,
+        resting,
+        held,
+        plan,
+        trade: plan.diff,
+        committedDelta: (await needOf(ladder)) - (await needOf(before)),
+      }
+    }
+
+    /**
+     * Grow (or shrink) the deal's `fundingHold` by the ladder change: the new
+     * levels are not on the book until `rebuildDealOrders` places them.
+     */
+    async holdAddedSafetyOrders(dealId: string, committedDelta: number) {
+      const current = this.getDeal(dealId)
+      const hold = current?.deal.fundingHold
+      if (!current || !hold || !committedDelta) {
+        return
+      }
+      const committed = Math.max(0, hold.committed + committedDelta)
+      current.deal.fundingHold = {
+        ...hold,
+        committed,
+        remaining: await this.fundingHoldRemaining(
+          dealId,
+          hold.asset,
+          committed,
+        ),
+      }
+      await this.saveDeal(current, { fundingHold: current.deal.fundingHold })
+      FundingReservation.getInstance().invalidate(
+        this.data?.exchangeUUID ?? '',
+        current.deal.symbol.quoteAsset,
+        current.deal.symbol.baseAsset,
+      )
+    }
+
+    /** {@link fundAddedSafetyOrders} once the account's funding lock is held. */
+    async fundAddedSafetyOrdersLocked(
+      dealId: string,
+      patch: Partial<Deal['settings']>,
+      mode: BaseFundingEnum,
+      lease: FundingLease,
+    ): Promise<boolean> {
+      // Re-read and re-plan fresh under the lock.
+      const findDeal = this.getDeal(dealId)
+      if (!findDeal || findDeal.deal.status !== DCADealStatusEnum.open) {
+        return true
+      }
+      const planned = await this.planAddedSafetyOrders(
+        findDeal,
+        dealId,
+        patch,
+        mode,
+        true,
+      )
+      if (!planned) {
+        return true
+      }
+      const { symbol, ed, price, long, needed, resting, held, plan, trade } =
+        planned
       if (!trade) {
+        await this.holdAddedSafetyOrders(dealId, planned.committedDelta)
         return true
       }
       if (trade.affordable === false) {
         // setError=false: a refused manual action is not a bot fault.
         this.handleErrors(
-          `Not enough ${ed.quoteAsset.name} to buy the ${this.math.round(trade.baseQty, 8)} ${ed.baseAsset.name} the new DCA levels need (≈ ${this.math.round(trade.quoteValue, 8)} ${ed.quoteAsset.name}). The deal was not changed`,
+          long
+            ? `Not enough ${ed.baseAsset.name} to sell for the ${this.math.round(plan.shortfall, 8)} ${ed.quoteAsset.name} the new DCA levels need (≈ ${this.math.round(trade.baseQty, 8)} ${ed.baseAsset.name}). The deal was not changed`
+            : `Not enough ${ed.quoteAsset.name} to buy the ${this.math.round(trade.baseQty, 8)} ${ed.baseAsset.name} the new DCA levels need (≈ ${this.math.round(trade.quoteValue, 8)} ${ed.quoteAsset.name}). The deal was not changed`,
+          'updateDealSettings',
+          '',
+          false,
+          true,
+          true,
+          true,
+        )
+        return false
+      }
+      if (!(await lease.owned())) {
+        this.handleErrors(
+          `Cannot fund the new DCA levels: the account's funding lock was lost. The deal was not changed`,
           'updateDealSettings',
           '',
           false,
@@ -26593,15 +27619,29 @@ function createDCABotHelper<
       if (lotId === null) {
         return false
       }
-      const heldUsed = Math.min(freeBase, Math.max(0, needed - resting))
-      const prev = findDeal.deal.botFunding
-      findDeal.deal.botFunding = {
+      if (!(await lease.owned())) {
+        this.handleErrors(
+          `Funding lock on this account was lost while deal ${dealId}'s DCA funding trade ran; recording it anyway`,
+          'updateDealSettings',
+          '',
+          false,
+          true,
+          true,
+        )
+      }
+      const heldUsed = Math.min(held, Math.max(0, needed - resting))
+      // Re-read: the trade awaited its fill (see updateDealSettings).
+      const current = this.getDeal(dealId) ?? findDeal
+      const prev = current.deal.botFunding
+      current.deal.botFunding = {
+        ...(prev ?? {}),
         mode,
         virtualEntry: prev?.virtualEntry,
         lotIds: [...(prev?.lotIds ?? []), ...(lotId ? [lotId] : [])],
         sourcedByBot: !!prev?.sourcedByBot && heldUsed === 0,
       }
-      await this.saveDeal(findDeal, { botFunding: findDeal.deal.botFunding })
+      await this.saveDeal(current, { botFunding: current.deal.botFunding })
+      await this.holdAddedSafetyOrders(dealId, planned.committedDelta)
       return true
     }
     /**
@@ -26622,15 +27662,19 @@ function createDCABotHelper<
       settings = withoutUnusableAvgPrice(settings)
       const keys = Object.keys(settings)
       if (keys.length > 0) {
-        const findDeal = this.getDeal(dealId)
         // Main-app spec 044: added DCA levels on a short spot deal are funded
-        // before anything changes; a refusal leaves the deal as it was.
+        // before anything changes; a refusal leaves the deal as it was. The
+        // deal is read only after: the funding trade waits for its fill, and
+        // the deal map may hold a new object by then — mutating the old one
+        // left the order placement working from the previous ladder.
+        const beforeFunding = this.getDeal(dealId)
         if (
-          findDeal &&
-          !(await this.fundAddedSafetyOrders(findDeal, dealId, settings))
+          beforeFunding &&
+          !(await this.fundAddedSafetyOrders(beforeFunding, dealId, settings))
         ) {
           return
         }
+        const findDeal = this.getDeal(dealId)
         // "Change DCA levels" (both dashboards) sends exactly `ordersCount`,
         // plus `useDca: true` when it switches DCA back on. An indicator /
         // custom ladder is not sized by `ordersCount`, so on those deals the

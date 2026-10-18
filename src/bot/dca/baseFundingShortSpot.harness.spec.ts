@@ -15,6 +15,7 @@ import { describe, it, before } from 'mocha'
 import { expect } from 'chai'
 import { createRequire } from 'module'
 import { MathHelper } from '../../utils/math'
+import { FundingLock, MemoryFundingLockStore } from '../fundingLock'
 import {
   BaseFundingEnum,
   ExchangeEnum,
@@ -96,6 +97,7 @@ type Setup = {
   freeBase?: number
   freeQuote?: number
   reserved?: number
+  reservedBase?: number
   status?: string
   resting?: any[]
   filled?: any[]
@@ -167,6 +169,9 @@ const buildBot = (o: Setup = {}) => {
     }
     async reservedFundingQuote() {
       return o.reserved ?? 0
+    }
+    async reservedFundingBase() {
+      return o.reservedBase ?? 0
     }
     async profitBase() {
       return false
@@ -243,6 +248,17 @@ describe('Short spot deal funded by the bot (main-app spec 044 phase 2)', () => 
     this.timeout(180000)
     // The lot write is the one DB call left on the path under test.
     const dbInit = loadModule('../../db/dbInit')
+    // Fix round 2 plumbing: the lot writer first looks a lot up by its
+    // client id (restart after the lot was written) — read the same `lots`.
+    dbInit.fundingLotDb.readData = async (filter: any) => {
+      const i = lots.findIndex((l) => l.clientOrderId === filter.clientOrderId)
+      return {
+        status: StatusEnum.ok,
+        data: {
+          result: i < 0 ? undefined : { ...lots[i], _id: `lot${i + 1}` },
+        },
+      }
+    }
     dbInit.fundingLotDb.createData = async (lot: any) => {
       lots.push(lot)
       return {
@@ -251,6 +267,8 @@ describe('Short spot deal funded by the bot (main-app spec 044 phase 2)', () => 
       }
     }
     Helper = loadModule('../dcaHelper').default(FakeBase as any)
+    // Phase 3: funding runs under the per-account lock; no Redis here.
+    FundingLock.getInstance().setStore(new MemoryFundingLockStore())
   })
 
   describe('deal open — fundShortSpotEntry', () => {
@@ -352,6 +370,46 @@ describe('Short spot deal funded by the bot (main-app spec 044 phase 2)', () => 
         expect(bot.sent).to.have.length(0)
       })
     }
+
+    it('a regular bot saved with terminalDealType smart is still funded', async () => {
+      // The dashboard stores terminalDealType 'smart' on every regular bot.
+      const { bot } = buildBot({
+        settings: { type: 'regular', terminalDealType: 'smart' },
+        freeBase: 0,
+        freeQuote: 1000,
+      })
+      expect(
+        await bot.fundShortSpotEntry(SYMBOL, DEAL_ID, marketBase()),
+      ).to.equal('virtual')
+    })
+
+    it('combo is funded even when it carries a limit startOrderType', async () => {
+      // Combo always enters at market; its settings may still say LIMIT.
+      const { bot } = buildBot({
+        settings: { startOrderType: 'LIMIT' },
+        freeBase: 0,
+        freeQuote: 1000,
+      })
+      bot.combo = true
+      expect(
+        bot.shortSpotFundingMode(await bot.getAggregatedSettings()),
+      ).to.equal(BaseFundingEnum.auto)
+      bot.combo = false
+      expect(
+        bot.shortSpotFundingMode(await bot.getAggregatedSettings()),
+      ).to.equal(null)
+    })
+
+    it('a terminal deal is not funded', async () => {
+      const { bot } = buildBot({
+        settings: { type: 'terminal' },
+        freeBase: 0,
+        freeQuote: 1000,
+      })
+      expect(
+        await bot.fundShortSpotEntry(SYMBOL, DEAL_ID, marketBase()),
+      ).to.equal('held')
+    })
 
     it('a hedge leg funds through its start action instead', async () => {
       const { bot } = buildBot({ freeBase: 0, freeQuote: 1000 })
@@ -465,6 +523,27 @@ describe('Short spot deal funded by the bot (main-app spec 044 phase 2)', () => 
       ).to.equal(false)
       expect(bot.sent).to.have.length(0)
       expect(bot.errors[0]).to.match(/The deal was not changed/)
+    })
+
+    it('records the lot on the deal object the map holds after the trade', async () => {
+      // The trade waits for its fill; the deal map can hold a new object by
+      // then, and writing to the old one lost the record.
+      const { bot, findDeal } = buildBot({
+        status: 'open',
+        freeBase: 0,
+        freeQuote: 1000,
+        resting,
+      })
+      const fresh = { ...findDeal, deal: { ...findDeal.deal } }
+      const send = bot.sendOrderToExchange.bind(bot)
+      bot.sendOrderToExchange = async (o: any) => {
+        const r = await send(o)
+        bot.getDeal = (id: string) => (id === DEAL_ID ? fresh : undefined)
+        return r
+      }
+      await bot.fundAddedSafetyOrders(findDeal, DEAL_ID, { ordersCount: 4 })
+      expect(fresh.deal.botFunding?.lotIds).to.have.length(1)
+      expect(findDeal.deal.botFunding).to.equal(undefined)
     })
 
     it('a patch that does not touch the ladder never buys', async () => {

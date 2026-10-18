@@ -70,6 +70,8 @@ import { getBalances } from './handlers/balance.handler'
 import {
   previewFunding,
   PreviewFundingInput,
+  previewHedgeFunding,
+  PreviewHedgeFundingInput,
 } from './handlers/funding.handler'
 import { usableFiatRates } from '../utils/fiatRates'
 import {
@@ -2518,6 +2520,20 @@ const resolvers = <
         return user
       }
       return previewFunding(user.data, input, paperContext)
+    },
+    previewHedgeFunding: async (
+      _parent: any,
+      { input }: { input: PreviewHedgeFundingInput },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return previewHedgeFunding(user.data, input, paperContext)
     },
     getProfitByBot: async (
       _parent: any,

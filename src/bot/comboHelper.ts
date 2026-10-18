@@ -64,6 +64,7 @@ import {
   DCACloseTriggerEnum,
 } from '../../types'
 import { observedFeeOnSide, observedFeeSplit } from './orderFee'
+import { comboFeeOrderQty } from './baseFunding'
 import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
 import { IdMute, IdMutex } from '../utils/mutex'
 import utils from '../utils'
@@ -4336,6 +4337,51 @@ function createComboBotHelper<
         .filter((g) => g.type === TypeOrderEnum.dealRegular)
         .reduce((acc, g) => acc + g.qty + pad, 0)
     }
+    /**
+     * Main-app spec 044 §8 (D8): the fee order {@link placeFeeOrder} places
+     * when the deal opens trades out of the same free balance the funding
+     * plan sizes — base (short: it sells) or quote (long: it buys). Planned
+     * with the deal as base, an upper bound of its size (the largest level
+     * bounds the largest minigrid order); 0 when no fee order will be placed.
+     */
+    override async dealOpenExtraNeed(
+      symbol: string,
+      ladder: Grid[],
+      baseOrderQty: number,
+      deal?: ExcludeDoc<ComboDealsSchema>,
+    ): Promise<number> {
+      const kucoinNewFee =
+        this.kucoinSpot && !!this.data?.flags?.includes(BotFlags.kucoinNewFee)
+      if (
+        this.futures ||
+        !this.data?.settings.feeOrder ||
+        (this.data.feeBalance ?? 0) > 0 ||
+        deal?.action === ActionsEnum.useOppositeBalance ||
+        (kucoinNewFee && this.isLong)
+      ) {
+        return 0
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      const fee = await this.getUserFee(symbol)
+      const price = await this.getLatestPrice(symbol)
+      return comboFeeOrderQty({
+        feeOrder: true,
+        makerFee: fee?.maker ?? 0,
+        maxLevelQty: Math.max(
+          baseOrderQty,
+          ...ladder
+            .filter((g) => g.type === TypeOrderEnum.dealRegular)
+            .map((g) => g.qty),
+        ),
+        price,
+        minNotional: ed?.quoteAsset.minAmount,
+        minBase: ed?.baseAsset.minAmount,
+        basePrecision: await this.baseAssetPrecision(symbol),
+        levelsMultiplier: kucoinNewFee
+          ? Math.floor(+(this.data.settings.gridLevel ?? '1'))
+          : 1,
+      })
+    }
     override async checkBalance(
       symbol: string,
       sizeMultiplier = 1,
@@ -4547,9 +4593,12 @@ function createComboBotHelper<
           : this.isLong
             ? (balance?.get(ed.quoteAsset.name)?.free ?? 0)
             : balance?.get(ed.baseAsset.name)?.free) ?? 0
-      if (!this.futures && this.isLong) {
+      if (!this.futures) {
         // Spec 044 §5: quote a bot-funded short's take profit will spend.
-        const reserved = await this.reservedFundingQuote(ed.quoteAsset.name)
+        // §8: base a funded long hedge leg's take profit will sell.
+        const reserved = this.isLong
+          ? await this.reservedFundingQuote(ed.quoteAsset.name)
+          : await this.reservedFundingBase(ed.baseAsset.name)
         if (reserved > 0) {
           available = Math.max(0, available - reserved)
         }
@@ -5391,6 +5440,48 @@ function createComboBotHelper<
             avg: +baseOrder.price,
             time: this.getDeal(dealId)?.deal.createTime,
           })
+          if (!this.data.settings.futures && dealId) {
+            // Spec 044 §8: a deal funded (or being funded) before a restart
+            // never gets a real base order.
+            const resumed = await this.resumeFundedEntry(
+              symbol,
+              dealId,
+              baseOrder,
+            )
+            if (resumed !== 'none') {
+              this.endMethod(_id)
+              return
+            }
+            // Fix round 2: a restored `start` deal whose hedge action spends
+            // the account's funds (a restart while it waited for the lock or
+            // planned, before any funding record) is decided under the lock
+            // like a new one — never an unplanned real base order.
+            const restored = oldDealId ? this.getDeal(dealId) : undefined
+            const restoredAction = restored?.deal.action
+            if (
+              restored &&
+              restored.deal.status === DCADealStatusEnum.start &&
+              restoredAction &&
+              restoredAction !== ActionsEnum.noAction &&
+              restoredAction !== ActionsEnum.useOppositeBalance
+            ) {
+              const started = await this.fundHedgeLegEntry(
+                symbol,
+                dealId,
+                baseOrder,
+                restoredAction,
+              )
+              if (started === 'refused') {
+                this.endMethod(_id)
+                return
+              }
+              if (started === 'virtual') {
+                this.endMethod(_id)
+                return this.startFundedDeal(baseOrder)
+              }
+              // `held`: the real base order below, checked and held.
+            }
+          }
           if (!this.data.settings.futures) {
             if (this.data?.action) {
               this.db?.updateData(
@@ -5413,10 +5504,7 @@ function createComboBotHelper<
                   false,
                 )
               }
-              if (
-                deal.deal.action &&
-                deal.deal.action !== ActionsEnum.useBalance
-              ) {
+              if (deal.deal.action) {
                 if (deal.deal.action === ActionsEnum.noAction) {
                   this.resetPending(this.botId, symbol)
                   this.endMethod(_id)
@@ -5425,35 +5513,10 @@ function createComboBotHelper<
                     'placeBaseOrder',
                   )
                 }
-                let proceedBaseOrder = false
-                if (
-                  [
-                    ActionsEnum.buyDiff,
-                    ActionsEnum.buyForAll,
-                    ActionsEnum.sellDiff,
-                    ActionsEnum.sellForAll,
-                  ].includes(deal.deal.action) &&
-                  deal.deal.settings.useDca
-                ) {
-                  this.handleDebug(`Action ${deal.deal.action} detected`)
-                  if (
-                    !(await this.placeHedgeFundingOrder(
-                      symbol,
-                      dealId,
-                      deal.deal,
-                      deal.deal.action,
-                    ))
-                  ) {
-                    this.endMethod(_id)
-                    return
-                  }
-                  proceedBaseOrder = true
-                }
+                this.handleDebug(`Action ${deal.deal.action} detected`)
                 if (deal.deal.action === ActionsEnum.useOppositeBalance) {
-                  this.handleDebug(`Action ${deal.deal.action} detected`)
-                  proceedBaseOrder = true
-                }
-                if (proceedBaseOrder) {
+                  // Unchanged: virtual base order, virtual levels — nothing
+                  // of the account's is spent at start.
                   baseOrder.status = 'FILLED'
                   baseOrder.executedQty = baseOrder.origQty
                   // main-app spec 044 §3.3: no venue trade behind this fill.
@@ -5463,6 +5526,25 @@ function createComboBotHelper<
                   this.endMethod(_id)
                   return this.startDeal(baseOrder)
                 }
+                // Main-app spec 044 §8: every other hedge start action uses
+                // the account's funds and is decided — and funded, or its need
+                // held — under the account's funding lock.
+                const started = await this.fundHedgeLegEntry(
+                  symbol,
+                  dealId,
+                  baseOrder,
+                  deal.deal.action,
+                )
+                if (started === 'refused') {
+                  this.endMethod(_id)
+                  return
+                }
+                if (started === 'virtual') {
+                  this.endMethod(_id)
+                  return this.startFundedDeal(baseOrder)
+                }
+                // `held`: `useBalance`, a funding action without DCA, or a
+                // `*Diff` leg its own funds cover — the real base order below.
               }
               if (!deal.deal.action) {
                 // Main-app spec 044: a short spot deal the bot funds itself.
@@ -5478,7 +5560,7 @@ function createComboBotHelper<
                 }
                 if (funded === 'virtual') {
                   this.endMethod(_id)
-                  return this.startDeal(baseOrder)
+                  return this.startFundedDeal(baseOrder)
                 }
               }
             }
@@ -5494,6 +5576,10 @@ function createComboBotHelper<
             },
             true,
           )
+          if (dealId && this.getDeal(dealId)?.deal.fundingHold) {
+            // Spec 044 §8.4: the base order no longer needs holding.
+            await this.syncFundingHold(dealId)
+          }
           if (result) {
             if (typeof result === 'string') {
               if (

@@ -2178,9 +2178,24 @@ const dealFunding = {
     qty: Number,
     price: Number,
     quoteReserved: Number,
+    // phase 3: held base backing a long hedge leg's virtual entry
+    baseReserved: Number,
+  },
+  pendingTrade: {
+    clientOrderId: String,
+    side: String,
+    qty: Number,
+    at: Number,
   },
   lotIds: [String],
   sourcedByBot: Boolean,
+}
+
+// spec 044 §8.4 — funds the deal's unplaced orders still need.
+const dealFundingHold = {
+  asset: String,
+  committed: Number,
+  remaining: Number,
 }
 
 const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
@@ -2188,6 +2203,10 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   trailingClose,
   feeSizingFallback,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
+  // Hedge leg start action (spec 044 §8.9): `createDeal` writes it; without
+  // it in the schema mongoose dropped it and a hedge DCA leg's deal never
+  // reached its funding branch. Same as combo.
+  action: { type: String, enum: ActionsEnum },
   flags: [String],
   note: String,
   botId: RequiredString,
@@ -2365,6 +2384,7 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     multiplierScope: String,
   },
   botFunding: dealFunding,
+  fundingHold: dealFundingHold,
   tags: [String],
   ac: {
     before: Number,
@@ -2549,6 +2569,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     multiplierScope: String,
   },
   botFunding: dealFunding,
+  fundingHold: dealFundingHold,
   tags: [String],
   flags: [String],
   ac: {

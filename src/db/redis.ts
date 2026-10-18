@@ -203,6 +203,77 @@ export class RedisWrapper {
     return undefined
   }
   /**
+   * SET key value NX PX ttlMs — a lock taken with millisecond expiry. Resolves
+   * true when this caller set the key, false when it already existed,
+   * undefined when Redis is unavailable.
+   */
+  public async setNxPx(
+    key: string,
+    value: string,
+    ttlMs: number,
+  ): Promise<boolean | undefined> {
+    if (this._instance && this._instance.isReady) {
+      return await this._instance
+        .set(key, value, { NX: true, PX: Math.max(1, Math.floor(ttlMs)) })
+        .then((r) => r === 'OK')
+        .catch((e) => {
+          logger.error(`${prefix} Redis setNxPx Error: ${e}`)
+          return undefined
+        })
+    }
+    return undefined
+  }
+  /**
+   * Delete `key` only while it still holds `value` (atomic, Lua): releases a
+   * lock without deleting one another holder took after ours expired. True
+   * when deleted, false when the key held something else or nothing,
+   * undefined when Redis is unavailable.
+   */
+  public async delIfValue(
+    key: string,
+    value: string,
+  ): Promise<boolean | undefined> {
+    if (this._instance && this._instance.isReady) {
+      return await this._instance
+        .eval(
+          "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+          { keys: [key], arguments: [value] },
+        )
+        .then((r) => Number(r) === 1)
+        .catch((e) => {
+          logger.error(`${prefix} Redis delIfValue Error: ${e}`)
+          return undefined
+        })
+    }
+    return undefined
+  }
+  /**
+   * PEXPIRE `key` ttlMs only while it still holds `value` (atomic, Lua): a
+   * lock holder's renewal that cannot extend a lock someone else now holds.
+   */
+  public async pexpireIfValue(
+    key: string,
+    value: string,
+    ttlMs: number,
+  ): Promise<boolean | undefined> {
+    if (this._instance && this._instance.isReady) {
+      return await this._instance
+        .eval(
+          "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end",
+          {
+            keys: [key],
+            arguments: [value, `${Math.max(1, Math.floor(ttlMs))}`],
+          },
+        )
+        .then((r) => Number(r) === 1)
+        .catch((e) => {
+          logger.error(`${prefix} Redis pexpireIfValue Error: ${e}`)
+          return undefined
+        })
+    }
+    return undefined
+  }
+  /**
    * Atomic INCR. Returns the new counter value, or undefined when Redis is
    * unavailable (callers must treat undefined as "could not count" and decide
    * their own fail-open/closed policy).

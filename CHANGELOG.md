@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.105.0] - 2026-10-18
+### Added
+- Hedge DCA and hedge combo legs on spot started with "buy difference" / "buy for all" (short leg) or "sell difference" / "sell for all" (long leg), with DCA on, fund themselves the way a bot-funded short does. The leg's base order is recorded filled at the latest price without a trade. Short leg: the quote that entry stands for is reserved for the take profit, and the safety orders' base is bought upfront (difference: free base first). Long leg, the mirror: the entry is backed by base the account holds, which is reserved for the take profit (`botFunding.virtualEntry.baseReserved`), and the safety orders' quote is raised by selling base upfront (difference: free quote first). A "difference" leg whose own free funds already cover its base order and safety orders trades nothing and starts with a real base order. A leg the account cannot cover is refused, its deal cancelled, and the user gets a bot warning.
+- The funding trade is a `funding` order without a deal id, so it is never mistaken for the deal's base order or counted in the deal's balances, fees or profit. A sale is recorded in `fundinglots` with the quote it raised.
+- Per-account funding lock: planning, trading and recording a deal's funding run one at a time per exchange account across worker processes (Redis `SET NX PX` with a token, renewed by a token-checked heartbeat while it is held, released by its holder only, bounded wait). Ownership is checked again right before the trade and before the record is saved, and the funds other deals reserve are read fresh inside it. `useBalance` hedge legs and funding actions without DCA are checked under the same lock. Adding DCA levels takes it only when a trade is needed.
+- `deal.fundingHold`: the free funds a deal's own orders still need while they are not on the venue — released as each order is placed (levels placed later included) and with the deal.
+- The funding record and the intended trade (`botFunding.pendingTrade`) are saved before the trade is sent. After a restart, a deal in `start` with a funding record never sends a real base order: the funding order is looked up by its client id and the deal resumes when it filled, or is cancelled otherwise.
+- A funded deal's reservation is reduced by what its own resting take profit and base-level grid orders already lock on the venue; orders paid by a safety level's own proceeds are not counted.
+- Adding DCA levels to a funded hedge leg funds the new levels first, both sides (short: buy base; long: sell base for quote).
+- GraphQL `previewHedgeFunding`: both legs of a hedge planned in both start orders, each reported with its worse outcome, so a leg it does not refuse opens whichever leg starts first. Optional combo inputs (`comboGridLevel`, `safetyLevels`, `feeOrder`) add the per-level padding and the fee order the engine plans.
+### Changed
+- Combo fee orders on deals the bot funds are planned into the funding at deal open (an upper bound of their size) instead of trading out of the funds held for the deal.
+- Funding refusals and failures (bot-funded shorts too) are shown to the user as bot warnings instead of only being logged.
+- The funding lock cannot be held forever: the funding trade times out after 180 s and the lock stops being renewed after a maximum hold.
+- A funding order the exchange acknowledges before it has filled is queried again until it is final, within the same 180 s. A final fill within 1% (plus one quantity step) of the plan funds the deal with what executed; a larger shortfall is recorded as executed and the deal cancelled. On exchanges that size market buys in quote, funding buys carry 0.5% headroom for the spread.
+- After a restart, a deal waiting to start with a hedge action and no funding record is funded under the lock like a new one; a funding lot written before the restart is linked to its deal; a funded deal is resumed before any stale-start cancel.
+- Hedge DCA legs started with "use opposite balance" now take the virtual path hedge combo legs take (virtual base order, levels and take profit checked by price), now that the deal keeps its start action.
+### Fixed
+- Hedge DCA deals keep their start action: the DCA deal schema had no `action` field, so the action was dropped on save and a hedge DCA leg always started with a plain base order, whatever action was chosen.
+
+## [1.104.1] - 2026-10-18
+### Fixed
+- Short spot base funding now applies to bots created in the dashboard: a regular bot's stored `terminalDealType` no longer reads as a terminal deal, and combo bots are funded whatever `startOrderType` they carry, since combo always enters at market.
+- Adding DCA levels to a bot-funded deal no longer leaves it without its safety orders and take profit: the deal is read again after the funding trade has filled, so the ladder is rebuilt from the deal's current state instead of re-sending the orders it had before.
+
 ## [1.104.0] - 2026-10-18
 ### Added
 - DCA timer start on selected weekdays: new bot setting `hodlWeekdays` (0 = Sunday … 6 = Saturday, in the user's profile timezone). A timer run on an unselected day opens no deal and the next run moves to the next selected day — a daily timer keeps its set time, an hourly one restarts at the first hour of that day. Empty, missing or all seven keeps every day, as before. Exposed on GraphQL (`DCABotSettings`, create/change inputs) and on the v2 API bot settings; matches `@gainium/backtester` 1.16.0.

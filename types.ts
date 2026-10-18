@@ -193,17 +193,53 @@ export enum BaseFundingEnum {
 }
 
 /**
+ * Account funds a deal's own orders need that are not on the book yet (spec
+ * 044 §8.4): free balance the reservation must hold for the deal until each
+ * order is placed. `committed` is the need of every order counted (in
+ * `asset`); `remaining` is what is not placed yet. Released as orders are
+ * placed, and with the deal (only open / start / error deals are counted).
+ */
+export type DealFundingHold = {
+  asset: 'base' | 'quote'
+  committed: number
+  remaining: number
+}
+
+/**
  * How a deal was funded by the bot (main-app spec 044). Absent on a deal that
  * ran on the account's own balance.
  */
 export type DealFunding = {
   mode: BaseFundingEnum
   /**
-   * The base order recorded filled at this price with no trade. Its quote is
-   * the account's own and stays reserved until the deal closes, because the
-   * take profit spends it to buy the base back.
+   * The base order recorded filled at this price with no trade.
+   *
+   * Short: its quote is the account's own and stays reserved
+   * (`quoteReserved`) until the deal closes, because the take profit spends
+   * it to buy the base back.
+   *
+   * Long (hedge leg, spec 044 phase 3): the entry is backed by base the
+   * account already holds, which the take profit sells — `baseReserved`
+   * keeps it from other deals until the deal closes; `quoteReserved` is 0.
    */
-  virtualEntry?: { qty: number; price: number; quoteReserved: number }
+  virtualEntry?: {
+    qty: number
+    price: number
+    quoteReserved: number
+    baseReserved?: number
+  }
+  /**
+   * A funding trade about to be (or being) sent (phase 3, restart safety):
+   * written before the order goes out, cleared when the funding is recorded.
+   * A deal in `start` that carries it must never get a real base order — a
+   * restore looks the order up and resumes or retires the deal.
+   */
+  pendingTrade?: {
+    clientOrderId: string
+    side: OrderSideEnum
+    qty: number
+    at: number
+  }
   /** `fundinglots` rows this deal's funding trades wrote. */
   lotIds: string[]
   /** Every base unit the deal sells came from a lot or the virtual entry. */
@@ -1586,6 +1622,7 @@ export interface DCADealsSchema extends SchemaI {
   sizes?: Sizes
   /** main-app spec 044 — absent unless the bot funded the deal itself. */
   botFunding?: DealFunding
+  fundingHold?: DealFundingHold
   fullFee?: number
   fixSize?: number
   /**

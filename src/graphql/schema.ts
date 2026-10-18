@@ -219,6 +219,10 @@ export const UserSchema = /* GraphQL */ `
     getBalances(input: getBalancesInput!): getBalancesResponse
     # What a short spot deal the bot funds itself will do (main-app spec 044).
     previewFunding(input: previewFundingInput!): previewFundingResponse
+    # Both legs of a hedge on spot, planned jointly SHORT then LONG (main-app spec 044 §8).
+    previewHedgeFunding(
+      input: previewHedgeFundingInput!
+    ): previewHedgeFundingResponse
     updateBalance(input: updateBalanceInput): getPortfolioResponse
     updateStatus: updateStatusResponse
     getUserPeriods: getUserPeriodsResponse
@@ -804,6 +808,66 @@ export const UserSchema = /* GraphQL */ `
     status: Status
     reason: String
     data: previewFundingData
+  }
+  input previewHedgeFundingLegInput {
+    # "LONG" | "SHORT"
+    side: String!
+    # ActionsEnum value
+    action: String!
+    # base qty of the leg's base order
+    baseOrderQty: Float!
+    # Σ base qty of the leg's safety orders (dealRegular), as rendered
+    safetyQty: Float!
+    # Σ qty*price of the leg's safety orders
+    safetyQuote: Float!
+    useDca: Boolean!
+    # Combo only (optional): bot gridLevel and the leg's safety-level count — short-leg padding (base step × gridLevel per level)
+    comboGridLevel: Float
+    safetyLevels: Int
+    # Combo only (optional): the bot places a fee order at deal open
+    feeOrder: Boolean
+  }
+  input previewHedgeFundingInput {
+    exchangeUUID: String!
+    exchange: String!
+    pair: String!
+    price: Float!
+    legs: [previewHedgeFundingLegInput!]!
+  }
+  type previewHedgeFundingLeg {
+    side: String!
+    action: String!
+    # "none" | "fund" | "refuse"
+    kind: String!
+    # "BUY" | "SELL" when kind=fund
+    tradeSide: String
+    tradeBaseQty: Float
+    tradeQuote: Float
+    raisedToMin: Boolean
+    # in needAsset
+    required: Float
+    # in needAsset, after other reservations
+    held: Float
+    # base or quote asset symbol
+    needAsset: String
+    # quoteReserved (short) or baseReserved (long)
+    reservedForEntry: Float
+    # refusal reason, human readable
+    message: String
+  }
+  type previewHedgeFundingData {
+    baseAsset: String!
+    quoteAsset: String!
+    freeBase: Float!
+    freeQuote: Float!
+    reservedQuote: Float!
+    reservedBase: Float!
+    legs: [previewHedgeFundingLeg!]!
+  }
+  type previewHedgeFundingResponse {
+    status: Status!
+    reason: String
+    data: previewHedgeFundingData
   }
   input userSettingsInput {
     timezone: String
