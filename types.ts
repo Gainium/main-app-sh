@@ -2198,6 +2198,35 @@ export interface ReconcileSweepSchema extends SchemaI {
   missedFills: number
 }
 
+/**
+ * One funding trade the bot placed itself to acquire an asset its orders
+ * consume (main-app spec 044 §3.2): the cost basis of base the bot bought, so
+ * a deal whose base is all bot-sourced can report an honest account result.
+ * `consumed` records each order that later sold out of the lot.
+ */
+export interface FundingLotSchema extends SchemaI {
+  userId: string
+  exchange: ExchangeEnum
+  exchangeUUID: string
+  botId: string
+  botType: BotType
+  dealId?: string
+  symbol: string
+  /** The asset acquired. */
+  asset: string
+  side: OrderSideEnum
+  qty: number
+  price: number
+  fee?: number
+  feeAsset?: string
+  orderId: string
+  clientOrderId: string
+  /** `qty` not yet consumed by a later sell. */
+  remaining: number
+  consumed: { orderId: string; qty: number; price: number; time: number }[]
+  paperContext: boolean
+}
+
 // One Binance Futures Quantitative Rules (-4400) cooldown event. Written by the
 // bot engine's QuantRulesGuard when a NEW cooldown (or escalation) is detected;
 // read by the getQuantRulesStatus GraphQL query, admin-app, and the dashboard.
@@ -3768,6 +3797,12 @@ export type Order = CommonOrder & {
    * fill of a deal adopted into the position (§4.2.3).
    */
   positionEntry?: boolean
+  /**
+   * `virtual`: recorded FILLED without a venue trade — a funded deal's base
+   * order (main-app spec 044 §3.3). Anything comparing a deal with the venue
+   * must read this row as "no venue trade". Absent on every real order.
+   */
+  fundingSource?: 'virtual'
   minigridBudget?: number
   liquidation?: boolean
   sl?: boolean

@@ -4,6 +4,7 @@ import type {
   BotEventSchema,
   ChangeTrailSchema,
   ReconcileSweepSchema,
+  FundingLotSchema,
   QuantRulesEventSchema,
   BotMessageSchema,
   BotSchema,
@@ -284,6 +285,42 @@ const reconcileSweepSchema: Schema<ReconcileSweepSchema> = new Schema(
   { collection: 'reconcilesweepcatches' },
 )
 
+// Funding trades the bot placed itself (main-app spec 044 §3.2) — the cost
+// basis of base it bought. Not TTL'd: a lot is a deal's accounting record.
+const fundingLotSchema: Schema<FundingLotSchema> = new Schema(
+  {
+    userId: RequiredString,
+    exchange: { ...RequiredString, enum: ExchangeEnum },
+    exchangeUUID: RequiredString,
+    botId: RequiredString,
+    botType: { ...RequiredString, enum: BotType },
+    dealId: String,
+    symbol: RequiredString,
+    asset: RequiredString,
+    side: { ...RequiredString, enum: SideEnum },
+    qty: RequiredNumber,
+    price: RequiredNumber,
+    fee: Number,
+    feeAsset: String,
+    orderId: RequiredString,
+    clientOrderId: RequiredString,
+    remaining: RequiredNumber,
+    consumed: [
+      {
+        _id: false,
+        orderId: RequiredString,
+        qty: RequiredNumber,
+        price: RequiredNumber,
+        time: RequiredNumber,
+      },
+    ],
+    paperContext: Boolean,
+    ...CreatedUpdated,
+  },
+  // Pinned: mongoose would lowercase the model name anyway, but say it.
+  { collection: 'fundinglots' },
+)
+
 // Binance Futures Quantitative Rules (-4400) cooldown events. Written by the
 // bot engine's QuantRulesGuard on each NEW cooldown / escalation; read by the
 // getQuantRulesStatus GraphQL query, admin-app, and the dashboard. Rows expire
@@ -511,7 +548,9 @@ const feeSizingFallback = {
   required: false,
 }
 
-const BuyTypeEnumDB = [BuyTypeEnum.X, BuyTypeEnum.all, BuyTypeEnum.proceed]
+// Every value: a grid started with "buy difference" / "sell difference" and a
+// start price stores its choice in `swapType` until the price is reached.
+const BuyTypeEnumDB = Object.values(BuyTypeEnum)
 
 const Symbols = {
   symbol: String,
@@ -879,6 +918,8 @@ const orderSchema: Schema<OrderSchema> = new Schema({
   addFundsId: String,
   reduceFundsId: String,
   positionEntry: Boolean,
+  // main-app spec 044 §3.3 — recorded FILLED without a venue trade.
+  fundingSource: { type: String, enum: ['virtual'] },
   minigridBudget: Number,
   liquidation: Boolean,
   sl: Boolean,
@@ -3239,6 +3280,10 @@ export const registerIndexes = () => {
   // Retain ~90 days of catches; bounds growth without manual cleanup.
   reconcileSweepSchema.index({ created: 1 }, { expireAfterSeconds: 7776000 })
 
+  fundingLotSchema.index({ dealId: 1 })
+  fundingLotSchema.index({ userId: 1, exchangeUUID: 1, asset: 1, remaining: 1 })
+  fundingLotSchema.index({ clientOrderId: 1 }, { unique: true })
+
   quantRulesEventSchema.index({ userId: 1, created: -1 })
   quantRulesEventSchema.index({ until: -1 })
   // Retain ~90 days of cooldown events; bounds growth without manual cleanup.
@@ -3682,6 +3727,7 @@ const schema = {
   botEvent: botEventSchema,
   changeTrail: changeTrailSchema,
   reconcileSweep: reconcileSweepSchema,
+  fundingLot: fundingLotSchema,
   quantRulesEvent: quantRulesEventSchema,
   favoritePairs: favoritePairsSchema,
   favoriteIndicators: favoriteIndicatorsSchema,

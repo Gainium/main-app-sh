@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.102.8] - 2026-10-18
+### Added
+- Base-funding planner (`bot/baseFunding.ts`): one pure calculation of how much of an asset a bot must buy or sell before placing the orders it commits to, covering use-held, buy-the-difference and buy-for-all, with fee gross-up, the exchange minimum and rounding. A `fundinglots` collection for the purchase price of assets a bot buys itself, and an `Order.fundingSource: 'virtual'` marker for order rows recorded filled without an exchange trade. No writer or reader of either yet.
+### Fixed
+- Hedge DCA and hedge combo legs started with "buy difference" / "sell difference" now size the funding order from the shortfall of the asset the leg's safety orders consume (base for a short leg, quote for a long leg). Before, they compared the requirement with the balance of the asset being spent, so an account holding plenty of quote bought nothing. "Buy for all" / "sell for all" now cover the safety orders only, since the leg's base order is recorded without a trade; the DCA leg also counted its take-profit order. The funding order is now raised to the exchange minimum and grossed up for the fee. The base order filled without a trade is marked `fundingSource: 'virtual'`.
+- A grid bot's "buy difference" / "sell difference" choice is accepted when stored with a start price.
+
 ## [1.102.7] - 2026-10-18
 ### Fixed
 - Hedge take profit / stop loss is judged per pair. On a multi-pair hedge bot the combined TP/SL summed every open deal of every pair and closed them all at once, so a pair past its target stayed open while the rest lagged. Each pair's long and short deals are now one hedge: when that pair's combined P&L reaches the TP or SL, only its deals close. A pair with one leg open is judged on that leg alone. Single-pair hedges are unchanged.

@@ -3,6 +3,7 @@ export const collections = {
   botEvent: 'botEvent',
   changeTrail: 'changeTrail',
   reconcileSweep: 'reconcilesweepcatches',
+  fundingLot: 'fundinglots',
   quantRulesEvent: 'quantrulesevents',
   dealStats: 'dealStats',
   favoritePairs: 'favoritePairs',

@@ -7,6 +7,7 @@ import {
   BotEventSchema,
   ChangeTrailSchema,
   ReconcileSweepSchema,
+  FundingLotSchema,
   QuantRulesEventSchema,
   BotMessageSchema,
   BotSchema,
@@ -60,6 +61,10 @@ const models = {
   reconcileSweep: model<ReconcileSweepSchema>(
     `${collections.reconcileSweep}`,
     schema.reconcileSweep,
+  ),
+  fundingLot: model<FundingLotSchema>(
+    `${collections.fundingLot}`,
+    schema.fundingLot,
   ),
   quantRulesEvent: model<QuantRulesEventSchema>(
     `${collections.quantRulesEvent}`,
@@ -193,6 +198,7 @@ export const syncIndexes = async (user = true) => {
   await models.botEvent.syncIndexes()
   await models.changeTrail.syncIndexes()
   await models.reconcileSweep.syncIndexes()
+  await models.fundingLot.syncIndexes()
   await models.quantRulesEvent.syncIndexes()
   await models.balance.syncIndexes()
   await models.backtest.syncIndexes()

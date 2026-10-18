@@ -1,3 +1,4 @@
+import { planHedgeLegFunding } from './baseFunding'
 import {
   combineIndicatorGroups,
   groupStandsAlone,
@@ -11006,95 +11007,16 @@ function createDCABotHelper<
                   deal.deal.settings.useDca
                 ) {
                   this.handleDebug(`Action ${deal.deal.action} detected`)
-                  const lp = await this.getLatestPrice(symbol)
-                  const orders = await this.createInitialDealOrders(
-                    symbol,
-                    lp,
-                    dealId,
-                    deal.deal,
-                  )
-                  const required = this.isLong
-                    ? orders.reduce((acc, v) => acc + v.qty * v.price, 0) / lp
-                    : orders.reduce((acc, v) => acc + v.qty, 0) * lp
-                  this.handleDebug(
-                    `Required amount for ${deal.deal.action} is ${required}, price is ${lp}`,
-                  )
-                  const ei = await this.getExchangeInfo(symbol)
-                  const balance =
-                    (await this.checkAssets(true, true))?.get(
-                      (this.isLong
-                        ? ei?.baseAsset.name
-                        : ei?.quoteAsset.name) ?? '',
-                    )?.free ?? 0
-                  this.handleDebug(`Available balance is ${balance}`)
-                  const orderSize = [
-                    ActionsEnum.buyDiff,
-                    ActionsEnum.sellDiff,
-                  ].includes(deal.deal.action)
-                    ? required - balance
-                    : required
-                  this.handleDebug(`Order size is ${orderSize}`)
-                  if (orderSize > 0) {
-                    const price = `${this.math.round(
-                      lp,
-                      ei?.priceAssetPrecision,
-                    )}`
-                    const qty = `${this.math.round(
-                      orderSize * (this.isLong ? 1 : 1 / lp),
-                      await this.baseAssetPrecision(symbol),
-                    )}`
-                    const r = await this.sendOrderToExchange(
-                      {
-                        clientOrderId: this.getOrderId('CMB-H'),
-                        status: 'NEW',
-                        executedQty: '0',
-                        price: price,
-                        origPrice: price,
-                        cummulativeQuoteQty: `${+price * +qty}`,
-                        orderId: '-1',
-                        origQty: `${qty}`,
-                        side: this.isLong
-                          ? OrderSideEnum.sell
-                          : OrderSideEnum.buy,
-                        symbol,
-                        type: OrderTypeEnum.market,
-                        updateTime: new Date().getTime(),
-                        transactTime: new Date().getTime(),
-                        exchange: this.data.exchange,
-                        exchangeUUID: this.data.exchangeUUID,
-                        typeOrder: TypeOrderEnum.dealStart,
-                        botId: this.botId,
-                        userId: this.userId,
-                        dealId,
-                        fills: [],
-                        baseAsset: ei?.baseAsset.name ?? '',
-                        quoteAsset: ei?.quoteAsset.name ?? '',
-                      },
-                      true,
-                    )
-                    if (typeof r === 'string') {
-                      this.endMethod(_id)
-                      return this.handleErrors(
-                        `Error placing order: ${r}`,
-                        'placeBaseOrder',
-                        '',
-                        false,
-                        false,
-                        false,
-                      )
-                    }
-                    if (!r) {
-                      this.endMethod(_id)
-                      return this.handleErrors(
-                        `Error placing order`,
-                        'placeBaseOrder',
-                        '',
-                        false,
-                        false,
-                        false,
-                      )
-                    }
-                    this.handleDebug(`Order ${r.clientOrderId} filled`)
+                  if (
+                    !(await this.placeHedgeFundingOrder(
+                      symbol,
+                      dealId,
+                      deal.deal,
+                      deal.deal.action,
+                    ))
+                  ) {
+                    this.endMethod(_id)
+                    return
                   }
                   proceedBaseOrder = true
                 }
@@ -11105,6 +11027,8 @@ function createDCABotHelper<
                 if (proceedBaseOrder) {
                   baseOrder.status = 'FILLED'
                   baseOrder.executedQty = baseOrder.origQty
+                  // main-app spec 044 §3.3: no venue trade behind this fill.
+                  baseOrder.fundingSource = 'virtual'
                   this.setOrder(baseOrder)
                   this.ordersDb.createData(baseOrder)
                   this.endMethod(_id)
@@ -19672,6 +19596,113 @@ function createDCABotHelper<
         `Breakpoint created. Current price ${breakpoint.price}, next order price ${breakpoint.displacedPrice}.`,
       )
       return deal.gridBreakpoints
+    }
+
+    /**
+     * Main-app spec 044 §6.5 — the funding trade a hedge leg's `buyDiff` /
+     * `buyForAll` / `sellDiff` / `sellForAll` action places at deal open,
+     * before the leg's base order is filled virtually. Sized by
+     * {@link planHedgeLegFunding}: the safety orders only, against the balance
+     * of the asset they consume.
+     *
+     * @returns true when the deal may proceed (traded, or nothing to trade);
+     *   false once the failure has been reported.
+     */
+    async placeHedgeFundingOrder(
+      symbol: string,
+      dealId: string,
+      deal: ExcludeDoc<Deal>,
+      action: ActionsEnum,
+    ): Promise<boolean> {
+      if (!this.data) {
+        return false
+      }
+      const lp = await this.getLatestPrice(symbol)
+      const orders = await this.createInitialDealOrders(
+        symbol,
+        lp,
+        dealId,
+        deal,
+      )
+      const ei = await this.getExchangeInfo(symbol)
+      const balances = await this.checkAssets(true, true)
+      const fee = await this.getUserFee(symbol)
+      const basePrecision = await this.baseAssetPrecision(symbol)
+      const funding = planHedgeLegFunding({
+        isLong: this.isLong,
+        action,
+        orders,
+        price: lp,
+        freeBase: balances?.get(ei?.baseAsset.name ?? '')?.free ?? 0,
+        freeQuote: balances?.get(ei?.quoteAsset.name ?? '')?.free ?? 0,
+        feeRate: fee?.taker ?? 0,
+        minNotional: ei?.quoteAsset.minAmount,
+        minBase: ei?.baseAsset.minAmount,
+        basePrecision,
+      })
+      this.handleDebug(
+        `Hedge funding ${action}: required ${funding?.plan.required} ${funding?.plan.needAsset}, held ${funding?.plan.held}, shortfall ${funding?.plan.shortfall}, price ${lp}`,
+      )
+      const trade = funding?.trade
+      if (!trade) {
+        return true
+      }
+      this.handleDebug(
+        `Hedge funding order ${trade.side} ${trade.baseQty}${trade.raisedToMin ? ' (raised to exchange minimum)' : ''}`,
+      )
+      const price = `${this.math.round(lp, ei?.priceAssetPrecision)}`
+      const qty = `${trade.baseQty}`
+      const r = await this.sendOrderToExchange(
+        {
+          clientOrderId: this.getOrderId('CMB-H'),
+          status: 'NEW',
+          executedQty: '0',
+          price: price,
+          origPrice: price,
+          cummulativeQuoteQty: `${+price * +qty}`,
+          orderId: '-1',
+          origQty: qty,
+          side: trade.side,
+          symbol,
+          type: OrderTypeEnum.market,
+          updateTime: new Date().getTime(),
+          transactTime: new Date().getTime(),
+          exchange: this.data.exchange,
+          exchangeUUID: this.data.exchangeUUID,
+          typeOrder: TypeOrderEnum.dealStart,
+          botId: this.botId,
+          userId: this.userId,
+          dealId,
+          fills: [],
+          baseAsset: ei?.baseAsset.name ?? '',
+          quoteAsset: ei?.quoteAsset.name ?? '',
+        },
+        true,
+      )
+      if (typeof r === 'string') {
+        this.handleErrors(
+          `Error placing order: ${r}`,
+          'placeBaseOrder',
+          '',
+          false,
+          false,
+          false,
+        )
+        return false
+      }
+      if (!r) {
+        this.handleErrors(
+          `Error placing order`,
+          'placeBaseOrder',
+          '',
+          false,
+          false,
+          false,
+        )
+        return false
+      }
+      this.handleDebug(`Order ${r.clientOrderId} filled`)
+      return true
     }
     /**
      * Create initial deal orders
