@@ -494,6 +494,16 @@ const orderQuarantineMinAgeMs = Number(
 )
 
 /**
+ * The age floor for {@link MainBot.retireUnsentOrder}. It does not need the day
+ * above: that order has no write-ahead row, so it was never sent and there is
+ * no propagation lag to wait out. The floor only keeps out an order whose
+ * write-ahead insert is still in flight in this process. Spec 172.
+ */
+const unsentOrderMinAgeMs = Number(
+  process.env.BOT_UNSENT_ORDER_MIN_AGE_MS ?? 2 * 60 * 1000,
+)
+
+/**
  * Reconcile-pass tunables. See {@link MainBot.getOrderForReconcile} and
  * {@link MainBot.spreadReconcileStart} for why each exists.
  *
@@ -1247,6 +1257,35 @@ class MainBot<T extends IMainBot> {
     order.quarantine = next
     this.setOrder(order)
     this.updateOrderOnDb(order)
+  }
+
+  /**
+   * Drop an order the venue definitively reports as absent when it provably
+   * never left this bot. That means it still carries the `'-1'` placeholder
+   * and Mongo has no row for it. `sendOrderToExchange` writes that row BEFORE
+   * the send, so a missing row means the send never happened. This is the
+   * shape a process stop leaves behind when it lands between "the order is in
+   * the map, and so in the Redis snapshot" and "the write-ahead insert". Unlike
+   * {@link MainBot.noteOrderNotFound}, there is no day to wait out. Returns
+   * whether it dropped the order, so the caller can place what it stood for.
+   * Spec 172 §1.1.3.
+   */
+  protected async retireUnsentOrder(order: Order, reason: string) {
+    if (`${order.orderId ?? ''}` !== noExchangeOrderId) return false
+    const lastKnownAt = Math.max(order.transactTime ?? 0, order.updateTime ?? 0)
+    if (!lastKnownAt || +new Date() - lastKnownAt < unsentOrderMinAgeMs) {
+      return false
+    }
+    const row = await this.ordersDb.readData(
+      { clientOrderId: order.clientOrderId },
+      { _id: 1 },
+    )
+    if (row.status !== StatusEnum.ok || row.data?.result) return false
+    this.handleLog(
+      `Order ${order.clientOrderId} was never sent: it has no exchange id and no saved record, and the exchange confirms it does not exist (${reason}) — dropping it`,
+    )
+    this.deleteOrder(order.clientOrderId)
+    return true
   }
 
   /**

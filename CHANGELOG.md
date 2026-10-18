@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.6] - 2026-10-18
+
+### Fixed
+
+- A DCA deal whose base order filled just before a worker restart is finished on restart: if the restart snapshot shows it open while the database still has it unstarted, it is loaded from the database and started on its filled base order, which places its take-profit. A restored take-profit that was never sent (no exchange id, no saved record, and the exchange confirms it does not exist) is dropped and placed again right away, instead of being polled for a day while the position has no exit.
+
 ## [1.106.5] - 2026-10-18
 
 ### Fixed

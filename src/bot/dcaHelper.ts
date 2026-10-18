@@ -2236,6 +2236,59 @@ function createDCABotHelper<
         this.botId,
         this.serviceRestart && !this.secondRestart,
       )
+      // `startDeal` marks a deal `open` in memory, and so in the snapshot,
+      // before its own Mongo update and before its take-profit is sent. A stop
+      // in between restored the deal `open` with a take-profit no venue ever
+      // saw, and the filled-base branch of `restoreWork`, which only walks
+      // `start` deals, never got to finish it. Where Mongo still says `start`
+      // and nothing of the deal beyond its entry ever reached the venue, load
+      // Mongo's copy instead, so the restart starts the deal again. Spec 172
+      // §1.1.1.
+      const unfinishedStarts = restoredFromRedis.filter((d) => {
+        if (d.deal.status !== DCADealStatusEnum.open) return false
+        const own = this.allOrders.filter(
+          (o) => `${o.dealId}` === `${d.deal._id}`,
+        )
+        return (
+          own.some(
+            (o) =>
+              o.typeOrder === TypeOrderEnum.dealStart && o.status === 'FILLED',
+          ) &&
+          !own.some(
+            (o) =>
+              o.typeOrder !== TypeOrderEnum.dealStart &&
+              `${o.orderId ?? ''}` !== '-1',
+          )
+        )
+      })
+      if (unfinishedStarts.length) {
+        const inDb = await this.dealsDb.readData(
+          {
+            botId: this.botId,
+            _id: { $in: unfinishedStarts.map((d) => `${d.deal._id}`) },
+            status: DCADealStatusEnum.start,
+          } as any,
+          {},
+          {},
+          true,
+        )
+        if (inDb.status === StatusEnum.notok) {
+          this.handleWarn(
+            `Cannot check DB status of deals restored from redis: ${inDb.reason}`,
+          )
+        } else if (inDb.data.result.length) {
+          const reload = new Set(inDb.data.result.map((d) => `${d._id}`))
+          this.handleLog(
+            `Deals restored from redis as open are still start in DB, loading them from DB: ${[
+              ...reload,
+            ].join(', ')}`,
+          )
+          restoredFromRedis = restoredFromRedis.filter(
+            (d) => !reload.has(`${d.deal._id}`),
+          )
+          deals = [...deals, ...inDb.data.result]
+        }
+      }
       // Now that the order book is populated, generate the orders for the deals
       // restored from Redis above. `getTPOrder` reads this deal's filled orders
       // and its base order out of that map; before, it ran against an empty one.
@@ -13015,6 +13068,9 @@ function createDCABotHelper<
             continue main
           }
           const forTPCheck = deal && (await this.isDealForTPLevelCheck(deal))
+          // Take-profits dropped below as never sent. They are not resting, so
+          // the grid comparison further down must not count them. Spec 172.
+          const unsentTPs = new Set<string>()
           if (activeTPSLOrders.length && deal && !forTPCheck) {
             for (const activeTPSLOrder of activeTPSLOrders) {
               if (this.isOrderQuarantined(activeTPSLOrder)) continue
@@ -13036,6 +13092,23 @@ function createDCABotHelper<
                 this.handleWarn(
                   `Order ${activeTPSLOrder.clientOrderId} not found on exchange: ${tpslOrderData?.reason}`,
                 )
+                // A take-profit restored from the Redis snapshot that was
+                // never sent: the process stopped inside `startDeal` after the
+                // snapshot had it and before its write-ahead row. Waiting out
+                // the quarantine floor left the position without an exit for
+                // a day. Drop it so the grid comparison below places the
+                // take-profit. Spec 172 §1.1.3.
+                if (
+                  this.serviceRestart &&
+                  !partiallyFilled &&
+                  (await this.retireUnsentOrder(
+                    activeTPSLOrder,
+                    `${tpslOrderData?.reason}`,
+                  ))
+                ) {
+                  unsentTPs.add(activeTPSLOrder.clientOrderId)
+                  continue
+                }
                 this.noteOrderNotFound(
                   activeTPSLOrder,
                   `${tpslOrderData?.reason}`,
@@ -13125,10 +13198,13 @@ function createDCABotHelper<
                   g.tpSlTarget ?? '',
                 ),
             )
-            if (activeTPSLOrders.length !== tpOrdersInCurrent.length) {
+            const restingTPs = unsentTPs.size
+              ? activeTPSLOrders.filter((o) => !unsentTPs.has(o.clientOrderId))
+              : activeTPSLOrders
+            if (restingTPs.length !== tpOrdersInCurrent.length) {
               for (const tpOrderInCurrent of tpOrdersInCurrent) {
                 if (
-                  activeTPSLOrders.find(
+                  restingTPs.find(
                     (o) =>
                       o.side === tpOrderInCurrent.side &&
                       +o.price === tpOrderInCurrent.price &&
