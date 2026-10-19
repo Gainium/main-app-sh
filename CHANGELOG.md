@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.107.0] - 2026-10-19
+### Changed
+- Bot base funding is available to every user: short spot DCA / combo `baseFunding` (Auto / Bot only) and hedge DCA / hedge combo legs on spot that fund themselves with the start actions. Deals opened from now on are stamped `baseFundingBeta` and follow the funded path; deals opened before keep the behaviour they started with. `baseFundingAccess.available` is true for every signed-in user, and `baseFunding` settings are stored as sent. The role check is kept in code (`BASE_FUNDING_RELEASED`) to narrow it again if needed.
+
 ## [1.106.18] - 2026-10-19
 
 ### Fixed

@@ -7,11 +7,12 @@ process.env.NODE_ENV = 'testing'
  *
  * Run: `npm test` (mocha).
  */
-import { describe, it, afterEach } from 'mocha'
+import { describe, it, afterEach, beforeEach } from 'mocha'
 import { expect } from 'chai'
 import { createRoleReader, resolveGroups } from '../utils/roleGate'
 import {
   BASE_FUNDING_BETA_ROLE,
+  BASE_FUNDING_RELEASED,
   BaseFundingGate,
   coerceBaseFundingSetting,
 } from './baseFundingGate'
@@ -21,7 +22,30 @@ const withGroups = (groups: Record<string, unknown>) =>
   createRoleReader(async (id) => groups[id])
 
 describe('BaseFundingGate (spec 044 beta gate)', () => {
-  afterEach(() => gate.setRoleReader(withGroups({})))
+  beforeEach(() => gate.setReleased(false))
+  afterEach(() => {
+    gate.setRoleReader(withGroups({}))
+    gate.setReleased(BASE_FUNDING_RELEASED)
+  })
+
+  it('released: every signed-in user is allowed, without a role read', async () => {
+    gate.setReleased(true)
+    let reads = 0
+    gate.setRoleReader(
+      createRoleReader(async () => {
+        reads++
+        return []
+      }),
+    )
+    expect(BASE_FUNDING_RELEASED).to.equal(true)
+    expect(await gate.isAllowed('anyone')).to.equal(true)
+    expect(await gate.isAllowed(undefined)).to.equal(false)
+    expect(
+      (await coerceBaseFundingSetting('anyone', { baseFunding: 'auto' }))
+        .baseFunding,
+    ).to.equal('auto')
+    expect(reads).to.equal(0)
+  })
 
   it('allows exactly the users holding BaseFundingBeta', async () => {
     gate.setRoleReader(

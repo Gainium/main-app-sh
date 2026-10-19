@@ -89,6 +89,8 @@ describe('previewHedgeFunding (main-app spec 044 §8)', () => {
         { asset: 'USDT', free: `${free.USDT}` },
       ],
     })
+    // The role path (the feature is released; these cases pin the gate).
+    BaseFundingGate.getInstance().setReleased(false)
     BaseFundingGate.getInstance().setRoleReader(
       createRoleReader(async (id: string) => roles[id], 0),
     )
@@ -96,6 +98,7 @@ describe('previewHedgeFunding (main-app spec 044 §8)', () => {
     FundingReservation.prototype.reservedBase = async () => reserved.base
   })
   after(() => {
+    BaseFundingGate.getInstance().setReleased(true)
     dbInit.pairDb.readData = saved.pair
     dbInit.feeDb.readData = saved.fee
     balanceHandler.getBalances = saved.balances

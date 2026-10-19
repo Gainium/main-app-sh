@@ -1,6 +1,12 @@
 /**
- * Spec 044 beta gate — who gets bot base funding (phases 2 and 3).
+ * Spec 044 gate — who gets bot base funding (phases 2 and 3).
  *
+ * RELEASED to everyone (2026-10-19): {@link BASE_FUNDING_RELEASED} is true, so
+ * every signed-in user is allowed and no role is read. The role path below is
+ * kept so the feature can be narrowed back to role holders by flipping that
+ * constant (a code change + deploy, by design — no runtime switch).
+ *
+ * While not released:
  * Only users holding the role {@link BASE_FUNDING_BETA_ROLE} in `user.groups`
  * (the admin user-roles editor, `PUT /user/groups`): exact, case-sensitive,
  * ≤ 60 s cache per process, a failed read keeps the last answer, otherwise not
@@ -16,6 +22,9 @@ import { userDb } from '../db/dbInit'
 import { createRoleReader } from '../utils/roleGate'
 
 export const BASE_FUNDING_BETA_ROLE = 'BaseFundingBeta'
+
+/** Base funding is generally available: every signed-in user is allowed. */
+export const BASE_FUNDING_RELEASED = true
 
 export const BASE_FUNDING_NOT_AVAILABLE =
   'Base funding is not available for your account yet.'
@@ -34,18 +43,27 @@ export class BaseFundingGate {
   private roles: RoleReader = createRoleReader(async (userId) => {
     const res = await userDb.readData({ _id: userId } as any, { groups: 1 })
     if (res.status !== 'OK') throw new Error(res.reason ?? 'read failed')
-    return (res.data?.result as { groups?: unknown } | null | undefined)
-      ?.groups
+    return (res.data?.result as { groups?: unknown } | null | undefined)?.groups
   })
+
+  private released = BASE_FUNDING_RELEASED
 
   /** May this user's NEW deals (and previews, settings) use base funding? */
   async isAllowed(userId: string | null | undefined): Promise<boolean> {
     if (!userId) {
       return false
     }
+    if (this.released) {
+      return true
+    }
     return this.roles
       .hasRole(String(userId), BASE_FUNDING_BETA_ROLE)
       .catch(() => false)
+  }
+
+  /** Tests: exercise the role path (or the released one). */
+  setReleased(released: boolean) {
+    this.released = released
   }
 
   /** Tests: an injectable role reader. */
