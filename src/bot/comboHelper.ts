@@ -353,6 +353,30 @@ function createComboBotHelper<
         return
       }
       const _id = this.startMethod('createMinigrid')
+      // One live minigrid per filled rung. A fill processed again after a
+      // restart (its first processing created the minigrid, and the restart
+      // loaded it) gets the existing ladder back, never a second minigrid.
+      const existing = this.liveMinigridForOrder(deal._id, order.clientOrderId)
+      if (existing) {
+        // Only the lines with no resting order are handed back to be placed.
+        const rests = this.getOrdersByStatusAndDealId({
+          status: ['NEW', 'PARTIALLY_FILLED'],
+          dealId: `${deal._id}`,
+        }).filter((o) => `${o.minigridId}` === `${existing.schema._id}`)
+        const missing = existing.currentOrders.filter(
+          (g) =>
+            !rests.some(
+              (o) =>
+                +o.price === g.price &&
+                (o.side === 'BUY') === (g.side === OrderSideEnum.buy),
+            ),
+        )
+        this.handleLog(
+          `Minigrid ${existing.schema._id} already open for ${order.clientOrderId}, not creating another (${missing.length} of its lines to place)`,
+        )
+        this.endMethod(_id)
+        return missing
+      }
       this.handleLog(`Create minigrid for ${order.clientOrderId}`)
       const findDeal = this.getDeal(deal._id)
       const settings = (await this.getAggregatedSettings(
@@ -564,8 +588,21 @@ function createComboBotHelper<
         schema: { ...minigridSchema, _id: minigridId },
       }
       this.setMinigrid(minigrid)
+      // Written now, not on the delayed snapshot timer: a restart in that
+      // window loaded the snapshot without this minigrid and the rung's fill
+      // opened a second one (§2.3.9).
+      await this.setToRedis('minigrids', this.allMinigrids)
       this.endMethod(_id)
       return grids
+    }
+
+    /** The open (not closed) minigrid of a deal opened by `dcaOrderId`. */
+    private liveMinigridForOrder(dealId: string, dcaOrderId: string) {
+      return this.getMinigridByDealId({ dealId: `${dealId}` }).find(
+        (m) =>
+          m.schema.dcaOrderId === dcaOrderId &&
+          m.schema.status !== ComboMinigridStatusEnum.closed,
+      )
     }
     private async prepareMinigrids(
       minigrids: ExcludeDoc<CleanComboMinigridSchema>[],
@@ -648,11 +685,18 @@ function createComboBotHelper<
      * loaded from the database instead of the Redis snapshot, read from the
      * database the way a load without the snapshot reads them.
      */
-    private async loadStaleDealMinigrids(dealIds: string[]) {
+    private async loadStaleDealMinigrids(dealIds: string[], all = false) {
+      if (!dealIds.length) {
+        return
+      }
+      const stale = new Set(this.snapshotStaleDeals)
+      const known = [...this.minigrids.keys()]
       const read = await this.minigridDb.readData(
         {
           botId: this.botId,
           dealId: { $in: dealIds },
+          status: { $ne: ComboMinigridStatusEnum.closed },
+          ...(all ? { _id: { $nin: known } } : {}),
         } as any,
         undefined,
         {},
@@ -665,10 +709,17 @@ function createComboBotHelper<
         return
       }
       const live = read.data.result.filter(
-        (m) => m.status !== ComboMinigridStatusEnum.closed,
+        (m) =>
+          m.status !== ComboMinigridStatusEnum.closed &&
+          (!all || stale.has(`${m.dealId}`) || !this.minigrids.has(`${m._id}`)),
       )
+      if (!live.length) {
+        return
+      }
       this.handleLog(
-        `Loaded ${live.length} minigrids of deals ${dealIds.join(', ')} from DB instead of the redis snapshot`,
+        `Loaded ${live.length} open minigrids from DB missing in the redis snapshot: ${live
+          .map((m) => `${m._id}`)
+          .join(', ')}`,
       )
       for (const m of live) {
         this.setMinigrid(
@@ -774,8 +825,12 @@ function createComboBotHelper<
       }
       const fullDbLoad =
         !(this.serviceRestart && !this.secondRestart) || !this.minigrids.size
-      if (!fullDbLoad && this.snapshotStaleDeals.size) {
-        await this.loadStaleDealMinigrids([...this.snapshotStaleDeals])
+      if (!fullDbLoad) {
+        // The snapshot misses whatever opened (or closed) after its last
+        // delayed write. Load the open minigrids Mongo holds for these deals
+        // that it lacks, as spec 151 does for deals — the deals loaded from
+        // Mongo instead of the snapshot take all theirs (§2.3.7, §2.3.9).
+        await this.loadStaleDealMinigrids([...this.deals.keys()], true)
       }
       if (fullDbLoad) {
         const minigridData = await this.minigridDb.readData(
@@ -849,8 +904,59 @@ function createComboBotHelper<
           }
         }
       }
+      await this.retireDuplicateMinigrids()
       await this.reconcileMinigridFundsScale()
       this.endMethod(_id)
+    }
+
+    /**
+     * §2.3.9: two open minigrids for one rung — left by a restart that opened
+     * a second one before this fix. The one with resting orders trades the
+     * rung; a copy with no resting order and no grid trade of its own is
+     * closed, so neither its ladder nor a funds scale counts it again. Two
+     * copies that both rest orders or traded are left as they are, reported.
+     */
+    private async retireDuplicateMinigrids() {
+      const byRung = new Map<string, FullMinigrid[]>()
+      for (const m of this.allMinigrids) {
+        if (m.schema.status === ComboMinigridStatusEnum.closed) continue
+        const key = `${m.schema.dealId}:${m.schema.dcaOrderId}`
+        byRung.set(key, [...(byRung.get(key) ?? []), m])
+      }
+      for (const [key, copies] of byRung) {
+        if (copies.length < 2) continue
+        const resting = (m: FullMinigrid) =>
+          this.getOrdersByStatusAndDealId({
+            status: ['NEW', 'PARTIALLY_FILLED'],
+            dealId: m.schema.dealId,
+          }).some((o) => `${o.minigridId}` === `${m.schema._id}`)
+        const traded = (m: FullMinigrid) =>
+          (m.schema.transactions?.buy ?? 0) +
+            (m.schema.transactions?.sell ?? 0) >
+          0
+        const keep =
+          copies.find(resting) ??
+          [...copies].sort(
+            (a, b) => (b.schema.createTime ?? 0) - (a.schema.createTime ?? 0),
+          )[0]
+        for (const m of copies) {
+          if (m === keep) continue
+          if (resting(m) || traded(m)) {
+            this.handleWarn(
+              `Rung ${key} has more than one open minigrid (${copies
+                .map((c) => c.schema._id)
+                .join(', ')}); ${m.schema._id} rests or traded, left open`,
+            )
+            continue
+          }
+          this.handleLog(
+            `Rung ${key}: closing duplicate minigrid ${m.schema._id}, kept ${keep.schema._id}`,
+          )
+          m.schema.status = ComboMinigridStatusEnum.closed
+          await this.saveMinigrid(m, { status: m.schema.status })
+          this.deleteMinigrid(`${m.schema._id}`, false)
+        }
+      }
     }
     private async loadTransactions() {
       this.handleLog('Start finding transactions')
@@ -1597,7 +1703,8 @@ function createComboBotHelper<
           levels: deal.deal.levels,
         })
       }
-      this.deleteMinigrid(minigrid.schema._id)
+      this.deleteMinigrid(minigrid.schema._id, false)
+      await this.setToRedis('minigrids', this.allMinigrids)
     }
     private async processCloseMinigrid(minigridId: string) {
       this.handleLog(`Close minigrid ${minigridId}`)

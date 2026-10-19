@@ -356,3 +356,20 @@ describe('combo funds scale: exit lines fitted to the lot step', () => {
     expect(capExitLines([[1, 2], [3]], 6.5, 0.1)).to.deep.equal([[1, 2], [3]])
   })
 })
+
+describe('combo funds scale: the position cap keeps every minigrid', () => {
+  it('a minigrid down to its last line keeps one lot; the excess comes off the others', () => {
+    // The largest line goes first; the single-line minigrid is never emptied.
+    const out = capExitLines([[0.1], [0.2, 0.2]], 0.3, 0.1)
+    expect(out[0]).to.deep.equal([0.1])
+    expect(out[1].reduce((a, b) => a + b, 0)).to.be.closeTo(0.2, 1e-9)
+  })
+
+  it('a book that cannot fit without emptying a minigrid is left one lot each, never empty', () => {
+    expect(capExitLines([[0.1], [0.1], [0.1]], 0.2, 0.1)).to.deep.equal([
+      [0.1],
+      [0.1],
+      [0.1],
+    ])
+  })
+})

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.5] - 2026-10-19
+
+### Fixed
+
+- Combo: a restart within seconds of a safety order fill could open a second minigrid for the same level. The minigrid snapshot a cold restart loads is written on a delay, so it lacked the minigrid the fill had just opened; the restarted worker processed the fill again and opened another, leaving the first open with no orders (and later scaled by add / reduce funds). The minigrid snapshot is now written as soon as a minigrid opens or closes, a cold restart also loads the open minigrids the database holds that the snapshot lacks, a level that already has an open minigrid never gets a second one, and a duplicate left by an earlier restart with no resting order and no grid trade is closed on load.
+- Combo add / reduce funds: the resting-exit cap never empties a minigrid. It used to take a minigrid's last line to zero when the deal's exits were over the position (for example with a duplicate minigrid), leaving that minigrid without a ladder until the next restart.
+
 ## [1.108.4] - 2026-10-19
 
 ### Fixed

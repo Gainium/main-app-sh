@@ -1173,10 +1173,21 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 ย
       }),
       countData: async () => ({ status: 'OK', data: { result: 1 } }),
     }
-    bot.saveMinigrid = async (m: any) => {
-      db.minigrids.set(`${m.schema._id}`, clone(m.schema))
+    bot.saveMinigrid = async (m: any, partial?: any) => {
+      const stored = db.minigrids.get(`${m.schema._id}`)
+      db.minigrids.set(
+        `${m.schema._id}`,
+        partial && stored ? { ...stored, ...clone(partial) } : clone(m.schema),
+      )
     }
+    bot.minigridCreates = 0
     bot.minigridDb = {
+      createData: async (doc: any) => {
+        bot.minigridCreates++
+        const _id = `mg-new-${db.minigrids.size}-${bot.minigridCreates}`
+        db.minigrids.set(_id, clone({ ...doc, _id }))
+        return { status: 'OK', data: { ...doc, _id } }
+      },
       readData: async (q: any) => ({
         status: 'OK',
         data: {
@@ -1513,6 +1524,123 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 ย
     expect(r.refusals[0]).to.match(
       /interrupted by a restart and nothing was bought or sold\. Please send it again/,
     )
+    expect(db.deal.comboFundsRebuild).to.equal(null)
+  })
+
+  /** Every open minigrid of the deal rests at least one exit line. */
+  const everyMinigridRestsAnExit = (bot: any) => {
+    const live = bot
+      .getMinigridByDealId({ dealId: DEAL_ID })
+      .filter((m: any) => m.schema.status !== 'closed')
+    for (const m of live) {
+      const exits = resting(bot).filter(
+        (o: any) =>
+          `${o.minigridId}` === `${m.schema._id}` &&
+          o.typeOrder === TypeOrderEnum.dealGrid &&
+          o.side === 'SELL',
+      )
+      expect(exits.length, `minigrid ${m.schema._id}`).to.be.greaterThan(0)
+    }
+  }
+
+  it('ยง2.3.9 a level fill right before a restart: its minigrid is snapshotted at once, loaded from Mongo when the snapshot lacks it, and the fill processed again opens no second one', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    // SO2 at 96 fills: the engine opens its minigrid.
+    const so2 = filledRow('so2', TypeOrderEnum.dealRegular, 2.0833, 96, 3)
+    bot.orders.set('so2', so2)
+    await bot.createMinigrid(bot.getDeal(DEAL_ID).deal, so2, false)
+    expect(bot.minigridCreates).to.equal(1)
+    const opened = bot.liveMinigridForOrder(DEAL_ID, 'so2')
+    // Written now, not on the delayed timer.
+    expect(
+      bot.redisSnapshot.minigrids.map((m: any) => `${m.schema._id}`),
+    ).to.include(`${opened.schema._id}`)
+
+    // ...but the restart finds the snapshot from before it (the worst case).
+    const { r, rows } = await restartOn(bot, db, snapshot)
+    await r.loadOrders()
+    rows.length = 0
+    const live = r.liveMinigridForOrder(DEAL_ID, 'so2')
+    expect(live, 'loaded from Mongo').to.not.equal(undefined)
+    expect(`${live.schema._id}`).to.equal(`${opened.schema._id}`)
+    // The fill handled again (its order looked unprocessed to the new worker).
+    await r.createMinigrid(r.getDeal(DEAL_ID).deal, so2, false)
+    expect(r.minigridCreates).to.equal(0)
+    const forSo2 = r
+      .getMinigridByDealId({ dealId: DEAL_ID })
+      .filter((m: any) => m.schema.dcaOrderId === 'so2')
+    expect(forSo2).to.have.length(1)
+  })
+
+  it('ยง2.3.9 two open minigrids already stored for one rung: the copy with no resting order and no trade is closed on load', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    const so2 = filledRow('so2', TypeOrderEnum.dealRegular, 2.0833, 96, 3)
+    bot.orders.set('so2', so2)
+    await bot.createMinigrid(bot.getDeal(DEAL_ID).deal, so2, false)
+    const first = bot.liveMinigridForOrder(DEAL_ID, 'so2')
+    // A second copy, as a pre-fix restart left it: the first's orders gone.
+    const dup = clone(db.minigrids.get(`${first.schema._id}`))
+    dup._id = 'mg-dup'
+    dup.createTime = (dup.createTime ?? 0) + 2000
+    db.minigrids.set('mg-dup', dup)
+    for (const g of first.currentOrders) {
+      bot.orders.set(`r-${g.price}`, {
+        clientOrderId: `r-${g.price}`,
+        symbol: SYMBOL,
+        botId: BOT_ID,
+        dealId: DEAL_ID,
+        minigridId: 'mg-dup',
+        typeOrder: TypeOrderEnum.dealGrid,
+        side: g.side,
+        status: 'NEW',
+        price: `${g.price}`,
+        origQty: `${g.qty}`,
+        executedQty: '0',
+      })
+    }
+    const { r, rows } = await restartOn(bot, db, snapshot)
+    await r.loadOrders()
+    rows.length = 0
+    const forSo2 = r
+      .getMinigridByDealId({ dealId: DEAL_ID })
+      .filter((m: any) => m.schema.dcaOrderId === 'so2')
+    expect(forSo2.map((m: any) => `${m.schema._id}`)).to.deep.equal(['mg-dup'])
+    expect(db.minigrids.get(`${first.schema._id}`).status).to.equal('closed')
+    expect(db.minigrids.get('mg-dup').status).to.not.equal('closed')
+  })
+
+  it('ยง2.3.9 a reduce filled on the venue while the worker was down: the resume rebuild re-places every open minigrid ladder in the same pass', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    bot.sendOrderToExchange = async (order: any) => {
+      bot.sent.push(order)
+      const resting = { ...order, status: 'NEW', orderId: 'x2' }
+      bot.orders.set(order.clientOrderId, resting)
+      return resting
+    }
+    await bot.reduceDealFunds(BOT_ID, DEAL_ID, pct('30'))
+    const red = bot.sent[0]
+    expect(
+      resting(bot).filter((o: any) => o !== bot.orders.get(red.clientOrderId)),
+    ).to.deep.equal([])
+    const { r, rows } = await restartOn(bot, db, snapshot)
+    r.venue.set(red.clientOrderId, {
+      ...red,
+      orderId: 'x2',
+      status: 'FILLED',
+      executedQty: red.origQty,
+      price: '97',
+      updateTime: 1_800_000_002_000,
+    })
+    await r.loadOrders()
+    rows.length = 0
+    await r.resumeComboFundsChanges()
+    const position = 1 + SO[0].qty - +red.origQty
+    expect(
+      r.getDeal(DEAL_ID).deal.reduceFunds.map((f: any) => f.qty),
+    ).to.deep.equal([+red.origQty])
+    everyMinigridRestsAnExit(r)
+    expect(restingSellBase(r)).to.be.at.most(position + 1e-9)
+    expect(restingSellBase(r)).to.be.closeTo(position, 0.002)
     expect(db.deal.comboFundsRebuild).to.equal(null)
   })
 })

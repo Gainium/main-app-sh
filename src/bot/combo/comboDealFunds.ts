@@ -356,8 +356,10 @@ export function fitExitLines(
 /**
  * Take lots off the largest exit lines until all of them together are at most
  * `position` floored to the step — the deal-level bound: the resting exits of
- * a Combo deal never sell (or buy back) more than the deal holds. Lines taken
- * to zero come back as 0; the caller drops them.
+ * a Combo deal never sell (or buy back) more than the deal holds. A minigrid
+ * always keeps at least one lot of exit: one left with none had no ladder at
+ * all until the next restart rebuilt it (§2.3.9). Lines taken to zero come
+ * back as 0; the caller drops them.
  */
 export function capExitLines(
   minigrids: number[][],
@@ -377,18 +379,28 @@ export function capExitLines(
   while (excess > 0) {
     let mi = -1
     let li = -1
+    let room = 0
     for (let i = 0; i < out.length; i++) {
+      const total = out[i].reduce((a, l) => a + l, 0)
       for (let j = 0; j < out[i].length; j++) {
-        if (mi < 0 || out[i][j] > out[mi][li]) {
+        const line = out[i][j]
+        // What this line can give without emptying its minigrid.
+        const can = toStep(
+          total - line > step / 2 ? line : line - step,
+          step,
+          'round',
+        )
+        if (can > room) {
+          room = can
           mi = i
           li = j
         }
       }
     }
-    if (mi < 0 || !(out[mi][li] > 0)) {
+    if (mi < 0) {
       break
     }
-    const take = Math.min(out[mi][li], excess)
+    const take = Math.min(room, excess)
     out[mi][li] = toStep(out[mi][li] - take, step, 'round')
     excess = toStep(excess - take, step, 'round')
   }
