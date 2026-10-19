@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.106.11] - 2026-10-18
+
+### Fixed
+
+- A DCA deal whose opening order filled just before a bot worker restart now opens after the restart. The fill had reached the bot's in-memory order book but not its saved order record, and the restart checked the saved record, then handed the order to a check that found it already filled and did nothing, so the deal stayed waiting with the position unbooked. The restart now confirms such an order with the exchange, saves it and opens the deal; if the exchange reports a different status, that status is used instead.
+- An order that never received an exchange id and that the exchange confirms does not exist is now written off after 5 minutes (`BOT_NEVER_PLACED_ORDER_MIN_AGE_MS`) instead of 24 hours, and the restart check places its take-profit or safety order again. Before, a take-profit lost this way left the deal with no exit for a day. Orders with an exchange id, and the not-found answers some exchanges give about an order placed moments ago, keep the 24-hour floor.
+
 ## [1.106.10] - 2026-10-18
 
 ### Fixed

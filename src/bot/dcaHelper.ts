@@ -13109,10 +13109,16 @@ function createDCABotHelper<
                   unsentTPs.add(activeTPSLOrder.clientOrderId)
                   continue
                 }
-                this.noteOrderNotFound(
-                  activeTPSLOrder,
-                  `${tpslOrderData?.reason}`,
-                )
+                // Retired as never placed: likewise not resting, so the grid
+                // comparison below places it again. Spec 177 §1.2.1.
+                if (
+                  this.noteOrderNotFound(
+                    activeTPSLOrder,
+                    `${tpslOrderData?.reason}`,
+                  )
+                ) {
+                  unsentTPs.add(activeTPSLOrder.clientOrderId)
+                }
               } else if (tpslOrderData?.status === StatusEnum.notok) {
                 this.handleWarn(`Cannot get order ${tpslOrderData.reason}`)
               } else if (!tpslOrderData || !tpslOrderData.data) {
@@ -13277,7 +13283,11 @@ function createDCABotHelper<
                   this.handleWarn(
                     `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
                   )
-                  this.noteOrderNotFound(o, `${exchangeData?.reason}`)
+                  // Retired as never placed: send it again below, as a
+                  // venue-side cancel is. Spec 177 §1.2.4.
+                  if (this.noteOrderNotFound(o, `${exchangeData?.reason}`)) {
+                    canceledOrders.push(o)
+                  }
                 } else if (!exchangeData || !exchangeData.data) {
                   this.handleWarn(
                     `Not enough data to get order ${o.clientOrderId}`,
@@ -13733,6 +13743,34 @@ function createDCABotHelper<
     }
 
     /**
+     * Confirm, on a cold restart, a deal entry the order map holds FILLED while
+     * its Mongo row does not: the FILLED write died with the process. Asks the
+     * venue by client order id. A venue answer that is not FILLED replaces the
+     * map copy and returns undefined, for `checkBaseOrder` to handle; no answer
+     * leaves the map's FILLED standing — it is the venue's own earlier report,
+     * and a filled order does not become unfilled. Saves what it returns, so
+     * the row stops looking unsent. Spec 177 §1.1.
+     */
+    async confirmRestoredFilledEntry(order: Order): Promise<Order | undefined> {
+      let filled = order
+      const venue = await this.getOrderForReconcile(order)
+      if (venue?.status === StatusEnum.ok && venue.data) {
+        const merged = await this.mergeCommonOrderWithOrder(venue.data, order)
+        if (merged.status !== 'FILLED') {
+          this.handleLog(
+            `Base order ${order.clientOrderId} restored as FILLED, but the exchange reports ${merged.status}`,
+          )
+          this.setOrder(merged)
+          return
+        }
+        filled = merged
+      }
+      this.setOrder(filled)
+      this.updateOrderOnDb(filled)
+      return filled
+    }
+
+    /**
      * Restore work
      */
 
@@ -13833,7 +13871,25 @@ function createDCABotHelper<
                 this.setOrder(full.data.result, false)
               }
             }
-            if (baseRow.status !== 'FILLED') {
+            // The map can be ahead of Mongo: the venue's FILLED reached the
+            // order map, and so the Redis snapshot, but its write did not land
+            // before the process stopped. `checkBaseOrder` reads the map, finds
+            // FILLED and does nothing, so the deal stayed in `start` with the
+            // position unbooked. Spec 177 §1.1.
+            const known =
+              serviceRestart && baseRow.status !== 'FILLED'
+                ? this.getOrderFromMap(baseRow.clientOrderId)
+                : undefined
+            const restoredFill =
+              known?.status === 'FILLED'
+                ? await this.confirmRestoredFilledEntry(known)
+                : undefined
+            if (restoredFill) {
+              this.handleLog(
+                `Deal ${d.deal._id} in status start, but its base order ${restoredFill.clientOrderId} was filled before the restart`,
+              )
+              await this.startDeal(restoredFill)
+            } else if (baseRow.status !== 'FILLED') {
               await this.checkBaseOrder(
                 this.botId,
                 baseRow.symbol,

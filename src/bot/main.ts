@@ -504,6 +504,31 @@ const unsentOrderMinAgeMs = Number(
 )
 
 /**
+ * The age floor for retiring an order still at the `'-1'` placeholder that the
+ * venue definitively reports as absent. It has a write-ahead row, so it may
+ * have been sent, but no exchange id ever came back: the process stopped
+ * before the venue's answer was recorded, or the venue never took it. A
+ * Binance or Bybit "does not exist" minutes after that is an answer, not
+ * propagation lag, and holding it to the day below left a deal with no
+ * take-profit for a day. The not-found wordings a venue gives about an order
+ * it took seconds ago ({@link isNotFoundUnreliableJustAfterPlacement}) keep the
+ * day. Spec 177 §1.2.
+ */
+const neverPlacedOrderMinAgeMs = Number(
+  process.env.BOT_NEVER_PLACED_ORDER_MIN_AGE_MS ?? 5 * 60 * 1000,
+)
+
+/**
+ * How old a `'-1'` order must be before a definitive not-found retires it.
+ * Spec 177 §1.2.
+ */
+export function neverPlacedOrderRetireMinAgeMs(reason?: string | null) {
+  return isNotFoundUnreliableJustAfterPlacement(reason)
+    ? orderQuarantineMinAgeMs
+    : neverPlacedOrderMinAgeMs
+}
+
+/**
  * Reconcile-pass tunables. See {@link MainBot.getOrderForReconcile} and
  * {@link MainBot.spreadReconcileStart} for why each exists.
  *
@@ -1217,32 +1242,45 @@ class MainBot<T extends IMainBot> {
    * Record one definitive not-found for an order and quarantine it once the
    * strikes add up. Called only when {@link isDefinitiveOrderNotFound} is true
    * — never on a timeout, a rate-limit or any other transient failure.
+   *
+   * Returns true when it retired the order, so a caller can place what it
+   * stood for. Spec 177 §1.2.
    */
-  protected noteOrderNotFound(order: Order, reason: string) {
-    if (!orderQuarantineStrikes) return
+  protected noteOrderNotFound(order: Order, reason: string): boolean {
+    if (!orderQuarantineStrikes) return false
     const now = +new Date()
     const runId = this.orderCheckRunId || `${now}`
-    // Too young to judge. A venue that says "unknown order id" about an order
-    // placed minutes ago is describing its own propagation lag. Use the most
-    // recent timestamp we have, and refuse to judge at all when we have none —
-    // both choices err towards leaving the order alone.
-    const lastKnownAt = Math.max(order.transactTime ?? 0, order.updateTime ?? 0)
-    if (!lastKnownAt || now - lastKnownAt < orderQuarantineMinAgeMs) return
     // Never reached the venue and the venue confirms it: retire it, the same
     // write-off the unknown-order ladder gives a `-1` order (bug #369), so the
-    // bot stops treating it as resting. Spec 109.
-    if (isRetirableNeverPlacedOrder(order, now, orderQuarantineMinAgeMs)) {
+    // bot stops treating it as resting. Spec 109. Its own, shorter age floor
+    // unless the venue's wording is one it gives about just-placed orders.
+    // Spec 177 §1.2.
+    if (
+      isRetirableNeverPlacedOrder(
+        order,
+        now,
+        neverPlacedOrderRetireMinAgeMs(reason),
+      )
+    ) {
       this.handleLog(
         `Order ${order.clientOrderId} never reached the exchange and the exchange confirms it does not exist (${reason}) — retiring it as CANCELED`,
       )
       const retired = { ...order, status: 'CANCELED' as const }
       this.deleteOrder(order.clientOrderId)
       this.updateOrderOnDb(retired)
-      return
+      return true
+    }
+    // Too young to judge. A venue that says "unknown order id" about an order
+    // placed minutes ago is describing its own propagation lag. Use the most
+    // recent timestamp we have, and refuse to judge at all when we have none —
+    // both choices err towards leaving the order alone.
+    const lastKnownAt = Math.max(order.transactTime ?? 0, order.updateTime ?? 0)
+    if (!lastKnownAt || now - lastKnownAt < orderQuarantineMinAgeMs) {
+      return false
     }
     const current = order.quarantine
     // Already quarantined, or already struck in this run: nothing new was learned.
-    if (current?.since || (current && current.runId === runId)) return
+    if (current?.since || (current && current.runId === runId)) return false
     const next: OrderQuarantine = {
       strikes: (current?.strikes ?? 0) + 1,
       firstAt: current?.firstAt ?? now,
@@ -1257,6 +1295,7 @@ class MainBot<T extends IMainBot> {
     order.quarantine = next
     this.setOrder(order)
     this.updateOrderOnDb(order)
+    return false
   }
 
   /**
