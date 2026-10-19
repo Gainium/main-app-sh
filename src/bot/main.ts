@@ -164,7 +164,7 @@ import RiskTierGuard, {
   isRiskTierRefusal,
   type RiskTierLevel,
 } from './riskTierGuard'
-import AuthFailureGuard, { isHardAuthFailure } from './authGuard'
+import AuthFailureGuard, { isHardAuthFailure, isVenueLockout } from './authGuard'
 import RetryBackoff from './retryBackoff'
 import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
 import { PriceStreamGapTracker } from './priceStreamGap'
@@ -316,6 +316,21 @@ const rateLimitMessages = ['too many visits', 'rate limit', 'too many requests']
 const isRateLimitReason = (reason: string | undefined) => {
   const r = `${reason ?? ''}`.toLowerCase()
   return rateLimitMessages.some((m) => r.indexOf(m) !== -1)
+}
+
+/**
+ * Back-off before each deferred re-send of a cancel refused as transient
+ * (spec `178`), used when the refusal states no hold of its own.
+ */
+const CANCEL_RETRY_DELAYS_MS = [30_000, 120_000, 600_000, 1_800_000]
+
+/**
+ * The hold the exchange balancer states for a Kraken key it is keeping off the
+ * venue: `… held this key off for another 405s …`. Milliseconds, or 0.
+ */
+const statedHoldMs = (reason: string | undefined) => {
+  const m = /for another (\d+)s/.exec(`${reason ?? ''}`)
+  return m ? +m[1] * 1000 : 0
 }
 
 const mutex = new IdMutex()
@@ -10025,6 +10040,117 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Whether a deferred cancel re-send (spec `178`) may still go to the venue
+   * for this order. The base bot has no deals to judge by, so never; the DCA /
+   * Combo helper answers "its deal is no longer open".
+   */
+  protected cancelRetryWanted(_order: Order): boolean {
+    return false
+  }
+
+  protected cancelRetryJitter() {
+    return 1 + Math.random() * 0.25
+  }
+
+  protected scheduleCancelRetry(fn: () => Promise<unknown>, ms: number) {
+    const timer = setTimeout(() => {
+      fn().catch((e) =>
+        this.handleDebug(`Deferred cancel re-send failed: ${e?.message ?? e}`),
+      )
+    }, ms)
+    timer.unref?.()
+  }
+
+  /**
+   * One pending deferred re-send per order, and how many it has had.
+   * Lazily created so prototype-driven harnesses need not seed it.
+   */
+  private cancelRetries?: Map<string, { attempt: number; pending: boolean }>
+
+  /**
+   * A cancel the venue refused as TRANSIENT — a rate limit, or a lockout of
+   * the key (`EGeneral:Temporary lockout`, also what the balancer answers while
+   * it holds a Kraken key off) — is asked again later instead of being
+   * forgotten. Deferred, never awaited: a lockout hold runs for minutes and the
+   * caller is usually a deal close, which must not wait on it. The re-send
+   * waits out the hold the refusal states, at least the back-off step.
+   *
+   * Without this a deal that closed during a lockout left its safety orders
+   * live on the venue with nothing managing them. Spec `178`.
+   */
+  private queueCancelRetry(
+    order: Order,
+    reason: string,
+    args: [boolean, boolean, boolean],
+  ) {
+    this.cancelRetries ??= new Map()
+    const id = order.clientOrderId
+    const state = this.cancelRetries.get(id) ?? { attempt: 0, pending: false }
+    if (state.pending) {
+      return
+    }
+    if (state.attempt >= CANCEL_RETRY_DELAYS_MS.length) {
+      this.cancelRetries.delete(id)
+      this.handleLog(
+        `Send cancel request ${id}: still refused after ${state.attempt} deferred re-sends, giving up`,
+      )
+      return
+    }
+    const ms = Math.round(
+      Math.max(
+        statedHoldMs(reason) + 1_000,
+        CANCEL_RETRY_DELAYS_MS[state.attempt],
+      ) * this.cancelRetryJitter(),
+    )
+    state.attempt++
+    state.pending = true
+    this.cancelRetries.set(id, state)
+    this.handleLog(
+      `Send cancel request ${id} refused as transient. Re-send ${state.attempt}/${CANCEL_RETRY_DELAYS_MS.length} in ${ms}ms`,
+    )
+    this.scheduleCancelRetry(() => this.runCancelRetry(id, args), ms)
+  }
+
+  /**
+   * Re-send a deferred cancel, if the order still needs it: its current row
+   * (memory, else the database) is still resting and the bot no longer has an
+   * open deal that owns it. An open deal's order is left to the engine's own
+   * passes, which re-issue whatever cancels they still want. The re-send is the
+   * ordinary `cancelOrderOnExchange` call, so its answer goes through the same
+   * routing — and a further transient refusal queues the next step.
+   */
+  private async runCancelRetry(
+    id: string,
+    args: [boolean, boolean, boolean],
+  ) {
+    const state = this.cancelRetries?.get(id)
+    if (!state) {
+      return
+    }
+    state.pending = false
+    const current = await this.findOwnOrder(id)
+    if (
+      !this.exchange ||
+      !current ||
+      !['NEW', 'PARTIALLY_FILLED'].includes(current.status) ||
+      !this.cancelRetryWanted(current)
+    ) {
+      this.cancelRetries?.delete(id)
+      this.handleDebug(
+        `Deferred cancel re-send ${id} skipped: ${
+          current ? `status ${current.status}` : 'order not found'
+        }`,
+      )
+      return
+    }
+    this.handleLog(`Send cancel request ${id}: deferred re-send ${state.attempt}`)
+    await this.cancelOrderOnExchange(current, ...args)
+    if (!this.cancelRetries?.get(id)?.pending) {
+      this.cancelRetries?.delete(id)
+    }
+  }
+
+  /**
    * Cancel order on exchange
    *
    * @param promotePartialToFilled When the venue reports the cancelled order
@@ -10186,6 +10312,16 @@ class MainBot<T extends IMainBot> {
             order.clientOrderId,
             order.symbol,
           )
+        }
+        if (
+          isRateLimitReason(request.reason) ||
+          isVenueLockout(request.reason)
+        ) {
+          this.queueCancelRetry(order, request.reason, [
+            setErrors,
+            removeFromLocal,
+            promotePartialToFilled,
+          ])
         }
         this.handleErrors(
           request.reason,

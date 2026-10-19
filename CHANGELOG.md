@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.12] - 2026-10-19
+
+### Fixed
+
+- A DCA or Combo deal that closes while the exchange is temporarily refusing requests (a rate limit, or a temporary lockout of the API key) no longer leaves its safety and take-profit orders open on the exchange. Before, a cancel refused for that reason was reported and never asked again, so the order stayed live with no deal managing it. The bot now asks again after the stated hold (or a back-off of up to 30 minutes, four times), and only while the order is still open and its deal has closed. The close itself is not delayed.
+
 ## [1.106.11] - 2026-10-18
 
 ### Fixed

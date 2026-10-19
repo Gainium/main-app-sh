@@ -1091,6 +1091,15 @@ function createDCABotHelper<
       return this.deals.get(key)
     }
 
+    /**
+     * A deferred cancel re-send (spec `178`) goes out only once the order's
+     * deal is no longer open: that is the order a close meant to cancel and
+     * nothing else will ask for again. An open deal's passes own its orders.
+     */
+    protected override cancelRetryWanted(order: Order) {
+      return !!order.dealId && !this.getDeal(`${order.dealId}`)
+    }
+
     deleteDeal(id: string) {
       const key = `${id}`
       const get = this.deals.get(key)
