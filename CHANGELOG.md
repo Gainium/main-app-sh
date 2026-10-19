@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.8] - 2026-10-20
+
+### Fixed
+
+- A limit order the exchange reports as resting with a price of 0 is recorded as a limit order. It was recorded as a market order, so the bot's resting-order checks and missed-fill recovery did not see it.
+
 ## [1.108.7] - 2026-10-20
 
 ### Fixed
