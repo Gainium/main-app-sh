@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.13] - 2026-10-19
+
+### Fixed
+
+- A combo grid order that had been resting on the exchange and was then cancelled there (the exchange cancelling all open orders, or a cancel made on the exchange by hand) now stays on its minigrid's ladder, and the bot places it again. Before, the bot dropped the level. After a cancel-all, a minigrid was left active with no orders at all: it held what its levels had bought and nothing would sell it back. A minigrid already left with no orders this way gets its ladder back on the next restart, rebuilt from its own last price as a full reload already did. An order the exchange refuses the moment it is placed is still dropped and not retried.
+
 ## [1.106.12] - 2026-10-19
 
 ### Fixed

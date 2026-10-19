@@ -80,6 +80,7 @@ import {
 } from './combo/tpSolve'
 import type { ComboTpSolveInput } from './combo/tpSolve'
 import { levelOf, reanchorLevelAfterFill } from './combo/reanchorAfterFill'
+import { wasRestingWhenCanceled } from './combo/gridCancelRested'
 import { hasCollapsedLevels, maxDistinctLevels } from './combo/subTickLadder'
 import {
   baseGridBelowMinimumBudget,
@@ -617,6 +618,51 @@ function createComboBotHelper<
                   ),
                   newClientOrderId: this.getOrderId(`CMB-GR`),
                 })
+              }
+              // An open minigrid with no ladder at all cannot trade again: it
+              // has no order to fill, and only a fill rebuilds its ladder. A
+              // load from the database rebuilds every ladder from the
+              // minigrid's own last price and side; the copy in Redis carries
+              // the emptied one forward on every restart. Rebuild it the same
+              // way the database load does. Spec 179 §4.4.
+              if (
+                !currentOrders.length &&
+                [
+                  ComboMinigridStatusEnum.active,
+                  ComboMinigridStatusEnum.range,
+                ].includes(m.schema.status)
+              ) {
+                const [rebuilt] = await this.prepareMinigrids([m.schema])
+                if (rebuilt?.currentOrders.length) {
+                  this.handleLog(
+                    `Minigrid ${m.schema._id} had no ladder, rebuilt ${rebuilt.currentOrders.length} levels at ${m.schema.lastPrice}`,
+                  )
+                  // The counts the prune left at 0/0 are rewritten off the
+                  // rebuilt ladder, as the fill and prune paths do.
+                  const currentBalances = this.calculateMinigridBalances(
+                    rebuilt.currentOrders,
+                  )
+                  rebuilt.schema.currentBalances = currentBalances
+                  rebuilt.schema.assets = {
+                    used: currentBalances,
+                    required: currentBalances,
+                  }
+                  rebuilt.schema.grids = {
+                    buy: rebuilt.currentOrders.filter(
+                      (g) => g.side === OrderSideEnum.buy,
+                    ).length,
+                    sell: rebuilt.currentOrders.filter(
+                      (g) => g.side === OrderSideEnum.sell,
+                    ).length,
+                  }
+                  this.setMinigrid(rebuilt, false)
+                  await this.saveMinigrid(rebuilt, {
+                    currentBalances: rebuilt.schema.currentBalances,
+                    assets: rebuilt.schema.assets,
+                    grids: rebuilt.schema.grids,
+                  })
+                  continue
+                }
               }
               this.setMinigrid(
                 {
@@ -2568,8 +2614,39 @@ function createComboBotHelper<
         o.price === price &&
         o.qty === qty &&
         o.side === order.side
-      let pruned = false
       const findMinigrid = this.getMinigrid(order.minigridId)
+      // Only an order the venue refused as it was placed leaves the ladder. A
+      // level that rested and was then cancelled on the venue (its cancel-all,
+      // or the user on the exchange) is still part of the ladder: pruning it
+      // left a minigrid whose levels were all cancelled with none at all,
+      // holding what it bought with nothing to sell it back. Keep it and send
+      // it again, as `checkOrders` does for a cancelled order on a restart.
+      // Spec 179.
+      if (wasRestingWhenCanceled(order)) {
+        const level = findMinigrid?.currentOrders.find(isCanceledLevel)
+        const deal = this.getDeal(order.dealId)
+        if (
+          level &&
+          deal &&
+          deal.deal.status === DCADealStatusEnum.open &&
+          findMinigrid?.schema.status !== ComboMinigridStatusEnum.closed
+        ) {
+          this.handleLog(
+            `Grid order ${order.clientOrderId} was cancelled on the exchange after resting, placing ${level.side} ${level.price} again`,
+          )
+          // Not awaited: the order queue is not held while it is placed.
+          this.placeOrders(this.botId, deal.deal.symbol.symbol, deal.deal._id, {
+            new: [{ ...level, newClientOrderId: this.getOrderId('CMB-GR') }],
+            cancel: [],
+          }).catch((e) =>
+            this.handleWarn(
+              `Cannot place grid level again after ${order.clientOrderId}: ${(e as Error)?.message ?? e}`,
+            ),
+          )
+        }
+        return
+      }
+      let pruned = false
       if (findMinigrid) {
         const remaining = findMinigrid.currentOrders.filter(
           (o) => !isCanceledLevel(o),
