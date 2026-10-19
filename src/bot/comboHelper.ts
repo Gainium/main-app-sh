@@ -72,6 +72,7 @@ const { sleep } = utils
 import { RunWithDelay } from '../utils/delay'
 import { DealStats } from './worker/statsService'
 import createDCABotHelper from './dcaHelper'
+import { isDefinitiveOrderNotFound } from './main'
 import {
   comboPercentAtPrice,
   comboPnlAtPrice,
@@ -6955,6 +6956,30 @@ function createComboBotHelper<
         d,
       )
     }
+    /**
+     * Cancel the resting grid orders of minigrids that are no longer active:
+     * nothing will ever replace or close them, and a combo deal's book is the
+     * union of its active minigrids' books.
+     */
+    private async cancelClosedMinigridOrders() {
+      const active = new Set(
+        this.getActiveMinigrids().map((m) => `${m.schema._id}`),
+      )
+      const ordersWithClosedMinigrids = this.getOrdersByStatusAndDealId({
+        status: 'NEW',
+        dealId: [...this.deals.keys()],
+      }).filter(
+        (o) =>
+          o.typeOrder === TypeOrderEnum.dealGrid &&
+          !active.has(`${o.minigridId}`),
+      )
+      for (const o of ordersWithClosedMinigrids ?? []) {
+        this.handleLog(
+          `Cancel order ${o.clientOrderId} because minigrid is closed`,
+        )
+        await this.cancelOrderOnExchange(o)
+      }
+    }
     override async restoreWork() {
       const _id = this.startMethod('restoreWork')
       const serviceRestart = this.serviceRestart
@@ -6966,30 +6991,49 @@ function createComboBotHelper<
       this.handleLog('Checking for existing deals')
       const settings = await this.getAggregatedSettings()
       const asapSymbols = await this.getSymbolsToOpenAsapDeals()
+      // Orders this start held as open before asking the venue about them. A
+      // level whose order the reconcile below finds FILLED is being rebuilt by
+      // the fill handler, which runs unawaited; the active-deal loop must not
+      // read that level as missing and send it a second time.
+      const heldOpenAtStart = new Set<string>()
       if (serviceRestart) {
-        const ordersWithClosedMinigrids = this.getOrdersByStatusAndDealId({
-          status: 'NEW',
-          dealId: [...this.deals.keys()],
-        }).filter(
-          (o) =>
-            o.typeOrder === TypeOrderEnum.dealGrid &&
-            !this.getActiveMinigrids()
-              .map((m) => m.schema._id)
-              .includes(o.minigridId),
-        )
-        for (const o of ordersWithClosedMinigrids ?? []) {
-          this.handleLog(
-            `Cancel order ${o.clientOrderId} because minigrid is closed`,
-          )
-          await this.cancelOrderOnExchange(o)
-        }
+        await this.cancelClosedMinigridOrders()
         await this.checkOrders(this.botId)
       } else {
         // Not a service restart — the user started or restarted this bot, which
         // is the manual escape hatch from order quarantine: whatever we decided
         // to stop polling, look again now.
         await this.clearAllOrderQuarantine('bot started by user')
-        await this.cancelAllOrder()
+        // Reconcile, don't tear down — as DCA's `restoreWork`. This used to
+        // `cancelAllOrder()` and re-place every open deal's ladder and every
+        // active minigrid's grid, giving up the resting orders' queue position
+        // and costing one venue call per order twice over. The bot was not
+        // listening while closed, so ask the venue about every order held as
+        // open (fills are booked, cancels dropped) and let the loop below
+        // place only what each deal is missing. The explicit Restart still
+        // sweeps the book: `reloadBot(replaceOrders=true)` cancels it before
+        // this runs.
+        for (const o of this.getOrdersByStatusAndDealId({
+          defaultStatuses: true,
+        })) {
+          heldOpenAtStart.add(o.clientOrderId)
+        }
+        await this.checkOrdersAfterReconnect(this.botId, false)
+        // The teardown also cleared orders that were never sent — a `'-1'`
+        // placeholder left by a process stop between the map and the
+        // write-ahead row. Kept, one would count as resting below and its
+        // level would never be placed. Spec 172 §1.1.3 / 174.
+        for (const o of this.getOrdersByStatusAndDealId({
+          defaultStatuses: true,
+        }).filter((o) => `${o.orderId ?? ''}` === '-1')) {
+          const venue = await this.getOrderForReconcile(o)
+          if (isDefinitiveOrderNotFound(venue)) {
+            await this.retireUnsentOrder(o, `${venue?.reason}`)
+          }
+        }
+        // The teardown swept these too. A closed minigrid's orders are not in
+        // any active minigrid's book, so nothing below would ever pull them.
+        await this.cancelClosedMinigridOrders()
         await this.checkOrders(this.botId, true)
       }
 
@@ -7090,36 +7134,46 @@ function createComboBotHelper<
               displayAvg: d.deal.displayAvg,
             })
             this.updateAssets(d.deal._id)
-            const findTp = this.getOrdersByStatusAndDealId({
-              status: 'PARTIALLY_FILLED',
-              dealId: `${d.deal._id}`,
-            }).find((o) => o.typeOrder === TypeOrderEnum.dealTP)
-            if (!findTp) {
-              const findMinigrids = this.getMinigridByDealId({
-                dealId: d.deal._id,
-              }).filter(
-                (m) => m.schema.status !== ComboMinigridStatusEnum.closed,
+            const dealId = `${d.deal._id}`
+            // A resting close order (`dealTP`) survives the start now that the
+            // book is no longer torn down, and spec 120 places no grid order
+            // beside a live close. Before, only a part-filled one held this
+            // back, because a NEW one had just been cancelled.
+            if (!this.hasLiveCloseOrder(dealId)) {
+              // The resting ladder levels and minigrid orders are the deal's
+              // live book: diff against them and place only what is missing,
+              // the same reconcile a service restart's `checkOrders` runs
+              // (spec 105 level pairing, spec 107 ladder cap). Its `cancel`
+              // side is ignored, as there: a start never pulls a resting order.
+              const resting = this.getOrdersByStatusAndDealId({
+                status: ['NEW', 'PARTIALLY_FILLED'],
+                dealId,
+              }).filter((o) =>
+                [TypeOrderEnum.dealRegular, TypeOrderEnum.dealGrid].includes(
+                  o.typeOrder,
+                ),
               )
-              const latestOrder = this.getOrdersByStatusAndDealId({
-                status: ['FILLED', 'CANCELED'],
-                dealId: `${d.deal._id}`,
-              })
-                .filter((o) => o.status === 'FILLED' || +o.executedQty > 0)
-                .sort((a, b) => +b.updateTime - +a.updateTime)[0]
+              const filledAtStart = this.getOrdersByStatusAndDealId({
+                status: 'FILLED',
+                dealId,
+              }).filter((o) => heldOpenAtStart.has(o.clientOrderId))
+              const diff = await this.getDiffForCheckOrders(d, resting)
+              const missing = diff.new.filter(
+                (g) =>
+                  !filledAtStart.some(
+                    (o) =>
+                      o.typeOrder === g.type &&
+                      (o.side === 'BUY'
+                        ? g.side === OrderSideEnum.buy
+                        : g.side === OrderSideEnum.sell) &&
+                      (+o.origPrice === g.price || +o.price === g.price),
+                  ),
+              )
               await this.placeOrders(
                 this.botId,
                 d.deal.symbol.symbol,
                 d.deal._id,
-                await this.findDiffCombo(
-                  [
-                    ...d.currentOrders,
-                    ...[...findMinigrids.flatMap((m) => m.currentOrders)],
-                  ].filter((o) => !o.hide),
-                  [],
-                  latestOrder ? +latestOrder.price : d.deal.lastPrice,
-                  undefined,
-                  d,
-                ),
+                { new: missing, cancel: [] },
               )
             }
           }

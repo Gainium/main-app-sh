@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.17] - 2026-10-19
+
+### Changed
+
+- Starting a stopped Combo bot that still has open deals no longer cancels and re-places those deals' orders. As for DCA bots, the bot checks its resting safety and grid orders with the exchange, books any fills that arrived while it was stopped, cancels the orders of grids that have already closed, and places only what each deal is missing. Restart still cancels and re-places the whole order book.
+
 ## [1.106.16] - 2026-10-19
 
 ### Changed
