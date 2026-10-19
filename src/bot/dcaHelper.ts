@@ -28428,11 +28428,14 @@ function createDCABotHelper<
     /**
      * Cancel a deal's resting orders, regenerate its ladder and take profit
      * from its current state, and place them again. Shared by a deal settings
-     * update and `restartDeal`.
+     * update and `restartDeal`, and by a Combo add / reduce funds fill
+     * (main-app spec 047), which keeps the deal's level counts as they are:
+     * its fill is a `dealRegular` row that is not a ladder level.
      */
-    private async rebuildDealOrders(
+    protected async rebuildDealOrders(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       dealId: string,
+      opts: { keepLevels?: boolean } = {},
     ) {
       await this.cancelAllOrder(findDeal.deal.lastPrice, dealId, true)
       if (findDeal.deal.status !== DCADealStatusEnum.start) {
@@ -28454,7 +28457,11 @@ function createDCABotHelper<
           false,
         )
         findDeal.initialOrders = this.getDealInitialOrders(dealId)
-
+      }
+      if (
+        findDeal.deal.status !== DCADealStatusEnum.start &&
+        !opts.keepLevels
+      ) {
         const completeLevels =
           (this.getOrdersByStatusAndDealId({
             dealId: findDeal.deal._id,

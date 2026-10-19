@@ -1449,6 +1449,13 @@ export type Sizes = {
   multiplier?: number
   /** what `multiplier` scaled: the base order only, or the whole deal */
   multiplierScope?: 'base' | 'whole'
+  /**
+   * Combo add / reduce funds (main-app spec 047): base added to (or, negative,
+   * taken from) each DCA level, indexed like `dca`. Kept apart from `dca` so
+   * it applies to every order-size type, including percent sizing, which
+   * never read `dca`.
+   */
+  fundsDca?: number[]
 }
 
 export enum DCADealFlags {
@@ -1795,6 +1802,11 @@ export type AddFundsSettings = {
   baseTotal?: string
   /** A single-position entry (spec 139 §3.3), not a user's add-funds. */
   positionEntry?: boolean
+  /**
+   * Combo: the deal's position in base when the add/reduce order was sent. The
+   * fill scales the deal by `1 ± executed / positionBase`.
+   */
+  positionBase?: number
 }
 
 export interface ComboDealsSchema extends DCADealsSchema {
@@ -1852,7 +1864,11 @@ export interface ComboDealsSchema extends DCADealsSchema {
   funds?: {
     price: number
     qty: number
+    /** Combo add funds: the funds id of the fill (main-app spec 047). */
+    id?: string
   }[]
+  /** Combo add / reduce funds: the scale factor of each executed change. */
+  fundsScale?: { id: string; k: number; time: number }[]
   transactions?: {
     buy: number
     sell: number

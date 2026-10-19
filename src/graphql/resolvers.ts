@@ -5413,6 +5413,7 @@ const resolvers = <
           asset: OrderSizeTypeEnum
           dealId: string
           botId: string
+          combo?: boolean
         }
       },
       { token, req, paperContext }: InputRequest,
@@ -5424,13 +5425,16 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { botId, dealId, ...rest } = input
+      const { botId, dealId, combo, ...rest } = input
       return await Bot.addDealFunds(
         botId,
         dealId,
         user.data._id.toString(),
         paperContext,
         rest,
+        false,
+        undefined,
+        combo === true ? true : undefined,
       )
     },
     restartDeal: async (
@@ -5502,6 +5506,7 @@ const resolvers = <
           asset: OrderSizeTypeEnum
           dealId: string
           botId: string
+          combo?: boolean
         }
       },
       { token, req, paperContext }: InputRequest,
@@ -5513,13 +5518,16 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { botId, dealId, ...rest } = input
+      const { botId, dealId, combo, ...rest } = input
       return await Bot.reduceDealFunds(
         botId,
         dealId,
         user.data._id.toString(),
         paperContext,
         rest,
+        false,
+        undefined,
+        combo === true ? true : undefined,
       )
     },
     cancelTerminalDealOrder: async (

@@ -10002,10 +10002,14 @@ class Bot<T extends UserSchema = UserSchema> {
     actor?: ChangeTrailActor,
     /** Place a resting LIMIT at this price instead of a MARKET order. */
     price?: string,
+    /** Main-app spec 047: the target is a Combo deal / bot; resolved when omitted. */
+    combo?: boolean,
   ) {
+    const isCombo =
+      combo ?? (await this.fundsDealIsCombo(userId, dealId, botId))
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
-        BotType.dca,
+        isCombo ? BotType.combo : BotType.dca,
         'addDealFundsFromPublicApi',
         false,
         userId,
@@ -10017,7 +10021,16 @@ class Bot<T extends UserSchema = UserSchema> {
         dealId,
         actor,
         price,
+        isCombo,
       )
+    }
+    if (isCombo && price !== undefined && price !== null && `${price}` !== '') {
+      return {
+        status: StatusEnum.notok as const,
+        reason:
+          'A limit price is not supported for Combo deals. Send it without a price to use a market order',
+        data: null,
+      }
     }
     const funds = parseSignalFundsPrice({
       price,
@@ -10033,7 +10046,11 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     let botIdToUse = botId
     if (!botIdToUse && dealId) {
-      const findDeal = await this.dcaDealsDb.readData({
+      const findDeal = await (
+        (isCombo
+          ? this.comboDealsDb
+          : this.dcaDealsDb) as typeof this.dcaDealsDb
+      ).readData({
         _id: dealId,
         userId,
       })
@@ -10046,13 +10063,9 @@ class Bot<T extends UserSchema = UserSchema> {
       botIdToUse = findDeal.data.result.botId
     }
     if (botId) {
-      const bot = await this.dcaBotDb.readData(
-        { userId, _id: botId },
-        undefined,
-        {},
-        false,
-        false,
-      )
+      const bot = await (
+        (isCombo ? this.comboBotDb : this.dcaBotDb) as typeof this.dcaBotDb
+      ).readData({ userId, _id: botId }, undefined, {}, false, false)
       if (bot.reason === StatusEnum.notok) {
         return bot
       }
@@ -10060,7 +10073,14 @@ class Bot<T extends UserSchema = UserSchema> {
         return this.entityNotFound('Bot')
       }
     }
-    const findBot = this.dcaBots.find((b) => b.id === botIdToUse)
+    const botType = isCombo ? BotType.combo : BotType.dca
+    const bots: {
+      id: string
+      worker: number
+      type: BotType
+      paperContext: boolean
+    }[] = isCombo ? this.comboBots : this.dcaBots
+    const findBot = bots.find((b) => b.id === botIdToUse)
     if (
       findBot &&
       funds.needsSymbol &&
@@ -10075,7 +10095,7 @@ class Bot<T extends UserSchema = UserSchema> {
     if (findBot) {
       this.getWorkerById(findBot.worker)?.postMessage({
         do: 'method',
-        botType: BotType.dca,
+        botType,
         botId: findBot.id,
         method: 'addFundsForAllDeals',
         args: [
@@ -10094,7 +10114,7 @@ class Bot<T extends UserSchema = UserSchema> {
         this.recordChangeTrail({
           userId,
           botId: botIdToUse,
-          botType: BotType.dca,
+          botType,
           dealId,
           scope: dealId ? 'deal' : 'bot',
           action: 'add_funds',
@@ -10202,10 +10222,14 @@ class Bot<T extends UserSchema = UserSchema> {
     actor?: ChangeTrailActor,
     /** Place a resting LIMIT at this price instead of a MARKET order. */
     price?: string,
+    /** Main-app spec 047: the target is a Combo deal / bot; resolved when omitted. */
+    combo?: boolean,
   ) {
+    const isCombo =
+      combo ?? (await this.fundsDealIsCombo(userId, dealId, botId))
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
-        BotType.dca,
+        isCombo ? BotType.combo : BotType.dca,
         'reduceDealFundsFromPublicApi',
         false,
         userId,
@@ -10217,7 +10241,16 @@ class Bot<T extends UserSchema = UserSchema> {
         dealId,
         actor,
         price,
+        isCombo,
       )
+    }
+    if (isCombo && price !== undefined && price !== null && `${price}` !== '') {
+      return {
+        status: StatusEnum.notok as const,
+        reason:
+          'A limit price is not supported for Combo deals. Send it without a price to use a market order',
+        data: null,
+      }
     }
     const funds = parseSignalFundsPrice({
       price,
@@ -10233,7 +10266,11 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     let botIdToUse = botId
     if (!botIdToUse && dealId) {
-      const findDeal = await this.dcaDealsDb.readData({
+      const findDeal = await (
+        (isCombo
+          ? this.comboDealsDb
+          : this.dcaDealsDb) as typeof this.dcaDealsDb
+      ).readData({
         _id: dealId,
         userId,
       })
@@ -10246,13 +10283,9 @@ class Bot<T extends UserSchema = UserSchema> {
       botIdToUse = findDeal.data.result.botId
     }
     if (botId) {
-      const bot = await this.dcaBotDb.readData(
-        { userId, _id: botId },
-        undefined,
-        {},
-        false,
-        false,
-      )
+      const bot = await (
+        (isCombo ? this.comboBotDb : this.dcaBotDb) as typeof this.dcaBotDb
+      ).readData({ userId, _id: botId }, undefined, {}, false, false)
       if (bot.reason === StatusEnum.notok) {
         return bot
       }
@@ -10260,7 +10293,14 @@ class Bot<T extends UserSchema = UserSchema> {
         return this.entityNotFound('Bot')
       }
     }
-    const findBot = this.dcaBots.find((b) => b.id === botIdToUse)
+    const botType = isCombo ? BotType.combo : BotType.dca
+    const bots: {
+      id: string
+      worker: number
+      type: BotType
+      paperContext: boolean
+    }[] = isCombo ? this.comboBots : this.dcaBots
+    const findBot = bots.find((b) => b.id === botIdToUse)
     if (
       findBot &&
       funds.needsSymbol &&
@@ -10275,7 +10315,7 @@ class Bot<T extends UserSchema = UserSchema> {
     if (findBot) {
       this.getWorkerById(findBot.worker)?.postMessage({
         do: 'method',
-        botType: BotType.dca,
+        botType,
         botId: findBot.id,
         method: 'reduceFundsInAllDeals',
         args: [
@@ -10294,7 +10334,7 @@ class Bot<T extends UserSchema = UserSchema> {
         this.recordChangeTrail({
           userId,
           botId: botIdToUse,
-          botType: BotType.dca,
+          botType,
           dealId,
           scope: dealId ? 'deal' : 'bot',
           action: 'reduce_funds',
@@ -13731,12 +13771,28 @@ class Bot<T extends UserSchema = UserSchema> {
     settings: AddFundsSettings,
     fromWebhook = false,
     actor?: ChangeTrailActor,
+    /** Main-app spec 047: the deal is a Combo deal; resolved when omitted. */
+    combo?: boolean,
   ) {
+    const isCombo = combo ?? (await this.fundsDealIsCombo(userId, dealId))
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
-        BotType.dca,
+        isCombo ? BotType.combo : BotType.dca,
         'addDealFunds',
         false,
+        botId,
+        dealId,
+        userId,
+        paperContext,
+        settings,
+        fromWebhook,
+        actor,
+        isCombo,
+      )
+    }
+    if (isCombo) {
+      return this.dispatchComboDealFunds(
+        'addDealFunds',
         botId,
         dealId,
         userId,
@@ -13890,6 +13946,123 @@ class Bot<T extends UserSchema = UserSchema> {
   }
 
   /**
+   * Main-app spec 047: does this add / reduce funds request target a Combo
+   * deal (or, with no deal, a Combo bot)? DCA is looked up first, so a DCA
+   * request routes exactly as it did before Combo was accepted.
+   */
+  private async fundsDealIsCombo(
+    userId: string,
+    dealId?: string,
+    botId?: string,
+  ): Promise<boolean> {
+    if (dealId) {
+      const dca = await this.dcaDealsDb.readData(
+        { _id: dealId, userId },
+        { _id: 1 },
+      )
+      if (dca.status === StatusEnum.ok && dca.data?.result) {
+        return false
+      }
+      const combo = await this.comboDealsDb.readData(
+        { _id: dealId, userId },
+        { _id: 1 },
+      )
+      return combo.status === StatusEnum.ok && !!combo.data?.result
+    }
+    if (botId) {
+      const dca = await this.dcaBotDb.readData(
+        { _id: botId, userId },
+        { _id: 1 },
+      )
+      if (dca.status === StatusEnum.ok && dca.data?.result) {
+        return false
+      }
+      const combo = await this.comboBotDb.readData(
+        { _id: botId, userId },
+        { _id: 1 },
+      )
+      return combo.status === StatusEnum.ok && !!combo.data?.result
+    }
+    return false
+  }
+
+  /**
+   * Main-app spec 047: route a Combo add / reduce funds to the worker that
+   * owns the deal — the bot read from the deal, as `restartDeal` does, so a
+   * hedge parent id sent by a client still reaches its child.
+   */
+  private async dispatchComboDealFunds(
+    method: 'addDealFunds' | 'reduceDealFunds',
+    botId: string,
+    dealId: string,
+    userId: string,
+    paperContext: boolean,
+    settings: AddFundsSettings,
+    fromWebhook: boolean,
+    actor?: ChangeTrailActor,
+  ) {
+    const deal = await this.comboDealsDb.readData(
+      { _id: dealId, userId },
+      { botId: 1 },
+    )
+    if (deal.status === StatusEnum.notok) {
+      return deal
+    }
+    const ownerId = deal.data.result?.botId
+    if (!ownerId) {
+      return this.entityNotFound('Deal')
+    }
+    if (ownerId !== botId) {
+      this.handleDebug(
+        `${loggerPrefix} ${method} | deal ${dealId} belongs to ${ownerId}, requested via ${botId}`,
+      )
+    }
+    const findLocal = this.comboBots.find(
+      (d) => d.id === ownerId && d.userId === userId,
+    )
+    if (!findLocal) {
+      return {
+        status: StatusEnum.notok,
+        reason: 'Bot is not running',
+        data: null,
+      }
+    }
+    this.getWorkerById(findLocal.worker)?.postMessage({
+      do: 'method',
+      botType: BotType.combo,
+      botId: ownerId,
+      method,
+      args: [ownerId, dealId, settings, fromWebhook],
+    })
+    const add = method === 'addDealFunds'
+    this.recordChangeTrail({
+      userId,
+      botId: ownerId,
+      botType: BotType.combo,
+      dealId,
+      scope: 'deal',
+      action: add ? 'add_funds' : 'reduce_funds',
+      actor: resolveChangeTrailActor(
+        actor,
+        fromWebhook ? { type: 'webhook' } : undefined,
+      ),
+      changes: [
+        {
+          path: add ? 'addFunds' : 'reduceFunds',
+          before: null,
+          after: settings,
+        },
+      ],
+      paperContext,
+    })
+    return {
+      status: StatusEnum.ok,
+      reason: null,
+      data: add ? 'Add funds scheduled' : 'Reduce funds scheduled',
+    }
+  }
+
+  /**
    * Restart one deal: cancel and re-place its orders without reloading the
    * whole bot. Feature request:
    * https://community.gainium.io/t/restart-option-for-individual-deals/5302
@@ -13975,12 +14148,28 @@ class Bot<T extends UserSchema = UserSchema> {
     settings: AddFundsSettings,
     fromWebhook = false,
     actor?: ChangeTrailActor,
+    /** Main-app spec 047: the deal is a Combo deal; resolved when omitted. */
+    combo?: boolean,
   ) {
+    const isCombo = combo ?? (await this.fundsDealIsCombo(userId, dealId))
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
-        BotType.dca,
+        isCombo ? BotType.combo : BotType.dca,
         'reduceDealFunds',
         false,
+        botId,
+        dealId,
+        userId,
+        paperContext,
+        settings,
+        fromWebhook,
+        actor,
+        isCombo,
+      )
+    }
+    if (isCombo) {
+      return this.dispatchComboDealFunds(
+        'reduceDealFunds',
         botId,
         dealId,
         userId,

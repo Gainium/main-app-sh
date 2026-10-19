@@ -1401,6 +1401,9 @@ export const BotSchema = /* GraphQL */ `
     limitPrice: String
     asset: String!
     type: String
+    # The deal is a Combo deal. Optional: resolved from the deal when omitted.
+    # A Combo add / reduce scales every rung of the deal (MARKET only).
+    combo: Boolean
   }
   """
   Execute a DCA deal's next safety order immediately, at market.
@@ -4582,6 +4585,7 @@ export const BotSchema = /* GraphQL */ `
     origDca: [Float]
     multiplier: Float
     multiplierScope: String
+    fundsDca: [Float]
   }
   type filledHistory {
     id: String
@@ -4757,6 +4761,10 @@ export const BotSchema = /* GraphQL */ `
     sizes: dealSizes
     tags: [String]
     ac: dealAc
+    funds: [dealFunds]
+    reduceFunds: [dealFunds]
+    pendingAddFunds: [pendingAddFunds]
+    pendingReduceFunds: [pendingAddFunds]
   }
   type comboTransactions {
     buy: Float

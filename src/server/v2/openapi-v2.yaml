@@ -7399,7 +7399,14 @@ paths:
     post:
       summary: Add Funds to Deal
       description: |
-        Add additional funds to an active DCA deal. 
+        Add additional funds to an active DCA deal, or to an active Combo deal
+        (the deal ID or bot ID may be a Combo one).
+        On a Combo deal the funds scale every rung of the deal by one factor:
+        the filled position is grown with one MARKET order and each live
+        minigrid and each unfilled DCA level grow by the same factor.
+        `type: perc` scales by that percentage; a fixed amount is the total
+        added across the position (at market) and the unfilled levels.
+        A `price` (limit) is not supported for Combo deals.
         Requires write permission of API keys.
       tags:
         - Deals - DCA
@@ -8075,7 +8082,14 @@ paths:
     post:
       summary: Reduce Funds from Deal
       description: |
-        Reduce funds from an active DCA deal. 
+        Reduce funds from an active DCA deal, or from an active Combo deal
+        (the deal ID or bot ID may be a Combo one).
+        On a Combo deal every rung shrinks by one factor: the position is
+        reduced with one MARKET order and each live minigrid and each unfilled
+        DCA level shrink by the same factor. A reduction that would leave a grid
+        line or a level below the exchange minimum is refused with the largest
+        percentage that would pass; one that covers the whole deal closes it.
+        A `price` (limit) is not supported for Combo deals.
         Requires write permission of API keys.
       tags:
         - Deals - DCA

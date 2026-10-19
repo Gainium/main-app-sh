@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.0] - 2026-10-19
+
+### Added
+
+- Add funds and reduce funds work on Combo deals. The change scales every rung of the deal by one factor instead of adding a new one: the filled position is grown or reduced with one market order, every live minigrid's budget (and so each of its grid lines) is scaled by the same factor, and every DCA level not filled yet is resized through a per-level offset (`sizes.fundsDca`) that its resting order and the minigrid it opens later both follow. A percentage scales by that percentage; a fixed amount is the total across the position (at market) and the unfilled levels. The fill is not counted as a safety order and opens no minigrid; a reduce books its realized profit at the deal average and does not close the deal. A reduce that would leave any grid line or unfilled level below the exchange minimum is refused with the largest percentage that would pass, and one that covers the whole deal closes it. A limit price is not supported for Combo deals and is refused.
+- Combo deals persist and expose `funds`, `reduceFunds`, `pendingAddFunds` and `pendingReduceFunds`; GraphQL `addDealFundsInput` takes an optional `combo` flag (the deal type is resolved when it is omitted), and the public add/reduce funds endpoints accept a Combo deal or bot.
+
 ## [1.107.0] - 2026-10-19
 ### Changed
 - Bot base funding is available to every user: short spot DCA / combo `baseFunding` (Auto / Bot only) and hedge DCA / hedge combo legs on spot that fund themselves with the start actions. Deals opened from now on are stamped `baseFundingBeta` and follow the funded path; deals opened before keep the behaviour they started with. `baseFundingAccess.available` is true for every signed-in user, and `baseFunding` settings are stored as sent. The role check is kept in code (`BASE_FUNDING_RELEASED`) to narrow it again if needed.

@@ -2120,6 +2120,8 @@ const funds = [
     baseTotal: String,
     // Spec 139 §3.3: a single-position entry.
     positionEntry: Boolean,
+    // Combo add / reduce funds: position base when the order was sent.
+    positionBase: Number,
   },
 ]
 
@@ -2568,7 +2570,15 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     origDca: [Number],
     multiplier: Number,
     multiplierScope: String,
+    // Combo add / reduce funds: per-level base offsets (main-app spec 047).
+    fundsDca: [Number],
   },
+  // Combo add / reduce funds (same shapes as the DCA deal).
+  pendingAddFunds: funds,
+  pendingReduceFunds: funds,
+  funds: filledFunds,
+  reduceFunds: filledFunds,
+  fundsScale: [{ id: String, k: Number, time: Number }],
   botFunding: dealFunding,
   fundingHold: dealFundingHold,
   baseFundingBeta: Boolean,

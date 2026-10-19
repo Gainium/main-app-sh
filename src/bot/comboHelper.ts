@@ -19,6 +19,7 @@ import type {
   BotParentProcessStatsEventDtoDcaCombo,
   DealStopLossCombo,
   CompareBalancesResponse,
+  AddFundsSettings,
 } from '../../types'
 import type { InitialGrid } from './helper'
 import type { FullDeal } from './dcaHelper'
@@ -91,6 +92,18 @@ import {
 import { gridBudgetVerdict, gridBudgetRefusalMessage } from './gridBudgetGuard'
 import { capLadderPlacements } from './ladderPlacementCap'
 import type { MinOrderFloor, MinOrderViolation } from './minOrderFloor'
+import { v4 } from 'uuid'
+import { bookReduceFundsFill } from './dca/reduceFundsFill'
+import { splitPendingFunds } from './dca/pendingFundsResend'
+import {
+  comboFillScale,
+  comboFundsMinimumRefusalMessage,
+  comboFundsMinimumVerdict,
+  comboFundsScale,
+  comboPositionBase,
+  scaledDcaOffsets,
+} from './combo/comboDealFunds'
+import type { ComboFundsDirection } from './combo/comboDealFunds'
 
 const mutex = new IdMutex()
 const mutexConcurrently = new IdMutex(300)
@@ -152,6 +165,15 @@ function createComboBotHelper<
     private flatProbeRunning: Set<string> = new Set()
     private feeOrderReasons: Map<string, string[]> = new Map()
     private lastFilledOrderMap: Map<string, Order> = new Map()
+    /**
+     * Add / reduce funds orders sent and not booked yet, per deal: the funds
+     * id and the deal's position base when the order was sent. Main-app spec
+     * 047.
+     */
+    private comboFundsSent: Map<
+      string,
+      { id: string; positionBase: number; direction: ComboFundsDirection }
+    > = new Map()
 
     constructor(
       id: string,
@@ -2349,9 +2371,31 @@ function createComboBotHelper<
 
         const boQty = +(bo?.executedQty ?? '0') || +(bo?.origQty ?? '0') || 0
         const boPrice = +(bo?.price ?? '0') || 0
-        const totalBase = regular.reduce((acc, g) => acc + g.qty, 0) + boQty
-        const totalQuote =
-          regular.reduce((acc, g) => acc + g.qty * g.price, 0) + boQty * boPrice
+        // Main-app spec 047: added funds widen the deal's commitment and
+        // reduced funds narrow it. The unfilled levels already carry their
+        // share through `sizes.fundsDca`; these are the position's share.
+        const fundsBase =
+          (findDeal.deal.funds ?? []).reduce((acc, f) => acc + f.qty, 0) -
+          (findDeal.deal.reduceFunds ?? []).reduce((acc, f) => acc + f.qty, 0)
+        const fundsQuote =
+          (findDeal.deal.funds ?? []).reduce(
+            (acc, f) => acc + f.qty * f.price,
+            0,
+          ) -
+          (findDeal.deal.reduceFunds ?? []).reduce(
+            (acc, f) => acc + f.qty * f.price,
+            0,
+          )
+        const totalBase = Math.max(
+          regular.reduce((acc, g) => acc + g.qty, 0) + boQty + fundsBase,
+          0,
+        )
+        const totalQuote = Math.max(
+          regular.reduce((acc, g) => acc + g.qty * g.price, 0) +
+            boQty * boPrice +
+            fundsQuote,
+          0,
+        )
         const base = (await this.profitBase(findDeal.deal))
           ? findDeal.deal.profit.total
           : 0
@@ -2540,6 +2584,17 @@ function createComboBotHelper<
       _updateTime: number,
       _expired: boolean,
     ): Promise<void> {
+      if (order.dealId && (order.addFundsId || order.reduceFundsId)) {
+        // Main-app spec 047. A part that executed is booked like a fill and
+        // scales the deal by what it got; nothing executed scales nothing.
+        const executed = +order.executedQty
+        if (Number.isFinite(executed) && executed > 0 && order.updateTime > 0) {
+          await this.applyComboFundsFill(order)
+        } else {
+          await this.dropCanceledComboFunds(order)
+        }
+        return
+      }
       if (order.typeOrder === TypeOrderEnum.dealStart) {
         // A Combo entry is a MARKET order and arms no base-order timer, so this
         // callback is the only report of a venue cancel. One that ended part
@@ -3561,6 +3616,15 @@ function createComboBotHelper<
         : new Set<string>()
       if (dealId && !getSet.has(clientOrderId)) {
         this.processedFilled.set(dealId, getSet.add(clientOrderId))
+        // Main-app spec 047: an add / reduce funds fill scales the deal. It is
+        // not a safety order (no minigrid, no level) and not a close.
+        if (
+          (order.typeOrder === TypeOrderEnum.dealRegular && order.addFundsId) ||
+          (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId)
+        ) {
+          this.applyComboFundsFill(order)
+          return
+        }
         if (
           order.typeOrder === TypeOrderEnum.dealTP &&
           (order.clientOrderId.indexOf('D-SR') === -1 ||
@@ -3589,6 +3653,586 @@ function createComboBotHelper<
         this.handleLog(`Order ${clientOrderId} was already processed`)
       }
     }
+    /**
+     * Main-app spec 047 — add funds to a Combo deal: every rung (base order and
+     * each DCA level) is scaled by one factor `k > 1`. See
+     * `combo/comboDealFunds.ts`.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `comboFunds${botId}${dealId}`,
+    )
+    override async addDealFunds(
+      _botId: string,
+      dealId: string,
+      settings: AddFundsSettings,
+      _fromWebhook = false,
+    ) {
+      const _id = this.startMethod('addDealFunds')
+      try {
+        await this.changeComboDealFunds('add', dealId, settings)
+      } finally {
+        this.endMethod(_id)
+      }
+    }
+
+    /** Main-app spec 047 — reduce funds: the same scaling with `k < 1`. */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `comboFunds${botId}${dealId}`,
+    )
+    override async reduceDealFunds(
+      _botId: string,
+      dealId: string,
+      settings: AddFundsSettings,
+      _fromWebhook = false,
+    ) {
+      const _id = this.startMethod('reduceDealFunds')
+      try {
+        await this.changeComboDealFunds('reduce', dealId, settings)
+      } finally {
+        this.endMethod(_id)
+      }
+    }
+
+    /** The deal's DCA levels that have not filled, as the ladder last built them. */
+    comboUnfilledLevels(d: FullDeal<CleanComboDealsSchema>) {
+      return d.initialOrders.filter(
+        (o) =>
+          o.type === TypeOrderEnum.dealRegular &&
+          (o.dcaLevel ?? 0) > (d.deal.lastFilledLevel ?? 0),
+      )
+    }
+
+    /** The deal's minigrids that still trade. */
+    comboLiveMinigrids(dealId: string) {
+      return this.getMinigridByDealId({ dealId }).filter(
+        (m) => m.schema.status !== ComboMinigridStatusEnum.closed,
+      )
+    }
+
+    /**
+     * Is an add / reduce funds order of this deal still on its way? Only one
+     * runs at a time: the next one is sized on the position the previous one
+     * leaves. A pending entry whose order is no longer live (lost over a
+     * restart) does not block.
+     */
+    private comboFundsInFlight(d: FullDeal<CleanComboDealsSchema>) {
+      if (this.comboFundsSent.has(d.deal._id)) {
+        return true
+      }
+      const orders = this.getOrdersByStatusAndDealId({
+        dealId: d.deal._id,
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      })
+      const live = (id: string) =>
+        orders.some((o) => o.addFundsId === id || o.reduceFundsId === id)
+      return [
+        ...(d.deal.pendingAddFunds ?? []),
+        ...(d.deal.pendingReduceFunds ?? []),
+      ].some((p) => live(p.id))
+    }
+
+    private async changeComboDealFunds(
+      direction: ComboFundsDirection,
+      dealId: string,
+      settings: AddFundsSettings,
+    ) {
+      const label = direction === 'add' ? 'Add funds' : 'Reduce funds'
+      this.handleDebug(
+        `${label} | Combo deal ${dealId}: ${settings.qty} ${settings.asset}, type ${settings.type ?? 'fixed'}`,
+      )
+      if (!this.data) {
+        return
+      }
+      // Only a user's request scales a Combo deal; the DCA-only uses of
+      // `addDealFunds` (base remainder, single-position entry) never apply.
+      if (settings.baseRemainder || settings.positionEntry) {
+        return
+      }
+      const d = this.getDeal(dealId)
+      if (!d) {
+        return this.reportUserRefusal(`Cannot find deal to ${direction} funds`)
+      }
+      const symbol = d.deal.symbol.symbol
+      const refuse = (reason: string) => this.reportUserRefusal(reason, symbol)
+      if (d.deal.status !== DCADealStatusEnum.open) {
+        return refuse(
+          direction === 'add'
+            ? 'Funds can only be added to deals with status open'
+            : 'Funds can only be reduced in deal with status open',
+        )
+      }
+      if (settings.useLimitPrice && settings.limitPrice) {
+        return refuse(
+          `${label} with a limit price is not supported for Combo deals. Send it without a price to use a market order`,
+        )
+      }
+      if (this.comboFundsInFlight(d)) {
+        return refuse(
+          `${label} refused: a previous add or reduce funds order of this deal is still being processed. Try again once it has filled`,
+        )
+      }
+      const price = await this.getLatestPrice(symbol)
+      if (!price) {
+        return refuse(`${label} refused: cannot get price`)
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      const minBase = ed?.baseAsset.minAmount ?? 0
+      const minQuote = this.coinm ? 0 : (ed?.quoteAsset.minAmount ?? 0)
+      const unfilled = this.comboUnfilledLevels(d)
+      const positionBase = comboPositionBase({
+        isLong: this.isLong,
+        initialBalances: d.deal.initialBalances,
+        currentBalances: d.deal.currentBalances,
+      })
+      const scale = comboFundsScale({
+        direction,
+        type: settings.type,
+        asset: settings.asset,
+        qty: +settings.qty,
+        price,
+        positionBase,
+        unfilled: unfilled.map((o) => ({ qty: o.qty, price: o.price })),
+      })
+      if (scale.kind === 'invalid') {
+        return refuse(`${label} refused: ${scale.reason}`)
+      }
+      if (scale.kind === 'close') {
+        await refuse(
+          'Reduce funds covers the whole deal, so the deal will be closed',
+        )
+        return this.closeDealById(
+          this.botId,
+          dealId,
+          CloseDCATypeEnum.closeByMarket,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          `${price}`,
+          undefined,
+          undefined,
+          DCACloseTriggerEnum.auto,
+        )
+      }
+      const { k } = scale
+      const lines = [
+        ...this.comboLiveMinigrids(dealId).flatMap((m) =>
+          m.currentOrders.map((g) => ({ qty: g.qty, price: g.price })),
+        ),
+        ...unfilled.map((o) => ({ qty: o.qty, price: o.price })),
+      ]
+      const verdict = comboFundsMinimumVerdict({ k, lines, minBase, minQuote })
+      if (verdict.refuse) {
+        return refuse(
+          comboFundsMinimumRefusalMessage((1 - k) * 100, verdict.maxReducePerc),
+        )
+      }
+      const precision = await this.baseAssetPrecision(symbol)
+      const orderQtyFor = (base: number) =>
+        this.math.round(Math.abs(k - 1) * base, precision)
+      let orderQty = orderQtyFor(positionBase)
+      if (direction === 'reduce' && orderQty >= positionBase) {
+        await refuse(
+          'Reduce funds covers the whole position, so the deal will be closed',
+        )
+        return this.closeDealById(
+          this.botId,
+          dealId,
+          CloseDCATypeEnum.closeByMarket,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          `${price}`,
+          undefined,
+          undefined,
+          DCACloseTriggerEnum.auto,
+        )
+      }
+      if (
+        !(orderQty > 0) ||
+        orderQty < minBase ||
+        orderQty * price < minQuote
+      ) {
+        return refuse(
+          `${label} refused: the order for the deal's position, ${orderQty} ${d.deal.symbol.baseAsset}, is below the exchange minimum order size`,
+        )
+      }
+      let sentBase = positionBase
+      if (direction === 'reduce') {
+        // The grid sells hold the base a long sells here (and on futures a
+        // reduce-only grid line could outlive the position): take the book
+        // down first. The fill re-places it scaled; a refusal re-places it as
+        // it was.
+        await this.cancelAllOrder(price, dealId, true)
+        const after = this.getDeal(dealId) ?? d
+        if (after.deal.status !== DCADealStatusEnum.open) {
+          return
+        }
+        sentBase = comboPositionBase({
+          isLong: this.isLong,
+          initialBalances: after.deal.initialBalances,
+          currentBalances: after.deal.currentBalances,
+        })
+        orderQty = Math.min(orderQtyFor(sentBase), sentBase)
+      }
+      const fundsId = v4()
+      const add = direction === 'add'
+      const buy = add === this.isLong
+      const order: Order = {
+        symbol,
+        orderId: '-1',
+        clientOrderId: this.getOrderId(add ? 'CMB-ROA' : 'D-TPR'),
+        updateTime: +new Date(),
+        price: `${price}`,
+        origQty: `${orderQty}`,
+        executedQty: '0',
+        status: 'NEW',
+        origPrice: `${price}`,
+        cummulativeQuoteQty: `${price * orderQty}`,
+        side: buy ? 'BUY' : 'SELL',
+        baseAsset: d.deal.symbol.baseAsset,
+        quoteAsset: d.deal.symbol.quoteAsset,
+        exchange: this.data.exchange,
+        exchangeUUID: this.data.exchangeUUID,
+        typeOrder: add ? TypeOrderEnum.dealRegular : TypeOrderEnum.dealTP,
+        botId: this.botId,
+        userId: this.userId,
+        type: 'MARKET',
+        transactTime: new Date().getTime(),
+        fills: [],
+        dealId,
+        positionSide: this.hedge
+          ? this.isLong
+            ? PositionSide.LONG
+            : PositionSide.SHORT
+          : PositionSide.BOTH,
+        ...(add ? { addFundsId: fundsId } : { reduceFundsId: fundsId }),
+      }
+      this.handleLog(
+        `${label} | Combo deal ${dealId}: scale ${k}, ${order.side} ${orderQty} at market for position ${sentBase}, order ${order.clientOrderId}`,
+      )
+      this.comboFundsSent.set(dealId, {
+        id: fundsId,
+        positionBase: sentBase,
+        direction,
+      })
+      const result = await this.sendOrderToExchange(order)
+      if (!result) {
+        // Refused or failed: the refusal is reported by the send. Nothing was
+        // scaled; a reduce puts back the book it took down.
+        if (this.comboFundsSent.get(dealId)?.id === fundsId) {
+          this.comboFundsSent.delete(dealId)
+        }
+        if (direction === 'reduce') {
+          const live = this.getDeal(dealId)
+          if (live && live.deal.status === DCADealStatusEnum.open) {
+            await this.rebuildDealOrders(live, dealId, { keepLevels: true })
+          }
+        }
+        return
+      }
+      if (result.status === 'FILLED') {
+        this.processFilledOrder(result)
+        return
+      }
+      const live = this.getDeal(dealId) ?? d
+      const entry = {
+        qty: `${orderQty}`,
+        asset: OrderSizeTypeEnum.base,
+        useLimitPrice: false,
+        limitPrice: `${price}`,
+        id: fundsId,
+        positionBase: sentBase,
+      } as AddFundsSettings & { id: string }
+      if (add) {
+        live.deal.pendingAddFunds = [
+          ...(live.deal.pendingAddFunds ?? []),
+          entry,
+        ]
+        this.saveDeal(live, { pendingAddFunds: live.deal.pendingAddFunds })
+      } else {
+        live.deal.pendingReduceFunds = [
+          ...(live.deal.pendingReduceFunds ?? []),
+          entry,
+        ]
+        this.saveDeal(live, {
+          pendingReduceFunds: live.deal.pendingReduceFunds,
+        })
+      }
+    }
+
+    /**
+     * Main-app spec 047. Book an add / reduce funds fill and scale the deal by
+     * what it executed: every live minigrid's budget, every unfilled DCA
+     * level's size offset, then re-place the deal's book. The fill is not a
+     * safety order — no minigrid, no level — and a reduce does not close.
+     */
+    @IdMute(mutex, (order: Order) => `${order.botId}update${order.dealId}`)
+    private async applyComboFundsFill(order: Order) {
+      const _id = this.startMethod('applyComboFundsFill')
+      try {
+        await this.bookComboFundsFill(order)
+      } finally {
+        this.endMethod(_id)
+      }
+    }
+
+    private async bookComboFundsFill(order: Order) {
+      const dealId = order.dealId
+      const direction: ComboFundsDirection = order.addFundsId ? 'add' : 'reduce'
+      const fundsId = (order.addFundsId || order.reduceFundsId) as string
+      const sent = dealId ? this.comboFundsSent.get(dealId) : undefined
+      if (dealId && sent?.id === fundsId) {
+        this.comboFundsSent.delete(dealId)
+      }
+      const d = dealId ? this.getDeal(dealId) : undefined
+      const price = +order.price
+      const executed = +order.executedQty
+      if (!dealId || !d || d.deal.status !== DCADealStatusEnum.open) {
+        if (
+          dealId &&
+          direction === 'add' &&
+          executed > 0 &&
+          order.botId === this.botId
+        ) {
+          // Coins bought for a deal that has closed meanwhile.
+          await this.sellRemainder(dealId, executed, price, false, d)
+        }
+        return
+      }
+      if ((d.deal.fundsScale ?? []).some((f) => f.id === fundsId)) {
+        return this.handleDebug(
+          `Funds fill ${order.clientOrderId} of deal ${dealId} already booked`,
+        )
+      }
+      const pendingList =
+        direction === 'add'
+          ? (d.deal.pendingAddFunds ?? [])
+          : (d.deal.pendingReduceFunds ?? [])
+      const pending = pendingList.find((p) => p.id === fundsId)
+      const positionBase =
+        (sent?.id === fundsId ? sent.positionBase : undefined) ??
+        pending?.positionBase ??
+        comboPositionBase({
+          isLong: this.isLong,
+          initialBalances: d.deal.initialBalances,
+          currentBalances: d.deal.currentBalances,
+        })
+      const k = comboFillScale(direction, executed, positionBase)
+      this.handleLog(
+        `${direction === 'add' ? 'Add' : 'Reduce'} funds FILLED ${order.clientOrderId}: ${executed} at ${price}, deal ${dealId} scaled by ${k}`,
+      )
+      d.deal.updateTime = order.updateTime
+      d.deal.lastPrice = price
+      if (direction === 'add') {
+        d.deal.pendingAddFunds = pendingList.filter((p) => p.id !== fundsId)
+        d.deal.funds = [
+          ...(d.deal.funds ?? []),
+          { price, qty: executed, id: fundsId },
+        ]
+      } else {
+        d.deal.pendingReduceFunds = pendingList.filter((p) => p.id !== fundsId)
+        // Realized at the deal's average, as a DCA reduce is. Fees are in
+        // `fullFee`, recomputed from the fills below.
+        const profitBase = await this.profitBase(d.deal)
+        const avg = d.deal.avgPrice
+        if (avg > 0 && executed > 0) {
+          const total = !profitBase
+            ? this.isLong
+              ? executed * (price - avg)
+              : executed * (avg - price)
+            : this.isLong
+              ? executed * (price / avg - 1)
+              : executed * (avg / price - 1)
+          const rate = await this.getUsdRate(order.symbol)
+          d.deal.profit = {
+            ...d.deal.profit,
+            total: d.deal.profit.total + total,
+            totalUsd:
+              d.deal.profit.totalUsd + total * (profitBase ? price : 1) * rate,
+          }
+        }
+        const booked = bookReduceFundsFill(d.deal, { price, qty: executed })
+        d.deal.reduceFunds = booked.reduceFunds
+        d.deal.size = booked.size
+      }
+      d.deal.fundsScale = [
+        ...(d.deal.fundsScale ?? []),
+        { id: fundsId, k, time: order.updateTime },
+      ]
+      const avgs = await this.avgPrice(dealId, dealId)
+      if (!isNaN(avgs.real)) {
+        d.deal.avgPrice = avgs.real
+        d.deal.settings.avgPrice = avgs.real
+      }
+      if (!isNaN(avgs.display)) {
+        d.deal.displayAvg = avgs.display
+      }
+      d.deal.fullFee = await this.getCommDeal(d.deal)
+      // Unfilled levels: through the per-level offsets (`sizes.fundsDca`) the
+      // ladder builder adds, so their resting limit and the minigrid they open
+      // later both scale, and the change survives a reload.
+      const unfilled = this.comboUnfilledLevels(d)
+      const sizes = d.deal.sizes ?? {
+        base: 0,
+        dca: [],
+        origBase: 0,
+        origDca: [],
+      }
+      d.deal.sizes = {
+        ...sizes,
+        fundsDca: scaledDcaOffsets(
+          sizes.fundsDca,
+          unfilled.map((o) => ({
+            number: o.number ?? (o.dcaLevel ?? 1) - 1,
+            qty: o.qty,
+          })),
+          k,
+        ),
+      }
+      await this.scaleComboMinigrids(dealId, k)
+      this.saveDeal(d, {
+        updateTime: d.deal.updateTime,
+        lastPrice: d.deal.lastPrice,
+        funds: d.deal.funds,
+        pendingAddFunds: d.deal.pendingAddFunds,
+        reduceFunds: d.deal.reduceFunds,
+        pendingReduceFunds: d.deal.pendingReduceFunds,
+        size: d.deal.size,
+        profit: d.deal.profit,
+        fundsScale: d.deal.fundsScale,
+        avgPrice: d.deal.avgPrice,
+        displayAvg: d.deal.displayAvg,
+        'settings.avgPrice': d.deal.settings.avgPrice,
+        fullFee: d.deal.fullFee,
+        sizes: d.deal.sizes,
+      })
+      const live = this.getDeal(dealId) ?? d
+      // Ladder regenerated with the new offsets, balances re-read from the
+      // fills, usage and the take profit recomputed, minigrids re-placed from
+      // their scaled budgets.
+      await this.rebuildDealOrders(live, dealId, { keepLevels: true })
+      this.updateBotDealStats(dealId)
+      if (direction === 'reduce') {
+        this.sendDealClosedAlert(live.deal, order, true)
+      }
+    }
+
+    /**
+     * Scale every live minigrid of the deal by `k`: its budget and its opening
+     * balances persist, its ladder is regenerated from them.
+     */
+    private async scaleComboMinigrids(dealId: string, k: number) {
+      for (const m of this.comboLiveMinigrids(dealId)) {
+        m.schema.settings = {
+          ...m.schema.settings,
+          budget: m.schema.settings.budget * k,
+        }
+        m.schema.initialBalances = {
+          base: m.schema.initialBalances.base * k,
+          quote: m.schema.initialBalances.quote * k,
+        }
+        const [prepared] = await this.prepareMinigrids([m.schema])
+        if (prepared) {
+          m.initialGrids = prepared.initialGrids
+          m.currentOrders = prepared.currentOrders
+        }
+        const currentBalances = this.calculateMinigridBalances(m.currentOrders)
+        m.schema.currentBalances = currentBalances
+        m.schema.assets = { used: currentBalances, required: currentBalances }
+        m.schema.grids = {
+          buy: m.currentOrders.filter((g) => g.side === OrderSideEnum.buy)
+            .length,
+          sell: m.currentOrders.filter((g) => g.side === OrderSideEnum.sell)
+            .length,
+        }
+        this.setMinigrid(m)
+        await this.saveMinigrid(m, {
+          settings: m.schema.settings,
+          initialBalances: m.schema.initialBalances,
+          currentBalances: m.schema.currentBalances,
+          assets: m.schema.assets,
+          grids: m.schema.grids,
+        })
+      }
+    }
+
+    /**
+     * Main-app spec 047. An add / reduce funds order that ended with nothing
+     * executed: drop its pending entry. A reduce took the book down before it
+     * was sent, so the book goes back as it was.
+     */
+    @IdMute(mutex, (order: Order) => `${order.botId}update${order.dealId}`)
+    private async dropCanceledComboFunds(order: Order) {
+      const dealId = order.dealId
+      const fundsId = order.addFundsId || order.reduceFundsId
+      if (!dealId || !fundsId) {
+        return
+      }
+      if (this.comboFundsSent.get(dealId)?.id === fundsId) {
+        this.comboFundsSent.delete(dealId)
+      }
+      const d = this.getDeal(dealId)
+      if (!d || d.deal.status !== DCADealStatusEnum.open) {
+        return
+      }
+      this.handleLog(
+        `Funds order ${order.clientOrderId} of deal ${dealId} was ${order.status} with nothing filled. The deal is not scaled`,
+      )
+      d.deal.pendingAddFunds = (d.deal.pendingAddFunds ?? []).filter(
+        (p) => p.id !== fundsId,
+      )
+      d.deal.pendingReduceFunds = (d.deal.pendingReduceFunds ?? []).filter(
+        (p) => p.id !== fundsId,
+      )
+      this.saveDeal(d, {
+        pendingAddFunds: d.deal.pendingAddFunds,
+        pendingReduceFunds: d.deal.pendingReduceFunds,
+      })
+      if (order.reduceFundsId) {
+        await this.rebuildDealOrders(this.getDeal(dealId) ?? d, dealId, {
+          keepLevels: true,
+        })
+      }
+    }
+
+    /**
+     * Main-app spec 047. A Combo add / reduce is one market order sized on the
+     * position at the moment it was asked for, so one whose order is gone
+     * after a reload is not sent again — it would be sized on a different
+     * position. Its entry is dropped; nothing was scaled.
+     */
+    override resendPendingFunds(d: FullDeal<ExcludeDoc<Deal>>) {
+      const orders = this.getOrdersByStatusAndDealId({
+        dealId: `${d.deal._id}`,
+      })
+      const add = splitPendingFunds(
+        d.deal.pendingAddFunds ?? [],
+        orders,
+        'addFundsId',
+      )
+      const reduce = splitPendingFunds(
+        d.deal.pendingReduceFunds ?? [],
+        orders,
+        'reduceFundsId',
+      )
+      if (!add.resend.length && !reduce.resend.length) {
+        return
+      }
+      this.handleLog(
+        `Deal ${d.deal._id}: dropping ${add.resend.length + reduce.resend.length} add/reduce funds entries whose order is gone`,
+      )
+      d.deal.pendingAddFunds = add.standing
+      d.deal.pendingReduceFunds = reduce.standing
+      this.saveDeal(d, {
+        pendingAddFunds: add.standing,
+        pendingReduceFunds: reduce.standing,
+      })
+    }
+
     override getInitalDealSettings(): ComboDealsSettings | undefined {
       if (this.data) {
         return this.utils.getInitalDealSettings(
@@ -4208,16 +4852,22 @@ function createComboBotHelper<
                 symbol.priceAssetPrecision,
               )
             }
+            // Main-app spec 047: the level's share of the deal's add / reduce
+            // funds, in base. Every sizing below adds it, percent included.
+            const fundsOffset = deal?.sizes?.fundsDca?.[i - 1] ?? 0
             let qty = this.math.round(
               ((orderSize * (this.coinm ? ed.quoteAsset.minAmount : 1)) /
                 price) *
                 volumeVal +
-                (deal?.sizes?.dca?.[i - 1] ?? 0),
+                (deal?.sizes?.dca?.[i - 1] ?? 0) +
+                fundsOffset,
               precision,
             )
             if (orderSizeType === OrderSizeTypeEnum.base) {
               qty = this.math.round(
-                orderSize * volumeVal + (deal?.sizes?.dca?.[i - 1] ?? 0),
+                orderSize * volumeVal +
+                  (deal?.sizes?.dca?.[i - 1] ?? 0) +
+                  fundsOffset,
                 precision,
               )
             }
@@ -4226,7 +4876,8 @@ function createComboBotHelper<
                 (orderSize * volumeVal) /
                   ((await this.getUsdRate(symbol.pair, 'quote')) *
                     latestPrice) +
-                  (deal?.sizes?.dca?.[i - 1] ?? 0),
+                  (deal?.sizes?.dca?.[i - 1] ?? 0) +
+                  fundsOffset,
                 precision,
               )
             }
@@ -4236,17 +4887,23 @@ function createComboBotHelper<
             ) {
               qty = this.futures
                 ? this.coinm
-                  ? this.math.round(balanceUseQty * volumeVal, precision)
+                  ? this.math.round(
+                      balanceUseQty * volumeVal + fundsOffset,
+                      precision,
+                    )
                   : this.math.round(
-                      (balanceUseQty / price) * volumeVal,
+                      (balanceUseQty / price) * volumeVal + fundsOffset,
                       precision,
                     )
                 : long
                   ? this.math.round(
-                      (balanceUseQty / price) * volumeVal,
+                      (balanceUseQty / price) * volumeVal + fundsOffset,
                       precision,
                     )
-                  : this.math.round(balanceUseQty * volumeVal, precision)
+                  : this.math.round(
+                      balanceUseQty * volumeVal + fundsOffset,
+                      precision,
+                    )
             }
             const floor: MinOrderViolation = {
               level: i,
