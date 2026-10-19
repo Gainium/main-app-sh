@@ -1872,4 +1872,174 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 Â
     expect(bot.refusals).to.have.length(1)
     expect(bot.refusals[0]).to.contain('still being processed')
   })
+
+  /**
+   * The stall: the venue reports the market add filled on the user stream
+   * while its send has not returned, and a grid fill of the same deal is
+   * re-placing its minigrid at that moment. The grid fill holds the deal's
+   * update lock and, through `placeOrders`, walks its cancel set; the stream
+   * fill holds the deal's processing lock and waits for the update lock to
+   * book. If the funds order is in that cancel set, its cancel resolves to
+   * FILLED and `handleUnknownOrder` â†’ `processFilledOrder` waits for the
+   * processing lock: each side holds what the other waits for, and every
+   * later event of the deal queues behind them.
+   */
+  const lockCycle = async (opts: { dropFundsId?: boolean } = {}) => {
+    const { bot } = await restingBook()
+    bot.processedFilled = new Map()
+    bot.lastFilledOrderMap = new Map()
+    bot.processFilledOrder = (o: any) =>
+      Combo.prototype.processFilledOrder.call(bot, o)
+    // The real placement path (its cancel loop is where the cycle closes).
+    bot.placeOrders = (...a: any[]) => Combo.prototype.placeOrders.apply(bot, a)
+    bot.batchablePlacements = () => []
+    bot.sendGridToExchange = async (g: any) => {
+      bot.orders.set(g.newClientOrderId, {
+        clientOrderId: g.newClientOrderId,
+        orderId: g.newClientOrderId,
+        symbol: SYMBOL,
+        botId: BOT_ID,
+        dealId: DEAL_ID,
+        typeOrder: g.type,
+        side: g.side === OrderSideEnum.buy ? 'BUY' : 'SELL',
+        type: 'LIMIT',
+        status: 'NEW',
+        price: `${g.price}`,
+        origPrice: `${g.price}`,
+        origQty: `${g.qty}`,
+        executedQty: '0',
+        minigridId: g.minigridId,
+        dcaLevel: g.dcaLevel,
+        updateTime: 1_800_000_100_000,
+      })
+      return null
+    }
+    for (const m of [
+      'createTransaction',
+      'calculateDealBalances',
+      'checkDealSlMethods',
+      'updateUsage',
+      'calculateBotBalances',
+      'autoRebalancing',
+    ]) {
+      bot[m] = async () => undefined
+    }
+    bot.checkDealsPriceExtremum = () => undefined
+    // Who rebuilt a minigrid, in order.
+    const rebuilt: string[] = []
+    const getMinigrid = bot.getMinigrid.bind(bot)
+    bot.getMinigrid = (id: string) => {
+      rebuilt.push(id)
+      return getMinigrid(id)
+    }
+    // The venue: a cancel of the funds order finds it already filled.
+    const cancelled: string[] = []
+    let placementReturned!: () => void
+    const placement = new Promise<void>((r) => (placementReturned = r))
+    let cancelReached!: () => void
+    const cancelHit = new Promise<void>((r) => (cancelReached = r))
+    bot.cancelOrderOnExchange = async (o: any) => {
+      cancelled.push(o.clientOrderId)
+      const row = bot.orders.get(o.clientOrderId)
+      if (row?.clientOrderId === bot.sent[0]?.clientOrderId) {
+        // Spec 155: a cancel waits for the placement still in flight, then
+        // the unknown-order lookup reads the venue: FILLED.
+        cancelReached()
+        await placement
+        return { ...row, status: 'FILLED', executedQty: row.origQty }
+      }
+      if (row) {
+        row.status = 'CANCELED'
+      }
+      return row
+    }
+    const gridFill = (n: number) => {
+      const g = resting(bot).find(
+        (o: any) =>
+          o.typeOrder === TypeOrderEnum.dealGrid &&
+          o.side === 'SELL' &&
+          !o.filledByTest,
+      )
+      g.filledByTest = true
+      g.status = 'FILLED'
+      g.executedQty = g.origQty
+      g.updateTime = 1_800_000_200_000 + n
+      return { ...g }
+    }
+    let addFundsRow: any
+    bot.sendOrderToExchange = async (order: any) => {
+      bot.sent.push(order)
+      // Placed: the order rests in the map while the venue call is out.
+      addFundsRow = { ...order, status: 'NEW' }
+      if (opts.dropFundsId) {
+        delete addFundsRow.addFundsId
+      }
+      bot.orders.set(order.clientOrderId, addFundsRow)
+      // A grid sell of the deal fills in the same tick: its rebuild holds
+      // the deal's update lock and reaches the cancel loop.
+      void bot.processFilledOrder(gridFill(1))
+      await Promise.race([cancelHit, sleep(200)])
+      // The stream reports the add filled before the send returns.
+      const filled = {
+        ...addFundsRow,
+        orderId: 'v1',
+        status: 'FILLED',
+        executedQty: order.origQty,
+        price: '97',
+        updateTime: 1_800_000_300_000,
+      }
+      bot.orders.set(order.clientOrderId, filled)
+      void bot.processFilledOrder(filled)
+      await sleep(20)
+      placementReturned()
+      return { ...filled }
+    }
+    return { bot, rebuilt, cancelled, gridFill }
+  }
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const within = <T>(p: Promise<T>, ms: number) =>
+    Promise.race([
+      p.then(() => 'done' as const),
+      sleep(ms).then(() => 'stalled' as const),
+    ])
+
+  it('stream fill before the send reply while a grid fill re-places the book: the add is booked, its order is never cancelled, and later fills of the deal are still processed', async () => {
+    const { bot, rebuilt, cancelled, gridFill } = await lockCycle()
+    const outcome = await within(
+      bot.addDealFunds(BOT_ID, DEAL_ID, pct('50')),
+      3000,
+    )
+    expect(outcome).to.equal('done')
+    const add = bot.sent[0]
+    expect(cancelled).to.not.include(add.clientOrderId)
+    expect(
+      bot.getDeal(DEAL_ID).deal.fundsScale.map((f: any) => f.id),
+    ).to.deep.equal([add.addFundsId])
+    // The worker keeps processing this deal: a later grid fill is rebuilt.
+    const before = rebuilt.length
+    const later = gridFill(2)
+    expect(await within(bot.processFilledOrder(later), 3000)).to.equal('done')
+    await sleep(50)
+    expect(rebuilt.slice(before)).to.include(later.minigridId)
+  })
+
+  it('the same race with a funds order whose row lost its funds id: still never cancelled as a grid level, and the deal keeps processing', async () => {
+    const { bot, rebuilt, cancelled, gridFill } = await lockCycle({
+      dropFundsId: true,
+    })
+    const outcome = await within(
+      bot.addDealFunds(BOT_ID, DEAL_ID, pct('50')),
+      3000,
+    )
+    expect(outcome).to.equal('done')
+    const add = bot.sent[0]
+    expect(cancelled).to.not.include(add.clientOrderId)
+    expect(bot.getDeal(DEAL_ID).deal.fundsScale).to.have.length(1)
+    const before = rebuilt.length
+    const later = gridFill(2)
+    expect(await within(bot.processFilledOrder(later), 3000)).to.equal('done')
+    await sleep(50)
+    expect(rebuilt.slice(before)).to.include(later.minigridId)
+  })
 })

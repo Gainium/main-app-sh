@@ -17,9 +17,33 @@
  * Everything here is plain arithmetic over plain numbers, so it can be pinned
  * without an engine. The engine side lives in `comboHelper.ts`.
  */
-import { AddFundsTypeEnum, OrderSizeTypeEnum } from '../../../types'
+import {
+  AddFundsTypeEnum,
+  OrderSizeTypeEnum,
+  TypeOrderEnum,
+} from '../../../types'
 
 export type ComboFundsDirection = 'add' | 'reduce'
+
+/**
+ * Is this order row an add / reduce funds order: by its funds id, or — a row
+ * that reached memory without it — by the client order id only funds orders
+ * get (`CMB-ROA` add, `D-TPR` reduce). It is never a grid or ladder level, so
+ * a book rebuild must not cancel it: its cancel can come back FILLED and book
+ * the fill from inside the rebuild, which holds the lock the booking waits for.
+ */
+export const isComboFundsOrderRow = (o: {
+  typeOrder?: TypeOrderEnum
+  clientOrderId?: string
+  addFundsId?: string
+  reduceFundsId?: string
+}) =>
+  !!o.addFundsId ||
+  !!o.reduceFundsId ||
+  (o.typeOrder === TypeOrderEnum.dealRegular &&
+    `${o.clientOrderId ?? ''}`.includes('CMB-ROA')) ||
+  (o.typeOrder === TypeOrderEnum.dealTP &&
+    `${o.clientOrderId ?? ''}`.includes('D-TPR'))
 
 /** One rung or grid line: a quantity in base at a price. */
 export type ComboFundsLine = { qty: number; price: number }

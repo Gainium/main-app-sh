@@ -3931,8 +3931,13 @@ function createComboBotHelper<
           (funds.addFundsId || funds.reduceFundsId) as string,
         )
         // Awaited so the request that sent a synchronously filled order
-        // returns only once the deal is booked and its book rebuilt. No
-        // caller holding this deal's update lock awaits this method.
+        // returns only once the deal is booked and its book rebuilt. The
+        // booking takes this deal's update lock while this method holds the
+        // processing lock. A grid rebuild holds the update lock and reaches
+        // here through its cancel loop (`placeOrders` → `handleUnknownOrder`)
+        // for any order its cancel finds FILLED — so a funds order must never
+        // be in a rebuild's cancel set (`findOrderForGrid`), or the two locks
+        // are taken in opposite orders and the deal stops processing.
         await this.bookComboFunds(funds)
         return
       }

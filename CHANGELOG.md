@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.7] - 2026-10-20
+
+### Fixed
+
+- Combo add / reduce funds: a grid fill that rebuilt the deal's book while the funds order was still being placed could stop the bot processing that deal until a restart. The rebuild tried to cancel the funds order, the cancel found it filled and waited to book it, while the user-stream report of the same fill waited for the rebuild — each held what the other needed. A funds order is never treated as a grid or ladder order by a rebuild, now also when its row reached the bot without its funds id.
+
 ## [1.108.6] - 2026-10-19
 
 ### Fixed
