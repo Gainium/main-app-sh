@@ -25429,7 +25429,12 @@ function createDCABotHelper<
         }
         this.loadingComplete = true
         await this.runAfterLoading()
-        await this.restoreWork()
+        // Publish the open status BEFORE restoreWork. On a user start
+        // restoreWork cancels and re-places the resting orders of every open
+        // deal one exchange call at a time — minutes on a bot with many deals —
+        // and the bot read as closed for that whole window, so a user who
+        // clicked Start saw nothing happen and clicked again. restoreWork's own
+        // stop/error paths write their status after this one, so they still win.
         if (
           this.data &&
           (this.data.status === 'open' || this.data?.status === 'monitoring')
@@ -25454,9 +25459,10 @@ function createDCABotHelper<
             workingShift: this.trimWorkingShift(this.data.workingShift),
             workingTimeNumber: this.getWorkingTimeNumber(),
           }
-          this.updateData(data)
+          await this.updateData(data)
           this.emit('bot settings update', data)
         }
+        await this.restoreWork()
         this.startPriceTimer()
         this.startConsumerHeartbeat()
         this.finishLoad = true

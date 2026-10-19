@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.15] - 2026-10-19
+
+### Fixed
+
+- Starting a DCA bot with many open deals now shows it as running right away. Before, the bot kept showing as closed until it had re-placed the orders of every open deal, which could take minutes, so it looked like the start had failed.
+
 ## [1.106.14] - 2026-10-19
 
 ### Fixed
