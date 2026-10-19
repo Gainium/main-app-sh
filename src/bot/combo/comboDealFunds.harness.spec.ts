@@ -627,13 +627,62 @@ describe('combo add / reduce funds through the engine (spec 047)', () => {
       type: AddFundsTypeEnum.perc,
       useLimitPrice: false,
     }
+    // The venue takes the first order but has not filled it yet.
+    const send = bot.sendOrderToExchange.bind(bot)
+    bot.sendOrderToExchange = async (order: any) => {
+      bot.sent.push(order)
+      const resting = { ...order, status: 'NEW', orderId: 'v1' }
+      bot.orders.set(order.clientOrderId, resting)
+      return resting
+    }
     await bot.addDealFunds(BOT_ID, DEAL_ID, settings)
     await bot.addDealFunds(BOT_ID, DEAL_ID, settings)
     expect(bot.sent).to.have.length(1)
     expect(bot.refusals[0]).to.contain('still being processed')
-    await bot.applyComboFundsFill(bot.orders.get(bot.sent[0].clientOrderId))
+    const first = bot.orders.get(bot.sent[0].clientOrderId)
+    const filled = {
+      ...first,
+      status: 'FILLED',
+      executedQty: first.origQty,
+      price: '90',
+    }
+    bot.orders.set(first.clientOrderId, filled)
+    await bot.applyComboFundsFill(filled)
+    bot.sendOrderToExchange = send
     await bot.addDealFunds(BOT_ID, DEAL_ID, settings)
     expect(bot.sent).to.have.length(2)
+  })
+
+  it('a fill reported on a path that did not book it is booked by the next request, on the position it was sent for, and the request goes through', async () => {
+    const bot = await setup({ filled: 3, price: 90 })
+    const position = bot.theDeal.deal.currentBalances.base
+    const settings = {
+      qty: '30',
+      asset: OrderSizeTypeEnum.quote,
+      type: AddFundsTypeEnum.perc,
+      useLimitPrice: false,
+    }
+    // The fill reaches the map, its booking never runs (stubbed routing).
+    await bot.addDealFunds(BOT_ID, DEAL_ID, settings)
+    expect(bot.theDeal.deal.fundsScale ?? []).to.deep.equal([])
+    expect(bot.theDeal.deal.comboFundsRequest.positionBase).to.be.closeTo(
+      position,
+      1e-9,
+    )
+    // Meanwhile the position moves (grid fills): the booking must not use it.
+    bot.theDeal.deal.currentBalances = {
+      ...bot.theDeal.deal.currentBalances,
+      base: position - 1,
+    }
+    await bot.addDealFunds(BOT_ID, DEAL_ID, settings)
+    // The first change booked (k from the position it was sent for, not
+    // the moved one); the second sent (its own booking is stubbed here).
+    const scale = bot.theDeal.deal.fundsScale
+    expect(scale).to.have.length(1)
+    expect(scale[0].id).to.equal(bot.sent[0].addFundsId)
+    expect(scale[0].k).to.be.closeTo(1.3, 1e-3)
+    expect(bot.sent).to.have.length(2)
+    expect(bot.refusals).to.deep.equal([])
   })
 
   it('a cancelled reduce with nothing filled scales nothing and puts the book back', async () => {
@@ -1642,5 +1691,185 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 �
     expect(restingSellBase(r)).to.be.at.most(position + 1e-9)
     expect(restingSellBase(r)).to.be.closeTo(position, 0.002)
     expect(db.deal.comboFundsRebuild).to.equal(null)
+  })
+
+  /** A copy of a stored minigrid, as a pre-fix restart left one. */
+  const copyMinigrid = (
+    db: Db,
+    from: string,
+    to: string,
+    withCounters = true,
+  ) => {
+    const dup = clone(db.minigrids.get(from))
+    dup._id = to
+    dup.createTime = (dup.createTime ?? 0) + 2000
+    if (withCounters) {
+      dup.transactions = { buy: 3, sell: 2 }
+    }
+    db.minigrids.set(to, dup)
+    return dup
+  }
+  const restartLoading = async (bot: any, db: Db, snapshot: any) => {
+    const { r, rows } = await restartOn(bot, db, snapshot)
+    r.recoverClosedBaseMinigrids = (...a: any[]) =>
+      Combo.prototype.recoverClosedBaseMinigrids.apply(r, a)
+    await r.loadOrders()
+    rows.length = 0
+    return r
+  }
+
+  it('§2.3.9 a duplicate of the BASE minigrid is closed as a duplicate and the deal is NOT closed for it', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    copyMinigrid(db, 'mg-bo', 'mg-bo-copy')
+    const r = await restartLoading(bot, db, snapshot)
+    expect(db.minigrids.get('mg-bo-copy').status).to.equal('closed')
+    expect(db.minigrids.get('mg-bo-copy').closeReason).to.equal('duplicate')
+    expect(db.minigrids.get('mg-bo').status).to.not.equal('closed')
+    expect(r.closes, 'no close for a live deal').to.deep.equal([])
+    expect(r.liveMinigridForOrder(DEAL_ID, 'bo')?.schema._id).to.equal('mg-bo')
+  })
+
+  it('§2.3.9 a genuinely closed base minigrid (no live copy, not a duplicate) still closes its deal', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    db.minigrids.get('mg-bo').status = 'closed'
+    for (const o of bot.orders.values()) {
+      if (o.minigridId === 'mg-bo' && o.status === 'NEW') o.status = 'CANCELED'
+    }
+    const r = await restartLoading(bot, db, snapshot)
+    expect(r.closes).to.have.length(1)
+  })
+
+  it("§2.3.9 decided on orders, not counters: a copy carrying the source's trade counters but no order of its own is closed; one with its own filled grid order is kept", async () => {
+    const { bot, db, snapshot } = await restingBook()
+    copyMinigrid(db, 'mg-so1', 'mg-so1-copy', true)
+    copyMinigrid(db, 'mg-so1', 'mg-so1-traded', false)
+    bot.orders.set('own-fill', {
+      clientOrderId: 'own-fill',
+      symbol: SYMBOL,
+      botId: BOT_ID,
+      dealId: DEAL_ID,
+      minigridId: 'mg-so1-traded',
+      typeOrder: TypeOrderEnum.dealGrid,
+      side: 'SELL',
+      status: 'FILLED',
+      price: '99',
+      origQty: '0.1',
+      executedQty: '0.1',
+      updateTime: 1,
+    })
+    await restartLoading(bot, db, snapshot)
+    expect(db.minigrids.get('mg-so1').status).to.not.equal('closed')
+    expect(db.minigrids.get('mg-so1-copy').status).to.equal('closed')
+    expect(db.minigrids.get('mg-so1-traded').status).to.not.equal('closed')
+  })
+
+  it('a funds fill reported by the stream before the send reply (the reply not FILLED) is booked once, and a second report is a no-op', async () => {
+    const { bot, db } = await restingBook()
+    bot.processedFilled = new Map()
+    bot.lastFilledOrderMap = new Map()
+    bot.processFilledOrder = (o: any) =>
+      Combo.prototype.processFilledOrder.call(bot, o)
+    bot.sendOrderToExchange = async (order: any) => {
+      bot.sent.push(order)
+      // The stream: the venue filled it; its report lands first.
+      const filled = {
+        ...order,
+        orderId: 'v9',
+        status: 'FILLED',
+        executedQty: order.origQty,
+        price: '97',
+        updateTime: 1_800_000_009_000,
+      }
+      bot.orders.set(order.clientOrderId, filled)
+      await bot.processFilledOrder(filled)
+      // ...and the reply is built from a row that says something else.
+      return { ...order, orderId: 'v9', status: 'CANCELED' }
+    }
+    await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+    const add = bot.sent[0]
+    expect(
+      bot.getDeal(DEAL_ID).deal.fundsScale.map((f: any) => f.id),
+    ).to.deep.equal([add.addFundsId])
+    // A later report of the same fill (venue lookup) changes nothing.
+    await bot.processFilledOrder(bot.orders.get(add.clientOrderId))
+    expect(bot.getDeal(DEAL_ID).deal.fundsScale).to.have.length(1)
+    expect(db.deal.comboFundsRebuild).to.equal(null)
+    expect(db.deal.comboFundsRequest).to.equal(null)
+  })
+
+  it('a funds order reported without its funds id is booked as the marked change, never as a safety level', async () => {
+    const { bot } = await restingBook()
+    bot.processedFilled = new Map()
+    bot.lastFilledOrderMap = new Map()
+    bot.processFilledOrder = (o: any) =>
+      Combo.prototype.processFilledOrder.call(bot, o)
+    const levels: any[] = []
+    bot.updateDeal = (_b: string, o: any) => levels.push(o)
+    let sentOrder: any
+    bot.sendOrderToExchange = async (order: any) => {
+      bot.sent.push(order)
+      sentOrder = { ...order, status: 'NEW', orderId: 'v8' }
+      bot.orders.set(order.clientOrderId, sentOrder)
+      return sentOrder
+    }
+    await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+    const { addFundsId, ...bare } = sentOrder
+    await bot.processFilledOrder({
+      ...bare,
+      status: 'FILLED',
+      executedQty: sentOrder.origQty,
+      price: '97',
+      updateTime: 1_800_000_008_000,
+    })
+    expect(levels).to.deep.equal([])
+    expect(
+      bot.getDeal(DEAL_ID).deal.fundsScale.map((f: any) => f.id),
+    ).to.deep.equal([addFundsId])
+  })
+
+  it('stopped before the send reply (no pending entry), filled on the venue, position moved since: the restart books it on the position it was sent for', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    bot.sendOrderToExchange = async (order: any) => {
+      bot.sent.push(order)
+      bot.orders.set(order.clientOrderId, {
+        ...order,
+        status: 'NEW',
+        orderId: 'x7',
+      })
+      throw new Error('process stopped')
+    }
+    await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50')).catch(() => undefined)
+    const add = bot.sent[0]
+    expect(db.deal.pendingAddFunds ?? []).to.deep.equal([])
+    expect(db.deal.comboFundsRequest.positionBase).to.be.closeTo(
+      1 + SO[0].qty,
+      1e-9,
+    )
+    // Grid fills moved the stored balances meanwhile.
+    db.deal.currentBalances.base -= 0.5
+    const { r, rows } = await restartOn(bot, db, snapshot)
+    r.venue.set(add.clientOrderId, {
+      ...add,
+      orderId: 'x7',
+      status: 'FILLED',
+      executedQty: add.origQty,
+      price: '97',
+      updateTime: 1_800_000_007_000,
+    })
+    await r.loadOrders()
+    rows.length = 0
+    await r.resumeComboFundsChanges()
+    const scale = r.getDeal(DEAL_ID).deal.fundsScale
+    expect(scale.map((f: any) => f.id)).to.deep.equal([add.addFundsId])
+    expect(scale[0].k).to.be.closeTo(1.5, 1e-3)
+  })
+
+  it('a request while a change is still marked unfinished is refused with a message, never left silent', async () => {
+    const { bot } = await restingBook()
+    bot.getDeal(DEAL_ID).deal.comboFundsRebuild = 'stuck'
+    await bot.reduceDealFunds(BOT_ID, DEAL_ID, pct('20'))
+    expect(bot.sent).to.deep.equal([])
+    expect(bot.refusals).to.have.length(1)
+    expect(bot.refusals[0]).to.contain('still being processed')
   })
 })

@@ -183,7 +183,12 @@ function createComboBotHelper<
      */
     private comboFundsSent: Map<
       string,
-      { id: string; positionBase: number; direction: ComboFundsDirection }
+      {
+        id: string
+        positionBase: number
+        direction: ComboFundsDirection
+        clientOrderId?: string
+      }
     > = new Map()
     /**
      * Funds bookings queued or running, per deal. Until one has rebuilt the
@@ -911,10 +916,12 @@ function createComboBotHelper<
 
     /**
      * §2.3.9: two open minigrids for one rung — left by a restart that opened
-     * a second one before this fix. The one with resting orders trades the
-     * rung; a copy with no resting order and no grid trade of its own is
-     * closed, so neither its ladder nor a funds scale counts it again. Two
-     * copies that both rest orders or traded are left as they are, reported.
+     * a second one before this fix. Decided on orders only, never on the
+     * minigrid's own counters (a copied duplicate carries its source's): a
+     * copy is closed (`closeReason: 'duplicate'`) only when it has no resting
+     * order AND no filled grid order of its own; one of the copies — the one
+     * that rests orders, else the one with fills, else the newest — always
+     * stays open.
      */
     private async retireDuplicateMinigrids() {
       const byRung = new Map<string, FullMinigrid[]>()
@@ -925,37 +932,84 @@ function createComboBotHelper<
       }
       for (const [key, copies] of byRung) {
         if (copies.length < 2) continue
-        const resting = (m: FullMinigrid) =>
-          this.getOrdersByStatusAndDealId({
-            status: ['NEW', 'PARTIALLY_FILLED'],
-            dealId: m.schema.dealId,
-          }).some((o) => `${o.minigridId}` === `${m.schema._id}`)
-        const traded = (m: FullMinigrid) =>
-          (m.schema.transactions?.buy ?? 0) +
-            (m.schema.transactions?.sell ?? 0) >
-          0
+        const evidence = new Map<
+          FullMinigrid,
+          { rests: boolean; fills: boolean }
+        >()
+        for (const m of copies) {
+          evidence.set(m, await this.minigridOrderEvidence(m))
+        }
         const keep =
-          copies.find(resting) ??
+          copies.find((m) => evidence.get(m)?.rests) ??
+          copies.find((m) => evidence.get(m)?.fills) ??
           [...copies].sort(
             (a, b) => (b.schema.createTime ?? 0) - (a.schema.createTime ?? 0),
           )[0]
         for (const m of copies) {
           if (m === keep) continue
-          if (resting(m) || traded(m)) {
+          const e = evidence.get(m)
+          if (!e || e.rests || e.fills) {
             this.handleWarn(
               `Rung ${key} has more than one open minigrid (${copies
                 .map((c) => c.schema._id)
-                .join(', ')}); ${m.schema._id} rests or traded, left open`,
+                .join(
+                  ', ',
+                )}); ${m.schema._id} has orders of its own, left open`,
             )
             continue
           }
           this.handleLog(
-            `Rung ${key}: closing duplicate minigrid ${m.schema._id}, kept ${keep.schema._id}`,
+            `Rung ${key}: closing duplicate minigrid ${m.schema._id} (no resting or filled order of its own), kept ${keep.schema._id}`,
           )
           m.schema.status = ComboMinigridStatusEnum.closed
-          await this.saveMinigrid(m, { status: m.schema.status })
+          m.schema.closeReason = 'duplicate'
+          await this.saveMinigrid(m, {
+            status: m.schema.status,
+            closeReason: 'duplicate',
+          })
           this.deleteMinigrid(`${m.schema._id}`, false)
         }
+      }
+    }
+
+    /**
+     * Orders a minigrid has of its own: resting ones (the order map) and
+     * filled grid ones (the orders collection — the map may not hold them).
+     * `null` evidence (a failed read) counts as having orders.
+     */
+    private async minigridOrderEvidence(m: FullMinigrid) {
+      const id = `${m.schema._id}`
+      const rests = this.getOrdersByStatusAndDealId({
+        status: ['NEW', 'PARTIALLY_FILLED'],
+        dealId: m.schema.dealId,
+      }).some((o) => `${o.minigridId}` === id)
+      const inMap = this.getOrdersByStatusAndDealId({
+        status: 'FILLED',
+        dealId: m.schema.dealId,
+      }).some(
+        (o) =>
+          `${o.minigridId}` === id && o.typeOrder === TypeOrderEnum.dealGrid,
+      )
+      if (rests || inMap) {
+        return { rests, fills: inMap }
+      }
+      const read = await this.ordersDb.readData(
+        {
+          botId: this.botId,
+          dealId: m.schema.dealId,
+          minigridId: id,
+          typeOrder: TypeOrderEnum.dealGrid,
+          status: 'FILLED',
+        },
+        { _id: 1 },
+      )
+      if (read.status === StatusEnum.notok) {
+        return { rests: false, fills: true }
+      }
+      const found = read.data?.result as unknown
+      return {
+        rests: false,
+        fills: Array.isArray(found) ? found.length > 0 : !!found,
       }
     }
     private async loadTransactions() {
@@ -1063,6 +1117,16 @@ function createComboBotHelper<
           continue
         }
         if (deal.closeBySl) {
+          continue
+        }
+        // A copy closed by the duplicate cleanup, or a base rung that still
+        // has ANOTHER open minigrid, is not a closed base: the deal trades on.
+        // Closing the deal for it market-closed a live deal (§2.3.9).
+        const live = this.liveMinigridForOrder(c.dealId, c.dcaOrderId)
+        if (
+          c.closeReason === 'duplicate' ||
+          (live && `${live.schema._id}` !== `${c._id}`)
+        ) {
           continue
         }
         this.handleLog(
@@ -3849,26 +3913,34 @@ function createComboBotHelper<
         this.lastFilledOrderMap.set(order.symbol, order)
       }
       const { dealId, clientOrderId } = order
+      // Main-app spec 047: an add / reduce funds fill scales the deal. It is
+      // not a safety order (no minigrid, no level) and not a close. Routed
+      // BEFORE the processed-once guard: the fill can reach here from the
+      // stream, from the send's reply and from a venue lookup, in any order,
+      // and whichever comes first books it — the booking itself is keyed by
+      // the funds id and a second one is a no-op.
+      const funds = dealId ? this.comboFundsOrder(order) : null
+      if (funds) {
+        this.processedFilled.set(
+          `${dealId}`,
+          (this.processedFilled.get(`${dealId}`) ?? new Set()).add(
+            clientOrderId,
+          ),
+        )
+        this.comboFundsSettled.add(
+          (funds.addFundsId || funds.reduceFundsId) as string,
+        )
+        // Awaited so the request that sent a synchronously filled order
+        // returns only once the deal is booked and its book rebuilt. No
+        // caller holding this deal's update lock awaits this method.
+        await this.bookComboFunds(funds)
+        return
+      }
       const getSet = dealId
         ? (this.processedFilled.get(dealId) ?? new Set<string>())
         : new Set<string>()
       if (dealId && !getSet.has(clientOrderId)) {
         this.processedFilled.set(dealId, getSet.add(clientOrderId))
-        // Main-app spec 047: an add / reduce funds fill scales the deal. It is
-        // not a safety order (no minigrid, no level) and not a close.
-        if (
-          (order.typeOrder === TypeOrderEnum.dealRegular && order.addFundsId) ||
-          (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId)
-        ) {
-          this.comboFundsSettled.add(
-            (order.addFundsId || order.reduceFundsId) as string,
-          )
-          // Awaited so the request that sent a synchronously filled order
-          // returns only once the deal is booked and its book rebuilt. No
-          // caller holding this deal's update lock awaits this method.
-          await this.bookComboFunds(order)
-          return
-        }
         if (
           order.typeOrder === TypeOrderEnum.dealTP &&
           (order.clientOrderId.indexOf('D-SR') === -1 ||
@@ -3986,7 +4058,10 @@ function createComboBotHelper<
     private comboFundsInFlight(d: FullDeal<CleanComboDealsSchema>) {
       if (
         this.comboFundsSent.has(d.deal._id) ||
-        (this.comboFundsBooking.get(d.deal._id) ?? 0) > 0
+        (this.comboFundsBooking.get(d.deal._id) ?? 0) > 0 ||
+        // A change that has not finished (booked and rebuilt) — refused with
+        // a message, never left waiting.
+        !!d.deal.comboFundsRebuild
       ) {
         return true
       }
@@ -4037,7 +4112,12 @@ function createComboBotHelper<
           `${label} with a limit price is not supported for Combo deals. Send it without a price to use a market order`,
         )
       }
-      if (this.comboFundsInFlight(d)) {
+      // A previous change whose order already ended but was never booked
+      // (its fill reported on a path that did not book it) is booked now, so
+      // it neither blocks this request nor is lost.
+      await this.settleEndedComboFunds(dealId)
+      const current = this.getDeal(dealId) ?? d
+      if (this.comboFundsInFlight(current)) {
         return refuse(
           `${label} refused: a previous add or reduce funds order of this deal is still being processed. Try again once it has filled`,
         )
@@ -4213,7 +4293,21 @@ function createComboBotHelper<
         id: fundsId,
         positionBase: sentBase,
         direction,
+        clientOrderId: order.clientOrderId,
       })
+      // The request as sent, durable before the send: the fill is booked on
+      // the position it was sized on, whichever path books it and whenever
+      // (a restart found it booked from a later position, k 1.36 for 1.3).
+      const request = {
+        id: fundsId,
+        clientOrderId: order.clientOrderId,
+        direction,
+        positionBase: sentBase,
+        k,
+      }
+      const stored = this.getDeal(dealId) ?? d
+      stored.deal.comboFundsRequest = request
+      await this.saveDeal(stored, { comboFundsRequest: request })
       const result = await this.sendOrderToExchange(order)
       if (!result) {
         // Refused or failed: the refusal is reported by the send. Nothing was
@@ -4233,11 +4327,26 @@ function createComboBotHelper<
         }
         return
       }
-      if (result.status === 'FILLED') {
+      // The venue's fill may have reached the order map before (or instead
+      // of) the reply: a reply built from a local row the stream had already
+      // moved on reads FILLED there and not here. Either way it is booked
+      // now; a booking already done is a no-op.
+      const local = this.getOrderFromMap(order.clientOrderId)
+      const filled =
+        result.status === 'FILLED'
+          ? result
+          : local?.status === 'FILLED'
+            ? local
+            : undefined
+      if (filled) {
         // Awaited: the request holds this deal's funds lock until the fill is
         // booked and the book rebuilt, so the next request is sized on the
         // position this one leaves.
-        await this.processFilledOrder(result)
+        await this.processFilledOrder({
+          ...filled,
+          addFundsId: order.addFundsId,
+          reduceFundsId: order.reduceFundsId,
+        })
         return
       }
       const live = this.getDeal(dealId) ?? d
@@ -4376,9 +4485,14 @@ function createComboBotHelper<
           ? (d.deal.pendingAddFunds ?? [])
           : (d.deal.pendingReduceFunds ?? [])
       const pending = pendingList.find((p) => p.id === fundsId)
+      const request =
+        d.deal.comboFundsRequest?.id === fundsId
+          ? d.deal.comboFundsRequest
+          : undefined
       const positionBase =
         (sent?.id === fundsId ? sent.positionBase : undefined) ??
         pending?.positionBase ??
+        request?.positionBase ??
         comboPositionBase({
           isLong: this.isLong,
           initialBalances: d.deal.initialBalances,
@@ -4694,8 +4808,12 @@ function createComboBotHelper<
       await this.updateUsage(`${d.deal._id}`, false, true, false)
       const live = this.getDeal(`${d.deal._id}`) ?? d
       live.deal.comboFundsRebuild = null
+      live.deal.comboFundsRequest = null
       await this.flushComboFundsSnapshot(true)
-      await this.saveDeal(live, { comboFundsRebuild: null })
+      await this.saveDeal(live, {
+        comboFundsRebuild: null,
+        comboFundsRequest: null,
+      })
     }
 
     /**
@@ -4714,24 +4832,7 @@ function createComboBotHelper<
         if (d.deal.comboFundsRebuild) {
           await this.probeMarkedFundsOrders(dealId, d.deal.comboFundsRebuild)
         }
-        const settled = settledPendingFundsOrders(
-          d.deal,
-          this.getOrdersByStatusAndDealId({ dealId }),
-        )
-        for (const o of [...settled.book, ...settled.drop]) {
-          this.comboFundsSettled.add(
-            (o.addFundsId || o.reduceFundsId) as string,
-          )
-        }
-        for (const o of settled.book) {
-          this.handleLog(
-            `Deal ${dealId}: funds order ${o.clientOrderId} ${o.status} ${o.executedQty} before the restart, booking it`,
-          )
-          await this.bookComboFunds(o)
-        }
-        for (const o of settled.drop) {
-          await this.dropCanceledComboFunds(o)
-        }
+        await this.settleEndedComboFunds(dealId)
         // Still marked with no order left open: a change booked whose book
         // was not rebuilt, or one stopped before or as its order was sent
         // (a reduce has already taken the book down). Rebuild the book from
@@ -4779,6 +4880,77 @@ function createComboBotHelper<
       )
       await this.rebuildDealOrders(d, dealId, { keepLevels: true })
       await this.completeComboFundsRebuild(this.getDeal(dealId) ?? d)
+    }
+
+    /**
+     * Book (or drop) the deal's funds changes whose order has already ended
+     * in the order map but was never booked. Shared by a new request and the
+     * restart resume. Returns nothing; each booking rebuilds as usual.
+     */
+    private async settleEndedComboFunds(dealId: string) {
+      const d = this.getDeal(dealId)
+      if (!d || d.deal.status !== DCADealStatusEnum.open) {
+        return
+      }
+      const settled = settledPendingFundsOrders(
+        d.deal,
+        this.getOrdersByStatusAndDealId({ dealId }),
+      )
+      for (const o of [...settled.book, ...settled.drop]) {
+        this.comboFundsSettled.add((o.addFundsId || o.reduceFundsId) as string)
+      }
+      for (const o of settled.book) {
+        this.handleLog(
+          `Deal ${dealId}: funds order ${o.clientOrderId} ${o.status} ${o.executedQty} not booked yet, booking it`,
+        )
+        await this.bookComboFunds(o)
+      }
+      for (const o of settled.drop) {
+        await this.dropCanceledComboFunds(o)
+      }
+    }
+
+    /**
+     * The order as a funds order, or `null`: one carrying its funds id, or an
+     * add (`CMB-ROA`) / reduce (`D-TPR`) order that reached here without it —
+     * a report built before the row had it — whose deal marks one change in
+     * flight: that change is this order (only one runs per deal). Never a
+     * ladder level: booked as a level it opened a minigrid and the change
+     * was never scaled.
+     */
+    private comboFundsOrder(order: Order): Order | null {
+      if (order.typeOrder === TypeOrderEnum.dealRegular && order.addFundsId) {
+        return order
+      }
+      if (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId) {
+        return order
+      }
+      const add =
+        order.typeOrder === TypeOrderEnum.dealRegular &&
+        order.clientOrderId.includes('CMB-ROA')
+      const reduce =
+        order.typeOrder === TypeOrderEnum.dealTP &&
+        order.clientOrderId.includes('D-TPR')
+      if (!add && !reduce) {
+        return null
+      }
+      const d = this.getDeal(order.dealId)
+      const sent = order.dealId
+        ? this.comboFundsSent.get(order.dealId)
+        : undefined
+      const req = d?.deal.comboFundsRequest
+      const id =
+        (sent?.clientOrderId === order.clientOrderId ? sent.id : undefined) ??
+        (req?.clientOrderId === order.clientOrderId ? req.id : undefined)
+      if (!id) {
+        return null
+      }
+      this.handleWarn(
+        `Funds order ${order.clientOrderId} reported without its funds id, booked as change ${id}`,
+      )
+      return add
+        ? { ...order, addFundsId: id }
+        : { ...order, reduceFundsId: id }
     }
 
     protected override dealBookRebuildInFlight(dealId: string) {

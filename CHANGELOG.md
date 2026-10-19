@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.6] - 2026-10-19
+
+### Fixed
+
+- Combo add / reduce funds: a funds order whose fill reached the bot before the venue's reply to the send could go unbooked — the deal kept its old scale and size, the change stayed marked unfinished, and a restart later booked it against a position that had moved since. The fill is now booked by whichever report reaches the bot first (stream, send reply or venue lookup) and the others change nothing; a funds order that arrives without its funds id is booked as the deal's change in flight and never as a safety order; the request is stored before the send with the position it was sized on, and the fill is always booked against that position; a grid level never cancels a funds order. A new request first books a previous change whose order has already ended, and a request while a change is unfinished is refused with a message.
+- Combo: the duplicate-minigrid cleanup decides on orders, not on the minigrid's own counters (a copy carries its source's): a copy is closed only with no resting and no filled grid order of its own, and it is marked as a duplicate. A closed duplicate, or a base rung that still has another open minigrid, no longer makes the restart close the deal as if its base minigrid had closed.
+
 ## [1.108.5] - 2026-10-19
 
 ### Fixed

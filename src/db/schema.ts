@@ -2581,6 +2581,19 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   reduceFunds: filledFunds,
   fundsScale: [{ id: String, k: Number, time: Number }],
   comboFundsRebuild: String,
+  comboFundsRequest: {
+    type: new Schema(
+      {
+        id: String,
+        clientOrderId: String,
+        direction: String,
+        positionBase: Number,
+        k: Number,
+      },
+      { _id: false },
+    ),
+    default: undefined,
+  },
   botFunding: dealFunding,
   fundingHold: dealFundingHold,
   baseFundingBeta: Boolean,
@@ -3139,6 +3152,7 @@ const comboMinigrid = new Schema<ComboMinigridSchema>({
   },
   lockClose: Boolean,
   appliedFundsScale: [String],
+  closeReason: String,
   ...CreatedUpdated,
 })
 const paperHedge = new Schema({

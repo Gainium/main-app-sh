@@ -10171,6 +10171,10 @@ class MainBot<T extends IMainBot> {
       dealId: order.dealId,
     })?.find(
       (orderT) =>
+        // A Combo add / reduce funds order is never a grid level: a level
+        // priced and sized like it must not cancel it (main-app spec 047).
+        (this.botType !== BotType.combo ||
+          (!orderT.addFundsId && !orderT.reduceFundsId)) &&
         parseFloat(orderT.price) === order.price &&
         (parseFloat(orderT.origQty) === order.qty ||
           (orderT.tpSlTarget &&

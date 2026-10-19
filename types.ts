@@ -1883,6 +1883,19 @@ export interface ComboDealsSchema extends DCADealsSchema {
    * the deal from the database and rebuilds the book (main-app spec 047).
    */
   comboFundsRebuild?: string | null
+  /**
+   * Combo add / reduce funds: the change's order as sent — its client id and
+   * the position it was sized on — written before the send and cleared with
+   * `comboFundsRebuild`. The fill is booked against this position whichever
+   * path reports it first, a restart included (main-app spec 047).
+   */
+  comboFundsRequest?: {
+    id: string
+    clientOrderId: string
+    direction: 'add' | 'reduce'
+    positionBase: number
+    k: number
+  } | null
   transactions?: {
     buy: number
     sell: number
@@ -1967,6 +1980,12 @@ export interface ComboMinigridSchema extends SchemaI {
    * this minigrid's budget has been scaled by.
    */
   appliedFundsScale?: string[]
+  /**
+   * Why the engine closed it when that is not a trade: `duplicate` — a
+   * second open minigrid of the same rung, closed on load (main-app spec 047
+   * §2.3.9). Such a minigrid never stands for its rung being closed.
+   */
+  closeReason?: string
 }
 
 export type CleanComboMinigridSchema = ExcludeDoc<ComboMinigridSchema>
