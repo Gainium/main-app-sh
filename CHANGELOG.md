@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.106.16] - 2026-10-19
+
+### Changed
+
+- Starting a stopped DCA bot that still has open deals no longer cancels and re-places those deals' orders. The bot checks the orders it already has with the exchange, books any fills that arrived while it was stopped, and places only what is missing. Existing safety orders keep their original prices and their place in the order book, and a bot with many open deals starts in seconds instead of minutes.
+
 ## [1.106.15] - 2026-10-19
 
 ### Fixed

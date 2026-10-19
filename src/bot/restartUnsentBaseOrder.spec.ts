@@ -224,13 +224,30 @@ describe('a restart never re-sends an entry that was never sent (spec 174)', () 
     expect(bot.raised.built).to.deep.equal([])
   })
 
-  it('§1.1.5 a user start does not reach the check', async () => {
+  // A user start used to cancel the whole book first, which cleared the
+  // phantom entry. It now reconciles instead, so it needs the same retire.
+  it('§1.1.5 a user start drops an unsent entry and places exactly once', async () => {
     const bot = buildBot({
       order: entry(),
       venue: NOT_FOUND,
       serviceRestart: false,
     })
     await bot.restoreWork()
-    expect(bot.raised.lookups).to.deep.equal([])
+    expect(bot.getOrderFromMap('x-BO-000000000074')).to.equal(undefined)
+    expect(bot.raised.built).to.deep.equal([DEAL_ID])
+    expect(bot.raised.logs.join('\n')).to.not.contain(
+      'already have and active base order',
+    )
+  })
+
+  it('§1.1.5 a user start keeps an entry the venue confirms', async () => {
+    const bot = buildBot({
+      order: entry(),
+      venue: ON_VENUE,
+      serviceRestart: false,
+    })
+    await bot.restoreWork()
+    expect(bot.getOrderFromMap('x-BO-000000000074')).to.not.equal(undefined)
+    expect(bot.raised.built, 'no second entry').to.deep.equal([])
   })
 })

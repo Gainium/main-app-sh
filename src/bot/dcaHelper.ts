@@ -12556,9 +12556,14 @@ function createDCABotHelper<
         this.processPartiallyFilledOrder(partially)
       }
     }
-    /** Check orders after socket reconnect */
-
-    async checkOrdersAfterReconnect(_botId: string) {
+    /**
+     * Check orders after socket reconnect — and on a user start, which follows
+     * a window in which the bot was not listening either.
+     *
+     * @param spread random start delay that keeps a fleet-wide reconnect from
+     * hitting the venue at once; a user start is one bot and skips it.
+     */
+    async checkOrdersAfterReconnect(_botId: string, spread = true) {
       if (!this.shouldProceed()) {
         this.handleLog(this.notProceedMessage('orders check after reconnect'))
         return
@@ -12575,7 +12580,9 @@ function createDCABotHelper<
       this.blockCheck = true
       try {
         this.handleLog('Check order after user stream reconnect')
-        await this.spreadReconcileStart()
+        if (spread) {
+          await this.spreadReconcileStart()
+        }
         const filledOrders: Order[] = []
         const partiallyFilledOrders: Order[] = []
         // Reported once at the end rather than per order: a bad window used to
@@ -13835,9 +13842,32 @@ function createDCABotHelper<
         // is the manual escape hatch from order quarantine: whatever we decided
         // to stop polling, look again now.
         await this.clearAllOrderQuarantine('bot started by user')
-        await this.cancelAllOrder()
+        // Reconcile, don't tear down. This used to `cancelAllOrder()` and
+        // re-place every open deal's book from `currentOrders`, which is
+        // rebuilt at the CURRENT price: a start silently re-priced every
+        // ladder, gave up the resting orders' queue position, and on a bot
+        // with ~100 open deals took minutes of one-at-a-time venue calls.
+        // A running deal keeps the orders it started with (see the keep-orders
+        // guard in the active-deal loop below). The bot was not listening
+        // while closed, so ask the venue about every order we hold as open —
+        // fills are booked, cancels dropped — and let the loop below place
+        // only what is missing.
+        await this.checkOrdersAfterReconnect(this.botId, false)
+        // The teardown also used to clear orders that were never sent — a
+        // `'-1'` placeholder left by a process stop between the map and the
+        // write-ahead row. Kept, one would count as resting below and its
+        // deal would never get that order. Spec 172 §1.1.3 / 174.
+        for (const o of this.getOrdersByStatusAndDealId({
+          defaultStatuses: true,
+        }).filter((o) => `${o.orderId ?? ''}` === '-1')) {
+          const venue = await this.getOrderForReconcile(o)
+          if (isDefinitiveOrderNotFound(venue)) {
+            await this.retireUnsentOrder(o, `${venue?.reason}`)
+          }
+        }
         await this.checkOrders(this.botId, true)
       }
+      const keepStandingBook = !serviceRestart
       const openDeals = this.getOpenDeals()
       const activeDeals = openDeals.filter(
         (d) => d.deal.status === DCADealStatusEnum.open,
@@ -14173,7 +14203,7 @@ function createDCABotHelper<
             // standing ladder alone; it is replaced by the fill path as each
             // level is taken, which is the same promise the rest of this path
             // makes to a running deal.
-            const resting = this.keepOrders
+            const resting = keepStandingBook
               ? this.getOrdersByStatusAndDealId({
                   status: 'NEW',
                   dealId: `${d.deal._id}`,

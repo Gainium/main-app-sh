@@ -222,6 +222,7 @@ const buildBot = (opts: {
   bot.calculateBotDeals = () => undefined
   bot.getSymbolsToOpenAsapDeals = async () => [SYMBOL]
   bot.checkOrders = async () => undefined
+  bot.checkOrdersAfterReconnect = async () => undefined
   bot.cancelAllOrder = async () => undefined
   bot.clearAllOrderQuarantine = async () => undefined
   bot.setCloseByTimer = async () => undefined
