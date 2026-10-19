@@ -93,17 +93,21 @@ describe('DCA worker openNewDealMan on a stopped bot', () => {
     bot.reported = [] as string[]
     bot.opened = [] as string[]
     bot.handleLog = () => undefined
-    bot.handleErrors = (m: string) => bot.reported.push(m)
+    bot.reportUserRefusal = async (m: string) => bot.reported.push(m)
     bot.getAggregatedSettings = async () => bot.data.settings
     bot.openNewDeal = async (_b: string, symbol: string) =>
       bot.opened.push(symbol)
     return bot
   }
 
-  it('reports the refusal instead of dropping it', async () => {
+  it('reports the refusal instead of dropping it, on every click', async () => {
     const bot = workerHarness(BotStatusEnum.closed)
     await bot.openNewDealMan()
-    expect(bot.reported).to.deep.equal([stoppedBotNewDealMessage])
+    await bot.openNewDealMan()
+    expect(bot.reported).to.deep.equal([
+      stoppedBotNewDealMessage,
+      stoppedBotNewDealMessage,
+    ])
     expect(bot.opened).to.have.length(0)
   })
 

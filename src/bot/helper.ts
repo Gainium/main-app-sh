@@ -1,5 +1,9 @@
 import type DB from '../db'
 import {
+  exchangeInfoMissingStopMessage,
+  startFailedMessage,
+} from './userNotice'
+import {
   OrderSideEnum,
   StatusEnum,
   TypeOrderEnum,
@@ -2757,6 +2761,10 @@ function createBotHelper<
         }
         if (this.pairsNotFound.size) {
           this.handleWarn(`Exchange info not found. Bot will stop`)
+          // The bot stops here — on a service restart too — so say why.
+          await this.reportUserRefusal(
+            exchangeInfoMissingStopMessage([...this.pairsNotFound]),
+          )
           this.ignoreErrors = true
           this.serviceRestart = false
           await this.stop()
@@ -2865,6 +2873,12 @@ function createBotHelper<
           false,
           false,
         )
+        // Answer a start the user asked for; a service restart stays quiet.
+        if (!serviceRestartAtEntry) {
+          await this.reportUserRefusal(
+            startFailedMessage((e as Error)?.message ?? `${e}`),
+          )
+        }
       }
       this.finishLoad = true
       this.secondRestart = false

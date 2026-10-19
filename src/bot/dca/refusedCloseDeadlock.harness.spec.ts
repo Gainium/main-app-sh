@@ -258,6 +258,9 @@ const buildBot = () => {
     handleErrors(m: string) {
       this.warns.push(m)
     }
+    async reportUserRefusal(m: string) {
+      this.warns.push(m)
+    }
   }
   return new TestBot()
 }

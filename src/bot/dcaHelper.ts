@@ -192,6 +192,17 @@ import {
   positionLeftOpen,
   trailingCloseFailed,
 } from './utils'
+import {
+  closeRefusedForStatusMessage,
+  exchangeInfoMissingPairRemovedMessage,
+  exchangeInfoMissingStopMessage,
+  manualEntryNotAddedMessage,
+  manualNewDealMaxDealsMessage,
+  manualNewDealNotOpenedMessage,
+  startFailedMessage,
+  stopFailedMessage,
+  stoppingNoticeMessage,
+} from './userNotice'
 import { isTimerRunAllowed, shiftToAllowedWeekday } from './timerWeekdays'
 import { dealRefPrice, withoutUnusableAvgPrice } from './dealRefPrice'
 import DCAUtils from './dca/utils'
@@ -7550,6 +7561,26 @@ function createDCABotHelper<
               : `Deal not found with. Close ${dealId}`,
           )
         }
+      }
+      // The API already answered "scheduled to be closed", but a deal in
+      // `error` (its base order failed) matches none of the branches above —
+      // only `start`/`open` deals and a Cancel are actioned — so the request
+      // ended here without a trace. Say so. Only for a caller who was
+      // answered (`manual` / `api`); a Cancel has already turned it `canceled`.
+      if (
+        findDeal &&
+        findDeal.deal.status === DCADealStatusEnum.error &&
+        verdictForMissingDealOnClose(findDeal.deal.status, closeTrigger) ===
+          'report'
+      ) {
+        await this.reportUserRefusal(
+          closeRefusedForStatusMessage(
+            dealId,
+            findDeal.deal.symbol.symbol,
+            findDeal.deal.status,
+          ),
+          findDeal.deal.symbol.symbol,
+        )
       }
       this.endMethod(_id)
     }
@@ -15242,16 +15273,9 @@ function createDCABotHelper<
           // The deal-opening gates drop it for a stopped bot; tell the user
           // instead of leaving the click without an answer.
           this.handleLog('Open new deal manualy refused: bot is stopped')
-          this.handleErrors(
-            stoppedBotNewDealMessage,
-            'openNewDeal',
-            '',
-            false,
-            true,
-            true,
-            true,
-            _symbol,
-          )
+          // Not `handleErrors`: its log policy keeps one row per bot for this
+          // message, so every click after the first was answered with nothing.
+          await this.reportUserRefusal(stoppedBotNewDealMessage, _symbol)
           return
         }
         const settings = await this.getAggregatedSettings()
@@ -16941,6 +16965,15 @@ function createDCABotHelper<
         this.handleDebug(
           `Single position | start signal for ${symbol} skipped: another one is being handled`,
         )
+        if (trigger === 'manual') {
+          await this.reportUserRefusal(
+            manualEntryNotAddedMessage(
+              symbol,
+              'another entry or merge on this position is being processed, please try again in a moment',
+            ),
+            symbol,
+          )
+        }
         if (cbIfNotOpened) {
           cbIfNotOpened()
         }
@@ -16997,8 +17030,17 @@ function createDCABotHelper<
       trigger?: NewDealTrigger,
     ) {
       const _id = this.startMethod('addPositionEntry')
-      const refuse = (debug: string) => {
+      // `user`: what a manual "+ New deal" is told. Omitted where the refusal
+      // is reported on its own path (balance, the exchange minimum) or cannot
+      // occur for a manual entry (cooldown, price filter).
+      const refuse = async (debug: string, user?: string) => {
         this.handleDebug(`Single position | ${symbol}: ${debug}`)
+        if (user && trigger === 'manual') {
+          await this.reportUserRefusal(
+            manualEntryNotAddedMessage(symbol, user),
+            symbol,
+          )
+        }
         if (cbIfNotOpened) {
           cbIfNotOpened()
         }
@@ -17015,7 +17057,10 @@ function createDCABotHelper<
       // §3.5: one entry in flight per position — skipped, not queued, and not
       // reported to the user.
       if (this.positionEntryInFlight(position)) {
-        return refuse(`entry in flight on ${dealId}, signal skipped`)
+        return refuse(
+          `entry in flight on ${dealId}, signal skipped`,
+          'the previous entry on this position is not filled and booked yet, please try again once it is',
+        )
       }
       const settings = await this.getAggregatedSettings()
       // §3.2.1: `maxNumberOfOpenDeals` is not consulted — the pair already
@@ -17027,7 +17072,10 @@ function createDCABotHelper<
           positionEntriesOf(position.deal),
           maxPositionEntriesOf(settings.maxPositionEntries),
         )
-        return refuse(`position ${dealId} is full`)
+        return refuse(
+          `position ${dealId} is full`,
+          'the position has reached its maximum number of entries',
+        )
       }
       // §3.2.3 / §3.2.4: the price filters; the dynamic one measures from the
       // last entry's fill (`checkInDynamicRange`).
@@ -17040,27 +17088,35 @@ function createDCABotHelper<
         (this.data?.status === BotStatusEnum.error &&
           this.data.previousStatus === BotStatusEnum.closed)
       ) {
-        return refuse(`bot status is ${this.data?.status}`)
+        return refuse(
+          `bot status is ${this.data?.status}`,
+          'the bot is stopped',
+        )
       }
       // §3.2.6: balance, as for a base order. A single-position bot has no
       // safety orders, so the requirement is the entry alone.
       const checkBalance = await this.checkBalanceGate(symbol)
       if (checkBalance.unknown) {
-        return refuse('cannot read balance')
+        return refuse(
+          'cannot read balance',
+          'the account balance could not be read from the exchange, please try again',
+        )
       }
       const reduce = checkBalance.status
         ? { ratio: null }
         : await this.reduceToAvailableRatio(checkBalance, symbol)
       if (!checkBalance.status && reduce.ratio === null) {
-        if (
-          trigger === 'manual' ||
+        const msg = `Not enough balance to add an entry to the ${symbol} position. Required: ${checkBalance.required}, available: ${checkBalance.available}`
+        if (trigger === 'manual') {
+          await this.reportUserRefusal(msg, symbol)
+        } else if (
           this.standingConditionLatch.shouldReport(
             standingConditionKey(notEnoughBalanceNewDeal, symbol),
             +new Date(),
           )
         ) {
           this.handleErrors(
-            `Not enough balance to add an entry to the ${symbol} position. Required: ${checkBalance.required}, available: ${checkBalance.available}`,
+            msg,
             'openNewDeal',
             '',
             false,
@@ -17133,7 +17189,10 @@ function createDCABotHelper<
         : undefined
       if (!base || !(+base.origQty > 0)) {
         release()
-        return refuse('cannot size the entry')
+        return refuse(
+          'cannot size the entry',
+          'the entry size could not be calculated from the current price',
+        )
       }
       let qty = +base.origQty
       if (reduce.ratio !== null) {
@@ -17193,6 +17252,15 @@ function createDCABotHelper<
       trigger?: NewDealTrigger,
       signalOverrides?: SignalDealOverrides | null,
     ) {
+      // A manual "+ New deal" is answered at every exit that refuses it; the
+      // automatic triggers keep their quiet, latched reporting.
+      const refuseManual = (why: string) =>
+        trigger === 'manual'
+          ? this.reportUserRefusal(
+              manualNewDealNotOpenedMessage(symbol, why),
+              symbol,
+            )
+          : undefined
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
           this.openNewDeal.bind(this)(
@@ -17227,6 +17295,7 @@ function createDCABotHelper<
         if (cbIfNotOpened) {
           cbIfNotOpened()
         }
+        await refuseManual('the pair is not in the bot settings')
         return this.handleDebug(`Bot settings does not contain ${symbol}`)
       }
       if (
@@ -17237,6 +17306,7 @@ function createDCABotHelper<
         if (cbIfNotOpened) {
           cbIfNotOpened()
         }
+        await refuseManual('the pair is not in the bot settings')
         return this.handleDebug(
           `Bot settings does not contain ${symbol}. Wont open new deal`,
         )
@@ -17292,6 +17362,9 @@ function createDCABotHelper<
             // report the user gets for a condition never actually observed.
             this.handleDebug(
               `Cannot read balance, wont open new deal ${symbol}`,
+            )
+            await refuseManual(
+              'the account balance could not be read from the exchange, please try again',
             )
             this.endMethod(_id)
             this.resetPending(this.botId, symbol)
@@ -17587,7 +17660,14 @@ function createDCABotHelper<
             // is a manual click, for the same reason (spec 144).
             if (
               settings.type === DCATypeEnum.terminal ||
-              trigger === 'manual' ||
+              trigger === 'manual'
+            ) {
+              // A click is answered on every click. `handleErrors` coalesces
+              // `Not enough balance` into one row per day (and `force` would
+              // only skip the backoff, not that), so a second click used to
+              // show nothing at all.
+              await this.reportUserRefusal(msg, symbol)
+            } else if (
               this.standingConditionLatch.shouldReport(
                 standingConditionKey(notEnoughBalanceNewDeal, symbol),
                 +new Date(),
@@ -17623,12 +17703,25 @@ function createDCABotHelper<
             }
           }
         } else {
+          await refuseManual(
+            !ed
+              ? 'the exchange did not return trading rules for this pair'
+              : 'the bot is stopped',
+          )
           if (cbIfNotOpened) {
             cbIfNotOpened()
           }
           this.resetPending(this.botId, symbol)
         }
       } else {
+        // The limit refusal itself is latched (`reportMaxDealsReached`), so a
+        // repeated click was answered once a day at most.
+        if (trigger === 'manual') {
+          await this.reportUserRefusal(
+            manualNewDealMaxDealsMessage(symbol),
+            symbol,
+          )
+        }
         if (cbIfNotOpened) {
           cbIfNotOpened()
         }
@@ -17796,6 +17889,11 @@ function createDCABotHelper<
         this.handleDebug(
           `Only ${StartConditionEnum.tradingviewSignals} start condition can start deal by signals`,
         )
+        // Still ignored — only the reason is new.
+        await this.reportIgnoredWebhookSignal(
+          `A start deal webhook signal was ignored: the bot's deal start condition is not Webhook`,
+          _symbol,
+        )
       }
     }
     /**
@@ -17840,6 +17938,19 @@ function createDCABotHelper<
           sl,
           undefined,
           DCACloseTriggerEnum.webhook,
+        )
+      } else {
+        // Deliberately ignored (no take profit / stop loss set to close by
+        // Webhook) — this used to leave no trace at all, not even a log line.
+        await this.reportIgnoredWebhookSignal(
+          `A ${sl ? 'stop loss ' : ''}close deal webhook signal was ignored: the bot's ${
+            sl ? 'stop loss' : 'take profit'
+          } close condition is not Webhook${
+            (sl ? settings.useSl : settings.useTp)
+              ? ''
+              : ` (${sl ? 'stop loss' : 'take profit'} is off)`
+          }`,
+          _symbol,
         )
       }
     }
@@ -22362,6 +22473,14 @@ function createDCABotHelper<
           currentStatus === BotStatusEnum.open ||
           (setMonitoring && currentStatus === BotStatusEnum.monitoring))
       ) {
+        // A start signal on a running bot is a no-op. On a bot in error it is
+        // refused on purpose (a signal must not paper over the error), which
+        // the sender could not see.
+        if (webhook && currentStatus === BotStatusEnum.error) {
+          await this.reportIgnoredWebhookSignal(
+            'A start bot webhook signal was ignored: the bot is in error. Resolve the error and start the bot from the dashboard',
+          )
+        }
         this.endMethod(_id)
         return false
       }
@@ -25418,6 +25537,10 @@ function createDCABotHelper<
                 this.handleWarn(
                   `Exchange info not found for ${p}. Will close all deals`,
                 )
+                await this.reportUserRefusal(
+                  exchangeInfoMissingPairRemovedMessage(p),
+                  p,
+                )
                 this.data.settings.pair = this.data.settings.pair.filter(
                   (d) => d !== p,
                 )
@@ -25440,6 +25563,11 @@ function createDCABotHelper<
               }
             } else {
               this.handleWarn(`Exchange info not found. Bot will stop`)
+              // The bot stops here — on a service restart too. Log-only meant
+              // a bot the user left running was found closed with no reason.
+              await this.reportUserRefusal(
+                exchangeInfoMissingStopMessage(removablePairs),
+              )
               this.loadingComplete = true
               await this.stop(CloseDCATypeEnum.cancel)
               this.loadingComplete = false
@@ -25507,6 +25635,14 @@ function createDCABotHelper<
           false,
         )
         logger.error(e)
+        // A start the user (or a settings reload) asked for must not fail
+        // silently. A service restart is not reported: an infrastructure blip
+        // would otherwise message every user on the worker at once.
+        if (!wasServiceRestart) {
+          await this.reportUserRefusal(
+            startFailedMessage((e as Error)?.message ?? `${e}`),
+          )
+        }
       }
       this.finishLoad = true
       this.secondRestart = true
@@ -25563,6 +25699,25 @@ function createDCABotHelper<
         const startDeals = openDeals.filter(
           (d) => d.deal.status === DCADealStatusEnum.start,
         )
+        // Every deal is closed one exchange round trip at a time BEFORE the
+        // bot is written `closed` below — minutes on a bot with many deals,
+        // while it still reads as running. There is no stopping status to
+        // publish instead (adding one is a contract change for every status
+        // reader), and writing `closed` first is not safe: the close paths
+        // read it. So say what is happening.
+        const closesDeals = !!closeType && closeType !== CloseDCATypeEnum.leave
+        const dealsToClose = closesDeals
+          ? startDeals.length +
+            openDeals.filter((d) => d.deal.status === DCADealStatusEnum.open)
+              .length
+          : 0
+        if (dealsToClose > 0) {
+          await this.reportUserRefusal(
+            stoppingNoticeMessage(dealsToClose),
+            undefined,
+            MessageTypeEnum.info,
+          )
+        }
         this.closeAfterTpFilled = true
         for (const d of startDeals) {
           await this.closeDealById(
@@ -25689,6 +25844,11 @@ function createDCABotHelper<
           false,
           false,
           false,
+        )
+        // `reportUserRefusal` honours `ignoreErrors`, so a delete / reset
+        // teardown stays quiet exactly as before.
+        await this.reportUserRefusal(
+          stopFailedMessage((e as Error)?.message ?? `${e}`),
         )
       }
     }

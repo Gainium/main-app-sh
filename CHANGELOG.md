@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.106.18] - 2026-10-19
+
+### Fixed
+
+- A user action the bot engine refuses, drops or fails is now answered with a bot message instead of only a log line: a crash during start or stop, a bot stopped because the exchange returned no trading rules for its pair, a manual new deal refused for balance, the deal limit or an unreadable balance (answered on every click, not once per day), a close request on a deal in error, a manual entry into a single position while another is in flight, and an action sent while the bot is not loaded on its worker.
+- Webhook signals the bot's settings ignore (a close signal when the close condition is not Webhook, a start signal on a bot that does not start by webhook or is in error) are still ignored, but the user is now told why.
+
+### Changed
+
+- Stopping a bot that closes its deals first posts a notice saying how many deals are being closed, since the bot only shows as closed once they are done.
+
 ## [1.106.17] - 2026-10-19
 
 ### Changed

@@ -9,6 +9,10 @@ import {
   ExchangeEnum,
   DeleteBotDto,
 } from '../../../types'
+import {
+  reportBotNotLoaded,
+  userInitiatedBotMethods,
+} from './botNotLoadedNotice'
 import { IdMute, IdMutex } from '../../utils/mutex'
 import logger from '../../utils/logger'
 import v8 from 'v8'
@@ -206,6 +210,9 @@ class BotOperations {
       }
       if (!bot) {
         logger.warn(`Worker ${threadId} bot not found ${botId} ${botType}`)
+        if (userInitiatedBotMethods.has(method)) {
+          await reportBotNotLoaded(botId, botType)
+        }
       }
       if (responseId) {
         parentPort?.postMessage({

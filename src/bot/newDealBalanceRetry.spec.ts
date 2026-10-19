@@ -165,6 +165,9 @@ const buildBot = (
     async handleErrors() {
       seen.warnings++
     }
+    async reportUserRefusal() {
+      seen.warnings++
+    }
     startMethod() {
       return '1'
     }

@@ -530,6 +530,23 @@ export const closeNotActioned = 'Close request not actioned'
 export const trailingCloseFailed = 'Trailing take profit not executed'
 
 /**
+ * The engine refused, dropped or failed an action the USER asked for (a start,
+ * a stop, a close, a manual "+ New deal"). Written through
+ * `MainBot.reportUserRefusal`, which writes one row per occurrence, never
+ * puts the bot into error and is never rate limited or grouped: a click must
+ * always be answered. Raised directly, never through `errorDict`.
+ */
+export const userActionRefused = 'User action refused'
+
+/**
+ * A webhook signal arrived and was deliberately ignored by the bot's settings
+ * (e.g. a close signal on a bot whose close condition is not Webhook). Unlike
+ * {@link userActionRefused} it keeps the ordinary re-raise backoff and log
+ * policy: signals can arrive every bar, so the user is told, not flooded.
+ */
+export const webhookSignalIgnored = 'Webhook signal ignored'
+
+/**
  * The venue refused a MARKET base order because its book is in limit-only mode,
  * so the entry was re-placed as a LIMIT one instead of being abandoned. Not a
  * malfunction of the bot — the substitution is the right call and it worked —

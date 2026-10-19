@@ -101,7 +101,9 @@ import {
   futuresPosition,
   getErrorSubType,
   indicatorsError,
+  webhookSignalIgnored,
 } from './utils'
+import { UserNotice, userNoticePayload, userNoticeRow } from './userNotice'
 import {
   getSubTypeBehavior,
   getSubTypeLogPolicy,
@@ -3559,6 +3561,98 @@ class MainBot<T extends IMainBot> {
 
   protected getErrorSubType(errorString: string): string {
     return getErrorSubType(errorString)
+  }
+
+  /**
+   * Tell the user the engine refused, dropped or failed an action THEY asked
+   * for. Every user-initiated method calls this at an early exit that would
+   * otherwise only reach the log.
+   *
+   * Deliberately outside `handleErrors`/`processError`: those coalesce repeats
+   * into one row per window (`Not enough balance` is one row per UTC day) and
+   * back off re-raises, which is right for a condition the engine hits on its
+   * own every cycle and wrong for a click — the second click was answered with
+   * nothing. `force` only skipped the backoff, never the grouping. So this
+   * writes one shown row per call, emits it at once, and never touches the
+   * bot's status: a refused action is not a broken bot.
+   *
+   * Callers must only reach this from a user-initiated path (a click, an API
+   * call, a start/stop), never from a per-tick loop.
+   */
+  async reportUserRefusal(
+    reason: string,
+    symbol?: string,
+    type: MessageTypeEnum = MessageTypeEnum.warning,
+  ): Promise<void> {
+    if (this.ignoreErrors) {
+      return
+    }
+    this.handleWarn(`User action refused | ${reason}`)
+    this.pushLogs(reason, 'warning')
+    try {
+      const time = Date.now()
+      const notice: UserNotice = {
+        userId: this.userId,
+        botId: this.data?.parentBotId || this.botId,
+        botType: this.data?.parentBotId
+          ? this.botType === BotType.dca
+            ? BotType.hedgeDca
+            : BotType.hedgeCombo
+          : this.botType,
+        botName: this.data?.settings?.name,
+        message: reason,
+        type,
+        symbol,
+        exchange: this.data?.exchange,
+        paperContext: !!this.data?.paperContext,
+        // @ts-ignore grid settings carry no `type`
+        terminal: this.data?.settings?.type === DCATypeEnum.terminal,
+      }
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Bot warning',
+        botType: this.botType,
+        description: `Warning: ${reason}`,
+        paperContext: !!this.data?.paperContext,
+        symbol,
+        type,
+      })
+      const saved = await this.messagesDb.createData(
+        userNoticeRow(notice, time),
+      )
+      const _id =
+        saved?.status === StatusEnum.ok && saved.data
+          ? `${saved.data._id}`
+          : v4()
+      this.emit('bot message', userNoticePayload(notice, _id, time))
+    } catch (e) {
+      this.handleWarn(
+        `Cannot report refused user action | ${(e as Error)?.message ?? e}`,
+      )
+    }
+  }
+
+  /**
+   * A webhook signal the bot's settings deliberately ignore. The semantics are
+   * unchanged — the signal is still ignored — but the user is told why, through
+   * the ordinary backoff and log policy (signals can arrive every bar).
+   */
+  reportIgnoredWebhookSignal(reason: string, symbol?: string) {
+    this.handleLog(`Webhook signal ignored | ${reason}`)
+    return this.processError(
+      this.botId,
+      webhookSignalIgnored,
+      // @ts-ignore grid settings carry no `type`
+      this.data?.settings?.type === DCATypeEnum.terminal,
+      false,
+      true,
+      reason,
+      Date.now(),
+      reason,
+      false,
+      symbol,
+    )
   }
 
   /**
