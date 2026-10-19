@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.108.4] - 2026-10-19
+
+### Fixed
+
+- Combo add / reduce funds after a restart: a funds order still open in the restored book was left to the restart check, whose fill booking then ran alongside the check — the check re-sent the safety orders the booking had just cancelled, at their old size, and placed missing orders from a book read before the change. The restart now asks the venue about the change's order first and books (or drops) it before the check runs, and the check places nothing for a deal whose book is being rebuilt.
+- The restart check no longer re-sends an order this process cancelled itself.
+- A change interrupted by a restart with no order executed (for example a reduce stopped after the book was taken down and before its sell was sent) puts the book back and now tells the user that nothing was bought or sold and the request should be sent again.
+- Combo deal size and usage follow grid fills, and are recomputed before a funds change is reported done; they used to stay at the last rebuild until the next restart.
+- The resting-exit cap (exits never above the position) also applies to a rebuild resuming a change that was never scaled.
+
 ## [1.108.3] - 2026-10-19
 
 ### Fixed

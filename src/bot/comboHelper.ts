@@ -3256,6 +3256,10 @@ function createComboBotHelper<
         }
         this.checkDealsPriceExtremum()
       })
+      // The deal's size and usage follow the grid fill (deal only: no bot
+      // usage, no usage alert). Without it they stayed at the last rebuild
+      // until the next restart recomputed them.
+      this.updateUsage(dealId, false, true, false)
       this.updateBotDealStats(dealId)
       this.calculateBotBalances()
       this.updateAssets(dealId)
@@ -4578,9 +4582,13 @@ function createComboBotHelper<
       ) {
         return
       }
-      d.deal.comboFundsRebuild = null
+      // The size and usage read back from the fills the rebuild just counted,
+      // before the change is called done.
+      await this.updateUsage(`${d.deal._id}`, false, true, false)
+      const live = this.getDeal(`${d.deal._id}`) ?? d
+      live.deal.comboFundsRebuild = null
       await this.flushComboFundsSnapshot(true)
-      await this.saveDeal(d, { comboFundsRebuild: null })
+      await this.saveDeal(live, { comboFundsRebuild: null })
     }
 
     /**
@@ -4596,6 +4604,9 @@ function createComboBotHelper<
           continue
         }
         const dealId = `${d.deal._id}`
+        if (d.deal.comboFundsRebuild) {
+          await this.probeMarkedFundsOrders(dealId, d.deal.comboFundsRebuild)
+        }
         const settled = settledPendingFundsOrders(
           d.deal,
           this.getOrdersByStatusAndDealId({ dealId }),
@@ -4620,13 +4631,27 @@ function createComboBotHelper<
         // the stored deal and minigrids. An open order is settled by the
         // venue check, whose booking rebuilds.
         const live = this.getDeal(dealId)
-        if (live?.deal.comboFundsRebuild) {
-          const now = settledPendingFundsOrders(
-            live.deal,
-            this.getOrdersByStatusAndDealId({ dealId }),
-          )
+        const marker = live?.deal.comboFundsRebuild
+        if (live && marker) {
+          const orders = this.getOrdersByStatusAndDealId({ dealId })
+          const now = settledPendingFundsOrders(live.deal, orders)
           if (!now.open) {
+            // No live or executed order of the change and it was never
+            // booked: nothing was bought or sold (the stop came before the
+            // send, or the order ended empty). The book is put back and the
+            // user told — the request is not sent again for them.
+            const unsent =
+              !(live.deal.fundsScale ?? []).some((f) => f.id === marker) &&
+              !orders.some(
+                (o) => o.addFundsId === marker || o.reduceFundsId === marker,
+              )
             await this.resumeComboFundsRebuild(this.botId, dealId)
+            if (unsent) {
+              await this.reportUserRefusal(
+                `Add / reduce funds on deal ${dealId} was interrupted by a restart and nothing was bought or sold. Please send it again`,
+                live.deal.symbol.symbol,
+              )
+            }
           }
         }
       }
@@ -4647,6 +4672,44 @@ function createComboBotHelper<
       )
       await this.rebuildDealOrders(d, dealId, { keepLevels: true })
       await this.completeComboFundsRebuild(this.getDeal(dealId) ?? d)
+    }
+
+    protected override dealBookRebuildInFlight(dealId: string) {
+      return (
+        (this.comboFundsBooking.get(dealId) ?? 0) > 0 ||
+        !!this.getDeal(dealId)?.deal.comboFundsRebuild
+      )
+    }
+
+    /**
+     * Spec 047 §2.3.7: ask the venue about the open order of a marked funds
+     * change, so a fill (or a cancel) made while the worker was down is
+     * settled — booked and rebuilt — before the restart check reads the book.
+     * Left to the restart check, the booking ran alongside it and the check
+     * re-sent the levels the booking had just cancelled, at the old size.
+     */
+    private async probeMarkedFundsOrders(dealId: string, marker: string) {
+      const open = this.getOrdersByStatusAndDealId({
+        status: ['NEW', 'PARTIALLY_FILLED'],
+        dealId,
+      }).filter((o) => o.addFundsId === marker || o.reduceFundsId === marker)
+      for (const o of open) {
+        const venue = await this.getOrderForReconcile(o, { fromCache: true })
+        if (venue?.status !== StatusEnum.ok || !venue.data) {
+          continue
+        }
+        const updated = await this.mergeCommonOrderWithOrder(venue.data, o)
+        if (
+          updated.status !== 'FILLED' &&
+          updated.status !== 'CANCELED' &&
+          updated.status !== 'EXPIRED'
+        ) {
+          continue
+        }
+        this.setOrder(updated)
+        this.updateOrderOnDb(updated)
+        this.emit('bot update', updated)
+      }
     }
 
     protected override snapshotStaleDealFilter() {
@@ -8169,7 +8232,7 @@ function createComboBotHelper<
       // Spec 047: on a deal whose funds were changed, the regenerated exit
       // lines are held to the position the rebuild just read back from the
       // fills — each line rounds on its own and their sum drifted over it.
-      if (d && (d.deal.fundsScale ?? []).length) {
+      if (d && ((d.deal.fundsScale ?? []).length || d.deal.comboFundsRebuild)) {
         await this.capComboExitLines(
           dealId,
           prepared,

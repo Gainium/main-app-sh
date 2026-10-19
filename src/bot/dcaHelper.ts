@@ -13417,7 +13417,12 @@ function createDCABotHelper<
                         `Order ${updatedOrder.clientOrderId} is CANCELED.`,
                       )
                       this.updateOrderOnDb(updatedOrder)
-                      canceledOrders.push(o)
+                      // An order this process cancelled itself (a book
+                      // rebuild running alongside this check) is not sent
+                      // again: what replaces it is the rebuild's business.
+                      if (!this.isOwnCancel(o.clientOrderId)) {
+                        canceledOrders.push(o)
+                      }
                     } else if (updatedOrder.status === 'FILLED') {
                       this.emit('bot update', updatedOrder)
                       this.setOrder(updatedOrder)
@@ -13458,6 +13463,15 @@ function createDCABotHelper<
                   }, quote: ${+o.executedQty * +o.price}, price: ${o.price}`,
                 )
                 this.processFilledOrder(o)
+              }
+              // A deal whose book is being rebuilt (a Combo funds change in
+              // flight) gets its whole book from that rebuild; the diff above
+              // was taken before it and would place the old book again.
+              if (this.dealBookRebuildInFlight(dealId)) {
+                this.handleLog(
+                  `Deal ${dealId}: book rebuild in flight, the restart check places nothing for it`,
+                )
+                continue main
               }
               for (const o of canceledOrders) {
                 this.handleDebug(
@@ -27706,6 +27720,15 @@ function createDCABotHelper<
      * §2.3.7). Their orders are read from Mongo too.
      */
     protected snapshotStaleDeals: Set<string> = new Set()
+
+    /**
+     * The deal's whole book is being rebuilt elsewhere (none on a DCA deal; a
+     * Combo funds change in flight — main-app spec 047 §2.3.7): the restart
+     * check places nothing for it.
+     */
+    protected dealBookRebuildInFlight(_dealId: string): boolean {
+      return false
+    }
 
     /**
      * Extra Mongo conditions (ORed) for the restored deals whose stored copy

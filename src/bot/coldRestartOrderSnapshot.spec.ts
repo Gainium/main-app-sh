@@ -359,5 +359,58 @@ describe('cold restart order snapshot (spec 108)', () => {
         `${TypeOrderEnum.dealRegular}@0.323`,
       ])
     })
+
+    describe('a book rebuild running alongside the check (main-app spec 047 §2.3.7)', () => {
+      /** The venue reports SO_OLD cancelled — by this process or not. */
+      const cancelledOld = (bot: any, own: boolean) => {
+        bot.getOrderForReconcile = async (o: any) => ({
+          status: StatusEnum.ok,
+          data:
+            o.clientOrderId === SO_OLD.clientOrderId
+              ? { ...o, status: 'CANCELED' }
+              : { ...o },
+        })
+        bot.mergeCommonOrderWithOrder = async (d: any) => d
+        bot.updateOrderOnDb = () => undefined
+        bot.emit = () => true
+        if (own) bot.noteOwnCancel(SO_OLD.clientOrderId)
+      }
+
+      it('a level the venue reports cancelled is sent again', async () => {
+        const bot = buildBot()
+        const loaded = await bot._loadOrders(undefined, false, [DEAL_ID])
+        for (const o of loaded) bot.orders.set(o.clientOrderId, o)
+        cancelledOld(bot, false)
+        await bot.checkOrders(BOT_ID)
+        expect(bot.placed.map((g: any) => g.price)).to.deep.equal([0.315])
+      })
+
+      it('a level this process cancelled itself is not sent again', async () => {
+        const bot = buildBot()
+        const loaded = await bot._loadOrders(undefined, false, [DEAL_ID])
+        for (const o of loaded) bot.orders.set(o.clientOrderId, o)
+        cancelledOld(bot, true)
+        await bot.checkOrders(BOT_ID)
+        expect(bot.placed).to.deep.equal([])
+      })
+
+      it('a deal whose book is being rebuilt gets nothing placed by the check', async () => {
+        const bot = buildBot()
+        bot.ordersDb = {
+          readData: async (q: any) => {
+            const result = [SO_OLD, TP_NEW].filter((r) => matches(r, q))
+            return {
+              status: StatusEnum.ok,
+              data: { result, count: result.length },
+            }
+          },
+        }
+        bot.dealBookRebuildInFlight = (id: string) => id === DEAL_ID
+        const loaded = await bot._loadOrders(undefined, false, [DEAL_ID])
+        for (const o of loaded) bot.orders.set(o.clientOrderId, o)
+        await bot.checkOrders(BOT_ID)
+        expect(bot.placed).to.deep.equal([])
+      })
+    })
   })
 })

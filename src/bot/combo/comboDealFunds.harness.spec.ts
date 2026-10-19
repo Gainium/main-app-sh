@@ -1234,7 +1234,7 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 Â
       'removeDealFromStopLossMethods',
       'checkAllowedMethods',
       'setClassProperties',
-      'updateUsage',
+
       'updateAssets',
       'setCloseByTimer',
       'checkTPLevel',
@@ -1252,6 +1252,15 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 Â
     }
     bot.getLastStreamData = () => undefined
     bot.pairs = new Set([SYMBOL])
+    bot.updateOrderOnDb = () => undefined
+    bot.emit = () => true
+    // The venue: what it knows about an order (as held, unless a test says).
+    bot.venue = new Map<string, any>()
+    bot.getOrderForReconcile = async (o: any) => ({
+      status: 'OK',
+      data: bot.venue.get(o.clientOrderId) ?? { ...o },
+    })
+    bot.mergeCommonOrderWithOrder = async (d: any, o: any) => ({ ...o, ...d })
   }
 
   const resting = (bot: any) =>
@@ -1395,5 +1404,115 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 Â
         .map((o: any) => o.clientOrderId)
         .sort(),
     ).to.deep.equal(book)
+  })
+
+  /** A fresh worker on the database as `bot` left it and the snapshot. */
+  const restartOn = async (bot: any, db: Db, snapshot: any) => {
+    const r = makeBot({ filled: 1, price: 97 })
+    const rows = [...bot.orders.values()].map(clone)
+    wire(r, { ...db, orders: () => rows }, { placed: 0 })
+    r.serviceRestart = true
+    r.secondRestart = false
+    r.redisSnapshot = clone(snapshot)
+    return { r, rows }
+  }
+
+  /** BO + SO1 filled, its book resting and snapshotted. */
+  const restingBook = async () => {
+    const bot = await setup({ filled: 1, price: 97 })
+    const store = bot.theDeal
+    bot.deals.set(DEAL_ID, store)
+    const db: Db = {
+      deal: clone(store.deal),
+      minigrids: new Map(
+        bot.allMinigrids.map((m: any) => [`${m.schema._id}`, clone(m.schema)]),
+      ),
+      orders: () => [...bot.orders.values()],
+    }
+    wire(bot, db, { placed: 0 })
+    await bot.rebuildDealOrders(store, DEAL_ID, { keepLevels: true })
+    await bot.flushComboFundsSnapshot(true)
+    return { bot, db, snapshot: clone(bot.redisSnapshot) }
+  }
+
+  it('stopped after the add was sent, filled on the venue meanwhile: the restart settles and books it BEFORE the restart check, and the check then places nothing', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    // The venue takes the order; its fill is never reported before the stop.
+    bot.sendOrderToExchange = async (order: any) => {
+      bot.sent.push(order)
+      const resting = { ...order, status: 'NEW', orderId: 'x1' }
+      bot.orders.set(order.clientOrderId, resting)
+      return resting
+    }
+    await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+    const add = bot.sent[0]
+    expect(db.deal.comboFundsRebuild).to.equal(add.addFundsId)
+    expect(db.deal.pendingAddFunds.map((p: any) => p.id)).to.deep.equal([
+      add.addFundsId,
+    ])
+
+    const { r, rows } = await restartOn(bot, db, snapshot)
+    r.venue.set(add.clientOrderId, {
+      ...add,
+      orderId: 'x1',
+      status: 'FILLED',
+      executedQty: add.origQty,
+      price: '97',
+      updateTime: 1_800_000_001_000,
+    })
+    await r.loadOrders()
+    rows.length = 0
+    // While the change is in flight the restart check leaves the deal alone.
+    expect(r.dealBookRebuildInFlight(DEAL_ID)).to.equal(true)
+    await r.resumeComboFundsChanges()
+    expect(r.orders.get(add.clientOrderId)?.status).to.equal('FILLED')
+    const position = 1 + SO[0].qty + 1.0102
+    expect(r.getDeal(DEAL_ID).deal.funds.map((f: any) => f.qty)).to.deep.equal([
+      1.0102,
+    ])
+    expect(restingSellBase(r)).to.be.at.most(position + 1e-9)
+    expect(restingSellBase(r)).to.be.closeTo(position, 0.002)
+    expect(restingLevels(r)).to.deep.equal([
+      [96, 3.125],
+      [94, 6.383],
+    ])
+    // The size followed the fills before the change was called done.
+    expect(db.deal.size).to.be.closeTo(position, 0.002)
+    expect(db.deal.comboFundsRebuild).to.equal(null)
+    expect(r.dealBookRebuildInFlight(DEAL_ID)).to.equal(false)
+  })
+
+  it('a reduce stopped after the book was taken down and before its order was sent: the book is put back, nothing is sold, the user is told', async () => {
+    const { bot, db, snapshot } = await restingBook()
+    bot.sendOrderToExchange = async () => {
+      throw new Error('process stopped')
+    }
+    await bot.reduceDealFunds(BOT_ID, DEAL_ID, pct('30')).catch(() => undefined)
+    expect(db.deal.comboFundsRebuild).to.be.a('string')
+    expect(resting(bot)).to.deep.equal([])
+    // The stored minigrid ladders rest a little over the position â€” the
+    // 1-lot over-commit a rebuild must not carry forward.
+    for (const m of db.minigrids.values()) {
+      m.settings.budget *= 1.01
+    }
+
+    const { r, rows } = await restartOn(bot, db, snapshot)
+    await r.loadOrders()
+    rows.length = 0
+    await r.resumeComboFundsChanges()
+    const position = 1 + SO[0].qty
+    expect(r.sent).to.deep.equal([])
+    expect(r.getDeal(DEAL_ID).deal.reduceFunds ?? []).to.deep.equal([])
+    expect(restingSellBase(r)).to.be.at.most(position + 1e-9)
+    expect(restingSellBase(r)).to.be.closeTo(position, 0.002)
+    expect(restingLevels(r)).to.deep.equal([
+      [96, 2.0833],
+      [94, 4.2553],
+    ])
+    expect(r.refusals).to.have.length(1)
+    expect(r.refusals[0]).to.match(
+      /interrupted by a restart and nothing was bought or sold\. Please send it again/,
+    )
+    expect(db.deal.comboFundsRebuild).to.equal(null)
   })
 })
