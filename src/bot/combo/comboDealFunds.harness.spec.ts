@@ -50,7 +50,12 @@ type Ed = {
   minQuote: number
 }
 
-const makeBot = (opts: { filled: number; price: number; ed?: Ed }) => {
+const makeBot = (opts: {
+  filled: number
+  price: number
+  ed?: Ed
+  futures?: boolean
+}) => {
   let seq = 0
   const settings: any = {
     name: 'combo',
@@ -130,7 +135,7 @@ const makeBot = (opts: { filled: number; price: number; ed?: Ed }) => {
       return true
     }
     get futures() {
-      return false
+      return !!opts.futures
     }
     get coinm() {
       return false
@@ -209,6 +214,17 @@ const makeBot = (opts: { filled: number; price: number; ed?: Ed }) => {
       return Promise.resolve()
     }
     saveMinigridToRedis() {}
+    events: any[] = []
+    botEventDb = { createData: (e: any) => this.events.push(e) }
+    redisWrites: string[] = []
+    redisSnapshot: Record<string, any> = {}
+    async setToRedis(key: string, data: any) {
+      this.redisWrites.push(key)
+      this.redisSnapshot[key] = JSON.parse(JSON.stringify(data))
+    }
+    async getFromRedis(key: string) {
+      return this.redisSnapshot[key]
+    }
     getOrdersByStatusAndDealId({
       status,
       dealId,
@@ -451,7 +467,7 @@ describe('combo add / reduce funds through the engine (spec 047)', () => {
     expect(bot.rebuilds[0].opts).to.deep.equal({ keepLevels: true })
   })
 
-  it('partial (BO + SO1 filled) at 97, +50 %: buys 1.0102 now, SO2 2.0833→3.1250, SO3 4.2553→6.3830, their minigrid budgets ×1.5', async () => {
+  it('partial (BO + SO1 filled) at 97, +50 %: buys 1.0102 now, SO2 2.0833→3.1250, SO3 4.2553→6.3830, their minigrid budgets ×1.5; filled SO1 is re-placed ×1.5 too', async () => {
     const bot = await setup({ filled: 1, price: 97 })
     const budgetsBefore = bot.theDeal.initialOrders.map(
       (o: any) => o.minigridBudget,
@@ -473,15 +489,25 @@ describe('combo add / reduce funds through the engine (spec 047)', () => {
       DEAL_ID,
       deal.deal,
     )
+    // SO1 had filled: its share was bought by the funds order and its
+    // minigrid scaled. Should that minigrid close and the level open again,
+    // it is re-placed at the scaled size, not the original one.
     expect(ladder.map((o: any) => [o.price, o.qty])).to.deep.equal([
-      [98, 1.0204],
+      [98, 1.5306],
       [96, 3.125],
       [94, 6.383],
     ])
+    expect(ladder[0].minigridBudget / budgetsBefore[0]).to.be.closeTo(1.5, 1e-3)
     expect(ladder[1].minigridBudget / budgetsBefore[1]).to.be.closeTo(1.5, 1e-3)
     expect(ladder[2].minigridBudget / budgetsBefore[2]).to.be.closeTo(1.5, 1e-3)
-    // The filled level keeps its size: its growth is in its minigrid.
-    expect(ladder[0].minigridBudget).to.be.closeTo(budgetsBefore[0], 1e-9)
+    // The filled level's offset is kept apart: it is a re-placement size,
+    // not new commitment, so the balances and usage leave it out.
+    expect(deal.deal.sizes.fundsDcaHeld[0]).to.be.closeTo(0.5102, 1e-9)
+    expect(deal.deal.sizes.fundsDca[0] ?? 0).to.equal(0)
+    expect(deal.deal.sizes.fundsDca[1]).to.be.closeTo(1.04165, 1e-9)
+    deal.initialOrders = ladder
+    expect(bot.fundsHeldOffset(deal).base).to.be.closeTo(0.5102, 1e-9)
+    expect(bot.fundsHeldOffset(deal).quote).to.be.closeTo(0.5102 * 98, 1e-9)
     const after = sells(bot)
     expect(sum(after.flat())).to.be.closeTo(1 + SO[0].qty + 1.0102, 0.002)
   })
@@ -573,6 +599,11 @@ describe('combo add / reduce funds through the engine (spec 047)', () => {
     expect(bot.sent).to.deep.equal([])
     expect(bot.closes).to.have.length(1)
     expect(bot.closes[0][1]).to.equal(DEAL_ID)
+    // Carried out, not refused: an info event on the deal.
+    expect(bot.refusals).to.deep.equal([])
+    expect(bot.events).to.have.length(1)
+    expect(bot.events[0].type).to.equal('info')
+    expect(bot.events[0].description).to.contain('the deal is closed')
   })
 
   it('a limit price is refused for Combo', async () => {
@@ -632,5 +663,373 @@ describe('combo add / reduce funds through the engine (spec 047)', () => {
     expect(bot.theDeal.deal.reduceFunds ?? []).to.deep.equal([])
     expect(sells(bot)).to.deep.equal(before)
     expect(bot.rebuilds).to.have.length(1)
+  })
+
+  describe('review fixes', () => {
+    const pct = (qty: string) => ({
+      qty,
+      asset: OrderSizeTypeEnum.quote,
+      type: AddFundsTypeEnum.perc,
+      useLimitPrice: false,
+    })
+    /** A gate the stubbed book rebuild waits on, and the moment it started. */
+    const gate = () => {
+      let open!: () => void
+      let started!: () => void
+      const opened = new Promise<void>((r) => (open = r))
+      const reached = new Promise<void>((r) => (started = r))
+      return { open, started, opened, reached }
+    }
+    /** The real fill routing, with its per-deal bookkeeping in place. */
+    const realRouting = (bot: any) => {
+      bot.processedFilled = new Map()
+      bot.lastFilledOrderMap = new Map()
+      bot.processFilledOrder = (o: any) =>
+        Combo.prototype.processFilledOrder.call(bot, o)
+    }
+
+    it('a request while a synchronously filled add is still being booked waits, and is sized on the booked position', async () => {
+      const bot = await setup({ filled: 3, price: 90 })
+      realRouting(bot)
+      const g = gate()
+      const deal = bot.theDeal.deal
+      // The rebuild is what re-reads the balances from the fills.
+      bot.rebuildDealOrders = async (d: any, dealId: string, o: any) => {
+        bot.rebuilds.push({ dealId, opts: o })
+        g.started()
+        await g.opened
+        const fill = bot.sent[bot.rebuilds.length - 1]
+        d.deal.currentBalances = {
+          ...d.deal.currentBalances,
+          base: d.deal.currentBalances.base + +fill.origQty,
+        }
+      }
+      const first = bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+      await g.reached
+      const second = bot.addDealFunds(BOT_ID, DEAL_ID, pct('10'))
+      await new Promise((r) => setTimeout(r, 20))
+      // Nothing is sent while the first fill is half booked.
+      expect(bot.sent).to.have.length(1)
+      g.open()
+      await first
+      await second
+      expect(bot.refusals).to.deep.equal([])
+      expect(bot.sent).to.have.length(2)
+      const position = 8.359 + 4.1795
+      expect(deal.currentBalances.base).to.be.closeTo(
+        position + +bot.sent[1].origQty,
+        1e-9,
+      )
+      // 10 % of the position the first fill left, not of the one before it.
+      expect(+bot.sent[1].origQty).to.be.closeTo(0.1 * position, 1e-4)
+    })
+
+    it('a request while a reported fill is still being booked is refused', async () => {
+      const bot = await setup({ filled: 3, price: 90 })
+      realRouting(bot)
+      bot.sendOrderToExchange = async (order: any) => {
+        bot.sent.push(order)
+        const resting = { ...order, status: 'NEW' }
+        bot.orders.set(order.clientOrderId, resting)
+        return resting
+      }
+      const g = gate()
+      bot.rebuildDealOrders = async () => {
+        g.started()
+        await g.opened
+      }
+      await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+      const sent = bot.sent[0]
+      const filled = {
+        ...sent,
+        status: 'FILLED',
+        executedQty: sent.origQty,
+        price: '90',
+        updateTime: 1_800_000_000_999,
+      }
+      bot.orders.set(sent.clientOrderId, filled)
+      const booking = bot.processFilledOrder(filled)
+      await g.reached
+      await bot.addDealFunds(BOT_ID, DEAL_ID, pct('10'))
+      expect(bot.sent).to.have.length(1)
+      expect(bot.refusals[0]).to.contain('still being processed')
+      g.open()
+      await booking
+      await bot.addDealFunds(BOT_ID, DEAL_ID, pct('10'))
+      expect(bot.sent).to.have.length(2)
+    })
+
+    it('a reduce reported PARTIALLY_FILLED 2 then FILLED 5 leaves no partial take profit for the close to count again', async () => {
+      const bot = await setup({ filled: 3, price: 90 })
+      bot.dealUpdateOrders = bot.dealUpdateOrders ?? new Map()
+      bot.sendOrderToExchange = async (order: any) => {
+        bot.sent.push(order)
+        const resting = { ...order, status: 'NEW' }
+        bot.orders.set(order.clientOrderId, resting)
+        return resting
+      }
+      await bot.reduceDealFunds(BOT_ID, DEAL_ID, pct('59.8'))
+      const sent = bot.sent[0]
+      expect(+sent.origQty).to.equal(4.9987)
+      const part = {
+        ...sent,
+        status: 'PARTIALLY_FILLED',
+        executedQty: '2',
+        price: '90',
+        updateTime: 1_800_000_000_100,
+      }
+      await bot.processPartiallyFilledOrder(part)
+      await new Promise((r) => setTimeout(r, 20))
+      const deal = bot.theDeal.deal
+      expect(deal.tpHistory ?? []).to.deep.equal([])
+      // An entry already there (written before this release, or racing) is
+      // taken out when the order is booked.
+      deal.tpHistory = [{ id: sent.clientOrderId, qty: 2, price: 90 }]
+      const filled = {
+        ...sent,
+        status: 'FILLED',
+        executedQty: '4.9987',
+        price: '90',
+        updateTime: 1_800_000_000_200,
+      }
+      bot.orders.set(sent.clientOrderId, filled)
+      await bot.applyComboFundsFill(filled)
+      expect(deal.tpHistory).to.deep.equal([])
+      expect(deal.reduceFunds).to.have.length(1)
+      expect(deal.reduceFunds[0].qty).to.equal(4.9987)
+      // The close sums its take profit with every other `tpHistory` entry.
+      const tpQty = 8.359 - 4.9987
+      const closeQty =
+        tpQty +
+        (deal.tpHistory ?? [])
+          .filter((h: any) => h.id !== 'tp')
+          .reduce((a: number, h: any) => a + h.qty, 0)
+      expect(closeQty).to.be.closeTo(tpQty, 1e-12)
+    })
+
+    it('spot average: a reduce fill keeps the average and takes its weight out of the later add', async () => {
+      const bot = await setup({ filled: 3, price: 90 })
+      const avg0 = bot.theDeal.deal.avgPrice
+      bot.orders.set('rf', {
+        ...filledRow('rf', TypeOrderEnum.dealTP, 2, 90, 0),
+        side: 'SELL',
+        reduceFundsId: 'r1',
+        updateTime: 1_800_000_000_001,
+      })
+      const afterReduce = await bot.avgPrice(DEAL_ID, DEAL_ID)
+      expect(afterReduce.real).to.be.closeTo(avg0, 1e-9)
+      bot.orders.set('af', {
+        ...filledRow('af', TypeOrderEnum.dealRegular, 2, 80, 0),
+        addFundsId: 'a1',
+        updateTime: 1_800_000_000_002,
+      })
+      const after = await bot.avgPrice(DEAL_ID, DEAL_ID)
+      expect(after.real).to.be.closeTo(
+        ((8.359 - 2) * avg0 + 2 * 80) / 8.359,
+        1e-9,
+      )
+    })
+
+    it('futures average: the reduce fill takes the position down before the add', async () => {
+      const bot = makeBot({ filled: 3, price: 90, futures: true })
+      const rows = [
+        filledRow('bo', TypeOrderEnum.dealStart, 1, 100, 1),
+        ...SO.map((l) =>
+          filledRow(
+            `so${l.level}`,
+            TypeOrderEnum.dealRegular,
+            l.qty,
+            l.price,
+            l.level + 1,
+          ),
+        ),
+        {
+          ...filledRow('rf', TypeOrderEnum.dealTP, 2, 90, 0),
+          side: 'SELL',
+          reduceFundsId: 'r1',
+          updateTime: 1_800_000_000_001,
+        },
+        {
+          ...filledRow('af', TypeOrderEnum.dealRegular, 2, 80, 0),
+          addFundsId: 'a1',
+          updateTime: 1_800_000_000_002,
+        },
+      ]
+      rows.forEach((r: any) => bot.orders.set(r.clientOrderId, r))
+      const avg = await bot.avgPrice(DEAL_ID, DEAL_ID)
+      // 8.359 at 95.70, 2 sold (average kept), 2 bought at 80.
+      expect(avg.real).to.be.closeTo((6.359 * 95.7 + 160) / 8.359, 0.01)
+    })
+
+    it('a restart that loads the minigrids from a snapshot written before the booking scales them on load', async () => {
+      const bot = await setup({ filled: 3, price: 90 })
+      const before = sells(bot)
+      await bot.setToRedis('minigrids', bot.allMinigrids)
+      bot.redisWrites = []
+      await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+      await bot.applyComboFundsFill(bot.orders.get(bot.sent[0].clientOrderId))
+      // The booking writes both snapshots at once, not on the delayed timer.
+      expect(bot.redisWrites).to.include.members(['minigrids', 'deals'])
+      // …but a restart can still find the older one: put it back.
+      await bot.setToRedis('minigrids', [])
+      bot.redisSnapshot.minigrids = JSON.parse(
+        JSON.stringify(
+          before.map((_: any, i: number) => {
+            const m = bot.allMinigrids[i]
+            return {
+              ...m,
+              schema: {
+                ...m.schema,
+                appliedFundsScale: [],
+                settings: {
+                  ...m.schema.settings,
+                  budget: m.schema.settings.budget / 1.5,
+                },
+                initialBalances: {
+                  base: m.schema.initialBalances.base / 1.5,
+                  quote: m.schema.initialBalances.quote / 1.5,
+                },
+              },
+            }
+          }),
+        ),
+      )
+      bot.minigrids = new Map()
+      bot.minigridDealMap = new Map()
+      bot.serviceRestart = true
+      bot.secondRestart = false
+      await bot.loadMinigrids()
+      const after = sells(bot)
+      after.forEach((lines: number[], i: number) =>
+        lines.forEach((q: number, j: number) =>
+          expect(q / before[i][j], `minigrid ${i} line ${j}`).to.be.closeTo(
+            1.5,
+            0.002,
+          ),
+        ),
+      )
+      // Loaded again, nothing more is applied.
+      const budgets = bot.allMinigrids.map((m: any) => m.schema.settings.budget)
+      await bot.reconcileMinigridFundsScale()
+      expect(
+        bot.allMinigrids.map((m: any) => m.schema.settings.budget),
+      ).to.deep.equal(budgets)
+    })
+
+    it('a cancel reported before the send returns leaves no pending entry behind', async () => {
+      const bot = await setup({ filled: 3, price: 90 })
+      bot.sendOrderToExchange = async (order: any) => {
+        bot.sent.push(order)
+        await bot.processCanceledOrder(
+          { ...order, status: 'CANCELED', executedQty: '0', updateTime: 0 },
+          0,
+          false,
+        )
+        return { ...order, status: 'NEW' }
+      }
+      await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+      expect(bot.sent).to.have.length(1)
+      expect(bot.theDeal.deal.pendingAddFunds ?? []).to.deep.equal([])
+    })
+
+    it('an add fill after the deal closed is sold as a late fill and reported', async () => {
+      const bot = await setup({ filled: 3, price: 90 })
+      const sold: any[] = []
+      bot.sellRemainder = async (...a: any[]) => {
+        sold.push(a)
+      }
+      bot.theDeal.deal.status = 'closed'
+      await bot.applyComboFundsFill({
+        ...filledRow('af', TypeOrderEnum.dealRegular, 2, 90, 0),
+        addFundsId: 'a1',
+        baseAsset: 'BTC',
+      })
+      expect(sold).to.have.length(1)
+      expect(sold[0][1]).to.equal(2)
+      // `lateEntryFill`: sold even when the deal's own remainder was.
+      expect(sold[0][7]).to.equal(true)
+      expect(bot.refusals[0]).to.match(/after deal .* was closed/)
+    })
+
+    it('unstubbed rebuild: an add then a reduce re-place the unfilled levels at the new sizes, under fresh order ids', async () => {
+      const bot = await setup({ filled: 1, price: 97 })
+      // The deal lives in the engine's own store, as it does in a worker:
+      // every save replaces the stored copy.
+      const store = bot.theDeal
+      bot.deals.set(DEAL_ID, store)
+      bot.getDeal = (id?: string) => Combo.prototype.getDeal.call(bot, id)
+      bot.saveDeal = (...a: any[]) => Combo.prototype.saveDeal.apply(bot, a)
+      bot.dealsDb = { updateData: async () => ({ status: 'OK' }) }
+      bot.rebuildDealOrders = (...a: any[]) =>
+        Combo.prototype.rebuildDealOrders.apply(bot, a)
+      const placed: any[][] = []
+      bot.placeOrders = async (_b: string, _s: string, _d: string, g: any) => {
+        placed.push(g?.new ?? [])
+      }
+      for (const m of [
+        'removeDealFromStopLossMethods',
+        'checkAllowedMethods',
+        'setClassProperties',
+        'updateUsage',
+        'updateAssets',
+        'setCloseByTimer',
+        'checkTPLevel',
+        'checkDealsAllowedMethods',
+      ]) {
+        bot[m] = async () => undefined
+      }
+      bot.getLastStreamData = () => undefined
+      // The ladder as placed before the request: SO2 and SO3 rest.
+      const live0 = bot.getDeal(DEAL_ID)
+      live0.currentOrders = await bot.createCurrentDealOrders(
+        SYMBOL,
+        97,
+        live0.initialOrders,
+        live0.deal.avgPrice,
+        100,
+        DEAL_ID,
+        false,
+        live0.deal,
+      )
+      const restingIds = live0.currentOrders.map((o: any) => o.newClientOrderId)
+      const levels = (grids: any[]) =>
+        grids
+          .filter((g: any) => g.type === TypeOrderEnum.dealRegular)
+          .map((g: any) => [g.price, g.qty])
+      expect(levels(live0.currentOrders)).to.deep.equal([
+        [96, 2.0833],
+        [94, 4.2553],
+      ])
+
+      await bot.addDealFunds(BOT_ID, DEAL_ID, pct('50'))
+      await bot.applyComboFundsFill(bot.orders.get(bot.sent[0].clientOrderId))
+      expect(placed).to.have.length(1)
+      expect(levels(placed[0])).to.deep.equal([
+        [96, 3.125],
+        [94, 6.383],
+      ])
+      const addIds = placed[0]
+        .filter((g: any) => g.type === TypeOrderEnum.dealRegular)
+        .map((g: any) => g.newClientOrderId)
+      addIds.forEach((id: string) => expect(restingIds).to.not.include(id))
+      expect(levels(bot.getDeal(DEAL_ID).currentOrders)).to.deep.equal([
+        [96, 3.125],
+        [94, 6.383],
+      ])
+
+      // The booking's rebuild read the balances back from the fills.
+      bot.price = 97
+      await bot.reduceDealFunds(BOT_ID, DEAL_ID, pct('20'))
+      expect(bot.refusals).to.deep.equal([])
+      await bot.applyComboFundsFill(bot.orders.get(bot.sent[1].clientOrderId))
+      const last = placed[placed.length - 1]
+      const [[p2, q2], [p3, q3]] = levels(last)
+      expect([p2, p3]).to.deep.equal([96, 94])
+      expect(q2).to.be.closeTo(3.125 * 0.8, 0.0002)
+      expect(q3).to.be.closeTo(6.383 * 0.8, 0.0002)
+      last
+        .filter((g: any) => g.type === TypeOrderEnum.dealRegular)
+        .forEach((g: any) => expect(addIds).to.not.include(g.newClientOrderId))
+    })
   })
 })

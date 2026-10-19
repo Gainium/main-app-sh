@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.108.1] - 2026-10-19
+
+### Fixed
+
+- Combo add / reduce funds: the unfilled DCA levels were re-placed at their previous size. The book was rebuilt on a copy of the deal read before its save had landed, and the save then put the old ladder back; the booking now waits for the save, so the levels go out at the new size under new order ids.
+- Combo add / reduce funds: a second request could be sized on the position before the previous fill was booked and scale the minigrids twice. A request now waits for, or is refused during, the whole booking of the previous one, book rebuild included.
+- Combo reduce funds: a part fill was also recorded as a partial take profit, which the deal's close then counted again. It is no longer recorded, and an entry left from before is dropped when the reduce is booked.
+- Combo deal average: a reduce funds fill now takes its quantity out of the position at the deal average (futures and spot), so a later add or reduce works from the right position.
+- Combo minigrids record which add / reduce changes they were scaled by; one loaded after a restart from a snapshot older than the change is scaled on load, and the snapshots are written right after the change.
+- Combo add / reduce funds now also resizes the DCA levels that had filled, for when their minigrid closes and the level is placed again. Those offsets are kept apart (`sizes.fundsDcaHeld`) and left out of the deal's balances and usage, which the funds order already covers.
+- Coin-margined Combo add / reduce funds orders are sized in whole contracts (a reduce rounds down) and one contract is the minimum for a grid line or level.
+- A funds order reported done before its send returned no longer leaves a pending entry; an add fill that arrives after the deal closed is sold as its own quantity and reported; a reduce covering the whole deal is reported as an info event, not a refused action.
+
 ## [1.108.0] - 2026-10-19
 
 ### Added

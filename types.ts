@@ -1456,6 +1456,13 @@ export type Sizes = {
    * never read `dca`.
    */
   fundsDca?: number[]
+  /**
+   * Combo add / reduce funds: the same offsets for levels that had already
+   * filled when the deal was scaled. They resize the level only when it is
+   * placed again; the funds order already moved their share, so they are not
+   * counted in the deal's balances or usage.
+   */
+  fundsDcaHeld?: number[]
 }
 
 export enum DCADealFlags {
@@ -1948,6 +1955,11 @@ export interface ComboMinigridSchema extends SchemaI {
     sell: number
   }
   lockClose: boolean
+  /**
+   * Combo add / reduce funds (main-app spec 047): the deal's `fundsScale` ids
+   * this minigrid's budget has been scaled by.
+   */
+  appliedFundsScale?: string[]
 }
 
 export type CleanComboMinigridSchema = ExcludeDoc<ComboMinigridSchema>

@@ -2572,6 +2572,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     multiplierScope: String,
     // Combo add / reduce funds: per-level base offsets (main-app spec 047).
     fundsDca: [Number],
+    fundsDcaHeld: [Number],
   },
   // Combo add / reduce funds (same shapes as the DCA deal).
   pendingAddFunds: funds,
@@ -3136,6 +3137,7 @@ const comboMinigrid = new Schema<ComboMinigridSchema>({
     sell: Number,
   },
   lockClose: Boolean,
+  appliedFundsScale: [String],
   ...CreatedUpdated,
 })
 const paperHedge = new Schema({

@@ -27647,6 +27647,18 @@ function createDCABotHelper<
     }
 
     /**
+     * The part of the deal's ladder that is a re-placement size only and no
+     * commitment of funds. None on a DCA deal; a Combo deal's held add /
+     * reduce funds offsets (main-app spec 047).
+     */
+    protected fundsHeldOffset(_findDeal: FullDeal<ExcludeDoc<Deal>>): {
+      base: number
+      quote: number
+    } {
+      return { base: 0, quote: 0 }
+    }
+
+    /**
      * Update deal balances
      *
      * @param {boolean} [skipUnbooked] Leave out fills whose `updateDeal` has
@@ -27677,6 +27689,7 @@ function createDCABotHelper<
           findDeal.deal.reduceFunds ??
           ([] as unknown as NonNullable<Deal['reduceFunds']>)
         ).reduce((acc, v) => acc + v.qty * v.price, 0)
+        const held = this.fundsHeldOffset(findDeal)
         findDeal.deal.initialBalances = {
           base: long
             ? 0
@@ -27686,7 +27699,8 @@ function createDCABotHelper<
               qty +
               fundsBase +
               pending.base -
-              reduceFundsBase,
+              reduceFundsBase -
+              held.base,
           quote: long
             ? findDeal.initialOrders
                 .filter((o) => o.side === OrderSideEnum.buy)
@@ -27694,7 +27708,8 @@ function createDCABotHelper<
               qty * price +
               fundsQuote +
               pending.quote -
-              reduceFundsQuote
+              reduceFundsQuote -
+              held.quote
             : 0,
         }
         // Spec `029`. This sum IS the deal's ledger, and everything in it is

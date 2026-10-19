@@ -41,6 +41,7 @@ import {
 } from '../db/dbInit'
 import {
   BotStatusEnum,
+  MessageTypeEnum,
   ExchangeEnum,
   ComboTpBase,
   StartConditionEnum,
@@ -100,8 +101,11 @@ import {
   comboFundsMinimumRefusalMessage,
   comboFundsMinimumVerdict,
   comboFundsScale,
+  comboContractSize,
   comboPositionBase,
-  scaledDcaOffsets,
+  heldOffsetTotals,
+  minigridMissingScale,
+  splitScaledOffsets,
 } from './combo/comboDealFunds'
 import type { ComboFundsDirection } from './combo/comboDealFunds'
 
@@ -168,12 +172,20 @@ function createComboBotHelper<
     /**
      * Add / reduce funds orders sent and not booked yet, per deal: the funds
      * id and the deal's position base when the order was sent. Main-app spec
-     * 047.
+     * 047. Cleared only once the booking has finished, book rebuild included.
      */
     private comboFundsSent: Map<
       string,
       { id: string; positionBase: number; direction: ComboFundsDirection }
     > = new Map()
+    /**
+     * Funds bookings queued or running, per deal. Until one has rebuilt the
+     * deal's book and balances, a new request would be sized on the position
+     * before the fill.
+     */
+    private comboFundsBooking: Map<string, number> = new Map()
+    /** Funds ids whose order the venue has already reported done. */
+    private comboFundsSettled: Set<string> = new Set()
 
     constructor(
       id: string,
@@ -521,6 +533,8 @@ function createComboBotHelper<
           sell: 0,
         },
         lockClose,
+        // Opened from a level already sized for every funds change so far.
+        appliedFundsScale: (findDeal?.deal.fundsScale ?? []).map((f) => f.id),
       }
       const saved = await this.minigridDb.createData(minigridSchema)
       if (saved.status === StatusEnum.notok) {
@@ -773,6 +787,7 @@ function createComboBotHelper<
           }
         }
       }
+      await this.reconcileMinigridFundsScale()
       this.endMethod(_id)
     }
     private async loadTransactions() {
@@ -1575,7 +1590,10 @@ function createComboBotHelper<
             (dealId ? true : o.minigridId === minigridId) &&
             (o.typeOrder === TypeOrderEnum.dealRegular ||
               o.typeOrder === TypeOrderEnum.dealStart ||
-              o.typeOrder === TypeOrderEnum.dealGrid),
+              o.typeOrder === TypeOrderEnum.dealGrid ||
+              // Main-app spec 047: a reduce funds fill takes the position
+              // down (an add funds fill is a `dealRegular` row, above).
+              (o.typeOrder === TypeOrderEnum.dealTP && !!o.reduceFundsId)),
         )
         if (minigridId) {
           const minigrid = this.getMinigrid(minigridId)
@@ -1631,6 +1649,40 @@ function createComboBotHelper<
         (acc, v) => acc + parseFloat(v.executedQty) * parseFloat(v.price),
         0,
       )
+      // Main-app spec 047: a reduce funds fill sells part of the position at
+      // the deal's average (its P&L is booked there), so it leaves that
+      // average as it is and takes its weight out of the entries before it.
+      // An add funds fill is a `dealRegular` row and counts once, above.
+      const reduceFills = dealId
+        ? this.getOrdersByStatusAndDealId({
+            status: 'FILLED',
+            dealId: dealToSearch,
+          }).filter(
+            (o) =>
+              o.typeOrder === TypeOrderEnum.dealTP &&
+              !!o.reduceFundsId &&
+              +o.executedQty > 0,
+          )
+        : []
+      if (reduceFills.length) {
+        const timeline = [
+          ...filledDealOrder.map((o) => ({ o, reduce: false })),
+          ...reduceFills.map((o) => ({ o, reduce: true })),
+        ].sort((a, b) => a.o.updateTime - b.o.updateTime)
+        base = 0
+        quote = 0
+        for (const { o, reduce } of timeline) {
+          const qty = parseFloat(o.executedQty)
+          if (!reduce) {
+            base += qty
+            quote += qty * parseFloat(o.price)
+          } else if (base > 0) {
+            const taken = Math.min(qty, base)
+            quote -= (quote / base) * taken
+            base -= taken
+          }
+        }
+      }
       let d: FullDeal<ExcludeDoc<ComboDealsSchema>> | undefined
       if (dealId) {
         d = this.getDeal(dealId)
@@ -2386,14 +2438,24 @@ function createComboBotHelper<
             (acc, f) => acc + f.qty * f.price,
             0,
           )
+        // Filled levels' re-placement sizes are in the ladder but not in the
+        // commitment: the funds above already hold them.
+        const held = heldOffsetTotals(
+          regular,
+          findDeal.deal.sizes?.fundsDcaHeld,
+        )
         const totalBase = Math.max(
-          regular.reduce((acc, g) => acc + g.qty, 0) + boQty + fundsBase,
+          regular.reduce((acc, g) => acc + g.qty, 0) +
+            boQty +
+            fundsBase -
+            held.base,
           0,
         )
         const totalQuote = Math.max(
           regular.reduce((acc, g) => acc + g.qty * g.price, 0) +
             boQty * boPrice +
-            fundsQuote,
+            fundsQuote -
+            held.quote,
           0,
         )
         const base = (await this.profitBase(findDeal.deal))
@@ -2587,9 +2649,12 @@ function createComboBotHelper<
       if (order.dealId && (order.addFundsId || order.reduceFundsId)) {
         // Main-app spec 047. A part that executed is booked like a fill and
         // scales the deal by what it got; nothing executed scales nothing.
+        this.comboFundsSettled.add(
+          (order.addFundsId || order.reduceFundsId) as string,
+        )
         const executed = +order.executedQty
         if (Number.isFinite(executed) && executed > 0 && order.updateTime > 0) {
-          await this.applyComboFundsFill(order)
+          await this.bookComboFunds(order)
         } else {
           await this.dropCanceledComboFunds(order)
         }
@@ -3622,7 +3687,13 @@ function createComboBotHelper<
           (order.typeOrder === TypeOrderEnum.dealRegular && order.addFundsId) ||
           (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId)
         ) {
-          this.applyComboFundsFill(order)
+          this.comboFundsSettled.add(
+            (order.addFundsId || order.reduceFundsId) as string,
+          )
+          // Awaited so the request that sent a synchronously filled order
+          // returns only once the deal is booked and its book rebuilt. No
+          // caller holding this deal's update lock awaits this method.
+          await this.bookComboFunds(order)
           return
         }
         if (
@@ -3695,6 +3766,28 @@ function createComboBotHelper<
       }
     }
 
+    /**
+     * A reduce that covers everything is carried out as a close: an info
+     * event on the deal, not a refused action.
+     */
+    private reportComboFundsClose(
+      message: string,
+      d: FullDeal<CleanComboDealsSchema>,
+    ) {
+      this.handleLog(`Reduce funds | Combo deal ${d.deal._id}: ${message}`)
+      this.botEventDb.createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Deal',
+        botType: this.botType,
+        description: message,
+        paperContext: !!this.data?.paperContext,
+        deal: d.deal._id,
+        symbol: d.deal.symbol.symbol,
+        type: MessageTypeEnum.info,
+      })
+    }
+
     /** The deal's DCA levels that have not filled, as the ladder last built them. */
     comboUnfilledLevels(d: FullDeal<CleanComboDealsSchema>) {
       return d.initialOrders.filter(
@@ -3718,7 +3811,10 @@ function createComboBotHelper<
      * restart) does not block.
      */
     private comboFundsInFlight(d: FullDeal<CleanComboDealsSchema>) {
-      if (this.comboFundsSent.has(d.deal._id)) {
+      if (
+        this.comboFundsSent.has(d.deal._id) ||
+        (this.comboFundsBooking.get(d.deal._id) ?? 0) > 0
+      ) {
         return true
       }
       const orders = this.getOrdersByStatusAndDealId({
@@ -3779,7 +3875,13 @@ function createComboBotHelper<
       }
       const ed = await this.getExchangeInfo(symbol)
       const minBase = ed?.baseAsset.minAmount ?? 0
-      const minQuote = this.coinm ? 0 : (ed?.quoteAsset.minAmount ?? 0)
+      // A coin-margined line is whole contracts of `quoteAsset.minAmount`
+      // quote each (Bitget sizes those in coins), so one contract is its
+      // notional minimum.
+      const contracts = this.coinm && !this.isBitget
+      const contractValue = ed?.quoteAsset.minAmount ?? 0
+      const minQuote =
+        this.coinm && !contracts ? 0 : (ed?.quoteAsset.minAmount ?? 0)
       const unfilled = this.comboUnfilledLevels(d)
       const positionBase = comboPositionBase({
         isLong: this.isLong,
@@ -3799,8 +3901,9 @@ function createComboBotHelper<
         return refuse(`${label} refused: ${scale.reason}`)
       }
       if (scale.kind === 'close') {
-        await refuse(
-          'Reduce funds covers the whole deal, so the deal will be closed',
+        this.reportComboFundsClose(
+          'Reduce funds covers the whole deal, so the deal is closed',
+          d,
         )
         return this.closeDealById(
           this.botId,
@@ -3831,11 +3934,22 @@ function createComboBotHelper<
       }
       const precision = await this.baseAssetPrecision(symbol)
       const orderQtyFor = (base: number) =>
-        this.math.round(Math.abs(k - 1) * base, precision)
+        contracts
+          ? this.math.round(
+              comboContractSize({
+                qty: Math.abs(k - 1) * base,
+                price,
+                contractValue,
+                direction,
+              }).qty,
+              precision,
+            )
+          : this.math.round(Math.abs(k - 1) * base, precision)
       let orderQty = orderQtyFor(positionBase)
       if (direction === 'reduce' && orderQty >= positionBase) {
-        await refuse(
-          'Reduce funds covers the whole position, so the deal will be closed',
+        this.reportComboFundsClose(
+          'Reduce funds covers the whole position, so the deal is closed',
+          d,
         )
         return this.closeDealById(
           this.botId,
@@ -3854,7 +3968,8 @@ function createComboBotHelper<
       if (
         !(orderQty > 0) ||
         orderQty < minBase ||
-        orderQty * price < minQuote
+        // A whole number of contracts is at least one, give or take rounding.
+        orderQty * price < minQuote * (contracts ? 1 - 1e-6 : 1)
       ) {
         return refuse(
           `${label} refused: the order for the deal's position, ${orderQty} ${d.deal.symbol.baseAsset}, is below the exchange minimum order size`,
@@ -3935,10 +4050,26 @@ function createComboBotHelper<
         return
       }
       if (result.status === 'FILLED') {
-        this.processFilledOrder(result)
+        // Awaited: the request holds this deal's funds lock until the fill is
+        // booked and the book rebuilt, so the next request is sized on the
+        // position this one leaves.
+        await this.processFilledOrder(result)
         return
       }
       const live = this.getDeal(dealId) ?? d
+      // The venue can report the order done before the send returns. Its fill
+      // (or cancel) is booked from that report; a pending entry written after
+      // it would stay behind and count in the deal's balances.
+      if (
+        this.comboFundsSettled.has(fundsId) ||
+        (live.deal.fundsScale ?? []).some((f) => f.id === fundsId) ||
+        live.deal.status !== DCADealStatusEnum.open
+      ) {
+        this.handleDebug(
+          `${label} | Combo deal ${dealId}: order ${order.clientOrderId} already reported, no pending entry`,
+        )
+        return
+      }
       const entry = {
         qty: `${orderQty}`,
         asset: OrderSizeTypeEnum.base,
@@ -3965,6 +4096,30 @@ function createComboBotHelper<
     }
 
     /**
+     * Book a funds fill with the deal marked as booking from the moment the
+     * fill is reported until the booking — book rebuild and balances included
+     * — has finished. A request in that window is refused instead of being
+     * sized on the position before the fill.
+     */
+    private async bookComboFunds(order: Order) {
+      const dealId = order.dealId ?? ''
+      this.comboFundsBooking.set(
+        dealId,
+        (this.comboFundsBooking.get(dealId) ?? 0) + 1,
+      )
+      try {
+        await this.applyComboFundsFill(order)
+      } finally {
+        const left = (this.comboFundsBooking.get(dealId) ?? 1) - 1
+        if (left > 0) {
+          this.comboFundsBooking.set(dealId, left)
+        } else {
+          this.comboFundsBooking.delete(dealId)
+        }
+      }
+    }
+
+    /**
      * Main-app spec 047. Book an add / reduce funds fill and scale the deal by
      * what it executed: every live minigrid's budget, every unfilled DCA
      * level's size offset, then re-place the deal's book. The fill is not a
@@ -3976,6 +4131,14 @@ function createComboBotHelper<
       try {
         await this.bookComboFundsFill(order)
       } finally {
+        // Only now is the order's effect on the deal fully in place.
+        const fundsId = order.addFundsId || order.reduceFundsId
+        if (
+          order.dealId &&
+          this.comboFundsSent.get(order.dealId)?.id === fundsId
+        ) {
+          this.comboFundsSent.delete(order.dealId)
+        }
         this.endMethod(_id)
       }
     }
@@ -3985,21 +4148,37 @@ function createComboBotHelper<
       const direction: ComboFundsDirection = order.addFundsId ? 'add' : 'reduce'
       const fundsId = (order.addFundsId || order.reduceFundsId) as string
       const sent = dealId ? this.comboFundsSent.get(dealId) : undefined
-      if (dealId && sent?.id === fundsId) {
-        this.comboFundsSent.delete(dealId)
-      }
       const d = dealId ? this.getDeal(dealId) : undefined
       const price = +order.price
       const executed = +order.executedQty
       if (!dealId || !d || d.deal.status !== DCADealStatusEnum.open) {
-        if (
-          dealId &&
-          direction === 'add' &&
-          executed > 0 &&
-          order.botId === this.botId
-        ) {
-          // Coins bought for a deal that has closed meanwhile.
-          await this.sellRemainder(dealId, executed, price, false, d)
+        if (dealId && executed > 0 && order.botId === this.botId) {
+          const message = `${direction === 'add' ? 'Add' : 'Reduce'} funds order ${order.clientOrderId} filled ${executed} ${order.baseAsset} after deal ${dealId} was closed`
+          this.handleWarn(message)
+          if (direction === 'add') {
+            // Coins bought for a deal that has closed meanwhile. A late fill
+            // is its own quantity: it is sold even when the deal's remainder
+            // already was.
+            await this.sellRemainder(
+              dealId,
+              executed,
+              price,
+              false,
+              d,
+              true,
+              false,
+              true,
+            )
+            await this.reportUserRefusal(
+              `${message}. The bought coins are sold at market`,
+              order.symbol,
+            )
+          } else {
+            await this.reportUserRefusal(
+              `${message}. Check the ${order.baseAsset} balance on the exchange`,
+              order.symbol,
+            )
+          }
         }
         return
       }
@@ -4058,6 +4237,11 @@ function createComboBotHelper<
         const booked = bookReduceFundsFill(d.deal, { price, qty: executed })
         d.deal.reduceFunds = booked.reduceFunds
         d.deal.size = booked.size
+        // A part of this order reported before it was booked is not a partial
+        // take profit: the close would count it again on top of `reduceFunds`.
+        d.deal.tpHistory = (d.deal.tpHistory ?? []).filter(
+          (h) => h.id !== order.clientOrderId,
+        )
       }
       d.deal.fundsScale = [
         ...(d.deal.fundsScale ?? []),
@@ -4072,10 +4256,13 @@ function createComboBotHelper<
         d.deal.displayAvg = avgs.display
       }
       d.deal.fullFee = await this.getCommDeal(d.deal)
-      // Unfilled levels: through the per-level offsets (`sizes.fundsDca`) the
-      // ladder builder adds, so their resting limit and the minigrid they open
-      // later both scale, and the change survives a reload.
-      const unfilled = this.comboUnfilledLevels(d)
+      // Every level, through the per-level offsets the ladder builder adds, so
+      // the change survives a reload. An unfilled level's resting limit and
+      // the minigrid it opens later scale (`sizes.fundsDca`); a filled level
+      // is re-placed scaled once its minigrid closes (`sizes.fundsDcaHeld`,
+      // which the deal's balances and usage leave out: the funds order above
+      // already moved that share).
+      const unfilled = new Set(this.comboUnfilledLevels(d))
       const sizes = d.deal.sizes ?? {
         base: 0,
         dca: [],
@@ -4084,17 +4271,26 @@ function createComboBotHelper<
       }
       d.deal.sizes = {
         ...sizes,
-        fundsDca: scaledDcaOffsets(
-          sizes.fundsDca,
-          unfilled.map((o) => ({
-            number: o.number ?? (o.dcaLevel ?? 1) - 1,
-            qty: o.qty,
-          })),
+        ...splitScaledOffsets(
+          sizes,
+          d.initialOrders
+            .filter((o) => o.type === TypeOrderEnum.dealRegular)
+            .map((o) => ({
+              number: o.number ?? (o.dcaLevel ?? 1) - 1,
+              qty: o.qty,
+              filled: !unfilled.has(o),
+            })),
           k,
         ),
       }
-      await this.scaleComboMinigrids(dealId, k)
-      this.saveDeal(d, {
+      await this.scaleComboMinigrids(dealId, k, fundsId)
+      // Awaited: `saveDeal` runs under its own lock and REPLACES the stored
+      // deal with a copy. Rebuilding on the copy read before that write lands
+      // leaves the stored deal holding the old ladder, which is what the
+      // rebuild then places — the levels at their previous size, under the
+      // ids of the orders it has just cancelled.
+      await this.saveDeal(d, {
+        tpHistory: d.deal.tpHistory,
         updateTime: d.deal.updateTime,
         lastPrice: d.deal.lastPrice,
         funds: d.deal.funds,
@@ -4110,6 +4306,10 @@ function createComboBotHelper<
         fullFee: d.deal.fullFee,
         sizes: d.deal.sizes,
       })
+      // The deal and minigrid snapshots a restart loads from are written on a
+      // 10–50 s delay. Write them now: a restart in that window would load the
+      // deal booked and its minigrids unscaled (or the other way round).
+      await this.flushComboFundsSnapshot()
       const live = this.getDeal(dealId) ?? d
       // Ladder regenerated with the new offsets, balances re-read from the
       // fills, usage and the take profit recomputed, minigrids re-placed from
@@ -4125,8 +4325,18 @@ function createComboBotHelper<
      * Scale every live minigrid of the deal by `k`: its budget and its opening
      * balances persist, its ladder is regenerated from them.
      */
-    private async scaleComboMinigrids(dealId: string, k: number) {
-      for (const m of this.comboLiveMinigrids(dealId)) {
+    private async scaleComboMinigrids(
+      dealId: string,
+      k: number,
+      fundsIds: string | string[],
+      only?: FullMinigrid[],
+    ) {
+      const ids = [fundsIds].flat()
+      for (const m of only ?? this.comboLiveMinigrids(dealId)) {
+        m.schema.appliedFundsScale = [
+          ...(m.schema.appliedFundsScale ?? []),
+          ...ids,
+        ]
         m.schema.settings = {
           ...m.schema.settings,
           budget: m.schema.settings.budget * k,
@@ -4156,7 +4366,50 @@ function createComboBotHelper<
           currentBalances: m.schema.currentBalances,
           assets: m.schema.assets,
           grids: m.schema.grids,
+          appliedFundsScale: m.schema.appliedFundsScale,
         })
+      }
+    }
+
+    /** Write the deal and minigrid snapshots a restart loads from, now. */
+    private async flushComboFundsSnapshot() {
+      await this.setToRedis('minigrids', this.allMinigrids)
+      await this.setToRedis('deals', [...this.deals.values()])
+    }
+
+    /**
+     * Main-app spec 047. After a load, scale every open minigrid by the funds
+     * changes of its deal it has not applied (a snapshot written before the
+     * booking reached it). A minigrid that opened after a change was sized
+     * from the scaled level and is left alone.
+     */
+    private async reconcileMinigridFundsScale() {
+      for (const m of this.allMinigrids) {
+        if (
+          ![
+            ComboMinigridStatusEnum.active,
+            ComboMinigridStatusEnum.range,
+          ].includes(m.schema.status)
+        ) {
+          continue
+        }
+        const d = this.getDeal(m.schema.dealId)
+        if (!d || !(d.deal.fundsScale ?? []).length) {
+          continue
+        }
+        const missing = minigridMissingScale(d.deal.fundsScale, m.schema)
+        if (!missing.ids.length) {
+          continue
+        }
+        this.handleLog(
+          `Minigrid ${m.schema._id} of deal ${m.schema.dealId} was loaded without funds changes ${missing.ids.join(', ')}. Scaling it by ${missing.k}`,
+        )
+        await this.scaleComboMinigrids(
+          m.schema.dealId,
+          missing.k,
+          missing.ids,
+          [m],
+        )
       }
     }
 
@@ -4172,9 +4425,21 @@ function createComboBotHelper<
       if (!dealId || !fundsId) {
         return
       }
-      if (this.comboFundsSent.get(dealId)?.id === fundsId) {
-        this.comboFundsSent.delete(dealId)
+      try {
+        await this.restoreAfterUnfilledComboFunds(order, dealId, fundsId)
+      } finally {
+        // Cleared once the book is back, not before.
+        if (this.comboFundsSent.get(dealId)?.id === fundsId) {
+          this.comboFundsSent.delete(dealId)
+        }
       }
+    }
+
+    private async restoreAfterUnfilledComboFunds(
+      order: Order,
+      dealId: string,
+      fundsId: string,
+    ) {
       const d = this.getDeal(dealId)
       if (!d || d.deal.status !== DCADealStatusEnum.open) {
         return
@@ -4188,7 +4453,9 @@ function createComboBotHelper<
       d.deal.pendingReduceFunds = (d.deal.pendingReduceFunds ?? []).filter(
         (p) => p.id !== fundsId,
       )
-      this.saveDeal(d, {
+      // Awaited so the rebuild below works on the stored deal (see the fill
+      // booking).
+      await this.saveDeal(d, {
         pendingAddFunds: d.deal.pendingAddFunds,
         pendingReduceFunds: d.deal.pendingReduceFunds,
       })
@@ -4231,6 +4498,30 @@ function createComboBotHelper<
         pendingAddFunds: add.standing,
         pendingReduceFunds: reduce.standing,
       })
+    }
+
+    /**
+     * Main-app spec 047. A part of a reduce funds order is not a partial take
+     * profit: the order is booked into `reduceFunds` when it fills, and an
+     * entry in `tpHistory` would be counted again by the deal's close.
+     */
+    override async processPartiallyFilledOrder(order: Order): Promise<void> {
+      if (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId) {
+        return this.handleDebug(
+          `Reduce funds order ${order.clientOrderId} PARTIALLY FILLED ${order.executedQty}, booked when it fills`,
+        )
+      }
+      return super.processPartiallyFilledOrder(order)
+    }
+
+    /** Main-app spec 047: the ladder's held funds offsets, see `heldOffsetTotals`. */
+    protected override fundsHeldOffset(findDeal: FullDeal<ExcludeDoc<Deal>>) {
+      return heldOffsetTotals(
+        findDeal.initialOrders.filter(
+          (o) => o.type === TypeOrderEnum.dealRegular,
+        ),
+        findDeal.deal.sizes?.fundsDcaHeld,
+      )
     }
 
     override getInitalDealSettings(): ComboDealsSettings | undefined {
@@ -4854,7 +5145,9 @@ function createComboBotHelper<
             }
             // Main-app spec 047: the level's share of the deal's add / reduce
             // funds, in base. Every sizing below adds it, percent included.
-            const fundsOffset = deal?.sizes?.fundsDca?.[i - 1] ?? 0
+            const fundsOffset =
+              (deal?.sizes?.fundsDca?.[i - 1] ?? 0) +
+              (deal?.sizes?.fundsDcaHeld?.[i - 1] ?? 0)
             let qty = this.math.round(
               ((orderSize * (this.coinm ? ed.quoteAsset.minAmount : 1)) /
                 price) *

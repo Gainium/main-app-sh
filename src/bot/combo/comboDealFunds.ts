@@ -195,3 +195,110 @@ export function scaledDcaOffsets(
   }
   return out
 }
+
+/**
+ * Split a scaling of the deal's DCA levels into the two offset arrays the
+ * deal keeps:
+ *
+ * - `fundsDca` — levels that had NOT filled when the deal was scaled. Their
+ *   extra size is new commitment: it counts in the deal's balances and usage.
+ * - `fundsDcaHeld` — levels that HAD filled. The funds order already bought
+ *   (or sold) their share for the position, and their minigrid was scaled, so
+ *   the offset only resizes the level when it is placed again after its
+ *   minigrid closes. Counting it in the balances or usage would count the
+ *   same funds twice.
+ *
+ * `levels[].qty` is each level's current size, offsets included, so repeated
+ * changes compound.
+ */
+export function splitScaledOffsets(
+  current: { fundsDca?: number[]; fundsDcaHeld?: number[] },
+  levels: { number: number; qty: number; filled: boolean }[],
+  k: number,
+): { fundsDca: number[]; fundsDcaHeld: number[] } {
+  return {
+    fundsDca: scaledDcaOffsets(
+      current.fundsDca,
+      levels.filter((l) => !l.filled),
+      k,
+    ),
+    fundsDcaHeld: scaledDcaOffsets(
+      current.fundsDcaHeld,
+      levels.filter((l) => l.filled),
+      k,
+    ),
+  }
+}
+
+/**
+ * The part of the deal's ladder that is only a re-placement size (the held
+ * offsets), in base and in quote at each level's price. Taken out of the
+ * ladder's sums wherever they measure the deal's commitment.
+ */
+export function heldOffsetTotals(
+  levels: { number?: number; price: number }[],
+  held: number[] | undefined,
+): { base: number; quote: number } {
+  let base = 0
+  let quote = 0
+  if (!held?.length) {
+    return { base, quote }
+  }
+  for (const l of levels) {
+    const offset = l.number ? (held[l.number - 1] ?? 0) : 0
+    if (!Number.isFinite(offset) || offset === 0) {
+      continue
+    }
+    base += offset
+    quote += offset * l.price
+  }
+  return { base, quote }
+}
+
+/**
+ * A coin-margined order is a whole number of contracts of `contractValue`
+ * quote each; the engine carries its size in base. A reduce rounds down so it
+ * never sells more than asked; an add rounds to the nearest contract, as the
+ * ladder does. `contracts < 1` is below the exchange minimum.
+ */
+export function comboContractSize(input: {
+  qty: number
+  price: number
+  contractValue: number
+  direction: ComboFundsDirection
+}): { contracts: number; qty: number } {
+  const { qty, price, contractValue, direction } = input
+  if (!finitePositive(qty) || !finitePositive(price)) {
+    return { contracts: 0, qty: 0 }
+  }
+  if (!finitePositive(contractValue)) {
+    return { contracts: qty, qty }
+  }
+  const raw = (qty * price) / contractValue
+  const contracts =
+    direction === 'reduce' ? Math.floor(raw + 1e-9) : Math.round(raw)
+  return { contracts, qty: (contracts * contractValue) / price }
+}
+
+/**
+ * The scale changes a minigrid is missing: those of its deal booked after the
+ * minigrid opened that it has not applied. A minigrid opened after a change
+ * was sized from the already scaled level and needs none of it.
+ */
+export function minigridMissingScale(
+  fundsScale: { id: string; k: number; time: number }[] | undefined,
+  minigrid: { appliedFundsScale?: string[]; createTime?: number },
+): { k: number; ids: string[] } {
+  const applied = new Set(minigrid.appliedFundsScale ?? [])
+  const created = Number(minigrid.createTime) || 0
+  let k = 1
+  const ids: string[] = []
+  for (const f of fundsScale ?? []) {
+    if (applied.has(f.id) || !(f.time > created) || !finitePositive(f.k)) {
+      continue
+    }
+    k *= f.k
+    ids.push(f.id)
+  }
+  return { k, ids }
+}

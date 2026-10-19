@@ -18,8 +18,12 @@ import {
   comboFundsMinimumVerdict,
   comboFundsScale,
   comboMinimumScale,
+  comboContractSize,
   comboPositionBase,
+  heldOffsetTotals,
+  minigridMissingScale,
   scaledDcaOffsets,
+  splitScaledOffsets,
 } from './comboDealFunds'
 
 const round4 = (n: number) => Math.round(n * 1e4) / 1e4
@@ -219,5 +223,87 @@ describe('combo add / reduce funds: arithmetic', () => {
     expect(scaledDcaOffsets([0.5], [{ number: 1, qty: 1 }], 0.5)).to.deep.equal(
       [0],
     )
+  })
+
+  it('filled levels get a held offset, unfilled ones a counted one', () => {
+    // BO + SO1 filled, +50 %.
+    const out = splitScaledOffsets(
+      {},
+      [
+        { number: 1, qty: SO1.qty, filled: true },
+        { number: 2, qty: SO2.qty, filled: false },
+        { number: 3, qty: SO3.qty, filled: false },
+      ],
+      1.5,
+    )
+    expect(out.fundsDcaHeld[0]).to.be.closeTo(SO1.qty / 2, 1e-12)
+    expect(out.fundsDca[0]).to.equal(0)
+    expect(out.fundsDca[1]).to.be.closeTo(SO2.qty / 2, 1e-12)
+    // Only the held part is left out of the commitment.
+    const held = heldOffsetTotals(
+      [
+        { number: 1, price: 98 },
+        { number: 2, price: 96 },
+      ],
+      out.fundsDcaHeld,
+    )
+    expect(held.base).to.be.closeTo(SO1.qty / 2, 1e-12)
+    expect(held.quote).to.be.closeTo((SO1.qty / 2) * 98, 1e-9)
+    expect(
+      heldOffsetTotals([{ number: 1, price: 98 }], undefined),
+    ).to.deep.equal({ base: 0, quote: 0 })
+  })
+
+  it('coin-M: whole contracts, a reduce rounds down, under one is zero', () => {
+    // 100 USD contracts at 50,000: 0.0025 BTC is 1.25 contracts.
+    const add = comboContractSize({
+      qty: 0.0025,
+      price: 50_000,
+      contractValue: 100,
+      direction: 'add',
+    })
+    expect(add.contracts).to.equal(1)
+    expect(add.qty).to.be.closeTo(0.002, 1e-12)
+    const reduce = comboContractSize({
+      qty: 0.0059,
+      price: 50_000,
+      contractValue: 100,
+      direction: 'reduce',
+    })
+    expect(reduce.contracts).to.equal(2)
+    expect(reduce.qty).to.be.closeTo(0.004, 1e-12)
+    expect(
+      comboContractSize({
+        qty: 0.0015,
+        price: 50_000,
+        contractValue: 100,
+        direction: 'reduce',
+      }).contracts,
+    ).to.equal(0)
+  })
+
+  it('a minigrid is missing only the changes booked after it opened that it has not applied', () => {
+    const scales = [
+      { id: 'a', k: 1.5, time: 100 },
+      { id: 'b', k: 0.8, time: 200 },
+    ]
+    expect(minigridMissingScale(scales, { createTime: 50 })).to.deep.equal({
+      k: 1.5 * 0.8,
+      ids: ['a', 'b'],
+    })
+    expect(
+      minigridMissingScale(scales, {
+        createTime: 50,
+        appliedFundsScale: ['a'],
+      }),
+    ).to.deep.equal({ k: 0.8, ids: ['b'] })
+    // Opened after `a`: sized from the scaled level already.
+    expect(minigridMissingScale(scales, { createTime: 150 })).to.deep.equal({
+      k: 0.8,
+      ids: ['b'],
+    })
+    expect(
+      minigridMissingScale(undefined, { createTime: 0 }).ids,
+    ).to.deep.equal([])
   })
 })
