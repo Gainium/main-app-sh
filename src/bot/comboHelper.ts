@@ -111,6 +111,8 @@ import {
   heldOffsetTotals,
   minigridMissingScale,
   splitScaledOffsets,
+  fitExitLines,
+  capExitLines,
 } from './combo/comboDealFunds'
 import type { ComboFundsDirection } from './combo/comboDealFunds'
 
@@ -4383,7 +4385,13 @@ function createComboBotHelper<
         fullFee: d.deal.fullFee,
         sizes: d.deal.sizes,
       })
-      await this.scaleComboMinigrids(dealId, k, fundsId)
+      await this.scaleComboMinigrids(
+        dealId,
+        k,
+        fundsId,
+        undefined,
+        positionBase * k,
+      )
       // The deal and minigrid snapshots a restart loads from are written on a
       // 10–50 s delay. Write them now: a restart in that window would load the
       // deal booked and its minigrids unscaled (or the other way round).
@@ -4402,16 +4410,22 @@ function createComboBotHelper<
 
     /**
      * Scale every live minigrid of the deal by `k`: its budget and its opening
-     * balances persist, its ladder is regenerated from them.
+     * balances persist, its ladder is regenerated from them. The regenerated
+     * exit lines are refitted to the lot step so they sum to no more than the
+     * base each minigrid holds after the scale, and with `positionAfter` all
+     * of them to no more than the deal's position.
      */
     private async scaleComboMinigrids(
       dealId: string,
       k: number,
       fundsIds: string | string[],
       only?: FullMinigrid[],
+      positionAfter?: number,
     ) {
       const ids = [fundsIds].flat()
+      const scaled: FullMinigrid[] = []
       for (const m of only ?? this.comboLiveMinigrids(dealId)) {
+        const heldBefore = this.comboExitLines(m).reduce((a, g) => a + g.qty, 0)
         m.schema.appliedFundsScale = [
           ...(m.schema.appliedFundsScale ?? []),
           ...ids,
@@ -4429,6 +4443,27 @@ function createComboBotHelper<
           m.initialGrids = prepared.initialGrids
           m.currentOrders = prepared.currentOrders
         }
+        const step = await this.comboExitLotStep(m.schema.symbol.symbol)
+        if (step && heldBefore > 0) {
+          const exits = this.comboExitLines(m)
+          const fitted = fitExitLines(
+            exits.map((g) => g.qty),
+            heldBefore * k,
+            step,
+          )
+          exits.forEach((g, i) => (g.qty = fitted[i]))
+        }
+        scaled.push(m)
+      }
+      if (positionAfter !== undefined && scaled.length) {
+        await this.capComboExitLines(
+          dealId,
+          this.comboLiveMinigrids(dealId),
+          positionAfter,
+        )
+      }
+      for (const m of scaled) {
+        m.currentOrders = m.currentOrders.filter((g) => g.qty > 0)
         const currentBalances = this.calculateMinigridBalances(m.currentOrders)
         m.schema.currentBalances = currentBalances
         m.schema.assets = { used: currentBalances, required: currentBalances }
@@ -4447,6 +4482,65 @@ function createComboBotHelper<
           grids: m.schema.grids,
           appliedFundsScale: m.schema.appliedFundsScale,
         })
+      }
+    }
+
+    /** A minigrid's exit lines: the sells of a long, the buy-backs of a short. */
+    private comboExitLines(m: FullMinigrid) {
+      const exit = this.isLong ? OrderSideEnum.sell : OrderSideEnum.buy
+      return m.currentOrders.filter((g) => g.side === exit)
+    }
+
+    /**
+     * The lot step exit lines are fitted to, or `undefined` where they are not
+     * fitted: coin-margined lines are contracts, not base.
+     */
+    private async comboExitLotStep(symbol: string) {
+      if (this.coinm) {
+        return undefined
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      const step = +(ed?.baseAsset.step ?? 0)
+      if (step > 0) {
+        return step
+      }
+      const precision = await this.baseAssetPrecision(symbol)
+      return Number.isFinite(precision) ? 10 ** -precision : undefined
+    }
+
+    /**
+     * Spec 047: the resting exits of a deal never sell (or buy back) more than
+     * the deal's position. Lots come off the largest lines; a line taken to
+     * zero is dropped.
+     */
+    private async capComboExitLines(
+      dealId: string,
+      minigrids: FullMinigrid[],
+      position: number,
+    ) {
+      const d = this.getDeal(dealId)
+      const step = d
+        ? await this.comboExitLotStep(d.deal.symbol.symbol)
+        : undefined
+      if (!step || !minigrids.length || !(position >= 0)) {
+        return
+      }
+      const exits = minigrids.map((m) => this.comboExitLines(m))
+      const before = exits.flat().reduce((a, g) => a + g.qty, 0)
+      const capped = capExitLines(
+        exits.map((e) => e.map((g) => g.qty)),
+        position,
+        step,
+      )
+      exits.forEach((e, i) => e.forEach((g, j) => (g.qty = capped[i][j])))
+      for (const m of minigrids) {
+        m.currentOrders = m.currentOrders.filter((g) => g.qty > 0)
+      }
+      const after = capped.flat().reduce((a, q) => a + q, 0)
+      if (after < before) {
+        this.handleLog(
+          `Deal ${dealId}: resting exit lines ${before} over the position ${position}, trimmed to ${after}`,
+        )
       }
     }
 
@@ -8072,6 +8166,20 @@ function createComboBotHelper<
       const prepared = await this.prepareMinigrids(
         findMinigrids.map((m) => m.schema),
       )
+      // Spec 047: on a deal whose funds were changed, the regenerated exit
+      // lines are held to the position the rebuild just read back from the
+      // fills — each line rounds on its own and their sum drifted over it.
+      if (d && (d.deal.fundsScale ?? []).length) {
+        await this.capComboExitLines(
+          dealId,
+          prepared,
+          comboPositionBase({
+            isLong: this.isLong,
+            initialBalances: d.deal.initialBalances,
+            currentBalances: d.deal.currentBalances,
+          }),
+        )
+      }
       for (const minigrid of prepared) {
         this.setMinigrid(minigrid, false)
       }

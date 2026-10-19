@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.3] - 2026-10-19
+
+### Fixed
+
+- Combo add / reduce funds: the resting grid exits (sells of a long, buy-backs of a short) could exceed the deal's position by a lot step after a change. The market order rounds down, but every regenerated grid line rounded on its own, so the lines no longer summed to the scaled holding (on a 0.1 lot, a 30 % reduce left 200.0 held against 200.1 resting). Scaled lines are now fitted to the lot step so each minigrid's exits sum to no more than what it holds after the change, and the book rebuilt for a deal with funds changes never rests more exit base than the deal's position (lots come off the largest lines). Coin-margined lines (contracts) are unchanged.
+
 ## [1.108.2] - 2026-10-19
 
 ### Fixed

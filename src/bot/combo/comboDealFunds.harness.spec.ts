@@ -1034,6 +1034,71 @@ describe('combo add / reduce funds through the engine (spec 047)', () => {
   })
 })
 
+describe('combo funds scale: resting exits never exceed the position (spec 047)', () => {
+  before(function () {
+    this.timeout(240000)
+    Combo ??= createRequire(__filename)('../comboHelper').default()
+    MainBot ??= createRequire(__filename)('../main').default
+  })
+  const pct = (qty: string) => ({
+    qty,
+    asset: OrderSizeTypeEnum.quote,
+    type: AddFundsTypeEnum.perc,
+    useLimitPrice: false,
+  })
+  /** The fixture on a coarse 0.1 lot, as XRP trades. */
+  const coarse = async (filled: number, price: number) => {
+    const bot = await setup({ filled, price })
+    const ed = await bot.getExchangeInfo()
+    bot.getExchangeInfo = async () => ({
+      ...ed,
+      baseAsset: { ...ed.baseAsset, step: 0.1, minAmount: 0.1 },
+    })
+    bot.baseAssetPrecision = async () => 1
+    // Re-lay the minigrids on the coarse lot.
+    for (const m of bot.allMinigrids) {
+      const [p] = await bot.prepareMinigrids([m.schema])
+      bot.setMinigrid(p, false)
+    }
+    return bot
+  }
+  const position = (bot: any) => {
+    const d = bot.theDeal.deal
+    return (
+      1 +
+      SO.slice(0, 3).reduce((a, l) => a + l.qty, 0) +
+      (d.funds ?? []).reduce((a: number, f: any) => a + f.qty, 0) -
+      (d.reduceFunds ?? []).reduce((a: number, f: any) => a + f.qty, 0)
+    )
+  }
+  const onLot = (q: number) => Math.abs(q * 10 - Math.round(q * 10)) < 1e-9
+
+  for (const [label, dir, qty] of [
+    ['reduce 30 %', 'reduce', '30'],
+    ['reduce 50 %', 'reduce', '50'],
+    ['add 50 %', 'add', '50'],
+    ['add 30 %', 'add', '30'],
+  ] as const) {
+    it(`${label} on a 0.1 lot: Σ resting sells ≤ the position, every line on the lot`, async () => {
+      const bot = await coarse(3, 90)
+      const before = sum(sells(bot).flat())
+      if (dir === 'reduce') {
+        await bot.reduceDealFunds(BOT_ID, DEAL_ID, pct(qty))
+      } else {
+        await bot.addDealFunds(BOT_ID, DEAL_ID, pct(qty))
+      }
+      expect(bot.refusals).to.deep.equal([])
+      await bot.applyComboFundsFill(bot.orders.get(bot.sent[0].clientOrderId))
+      const lines = sells(bot).flat()
+      lines.forEach((q: number) => expect(onLot(q), `${q}`).to.equal(true))
+      expect(sum(lines)).to.be.at.most(position(bot) + 1e-9)
+      // ...and the book keeps the scaled holding, less at most a lot a line.
+      const k = bot.theDeal.deal.fundsScale[0].k
+      expect(sum(lines)).to.be.at.least(before * k - 0.1 * lines.length)
+    })
+  }
+})
+
 /**
  * Spec 047 §2.3.7: a worker stopped while an add's book was being rebuilt.
  * The deal, its minigrids and its orders are in the database as the booking

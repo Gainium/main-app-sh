@@ -24,6 +24,8 @@ import {
   minigridMissingScale,
   scaledDcaOffsets,
   splitScaledOffsets,
+  fitExitLines,
+  capExitLines,
 } from './comboDealFunds'
 
 const round4 = (n: number) => Math.round(n * 1e4) / 1e4
@@ -305,5 +307,52 @@ describe('combo add / reduce funds: arithmetic', () => {
     expect(
       minigridMissingScale(undefined, { createTime: 0 }).ids,
     ).to.deep.equal([])
+  })
+})
+
+describe('combo funds scale: exit lines fitted to the lot step', () => {
+  const total = (a: number[]) => +a.reduce((x, y) => x + y, 0).toFixed(8)
+  const onStep = (q: number, step: number) =>
+    Math.abs(q / step - Math.round(q / step)) < 1e-9
+
+  it('XRP, lot 0.1: three 57.2 lines × 0.7 regenerate as 40.1 + 40.1 + 40.0 (120.2) and are fitted to 120.1', () => {
+    const held = 57.2 * 3 * 0.7 // 120.12
+    const fitted = fitExitLines([40.1, 40.1, 40.0], held, 0.1)
+    expect(total(fitted)).to.equal(120.1)
+    fitted.forEach((q) => expect(onStep(q, 0.1), `${q}`).to.equal(true))
+  })
+
+  it('never raises lines above their own sum, and gives a floored remainder to the last line', () => {
+    expect(fitExitLines([40, 40, 40], 120.12, 0.1)).to.deep.equal([40, 40, 40])
+    // 40.05 floors to 40.0 on each line; the 0.1 lost goes to the last one.
+    expect(fitExitLines([40.05, 40.05, 40.05], 120.15, 0.1)).to.deep.equal([
+      40, 40, 40.1,
+    ])
+  })
+
+  it('XRP reduce 30 %: the market reduce rounds down (85.71 → 85.7, position 200.0), the resting sells 200.1 are cut to 200.0', () => {
+    const position = 285.7 - 85.7
+    const capped = capExitLines(
+      [
+        [40.1, 40.0, 40.0],
+        [40.0, 40.0],
+      ],
+      position,
+      0.1,
+    )
+    expect(total(capped.flat())).to.equal(200)
+    expect(capped).to.deep.equal([
+      [40, 40, 40],
+      [40, 40],
+    ])
+  })
+
+  it('add on a level minigrid: 0.031 + 0.031 resting vs 0.0615 held is cut to 0.0615', () => {
+    const capped = capExitLines([[0.031, 0.031]], 0.0615, 0.0001)
+    expect(total(capped.flat())).to.equal(0.0615)
+  })
+
+  it('a book already within the position is left as it is', () => {
+    expect(capExitLines([[1, 2], [3]], 6.5, 0.1)).to.deep.equal([[1, 2], [3]])
   })
 })

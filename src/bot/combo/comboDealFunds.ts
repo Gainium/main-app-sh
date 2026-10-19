@@ -302,3 +302,95 @@ export function minigridMissingScale(
   }
   return { k, ids }
 }
+
+const stepDecimals = (step: number) => {
+  const s = `${step}`
+  if (s.includes('e-')) {
+    return +s.split('e-')[1]
+  }
+  return s.includes('.') ? s.split('.')[1].length : 0
+}
+const toStep = (n: number, step: number, mode: 'floor' | 'round') => {
+  const units = n / step
+  const whole = mode === 'floor' ? Math.floor(units + 1e-9) : Math.round(units)
+  return +(whole * step).toFixed(stepDecimals(step))
+}
+
+/**
+ * The exit lines (sells of a long, buy-backs of a short) of one minigrid after
+ * a funds scale, refitted to the lot step so they sum to no more than the base
+ * the minigrid holds after the scale (`target`, floored to the step).
+ *
+ * The ladder regenerated from the scaled budget rounds every line on its own,
+ * so the lines did not sum back to the scaled holding: on a 0.1 lot, 57.2 ×
+ * 0.7 came back as 40.1 + 40.0 + …, one lot over what the reduce left. Each
+ * line is floored to the step and the remainder up to the target given to the
+ * last line; lines never sum above the target and never above their own sum.
+ */
+export function fitExitLines(
+  lines: number[],
+  target: number,
+  step: number,
+): number[] {
+  if (!finitePositive(step) || !lines.length) {
+    return lines
+  }
+  const cap = Math.min(
+    toStep(Math.max(target, 0), step, 'floor'),
+    toStep(
+      lines.reduce((a, l) => a + l, 0),
+      step,
+      'round',
+    ),
+  )
+  const out = lines.map((l) => toStep(Math.max(l, 0), step, 'floor'))
+  const total = out.reduce((a, l) => a + l, 0)
+  const last = out.length - 1
+  if (total < cap) {
+    out[last] = toStep(out[last] + (cap - total), step, 'round')
+    return out
+  }
+  return capExitLines([out], cap, step)[0]
+}
+
+/**
+ * Take lots off the largest exit lines until all of them together are at most
+ * `position` floored to the step — the deal-level bound: the resting exits of
+ * a Combo deal never sell (or buy back) more than the deal holds. Lines taken
+ * to zero come back as 0; the caller drops them.
+ */
+export function capExitLines(
+  minigrids: number[][],
+  position: number,
+  step: number,
+): number[][] {
+  if (!finitePositive(step)) {
+    return minigrids
+  }
+  const out = minigrids.map((m) => [...m])
+  const cap = toStep(Math.max(position, 0), step, 'floor')
+  let excess = toStep(
+    out.flat().reduce((a, l) => a + l, 0) - cap,
+    step,
+    'round',
+  )
+  while (excess > 0) {
+    let mi = -1
+    let li = -1
+    for (let i = 0; i < out.length; i++) {
+      for (let j = 0; j < out[i].length; j++) {
+        if (mi < 0 || out[i][j] > out[mi][li]) {
+          mi = i
+          li = j
+        }
+      }
+    }
+    if (mi < 0 || !(out[mi][li] > 0)) {
+      break
+    }
+    const take = Math.min(out[mi][li], excess)
+    out[mi][li] = toStep(out[mi][li] - take, step, 'round')
+    excess = toStep(excess - take, step, 'round')
+  }
+  return out
+}
