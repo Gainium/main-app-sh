@@ -80,6 +80,7 @@ import ExchangeChooser from '../exchange/exchangeChooser'
 import { withExchangeCaller } from '../exchange/requestContext'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
+import { placedOrderType } from './placedOrderType'
 import utils, { isPaper } from '../utils'
 import { resolveConnection } from '../utils/credentials'
 import {
@@ -9855,34 +9856,11 @@ class MainBot<T extends IMainBot> {
           processedOrder.executedQty =
             await this.convertOrderExecutedQty(processedOrder)
         }
-        const orderType =
-          processedOrder.type === 'MARKET' ||
-          (processedOrder.fills?.length || 0) > 0 ||
-          (processedOrder.price &&
-            order.origPrice &&
-            !isNaN(+processedOrder.price) &&
-            isFinite(+processedOrder.price) &&
-            !isNaN(+order.origPrice) &&
-            isFinite(+order.origPrice) &&
-            +processedOrder.price !== +order.origPrice) ||
-          (processedOrder.cummulativeQuoteQty &&
-            !isNaN(+processedOrder.cummulativeQuoteQty) &&
-            isFinite(+processedOrder.cummulativeQuoteQty) &&
-            order.origPrice &&
-            !isNaN(+order.origPrice) &&
-            isFinite(+order.origPrice) &&
-            processedOrder.executedQty &&
-            !isNaN(+processedOrder.executedQty) &&
-            isFinite(+processedOrder.executedQty) &&
-            +processedOrder.cummulativeQuoteQty &&
-            +processedOrder.executedQty &&
-            +order.origPrice &&
-            this.math.round(
-              +processedOrder.cummulativeQuoteQty / +processedOrder.executedQty,
-              ed?.priceAssetPrecision,
-            ) !== +order.origPrice)
-            ? OrderTypeEnum.market
-            : OrderTypeEnum.limit
+        const orderType = placedOrderType(
+          processedOrder,
+          { type: requestData.type, origPrice: order.origPrice },
+          (value) => this.math.round(value, ed?.priceAssetPrecision),
+        )
         let price =
           orderType === OrderTypeEnum.limit
             ? ord.price

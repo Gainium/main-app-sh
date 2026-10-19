@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.107.1] - 2026-10-19
+
+### Fixed
+
+- A limit order the exchange reports as resting with a price of 0 is recorded as a limit order. It was recorded as a market order, so the bot's resting-order checks and missed-fill recovery did not see it.
+
 ## [1.107.0] - 2026-10-19
 ### Changed
 - Bot base funding is available to every user: short spot DCA / combo `baseFunding` (Auto / Bot only) and hedge DCA / hedge combo legs on spot that fund themselves with the start actions. Deals opened from now on are stamped `baseFundingBeta` and follow the funded path; deals opened before keep the behaviour they started with. `baseFundingAccess.available` is true for every signed-in user, and `baseFunding` settings are stored as sent. The role check is kept in code (`BASE_FUNDING_RELEASED`) to narrow it again if needed.
