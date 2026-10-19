@@ -1100,6 +1100,11 @@ function createDCABotHelper<
       return !!order.dealId && !this.getDeal(`${order.dealId}`)
     }
 
+    /** A deferred cancel re-send found the order filled: a late fill. Spec `180`. */
+    protected override async settleLateCancelFill(order: Order) {
+      await this.handleUnknownOrder(order)
+    }
+
     deleteDeal(id: string) {
       const key = `${id}`
       const get = this.deals.get(key)
@@ -4381,9 +4386,24 @@ function createDCABotHelper<
       return
     }
 
+    /**
+     * Drop a closed deal's orders from memory — except any still resting on
+     * the venue. Once `cancelAllOrder` has swept the deal, a `NEW` or
+     * `PARTIALLY_FILLED` order is one whose cancel the venue did not confirm.
+     * Dropping it would also unregister it from the user stream, so its later
+     * fill would reach nothing and the coin would sit outside every deal. Kept,
+     * its fill still arrives and is sold as a late fill (spec `112`), and the
+     * deferred re-send keeps asking for its cancel. Spec `180`.
+     */
     removeOrdersByDeal(dealId: string) {
       const get = this.getOrdersByStatusAndDealId({ dealId })
       for (const o of get) {
+        if (this.orderStatuses.includes(o.status)) {
+          this.handleLog(
+            `Order ${o.clientOrderId} is still ${o.status} after its deal closed. Keep tracking it`,
+          )
+          continue
+        }
         this.deleteOrder(o.clientOrderId)
       }
     }

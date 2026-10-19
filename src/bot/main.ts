@@ -318,6 +318,35 @@ const isRateLimitReason = (reason: string | undefined) => {
   return rateLimitMessages.some((m) => r.indexOf(m) !== -1)
 }
 
+const isUnknownOrderReason = (reason: string | null | undefined) => {
+  const r = `${reason ?? ''}`.toLowerCase()
+  return unknownOrderMessages.some((m) => r.indexOf(m.toLowerCase()) !== -1)
+}
+
+/**
+ * The venue accepted an earlier cancel of this order and is still finishing
+ * it. Kraken spot: `WOrder:Cancel pending` is a warning, not a refusal.
+ */
+const isCancelInProgressReason = (reason: string | null | undefined) => {
+  const r = `${reason ?? ''}`
+  return (
+    r.indexOf('Order cancellation in progress') !== -1 ||
+    r.indexOf(
+      'Cancellation failed as the order is already under cancelling status',
+    ) !== -1 ||
+    r.indexOf('DUPLICATE_CANCEL_REQUEST') !== -1 ||
+    r.indexOf('Cancel pending') !== -1
+  )
+}
+
+/**
+ * The venue will never cancel this order, so sending the cancel again cannot
+ * help. Coinbase: an order it is filling as an RFQ.
+ */
+const uncancellableMessages = ['RFQ_ORDERS_CANNOT_BE_CANCELLED']
+const isUncancellableReason = (reason: string | null | undefined) =>
+  uncancellableMessages.some((m) => `${reason ?? ''}`.indexOf(m) !== -1)
+
 /**
  * Back-off before each deferred re-send of a cancel refused as transient
  * (spec `178`), used when the refusal states no hold of its own.
@@ -10048,6 +10077,30 @@ class MainBot<T extends IMainBot> {
     return false
   }
 
+  /**
+   * Whether this cancel is the last one anything will send for the order: the
+   * bot is stopping, or the order's deal has already closed. A refusal of such
+   * a cancel is re-sent once and then looked up rather than only reported.
+   * Spec `180`.
+   */
+  protected cancelIsTeardown(order: Order): boolean {
+    return this.blockPriceCheck || this.cancelRetryWanted(order)
+  }
+
+  /** Back-off before the single re-send of a refused teardown cancel. Spec `180`. */
+  protected refusedCancelRetryDelay(): number {
+    return Math.round(2_000 * (1 + Math.random() * 0.5))
+  }
+
+  /**
+   * A deferred cancel re-send found the order filled. The base bot has no
+   * deal to settle it against; the DCA / Combo helper sells it like any other
+   * late fill. Spec `180`.
+   */
+  protected async settleLateCancelFill(_order: Order): Promise<void> {
+    return
+  }
+
   protected cancelRetryJitter() {
     return 1 + Math.random() * 0.25
   }
@@ -10144,7 +10197,10 @@ class MainBot<T extends IMainBot> {
       return
     }
     this.handleLog(`Send cancel request ${id}: deferred re-send ${state.attempt}`)
-    await this.cancelOrderOnExchange(current, ...args)
+    const result = await this.cancelOrderOnExchange(current, ...args)
+    if (result?.status === 'FILLED') {
+      await this.settleLateCancelFill(result)
+    }
     if (!this.cancelRetries?.get(id)?.pending) {
       this.cancelRetries?.delete(id)
     }
@@ -10280,6 +10336,52 @@ class MainBot<T extends IMainBot> {
           request = await sendCancel()
         }
       }
+      // A teardown cancel the venue refused for anything else — not "unknown
+      // order", not "already cancelling", not rate or lockout (those are
+      // spec `134` / `178`) — was only reported, and the deal close then
+      // dropped the order from memory and from the user stream while it was
+      // still live on the venue. Send it once more after a short back-off,
+      // then ask the venue what the order is. An order the venue can never
+      // cancel (RFQ) is asked straight away. A running deal is untouched: its
+      // own passes re-issue whatever cancels they still want. Spec `180`.
+      const teardown = !primed && !lookupFailed && this.cancelIsTeardown(order)
+      const refusedAtTeardown = () =>
+        teardown &&
+        request.status === StatusEnum.notok &&
+        !isUnknownOrderReason(request.reason) &&
+        !isCancelInProgressReason(request.reason) &&
+        !isRateLimitReason(request.reason) &&
+        !isVenueLockout(request.reason)
+      if (refusedAtTeardown() && !isUncancellableReason(request.reason)) {
+        const delay = this.refusedCancelRetryDelay()
+        this.handleLog(
+          `Send cancel request ${order.clientOrderId} refused during teardown: ${request.reason}. Retry in ${delay}ms`,
+        )
+        await this.sleepBeforeCancelRetry(delay)
+        request = await sendCancel()
+      }
+      if (refusedAtTeardown()) {
+        const reason = `${request.reason ?? ''}`
+        this.handleWarn(
+          `Send cancel request ${order.clientOrderId} refused during teardown: ${reason}. Ask the exchange for the order state`,
+        )
+        this.endMethod(_id)
+        const real = await this._handleUnknownOrder(
+          order.clientOrderId,
+          order.symbol,
+        )
+        // Still resting: keep asking on spec `178`'s deferred ladder until the
+        // venue says it is cancelled or filled.
+        const current = real ? null : await this.findOwnOrder(order.clientOrderId)
+        if (current && ['NEW', 'PARTIALLY_FILLED'].includes(current.status)) {
+          this.queueCancelRetry(current, reason, [
+            setErrors,
+            removeFromLocal,
+            promotePartialToFilled,
+          ])
+        }
+        return real
+      }
       if (request.status === StatusEnum.notok) {
         for (const m of unknownOrderMessages) {
           if (request.reason.toLowerCase().indexOf(m.toLowerCase()) !== -1) {
@@ -10293,16 +10395,7 @@ class MainBot<T extends IMainBot> {
             )
           }
         }
-        if (
-          request.reason.indexOf('Order cancellation in progress') !== -1 ||
-          request.reason.indexOf(
-            'Cancellation failed as the order is already under cancelling status',
-          ) !== -1 ||
-          request.reason.indexOf('DUPLICATE_CANCEL_REQUEST') !== -1 ||
-          // Kraken spot: `WOrder:Cancel pending` is a warning, not a refusal —
-          // the venue accepted the cancel and is still finalising it.
-          request.reason.indexOf('Cancel pending') !== -1
-        ) {
+        if (isCancelInProgressReason(request.reason)) {
           this.handleDebug(
             `Cancellation in progress ${order.clientOrderId}. Sleep 5s`,
           )

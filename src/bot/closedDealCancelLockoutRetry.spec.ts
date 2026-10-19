@@ -222,11 +222,17 @@ describe('closed-deal cancel refused as transient (spec 178)', () => {
     expect(rec.timers).to.have.length(1)
   })
 
-  it('§4.5 a non-transient refusal is not re-sent', async () => {
+  // Narrowed by spec 180: on a closed deal a non-transient refusal is re-sent
+  // once inline and then looked up; it reaches this ladder only if the order
+  // is still resting after the lookup (here the lookup retires it).
+  it('§4.5 a non-transient refusal is not put on the transient ladder', async () => {
     const { b, rec } = bot(() => bad('EGeneral:Invalid arguments'), Helper.prototype)
+    b.sleepBeforeCancelRetry = async () => undefined
     const a = so('D-RO-a', 'OAAAAA-AAAAA-AAAAAA', '2059.39', '0.2097')
     b.orders.set(a.clientOrderId, a)
     await b.cancelOrderOnExchange(a)
+    expect(rec.sent).to.deep.equal([a.clientOrderId, a.clientOrderId])
+    expect(rec.unknown).to.deep.equal([a.clientOrderId])
     expect(rec.timers).to.deep.equal([])
   })
 

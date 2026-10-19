@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.106.14] - 2026-10-19
+
+### Fixed
+
+- A deal close or bot stop whose cancel the exchange refused for a reason other than a rate limit, a lockout or "unknown order" no longer leaves the order resting on the exchange with nothing tracking it. Two examples are Coinbase `COMMANDER_REJECTED_CANCEL_ORDER`, and `RFQ_ORDERS_CANNOT_BE_CANCELLED` for an order the exchange is filling as an RFQ. Before, the refusal was only reported, and the close then dropped the order from the bot, so a later fill sat outside any deal. Now the bot:
+  - sends the cancel once more after a short back-off (except for RFQ orders, which can never be cancelled);
+  - asks the exchange for the order's real status;
+  - keeps tracking the order until the exchange reports it cancelled or filled, asking again on the deferred schedule;
+  - sells a late fill like any other fill that arrives after its deal closed.
+
+  Cancels on running deals are unchanged.
+
 ## [1.106.13] - 2026-10-19
 
 ### Fixed

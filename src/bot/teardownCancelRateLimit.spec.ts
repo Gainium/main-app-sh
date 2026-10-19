@@ -143,12 +143,15 @@ describe('teardown cancel refused for rate (spec 134)', () => {
     expect(rec.errors).to.deep.equal([RATE_LIMIT])
   })
 
-  it('§4.5 any other refusal during stop is not re-sent', async () => {
+  // Amended by spec 180: a non-rate refusal during stop is re-sent ONCE (not
+  // on this ladder), then looked up. See `closeCancelRefused.spec.ts`.
+  it('§4.5 any other refusal during stop is not put on the rate ladder', async () => {
     const { b, rec } = bot([bad('Insufficient balance'), cancelled()], true)
     const o = order()
     b.orders.set(o.clientOrderId, o)
     await b.cancelOrderOnExchange(o)
-    expect(rec.cancels).to.equal(1)
-    expect(rec.errors).to.deep.equal(['Insufficient balance'])
+    expect(rec.cancels, 'one re-send, not the ladder').to.equal(2)
+    expect(rec.waits).to.have.length(1)
+    expect(rec.saved.map((s) => s.status)).to.deep.equal(['CANCELED'])
   })
 })
