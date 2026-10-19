@@ -97,6 +97,11 @@ import { v4 } from 'uuid'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
 import { splitPendingFunds } from './dca/pendingFundsResend'
 import {
+  comboFundsRestartFilter,
+  comboFundsSnapshotStale,
+  settledPendingFundsOrders,
+} from './combo/comboFundsRestart'
+import {
   comboFillScale,
   comboFundsMinimumRefusalMessage,
   comboFundsMinimumVerdict,
@@ -636,6 +641,54 @@ function createComboBotHelper<
       return result
     }
 
+    /**
+     * Main-app spec 047 §2.3.7: the minigrids of the deals a cold restart
+     * loaded from the database instead of the Redis snapshot, read from the
+     * database the way a load without the snapshot reads them.
+     */
+    private async loadStaleDealMinigrids(dealIds: string[]) {
+      const read = await this.minigridDb.readData(
+        {
+          botId: this.botId,
+          dealId: { $in: dealIds },
+        } as any,
+        undefined,
+        {},
+        true,
+      )
+      if (read.status === StatusEnum.notok) {
+        this.handleWarn(
+          `Cannot read minigrids of deals ${dealIds.join(', ')} from DB: ${read.reason}`,
+        )
+        return
+      }
+      const live = read.data.result.filter(
+        (m) => m.status !== ComboMinigridStatusEnum.closed,
+      )
+      this.handleLog(
+        `Loaded ${live.length} minigrids of deals ${dealIds.join(', ')} from DB instead of the redis snapshot`,
+      )
+      for (const m of live) {
+        this.setMinigrid(
+          {
+            schema: { ...m, _id: `${m._id}` },
+            initialGrids: [],
+            currentOrders: [],
+          },
+          false,
+        )
+      }
+      const open = live.filter((m) =>
+        [
+          ComboMinigridStatusEnum.active,
+          ComboMinigridStatusEnum.range,
+        ].includes(m.status),
+      )
+      for (const minigrid of await this.prepareMinigrids(open)) {
+        this.setMinigrid(minigrid, false)
+      }
+    }
+
     private async loadMinigrids() {
       this.handleLog('Start finding minigrids')
       const _id = this.startMethod('loadMinigrids')
@@ -644,6 +697,11 @@ function createComboBotHelper<
         if (fromRedis?.length) {
           this.handleLog(`Found in redis ${fromRedis.length} minigrids`)
           for (const m of fromRedis) {
+            // A deal loaded from the database because its snapshot was older
+            // (spec 047 §2.3.7) loads its minigrids from there too, below.
+            if (this.snapshotStaleDeals.has(`${m.schema.dealId}`)) {
+              continue
+            }
             if (m.schema.status !== ComboMinigridStatusEnum.closed) {
               const currentOrders: Grid[] = []
               for (const o of m.currentOrders) {
@@ -712,10 +770,12 @@ function createComboBotHelper<
           }
         }
       }
-      if (
-        !(this.serviceRestart && !this.secondRestart) ||
-        !this.minigrids.size
-      ) {
+      const fullDbLoad =
+        !(this.serviceRestart && !this.secondRestart) || !this.minigrids.size
+      if (!fullDbLoad && this.snapshotStaleDeals.size) {
+        await this.loadStaleDealMinigrids([...this.snapshotStaleDeals])
+      }
+      if (fullDbLoad) {
         const minigridData = await this.minigridDb.readData(
           {
             botId: this.botId,
@@ -3975,6 +4035,14 @@ function createComboBotHelper<
           `${label} refused: the order for the deal's position, ${orderQty} ${d.deal.symbol.baseAsset}, is below the exchange minimum order size`,
         )
       }
+      const fundsId = v4()
+      // Durable until the change is booked and its book rebuilt, or ends with
+      // nothing executed: a restart in between loads the deal from the
+      // database and finishes the change (§2.3.7). Written before a reduce
+      // takes the book down, and before a fill the venue reports with the
+      // send could be booked.
+      d.deal.comboFundsRebuild = fundsId
+      await this.saveDeal(d, { comboFundsRebuild: fundsId })
       let sentBase = positionBase
       if (direction === 'reduce') {
         // The grid sells hold the base a long sells here (and on futures a
@@ -3993,7 +4061,6 @@ function createComboBotHelper<
         })
         orderQty = Math.min(orderQtyFor(sentBase), sentBase)
       }
-      const fundsId = v4()
       const add = direction === 'add'
       const buy = add === this.isLong
       const order: Order = {
@@ -4041,11 +4108,15 @@ function createComboBotHelper<
         if (this.comboFundsSent.get(dealId)?.id === fundsId) {
           this.comboFundsSent.delete(dealId)
         }
-        if (direction === 'reduce') {
-          const live = this.getDeal(dealId)
-          if (live && live.deal.status === DCADealStatusEnum.open) {
+        const live = this.getDeal(dealId)
+        if (live && live.deal.status === DCADealStatusEnum.open) {
+          if (direction === 'reduce') {
             await this.rebuildDealOrders(live, dealId, { keepLevels: true })
           }
+          await this.completeComboFundsRebuild(
+            this.getDeal(dealId) ?? live,
+            fundsId,
+          )
         }
         return
       }
@@ -4283,13 +4354,19 @@ function createComboBotHelper<
           k,
         ),
       }
-      await this.scaleComboMinigrids(dealId, k, fundsId)
+      // Durable until the rebuilt book is in the restart snapshots: a restart
+      // before that loads this deal, its orders and its minigrids from the
+      // database and finishes the rebuild (§2.3.7). Written with the booking,
+      // and before the minigrids are scaled — a minigrid the stop leaves
+      // unscaled is scaled on load from `fundsScale`.
+      d.deal.comboFundsRebuild = fundsId
       // Awaited: `saveDeal` runs under its own lock and REPLACES the stored
       // deal with a copy. Rebuilding on the copy read before that write lands
       // leaves the stored deal holding the old ladder, which is what the
       // rebuild then places — the levels at their previous size, under the
       // ids of the orders it has just cancelled.
       await this.saveDeal(d, {
+        comboFundsRebuild: fundsId,
         tpHistory: d.deal.tpHistory,
         updateTime: d.deal.updateTime,
         lastPrice: d.deal.lastPrice,
@@ -4306,6 +4383,7 @@ function createComboBotHelper<
         fullFee: d.deal.fullFee,
         sizes: d.deal.sizes,
       })
+      await this.scaleComboMinigrids(dealId, k, fundsId)
       // The deal and minigrid snapshots a restart loads from are written on a
       // 10–50 s delay. Write them now: a restart in that window would load the
       // deal booked and its minigrids unscaled (or the other way round).
@@ -4315,6 +4393,7 @@ function createComboBotHelper<
       // fills, usage and the take profit recomputed, minigrids re-placed from
       // their scaled budgets.
       await this.rebuildDealOrders(live, dealId, { keepLevels: true })
+      await this.completeComboFundsRebuild(this.getDeal(dealId) ?? live)
       this.updateBotDealStats(dealId)
       if (direction === 'reduce') {
         this.sendDealClosedAlert(live.deal, order, true)
@@ -4371,10 +4450,120 @@ function createComboBotHelper<
       }
     }
 
-    /** Write the deal and minigrid snapshots a restart loads from, now. */
-    private async flushComboFundsSnapshot() {
+    /**
+     * Write the deal and minigrid snapshots a restart loads from, now — and
+     * the order snapshot with `orders`, the same content (and the same 500
+     * order cap) as the delayed `setOrdersToRedis`.
+     */
+    private async flushComboFundsSnapshot(orders = false) {
+      if (orders) {
+        if (this.orders.size > 500) {
+          await this.removeFromRedis('orders')
+        } else {
+          await this.setToRedis('orders', [...this.orders.values()])
+        }
+      }
       await this.setToRedis('minigrids', this.allMinigrids)
       await this.setToRedis('deals', [...this.deals.values()])
+    }
+
+    /**
+     * Spec 047 §2.3.7: the deal's book is rebuilt for its funds change. Put
+     * the rebuilt state in every restart snapshot, THEN clear the durable
+     * marker — a stop before the clear restarts from the database and
+     * rebuilds again, which is idempotent; a stop after it restarts from
+     * snapshots that already hold the new book.
+     */
+    private async completeComboFundsRebuild(
+      d: FullDeal<ExcludeDoc<ComboDealsSchema>>,
+      fundsId?: string,
+    ) {
+      if (
+        !d.deal.comboFundsRebuild ||
+        (fundsId && d.deal.comboFundsRebuild !== fundsId)
+      ) {
+        return
+      }
+      d.deal.comboFundsRebuild = null
+      await this.flushComboFundsSnapshot(true)
+      await this.saveDeal(d, { comboFundsRebuild: null })
+    }
+
+    /**
+     * Spec 047 §2.3.7: finish, after a restart, the funds changes the stop
+     * interrupted — before the restart check, so it does not place the old
+     * book. A pending order that executed is booked (which rebuilds); one
+     * that executed nothing is dropped; a booking whose rebuild did not
+     * finish is rebuilt from the stored deal and minigrids.
+     */
+    private async resumeComboFundsChanges() {
+      for (const d of this.getOpenDeals()) {
+        if (d.deal.status !== DCADealStatusEnum.open) {
+          continue
+        }
+        const dealId = `${d.deal._id}`
+        const settled = settledPendingFundsOrders(
+          d.deal,
+          this.getOrdersByStatusAndDealId({ dealId }),
+        )
+        for (const o of [...settled.book, ...settled.drop]) {
+          this.comboFundsSettled.add(
+            (o.addFundsId || o.reduceFundsId) as string,
+          )
+        }
+        for (const o of settled.book) {
+          this.handleLog(
+            `Deal ${dealId}: funds order ${o.clientOrderId} ${o.status} ${o.executedQty} before the restart, booking it`,
+          )
+          await this.bookComboFunds(o)
+        }
+        for (const o of settled.drop) {
+          await this.dropCanceledComboFunds(o)
+        }
+        // Still marked with no order left open: a change booked whose book
+        // was not rebuilt, or one stopped before or as its order was sent
+        // (a reduce has already taken the book down). Rebuild the book from
+        // the stored deal and minigrids. An open order is settled by the
+        // venue check, whose booking rebuilds.
+        const live = this.getDeal(dealId)
+        if (live?.deal.comboFundsRebuild) {
+          const now = settledPendingFundsOrders(
+            live.deal,
+            this.getOrdersByStatusAndDealId({ dealId }),
+          )
+          if (!now.open) {
+            await this.resumeComboFundsRebuild(this.botId, dealId)
+          }
+        }
+      }
+    }
+
+    @IdMute(mutex, (botId: string, dealId: string) => `${botId}update${dealId}`)
+    private async resumeComboFundsRebuild(_botId: string, dealId: string) {
+      const d = this.getDeal(dealId)
+      if (
+        !d ||
+        d.deal.status !== DCADealStatusEnum.open ||
+        !d.deal.comboFundsRebuild
+      ) {
+        return
+      }
+      this.handleLog(
+        `Deal ${dealId}: funds change ${d.deal.comboFundsRebuild} did not finish before the restart. Rebuilding the book from the stored deal`,
+      )
+      await this.rebuildDealOrders(d, dealId, { keepLevels: true })
+      await this.completeComboFundsRebuild(this.getDeal(dealId) ?? d)
+    }
+
+    protected override snapshotStaleDealFilter() {
+      return comboFundsRestartFilter()
+    }
+
+    protected override snapshotStaleReason(
+      snapshot: ExcludeDoc<Deal>,
+      stored: ExcludeDoc<Deal>,
+    ) {
+      return comboFundsSnapshotStale(snapshot, stored)
     }
 
     /**
@@ -4464,6 +4653,7 @@ function createComboBotHelper<
           keepLevels: true,
         })
       }
+      await this.completeComboFundsRebuild(this.getDeal(dealId) ?? d, fundsId)
     }
 
     /**
@@ -7946,6 +8136,9 @@ function createComboBotHelper<
       // the fill handler, which runs unawaited; the active-deal loop must not
       // read that level as missing and send it a second time.
       const heldOpenAtStart = new Set<string>()
+      // A funds change the stop interrupted is finished first: the checks
+      // below would otherwise place the book the change was replacing.
+      await this.resumeComboFundsChanges()
       if (serviceRestart) {
         await this.cancelClosedMinigridOrders()
         await this.checkOrders(this.botId)

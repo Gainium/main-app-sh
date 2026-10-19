@@ -2075,6 +2075,7 @@ function createDCABotHelper<
       // whose orders it was generating, so `findBaseOrderByDeal` — which returns
       // nothing without it — could never find that deal's own base order either.
       let restoredFromRedis: FullDeal<ExcludeDoc<Deal>>[] = []
+      this.snapshotStaleDeals = new Set()
       if (this.serviceRestart && !this.secondRestart) {
         const fromRedis =
           await this.getFromRedis<FullDeal<ExcludeDoc<Deal>>[]>('deals')
@@ -2162,6 +2163,12 @@ function createDCABotHelper<
         // its filled base order, and the bot opened another deal on the pair.
         // Load the live deals the snapshot lacks the way a Mongo load does.
         // Spec 151.
+        //
+        // The same read returns the restored deals whose stored copy may be
+        // newer than the snapshot (`snapshotStaleDealFilter`, none for DCA);
+        // `snapshotStaleReason` decides which of them load from Mongo instead.
+        const restoredIds = [...this.deals.keys()]
+        const staleFilter = this.snapshotStaleDealFilter()
         const missing = await this.dealsDb.readData(
           {
             botId: this.botId,
@@ -2172,7 +2179,11 @@ function createDCABotHelper<
                 DCADealStatusEnum.start,
               ],
             },
-            _id: { $nin: [...this.deals.keys()] },
+            ...(staleFilter.length
+              ? {
+                  $or: [{ _id: { $nin: restoredIds } }, ...staleFilter],
+                }
+              : { _id: { $nin: restoredIds } }),
           } as any,
           {},
           {},
@@ -2183,12 +2194,40 @@ function createDCABotHelper<
             `Cannot check DB for deals missing from redis: ${missing.reason}`,
           )
         } else if (missing.data.result.length) {
-          deals = missing.data.result
-          this.handleLog(
-            `Found in DB ${deals.length} deals missing from redis: ${deals
-              .map((d) => `${d._id}`)
-              .join(', ')}`,
+          const restoredSet = new Set(restoredIds)
+          const absent = missing.data.result.filter(
+            (d) => !restoredSet.has(`${d._id}`),
           )
+          const stale = missing.data.result.filter((d) => {
+            const snapshot = this.deals.get(`${d._id}`)
+            if (!snapshot) {
+              return false
+            }
+            const reason = this.snapshotStaleReason(snapshot.deal, d)
+            if (reason) {
+              this.handleLog(
+                `Deal ${d._id} restored from redis is older than DB (${reason}), loading it from DB`,
+              )
+            }
+            return !!reason
+          })
+          for (const d of stale) {
+            this.snapshotStaleDeals.add(`${d._id}`)
+            this.deleteDeal(`${d._id}`)
+          }
+          if (stale.length) {
+            restoredFromRedis = restoredFromRedis.filter(
+              (r) => !this.snapshotStaleDeals.has(`${r.deal._id}`),
+            )
+          }
+          deals = [...absent, ...stale]
+          if (absent.length) {
+            this.handleLog(
+              `Found in DB ${absent.length} deals missing from redis: ${absent
+                .map((d) => `${d._id}`)
+                .join(', ')}`,
+            )
+          }
         }
       }
       const keys = loadFromDb
@@ -2249,6 +2288,9 @@ function createDCABotHelper<
         // A cold restart that restores orders from Redis merges in these
         // deals' open orders from Mongo (Spec 109).
         keys,
+        // ...and reads every row of the deals loaded from Mongo above because
+        // the snapshot was older (main-app spec 047 §2.3.7).
+        [...this.snapshotStaleDeals],
       )
       orders
         .filter(
@@ -27656,6 +27698,32 @@ function createDCABotHelper<
       quote: number
     } {
       return { base: 0, quote: 0 }
+    }
+
+    /**
+     * Deals a cold restart loaded from Mongo instead of the Redis snapshot
+     * because the snapshot was older than the stored deal (main-app spec 047
+     * §2.3.7). Their orders are read from Mongo too.
+     */
+    protected snapshotStaleDeals: Set<string> = new Set()
+
+    /**
+     * Extra Mongo conditions (ORed) for the restored deals whose stored copy
+     * may be newer than the Redis snapshot. None on a DCA deal.
+     */
+    protected snapshotStaleDealFilter(): Record<string, unknown>[] {
+      return []
+    }
+
+    /**
+     * Why the stored copy of a restored deal must win over the snapshot, or
+     * `null` to keep the snapshot. Never on a DCA deal.
+     */
+    protected snapshotStaleReason(
+      _snapshot: ExcludeDoc<Deal>,
+      _stored: ExcludeDoc<Deal>,
+    ): string | null {
+      return null
     }
 
     /**

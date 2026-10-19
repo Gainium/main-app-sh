@@ -2161,7 +2161,9 @@ class MainBot<T extends IMainBot> {
   async setToRedis<T>(key: RedisKeys, data: T) {
     try {
       if (this.redisDb && this.redisDb.isReady) {
-        this.redisDb.hSet(this.botId, key, JSON.stringify(data))
+        // Awaited so a caller that awaits this knows the snapshot is written
+        // (a Combo funds rebuild clears its durable marker only after).
+        await this.redisDb.hSet(this.botId, key, JSON.stringify(data))
       }
     } catch (e) {
       this.handleErrors(
@@ -2178,7 +2180,7 @@ class MainBot<T extends IMainBot> {
   async removeFromRedis(key: RedisKeys) {
     try {
       if (this.redisDb && this.redisDb.isReady) {
-        this.redisDb.hDel(this.botId, key)
+        await this.redisDb.hDel(this.botId, key)
       }
     } catch (e) {
       this.handleErrors(
@@ -5018,6 +5020,48 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Every row of the given deals that a load without the Redis snapshot reads
+   * (`query`, or the default bot query), or `null` when there are none to read
+   * or the read failed — the caller then keeps the snapshot's rows.
+   */
+  private async loadDealOrdersFromDb(
+    query: QueryFilter<ClearOrderSchema> | undefined,
+    dealIds: string[],
+  ): Promise<{ dealIds: Set<string>; rows: ClearOrderSchema[] } | null> {
+    if (!dealIds.length) {
+      return null
+    }
+    const ids = [...new Set(dealIds.map((d) => `${d}`))]
+    const read = await this.ordersDb.readData(
+      {
+        $and: [
+          query ?? {
+            botId: this.botId,
+            status: { $nin: ['CANCELED', 'EXPIRED'] },
+            typeOrder: {
+              $nin: [TypeOrderEnum.liquidation, TypeOrderEnum.br],
+            },
+          },
+          { botId: this.botId, dealId: { $in: ids } },
+        ],
+      } as QueryFilter<ClearOrderSchema>,
+      undefined,
+      {},
+      true,
+    )
+    if (read.status === StatusEnum.notok) {
+      this.handleWarn(
+        `Cannot read the orders of deals ${ids.join(', ')} from DB, keeping the redis snapshot: ${read.reason}`,
+      )
+      return null
+    }
+    this.handleLog(
+      `Loaded ${read.data.result.length} orders of deals ${ids.join(', ')} from DB instead of the redis snapshot`,
+    )
+    return { dealIds: new Set(ids), rows: read.data.result }
+  }
+
+  /**
    * Read orders from {@link MainBot#ordersDb}<br />
    *
    * @returns {Promise<ClearOrderSchema[]>} Array of orders
@@ -5027,6 +5071,7 @@ class MainBot<T extends IMainBot> {
     query?: QueryFilter<ClearOrderSchema>,
     skipRedis = false,
     dealIds: string[] = [],
+    dbDealIds: string[] = [],
   ): Promise<ClearOrderSchema[]> {
     const id = this.startMethod('loadOrders main')
     // The Redis order snapshot is a COLD-START shortcut only, hence the same
@@ -5065,7 +5110,21 @@ class MainBot<T extends IMainBot> {
         // from it, and the restart check placed both again. Merge in the open
         // rows Mongo holds for these deals. Scoped by `dealId` (indexed) to
         // open statuses, so a mass restart reads no order history. Spec 109.
-        const restored = orders.map((o) => ({ ...o, _id: o._id }))
+        // Deals whose stored copy the caller found newer than the snapshot
+        // (`dbDealIds`, e.g. a Combo add / reduce funds booked but not yet
+        // rebuilt — main-app spec 047 §2.3.7) take ALL their rows from Mongo,
+        // the way a load without the snapshot does. The snapshot predates the
+        // booking: it still holds the book the booking was cancelling, and it
+        // lacks the filled funds order the deal's balances are read from.
+        // Merging only Mongo's OPEN rows left the cancelled rows live in
+        // memory, and the restart check placed them again.
+        const fromDb = await this.loadDealOrdersFromDb(query, dbDealIds)
+        const restored = orders
+          .filter((o) => !fromDb || !fromDb.dealIds.has(`${o.dealId}`))
+          .map((o) => ({ ...o, _id: o._id }))
+        if (fromDb) {
+          restored.push(...fromDb.rows)
+        }
         const ids = [
           ...new Set([
             ...dealIds,

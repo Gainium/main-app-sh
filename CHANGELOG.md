@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.2] - 2026-10-19
+
+### Fixed
+
+- Combo add / reduce funds: a worker stopped while a change was being booked or its book rebuilt restarted on Redis snapshots written before the change and placed the old book again next to the half placed new one — grid exits for more base than the deal held, safety orders at the old size, and the deal size left at the old position. A change now writes a durable marker on the deal (`comboFundsRebuild`) before its order is sent and clears it once the rebuilt book is in the snapshots. A cold restart loads a marked deal, a deal with an order in flight, or a deal holding a change its snapshot lacks from the database together with its orders and minigrids, books a funds order that executed before the stop (drops one that executed nothing), and rebuilds the book from the stored deal before the restart check runs.
+- Redis snapshot writes are awaited by callers that await them.
+
 ## [1.108.1] - 2026-10-19
 
 ### Fixed

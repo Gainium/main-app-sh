@@ -2580,6 +2580,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   funds: filledFunds,
   reduceFunds: filledFunds,
   fundsScale: [{ id: String, k: Number, time: Number }],
+  comboFundsRebuild: String,
   botFunding: dealFunding,
   fundingHold: dealFundingHold,
   baseFundingBeta: Boolean,

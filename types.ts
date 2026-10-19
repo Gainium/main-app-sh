@@ -1876,6 +1876,13 @@ export interface ComboDealsSchema extends DCADealsSchema {
   }[]
   /** Combo add / reduce funds: the scale factor of each executed change. */
   fundsScale?: { id: string; k: number; time: number }[]
+  /**
+   * Combo add / reduce funds: the id of a change that is booked but whose
+   * book rebuild has not finished. Written with the booking, cleared once the
+   * rebuilt book is in the restart snapshots; a restart that finds it loads
+   * the deal from the database and rebuilds the book (main-app spec 047).
+   */
+  comboFundsRebuild?: string | null
   transactions?: {
     buy: number
     sell: number
