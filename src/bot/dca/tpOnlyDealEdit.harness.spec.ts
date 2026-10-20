@@ -57,7 +57,7 @@ const restingSo = {
   status: 'NEW',
 }
 
-const buildBot = (botType: BotType = BotType.dca) => {
+const buildBot = (botType: BotType = BotType.dca, extra: any[] = []) => {
   const raised = {
     cancelled: [] as string[],
     cancelAll: [] as unknown[][],
@@ -80,7 +80,7 @@ const buildBot = (botType: BotType = BotType.dca) => {
     initialOrders: [{ type: TypeOrderEnum.dealRegular }],
     currentOrders: [] as any[],
   }
-  const orders = [restingTp, restingSo]
+  const orders = [restingTp, restingSo, ...extra]
   class TestBot extends (Helper as any) {
     raised = raised
     botId = BOT_ID
@@ -236,6 +236,60 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
     it('does not for a ladder edit', async () => {
       expect(await run({ ...BOT_SETTINGS, ordersCount: 7 })).to.deep.equal([
         { tpOnly: false },
+      ])
+    })
+  })
+
+  describe('reduce-funds orders are not the take profit (main-app spec 047)', () => {
+    /** A resting reduce: a dealTP row, with or without its funds id. */
+    const reduce = (clientOrderId: string, withId: boolean) => ({
+      clientOrderId,
+      dealId: DEAL_ID,
+      symbol: SYMBOL,
+      typeOrder: TypeOrderEnum.dealTP,
+      status: 'NEW',
+      ...(withId ? { reduceFundsId: `rf-${clientOrderId}` } : {}),
+    })
+
+    it('DCA: a resting limit reduce is left resting; only the take profit is replaced', async () => {
+      const { bot, deal, raised } = buildBot(BotType.dca, [
+        reduce('D-TPR-52a', true),
+      ])
+      ;(deal.deal as any).pendingReduceFunds = [{ id: 'rf-D-TPR-52a' }]
+      await bot.rebuildDealOrders(deal, DEAL_ID, { tpOnly: true })
+      expect(raised.cancelled).to.deep.equal(['D-TP-52'])
+      expect(raised.placed.map((o: any) => o.type)).to.deep.equal([
+        TypeOrderEnum.dealTP,
+      ])
+      // Nothing re-sends the reduce: it was never cancelled.
+      expect(raised.resent).to.equal(0)
+    })
+
+    it('a reduce row that reached memory without its funds id is still recognised by its client id', async () => {
+      const { bot, deal, raised } = buildBot(BotType.dca, [
+        reduce('D-TPR-52b', false),
+      ])
+      await bot.rebuildDealOrders(deal, DEAL_ID, { tpOnly: true })
+      expect(raised.cancelled).to.deep.equal(['D-TP-52'])
+    })
+
+    it('Combo: an in-flight reduce (with or without its id) is untouched, and the minigrids are not regenerated', async () => {
+      const { bot, deal, raised } = buildBot(BotType.combo, [
+        reduce('D-TPR-52c', true),
+        reduce('D-TPR-52d', false),
+      ])
+      bot.combo = true
+      let regenerated = 0
+      bot.getOrdersToRestartAfterSettingsUpdate = async () => {
+        regenerated++
+        return { new: [], cancel: [] }
+      }
+      await bot.rebuildDealOrders(deal, DEAL_ID, { tpOnly: true })
+      expect(raised.cancelled).to.deep.equal(['D-TP-52'])
+      expect(raised.cancelAll).to.have.length(0)
+      expect(regenerated).to.equal(0)
+      expect(raised.placed.map((o: any) => [o.type, o.price])).to.deep.equal([
+        [TypeOrderEnum.dealTP, 3100],
       ])
     })
   })

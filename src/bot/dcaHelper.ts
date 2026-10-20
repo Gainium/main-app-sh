@@ -276,6 +276,7 @@ import {
 } from './dca/gridBreakpoints'
 import { resolveLevelClientOrderId } from './clientOrderIdReissue'
 import { splitPendingFunds } from './dca/pendingFundsResend'
+import { isComboFundsOrderRow } from './combo/comboDealFunds'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
@@ -28603,9 +28604,12 @@ function createDCABotHelper<
           status: this.orderStatuses,
           dealId,
         }).filter(
-          // A reduce-funds order is a dealTP too; it is not the deal's take
-          // profit and must never be cancelled by a take-profit edit.
-          (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
+          // A reduce-funds order is a dealTP too (a resting DCA limit reduce,
+          // an in-flight Combo reduce); it is not the deal's take profit and
+          // must never be cancelled by a take-profit edit — also when its row
+          // reached memory without its funds id (`D-TPR` client id).
+          (o) =>
+            o.typeOrder === TypeOrderEnum.dealTP && !isComboFundsOrderRow(o),
         )
         for (const o of restingTps) {
           const result = await this.cancelOrderOnExchange(o)
@@ -28719,7 +28723,12 @@ function createDCABotHelper<
       })
 
       if (tpOnly) {
-        const toPlace = await this.getOrdersToRestartAfterSettingsUpdate(dealId)
+        // A Combo deal's restart set regenerates (and re-caps) its minigrid
+        // ladders in memory, which a take-profit edit must not touch: its
+        // take profit is taken straight from the rebuilt deal orders.
+        const toPlace = this.combo
+          ? { new: findDeal.currentOrders, cancel: [] }
+          : await this.getOrdersToRestartAfterSettingsUpdate(dealId)
         await this.placeOrders(
           this.botId,
           findDeal.deal.symbol.symbol,

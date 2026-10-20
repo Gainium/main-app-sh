@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.11] - 2026-10-20
+
+### Fixed
+
+- A take-profit-only deal edit now also leaves a reduce-funds order resting when its row has no funds id yet (recognised by its client id), and on a Combo deal it places the take profit from the rebuilt deal orders without regenerating the minigrid ladders.
+
 ## [1.108.10] - 2026-10-20
 
 ### Changed
