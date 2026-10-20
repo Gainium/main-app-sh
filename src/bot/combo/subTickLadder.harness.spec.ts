@@ -389,15 +389,26 @@ describe('combo minigrid levels finer than the price tick (spec 176)', () => {
       // Each level is sized on its own (spec 086 carries the lot residual
       // across levels), so a BUY and the SELL a level above it may differ by
       // one lot. A level traded twice at one price is a whole level: ~172.
+      // Main-app spec 048: the opening buy-backs (431+432+431+432 = 1726) are
+      // held to the 1720 sold, the 6 lots off the first to fill.
       const trail = `${JSON.stringify(bot.filled)}\n${bot.trail.join('\n')}`
       const LOT = 1
+      const HELD_TO_SOLD = 6
       expect(Math.abs(bot.filled.BUY - bot.filled.SELL), trail).to.be.at.most(
-        LOT * bot.mgs[0].schema.settings.levels,
+        LOT * bot.mgs[0].schema.settings.levels + HELD_TO_SOLD,
       )
     })
   })
 
   describe('§4 the minigrid createMinigrid builds', () => {
+    it('§4.0 buys back no more than its level sold (main-app spec 048)', async () => {
+      const grids = await open(makeBot())
+      const buyBacks = grids.filter((g: any) => g.side === OrderSideEnum.buy)
+      expect(buyBacks.reduce((a: number, g: any) => a + g.qty, 0)).to.equal(
+        1720,
+      )
+    })
+
     it('§4.1 has no two levels at one price', async () => {
       const bot = makeBot()
       await open(bot)

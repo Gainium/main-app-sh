@@ -430,3 +430,102 @@ export function capExitLines(
   }
   return out
 }
+
+type LadderLine = { side: string; price: number; qty: number }
+
+/**
+ * Main-app spec 048. The exit lines a minigrid's ladder regenerates after one
+ * of its own orders fills (or after it opens), held to what it can sell.
+ *
+ * Each regenerated line rounds on its own, so the line a fill hands back (the
+ * sell over a refilled buy of a long, the buy-back under a refilled sell of a
+ * short) can be a lot larger than the fill: a buy of 0.028 answered by a sell
+ * of 0.029. Every refill cycle then rested one more lot than the minigrid held.
+ *
+ * - `prev` / `next`: the minigrid's ladder before the fill (empty for a new
+ *   one) and as regenerated; `exit` is the exit side.
+ * - `floors[i]`: the least the i-th exit line of `next` may be trimmed to (the
+ *   venue minimum), at least one step.
+ * - `filled`: the fill, at its own executed quantity.
+ * - `others` / `position`: with both, the exits of the deal's other live
+ *   minigrids and the deal's position after the fill — the deal as a whole
+ *   rests no more than it holds.
+ *
+ * What the minigrid holds after the fill is what its exits rested before, plus
+ * the entries the rebuild counts as filled (the fill, and on a catch-up every
+ * entry line it dropped), less the exits it counts as filled. Lots come off
+ * the exit lines that are not resting unchanged first — the fill's
+ * counter-order is one of them — largest first; a resting line is trimmed only
+ * when that is not enough. No line goes below its floor, so the minigrid is
+ * never emptied; `excess` is what could not be taken.
+ */
+export function capRefillExitLines(input: {
+  prev: LadderLine[]
+  next: LadderLine[]
+  exit: string
+  floors?: number[]
+  filled: LadderLine
+  others?: number
+  position?: number
+  step: number
+}): { qty: number[]; cap: number; excess: number } {
+  const { prev, exit, step, filled } = input
+  const next = input.next.filter((l) => l.side === exit)
+  const qty = next.map((l) => l.qty)
+  if (!finitePositive(step) || !next.length || !(filled.qty >= 0)) {
+    return { qty, cap: Infinity, excess: 0 }
+  }
+  const sign = (side: string) => (side === exit ? -1 : 1)
+  const same = (a: LadderLine, b: LadderLine) =>
+    a.side === b.side && a.price === b.price
+  const own = prev.findIndex((l) => same(l, filled))
+  let held = prev.filter((l) => l.side === exit).reduce((a, l) => a + l.qty, 0)
+  prev.forEach((l, i) => {
+    if (i !== own && !input.next.some((n) => same(n, l))) {
+      held += sign(l.side) * l.qty
+    }
+  })
+  held += sign(filled.side) * filled.qty
+  let cap = toStep(held, step, 'round')
+  if (input.position !== undefined && Number.isFinite(input.position)) {
+    // Floored to the step, but a value a float hair under a whole step (lot
+    // counts in the tens of millions) is that step, not the one below.
+    const room = input.position - (input.others ?? 0)
+    const near = toStep(room, step, 'round')
+    cap = Math.min(
+      cap,
+      Math.abs(near - room) <= step * 1e-6 ? near : toStep(room, step, 'floor'),
+    )
+  }
+  cap = Math.max(cap, 0)
+  let excess = toStep(qty.reduce((a, q) => a + q, 0) - cap, step, 'round')
+  if (excess <= 0) {
+    return { qty, cap, excess: 0 }
+  }
+  const resting = (i: number) =>
+    prev.some(
+      (p) =>
+        same(p, next[i]) &&
+        toStep(p.qty, step, 'round') === toStep(next[i].qty, step, 'round'),
+    )
+  const order = next
+    .map((_, i) => i)
+    .sort(
+      (a, b) =>
+        Number(resting(a)) - Number(resting(b)) || qty[b] - qty[a] || b - a,
+    )
+  for (const i of order) {
+    if (excess <= 0) {
+      break
+    }
+    const floor = Math.max(input.floors?.[i] ?? step, step)
+    const can = toStep(qty[i] - floor, step, 'floor')
+    if (can <= 0) {
+      continue
+    }
+    const take = Math.min(can, excess)
+    qty[i] = toStep(qty[i] - take, step, 'round')
+    excess = toStep(excess - take, step, 'round')
+  }
+  return { qty, cap, excess: Math.max(excess, 0) }
+}

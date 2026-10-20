@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.9] - 2026-10-20
+
+### Fixed
+
+- Combo: a minigrid's resting exits (the sells of a long, the buy-backs of a short) could sum to more base than the deal held. After a grid fill the ladder is regenerated and each line is rounded on its own, so the exit handed back over a refilled level could be one lot larger than the fill that refilled it (a buy of 0.027 answered by a sell of 0.028); every refill cycle rested one more lot. On one-way futures the last exit would have reversed the position, on spot it was refused for insufficient balance, and a deal could close with a negative base. The regenerated exits are now held to what the minigrid holds after each fill, and the deal's exits together to its position, trimming the newly placed lines first and never below the exchange minimum; a new minigrid's exits are held to the level that opened it, and a book rebuild holds every deal's exits to its position (before, only after an add / reduce funds change). Spot shorts are unchanged: they buy back with quote, and buying back more base than they sold is their profit.
+
 ## [1.108.8] - 2026-10-20
 
 ### Fixed

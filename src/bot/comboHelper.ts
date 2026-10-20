@@ -113,6 +113,7 @@ import {
   splitScaledOffsets,
   fitExitLines,
   capExitLines,
+  capRefillExitLines,
 } from './combo/comboDealFunds'
 import type { ComboFundsDirection } from './combo/comboDealFunds'
 
@@ -515,6 +516,14 @@ function createComboBotHelper<
         dealId: deal._id,
         type: TypeOrderEnum.dealGrid,
       }))
+      // Spec 048: a new minigrid's exits never rest more than its level filled.
+      await this.capMinigridExitsAfterFill({
+        dealId: deal._id,
+        symbol: pair,
+        grids,
+        prev: [],
+        order,
+      })
       const buys = grids.filter((g) => g.side === OrderSideEnum.buy)
       const sells = grids.filter((g) => g.side === OrderSideEnum.sell)
       const base = sells.reduce((acc, o) => acc + o.qty, 0)
@@ -3306,6 +3315,20 @@ function createComboBotHelper<
           newClientOrderId: this.getOrderId(`CMB-GR`),
         }))
       }
+      // Spec 048: each regenerated line rounds on its own, and the line this
+      // fill hands back could rest a lot more than the fill added. Held to
+      // what the minigrid holds now, and the deal's exits to its position.
+      if (isLatest && deal && grids.length) {
+        await this.capMinigridExitsAfterFill({
+          dealId,
+          minigridId: minigrid.schema._id,
+          symbol: pair,
+          grids,
+          prev: minigrid.currentOrders,
+          order,
+          position: await this.comboPositionAfterFill(dealId, order),
+        })
+      }
       const wasClosed =
         minigrid.schema.status === ComboMinigridStatusEnum.closed
       if (grids) {
@@ -4713,6 +4736,106 @@ function createComboBotHelper<
           appliedFundsScale: m.schema.appliedFundsScale,
         })
       }
+    }
+
+    /**
+     * Main-app spec 048: hold the exit lines a minigrid regenerated after
+     * `order` filled — one of its grid orders, or the level that opens it — to
+     * what the minigrid holds after the fill (`prev` is its ladder before) and,
+     * with `position`, the deal's exits to the deal's position. `grids` is
+     * changed in place.
+     */
+    private async capMinigridExitsAfterFill(input: {
+      dealId: string
+      minigridId?: string
+      symbol: string
+      grids: Grid[]
+      prev: Grid[]
+      order: Order
+      position?: number
+    }) {
+      const { grids, order } = input
+      if (!this.comboExitsHeldInBase()) {
+        return
+      }
+      const step = await this.comboExitLotStep(input.symbol)
+      const filled = +order.executedQty
+      const exit = this.isLong ? OrderSideEnum.sell : OrderSideEnum.buy
+      const next = grids.filter((g) => g.side === exit)
+      if (!step || !(filled > 0) || !next.length) {
+        return
+      }
+      const ed = await this.getExchangeInfo(input.symbol)
+      const minQty = +(ed?.baseAsset.minAmount ?? 0) || 0
+      const minNotional = +(ed?.quoteAsset.minAmount ?? 0) || 0
+      const others = this.comboLiveMinigrids(input.dealId)
+        .filter((m) => `${m.schema._id}` !== `${input.minigridId}`)
+        .flatMap((m) => this.comboExitLines(m))
+        .reduce((a, g) => a + g.qty, 0)
+      const before = next.reduce((a, g) => a + g.qty, 0)
+      const capped = capRefillExitLines({
+        prev: input.prev,
+        next,
+        exit,
+        floors: next.map((g) =>
+          Math.max(minQty, g.price > 0 ? minNotional / g.price : 0),
+        ),
+        filled: {
+          side:
+            order.side === OrderSideEnum.buy
+              ? OrderSideEnum.buy
+              : OrderSideEnum.sell,
+          price: +(order.origPrice || order.price),
+          qty: filled,
+        },
+        others,
+        position: input.position,
+        step,
+      })
+      next.forEach((g, i) => (g.qty = capped.qty[i]))
+      const after = capped.qty.reduce((a, q) => a + q, 0)
+      if (after < before || capped.excess > 0) {
+        this.handleLog(
+          `Minigrid ${input.minigridId ?? 'new'} after ${order.clientOrderId}: exit lines ${before} over ${capped.cap}, trimmed to ${after}${capped.excess > 0 ? `, ${capped.excess} left over (lines at the venue minimum)` : ''}`,
+        )
+      }
+    }
+
+    /**
+     * The deal's position once `order` is booked: the balances are read back
+     * from the fills, and the fill is added if the order map does not hold it
+     * as filled yet.
+     */
+    private async comboPositionAfterFill(dealId: string, order: Order) {
+      await this.calculateDealBalances(dealId)
+      const d = this.getDeal(dealId)
+      if (!d?.deal.initialBalances || !d.deal.currentBalances) {
+        return undefined
+      }
+      const position = comboPositionBase({
+        isLong: this.isLong,
+        initialBalances: d.deal.initialBalances,
+        currentBalances: d.deal.currentBalances,
+      })
+      const booked = this.getOrderFromMap(order.clientOrderId)
+      const entry = (order.side === OrderSideEnum.buy) === this.isLong
+      const after =
+        booked && (booked.status === 'FILLED' || +booked.executedQty !== 0)
+          ? position
+          : position + +order.executedQty * (entry ? 1 : -1)
+      // A ledger that reads no position while the minigrid still has exits to
+      // rest is not trusted to cap them; the minigrid's own holding still is.
+      return Number.isFinite(after) && after > 0 ? after : undefined
+    }
+
+    /**
+     * Are this bot's exit lines bounded by base? A long sells the base it
+     * bought and a futures short buys back the position it opened; a spot
+     * short buys back with the quote it took, and buying back more base than
+     * it sold is its profit.
+     */
+    private comboExitsHeldInBase() {
+      return this.isLong || this.futures
     }
 
     /** A minigrid's exit lines: the sells of a long, the buy-backs of a short. */
@@ -8513,10 +8636,16 @@ function createComboBotHelper<
       const prepared = await this.prepareMinigrids(
         findMinigrids.map((m) => m.schema),
       )
-      // Spec 047: on a deal whose funds were changed, the regenerated exit
-      // lines are held to the position the rebuild just read back from the
-      // fills — each line rounds on its own and their sum drifted over it.
-      if (d && ((d.deal.fundsScale ?? []).length || d.deal.comboFundsRebuild)) {
+      // Specs 047 / 048: the regenerated exit lines are held to the position
+      // the rebuild just read back from the fills — each line rounds on its
+      // own and their sum drifted over it, after a funds change and after
+      // grid refills alike (refills: where the exits are held in base).
+      if (
+        d &&
+        (this.comboExitsHeldInBase() ||
+          (d.deal.fundsScale ?? []).length ||
+          d.deal.comboFundsRebuild)
+      ) {
         await this.capComboExitLines(
           dealId,
           prepared,
