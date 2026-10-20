@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.21] - 2026-10-20
+
+### Fixed
+
+- A bot service restart moments after a deal closed and the next one opened could restore the bot's open/total deal counter from an older saved copy and keep it wrong. The counter is now re-checked against the bot's actual deals on every start and corrected when it differs.
+
 ## [1.108.20] - 2026-10-20
 
 ### Fixed

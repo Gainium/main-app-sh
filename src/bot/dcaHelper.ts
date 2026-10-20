@@ -2508,6 +2508,13 @@ function createDCABotHelper<
       } as any)
       this.handleLog(`Get deals count ${count?.data?.result ?? 0}`)
       this.allDeals = count?.data?.result ?? this.deals.size
+      // A cold restart restores `deals` from the debounced `botData` snapshot,
+      // which can predate the last counter write, and `restoreWork` skips
+      // `calculateBotDeals` on that path. Re-derive it here. Spec 183.
+      await this.reconcileBotDeals(
+        this.botId,
+        count?.status === StatusEnum.ok ? count.data.result : undefined,
+      )
 
       this.handleLog(`Check exchange info and user fee to be in the bot`)
       if (this.deals.size) {
@@ -2906,7 +2913,7 @@ function createDCABotHelper<
           }
         }
         this.emit('bot deal update', record.data)
-        this.updateBotDeals(this.botId, true)
+        await this.updateBotDeals(this.botId, true)
         this.endMethod(_id)
         return dealId
       }
@@ -11953,6 +11960,33 @@ function createDCABotHelper<
           },
         })
       }
+    }
+    /**
+     * Set `deals` from what this load holds: `all` from the database count
+     * (the stored value when the count failed), `active` from the `open` and
+     * `start` deals in memory. Writes only when that differs from the stored
+     * counter, so a service restart does not write every bot. Shares the
+     * `updateBotDeals` mutex. Spec 183.
+     */
+    @IdMute(mutex, (botId) => `updateBotDeals${botId}`)
+    async reconcileBotDeals(_botId: string, all?: number) {
+      if (!this.data) {
+        return
+      }
+      const stored = this.data.deals ?? { all: 0, active: 0 }
+      const deals = {
+        all: all ?? stored.all,
+        active: this.getOpenDeals().length,
+      }
+      if (deals.all === stored.all && deals.active === stored.active) {
+        return
+      }
+      this.handleLog(
+        `Bot deals counter ${stored.active}/${stored.all} (active/all) does not match the loaded deals, set to ${deals.active}/${deals.all}`,
+      )
+      this.data.deals = deals
+      await this.updateData({ deals })
+      this.emit('bot settings update', { dealsInBot: deals })
     }
     /**
      * Update bot deals
