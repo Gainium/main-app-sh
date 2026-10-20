@@ -277,6 +277,10 @@ import {
 import { resolveLevelClientOrderId } from './clientOrderIdReissue'
 import { splitPendingFunds } from './dca/pendingFundsResend'
 import { isComboFundsOrderRow } from './combo/comboDealFunds'
+import {
+  pendingReduceQty,
+  type PendingReduceEntry,
+} from './dca/pendingReduceQty'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
@@ -11858,30 +11862,15 @@ function createDCABotHelper<
     }
 
     getPendingReduceFunds(deal: FullDeal<ExcludeDoc<Deal>>) {
-      const pendingReduceFunds =
-        deal.deal.pendingReduceFunds ??
-        ([] as unknown as NonNullable<Deal['pendingReduceFunds']>)
-      const base = pendingReduceFunds.reduce(
-        (acc, v) =>
-          acc +
-          (v.useLimitPrice
-            ? v.asset === OrderSizeTypeEnum.base
-              ? +v.qty
-              : +v.qty / +(v.limitPrice ?? '0')
-            : 0),
-        0,
+      // The resting reduce order, when there is one, is the withdrawal; a
+      // percentage request is not an amount. See `./dca/pendingReduceQty`.
+      return pendingReduceQty(
+        (deal.deal.pendingReduceFunds ?? []) as PendingReduceEntry[],
+        this.getOrdersByStatusAndDealId({
+          status: ['NEW', 'PARTIALLY_FILLED'],
+          dealId: `${deal.deal._id}`,
+        }),
       )
-      const quote = pendingReduceFunds.reduce(
-        (acc, v) =>
-          acc +
-          (v.useLimitPrice
-            ? v.asset === OrderSizeTypeEnum.base
-              ? +v.qty * +(v.limitPrice ?? '0')
-              : +v.qty
-            : 0),
-        0,
-      )
-      return { base, quote }
     }
     sendEightyAlert(_findDeal: FullDeal<ExcludeDoc<Deal>>) {
       return

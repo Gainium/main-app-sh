@@ -240,8 +240,8 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
     })
   })
 
-  describe('reduce-funds orders are not the take profit (main-app spec 047)', () => {
-    /** A resting reduce: a dealTP row, with or without its funds id. */
+  describe('a resting reduce-funds order is not the take profit', () => {
+    /** A resting limit reduce: a dealTP row, with or without its funds id. */
     const reduce = (clientOrderId: string, withId: boolean) => ({
       clientOrderId,
       dealId: DEAL_ID,
@@ -251,7 +251,7 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
       ...(withId ? { reduceFundsId: `rf-${clientOrderId}` } : {}),
     })
 
-    it('DCA: a resting limit reduce is left resting; only the take profit is replaced', async () => {
+    it('a take-profit edit leaves the reduce resting and replaces only the take profit', async () => {
       const { bot, deal, raised } = buildBot(BotType.dca, [
         reduce('D-TPR-52a', true),
       ])
@@ -261,11 +261,14 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
       expect(raised.placed.map((o: any) => o.type)).to.deep.equal([
         TypeOrderEnum.dealTP,
       ])
-      // Nothing re-sends the reduce: it was never cancelled.
+      // Not cancelled, so not re-sent either: the pending entry stays as is.
       expect(raised.resent).to.equal(0)
+      expect((deal.deal as any).pendingReduceFunds).to.deep.equal([
+        { id: 'rf-D-TPR-52a' },
+      ])
     })
 
-    it('a reduce row that reached memory without its funds id is still recognised by its client id', async () => {
+    it('a reduce row without its funds id is recognised by its client id', async () => {
       const { bot, deal, raised } = buildBot(BotType.dca, [
         reduce('D-TPR-52b', false),
       ])

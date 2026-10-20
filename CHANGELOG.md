@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.108.13] - 2026-10-20
+
+### Fixed
+
+Merges the 1.107.3 take-profit-only edit fix:
+
+- A take-profit-only deal edit cancelled every resting take-profit-type order of the deal, including a resting limit reduce-funds order. A reduce-funds order is now left resting (also when its row has no funds id yet).
+- A take profit rebuilt next to a resting percentage reduce-funds order was sized as if the reduce were almost nothing: the pending entry's percentage was read as a quote amount. The resting reduce order's own quantity is now what the take profit and the deal's balances leave out, so the take profit and the reduce together never sell more than the deal holds.
+
 ## [1.108.12] - 2026-10-20
 
 ### Fixed
