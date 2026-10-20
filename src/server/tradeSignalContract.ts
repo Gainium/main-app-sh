@@ -150,3 +150,65 @@ export function missingWebhookFieldsReason(missing: string[]): string {
     `{"action":"startDeal","uuid":"<bot uuid>"}.`
   )
 }
+
+/**
+ * The longest a signal may wait before it is executed. A TradingView alert is
+ * a decision about the market at the moment it fired; executed a minute later
+ * it may be the wrong decision, and the sender (which gave up after a few
+ * seconds) can no longer tell that it ran. So a signal is either executed
+ * within this window of reaching our API or it is rejected with the reason —
+ * never queued and executed late. Covers the wait for a bot that is still
+ * re-loading after a service restart, a command queue that is not consumed
+ * yet, and the replay of a signal the API could not hand over.
+ */
+export const WEBHOOK_SIGNAL_MAX_AGE_MS = 10_000
+
+/** Age of a signal stamped `receivedAt` at the API; 0 when unstamped or from the future. */
+export function webhookSignalAgeMs(
+  receivedAt: number | undefined,
+  now: number,
+): number {
+  if (typeof receivedAt !== 'number' || !Number.isFinite(receivedAt)) return 0
+  return Math.max(0, now - receivedAt)
+}
+
+/**
+ * True when a stamped signal is already older than the cap. An unstamped
+ * signal (sent by an API process that predates the stamp) is never expired
+ * here, so a mixed-version rollout keeps today's behaviour for it.
+ */
+export function webhookSignalExpired(
+  receivedAt: number | undefined,
+  now: number,
+  maxAgeMs = WEBHOOK_SIGNAL_MAX_AGE_MS,
+): boolean {
+  return webhookSignalAgeMs(receivedAt, now) > maxAgeMs
+}
+
+/**
+ * The instant past which a signal must not be executed: the cap measured from
+ * when the API received it, or from `intakeAt` (when this process took it) for
+ * an unstamped signal.
+ */
+export function webhookSignalDeadline(
+  receivedAt: number | undefined,
+  intakeAt: number,
+  maxAgeMs = WEBHOOK_SIGNAL_MAX_AGE_MS,
+): number {
+  const start =
+    typeof receivedAt === 'number' && Number.isFinite(receivedAt)
+      ? Math.min(receivedAt, intakeAt)
+      : intakeAt
+  return start + maxAgeMs
+}
+
+export function webhookSignalExpiredReason(
+  action: string,
+  ageMs: number,
+): string {
+  return (
+    `Bot is restarting on our side, so "${action}" was not executed. ` +
+    `The signal arrived ${Math.round(ageMs / 1000)}s ago; signals that cannot ` +
+    `run within ${WEBHOOK_SIGNAL_MAX_AGE_MS / 1000}s are dropped, not executed late.`
+  )
+}

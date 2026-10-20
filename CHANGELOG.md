@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.108.15] - 2026-10-20
+
+### Fixed
+
+- Webhook signals around a bot-service restart are executed within 10 seconds of reaching the API or refused with the reason, never queued and executed later. A signal for a bot that is still re-loading waits for it for at most that long; the API stamps each signal on arrival and the bot service drops one that is older, including a replayed one.
+- The bot service now takes webhook signals while its bots are still being re-loaded; other commands still wait until every bot is back.
+- The restart could start taking commands before every bot had been handed to a worker, when a worker that failed during start-up had its bots counted twice. Bots are now counted once each.
+- Bots that webhook signals drive, and bots with an open deal, are resumed first after a restart.
+
 ## [1.108.13] - 2026-10-20
 
 ### Fixed
