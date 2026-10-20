@@ -1,10 +1,11 @@
 process.env.NODE_ENV = 'testing'
 
 /**
- * Restart-time webhook intake: a signal is executed within
- * WEBHOOK_SIGNAL_MAX_AGE_MS of reaching the API or refused with the reason —
- * never queued and executed late — and the restart resumes the bots a signal
- * is likely to need first.
+ * Restart-time webhook intake: a signal for a bot that is still re-loading
+ * waits for it at most WEBHOOK_SIGNAL_MAX_AGE_MS and is then refused with the
+ * reason; a replayed signal runs as it always did, on its own bot type's
+ * queue; the restart resumes the bots a signal is likely to need first and
+ * spreads them over its worker threads.
  *
  * The real methods are driven off the prototype with fake state: no Mongo, no
  * worker threads, no rabbit. Fixture ids are synthetic — this file is public.
@@ -13,13 +14,10 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import Bot from './index'
+import Bot, { webhookIntakeQueue, webhookReplayQueue } from './index'
 import {
   WEBHOOK_SIGNAL_MAX_AGE_MS,
   webhookSignalAgeMs,
-  webhookSignalDeadline,
-  webhookSignalExpired,
-  webhookSignalExpiredReason,
 } from '../server/tradeSignalContract'
 import { restartResumeOrder, restartResumeTier } from './restartResumeOrder'
 import {
@@ -29,42 +27,15 @@ import {
   StatusEnum,
 } from '../../types'
 
-describe('webhook signal age cap', () => {
+describe('webhook wait cap', () => {
   const now = 1_800_000_000_000
   it('is a small named constant', () => {
     expect(WEBHOOK_SIGNAL_MAX_AGE_MS).to.be.at.most(10_000)
   })
-  it('measures age from the API stamp, never negative', () => {
+  it('measures age from the API stamp for logs, never negative', () => {
     expect(webhookSignalAgeMs(now - 2500, now)).to.equal(2500)
     expect(webhookSignalAgeMs(now + 500, now)).to.equal(0)
     expect(webhookSignalAgeMs(undefined, now)).to.equal(0)
-  })
-  it('expires only a stamped signal past the cap', () => {
-    expect(webhookSignalExpired(now - WEBHOOK_SIGNAL_MAX_AGE_MS, now)).to.equal(
-      false,
-    )
-    expect(
-      webhookSignalExpired(now - WEBHOOK_SIGNAL_MAX_AGE_MS - 1, now),
-    ).to.equal(true)
-    // A signal from an API that predates the stamp keeps today's behaviour.
-    expect(webhookSignalExpired(undefined, now)).to.equal(false)
-  })
-  it('measures the deadline from the stamp, or from intake when unstamped', () => {
-    expect(webhookSignalDeadline(now - 3000, now)).to.equal(
-      now - 3000 + WEBHOOK_SIGNAL_MAX_AGE_MS,
-    )
-    expect(webhookSignalDeadline(undefined, now)).to.equal(
-      now + WEBHOOK_SIGNAL_MAX_AGE_MS,
-    )
-    // A stamp from a clock ahead of ours cannot extend the budget.
-    expect(webhookSignalDeadline(now + 60_000, now)).to.equal(
-      now + WEBHOOK_SIGNAL_MAX_AGE_MS,
-    )
-  })
-  it('names the action and says it was not executed', () => {
-    expect(webhookSignalExpiredReason('addFunds', 14_200)).to.match(
-      /^Bot is restarting on our side, so "addFunds" was not executed\. The signal arrived 14s ago/,
-    )
   })
 })
 
@@ -217,49 +188,260 @@ describe('signals during a restart', () => {
     expect(Date.now() - started).to.be.within(350, 1500)
   })
 
-  it('refuses a stale signal without touching any bot', async () => {
+  it('does not refuse an old signal when its bot is running', async () => {
     const { bot } = harness()
     const res = await bot.singleWebhookProcess({
       action: 'addFunds',
       uuid: UUID,
       qty: '10',
       asset: 'quote',
-      receivedAt: Date.now() - WEBHOOK_SIGNAL_MAX_AGE_MS - 4000,
+      receivedAt: Date.now() - 10 * 60_000,
     })
-    expect(res.status).to.equal(StatusEnum.notok)
-    expect(res.reason).to.match(/"addFunds" was not executed/)
-    expect(bot.warnings.join('\n')).to.match(/dropped, not executed/)
+    // No bot holds the uuid in this harness: the old answer, not an age refusal.
+    expect(res.reason).to.not.match(/arrived|dropped/)
+    expect(bot.warnings.join('\n')).to.not.match(/dropped/)
   })
 
-  it('refuses a signal whose bot is not back within the budget', async () => {
+  it('refuses a signal whose bot is not back within the wait', async function () {
+    this.timeout(WEBHOOK_SIGNAL_MAX_AGE_MS + 5000)
     const { bot } = harness()
     openWindow(bot, [{ id: BOT_ID, uuid: UUID }])
+    const started = Date.now()
     const res = await bot.singleWebhookProcess({
       action: 'addFunds',
       uuid: UUID,
       qty: '10',
       asset: 'quote',
-      // 300ms of budget left.
-      receivedAt: Date.now() - WEBHOOK_SIGNAL_MAX_AGE_MS + 300,
+      // An old stamp does not shorten the wait: it is measured from intake.
+      receivedAt: Date.now() - 60_000,
     })
+    expect(Date.now() - started).to.be.at.least(WEBHOOK_SIGNAL_MAX_AGE_MS - 50)
     expect(res.status).to.equal(StatusEnum.notok)
     expect(res.reason).to.equal(
       'Bot is restarting on our side, so "addFunds" was not executed.',
     )
   })
 
-  it('holds non-webhook commands until the listener arms', async () => {
+  it('does not give a second signal queued behind the first a fresh wait', async function () {
+    this.timeout(WEBHOOK_SIGNAL_MAX_AGE_MS + 8000)
     const { bot } = harness()
-    const ran: string[] = []
-    bot.someCommand = async () => ran.push('cmd')
-    bot.webhookProcess = async () => ran.push('webhook')
-    const cmd = bot.processInternalApiCall({ method: 'someCommand', params: [] })
-    await bot.processInternalApiCall({ method: 'webhookProcess', params: [] })
-    await new Promise((r) => setImmediate(r))
-    expect(ran).to.deep.equal(['webhook'])
-    bot.commandListenerArmed = true
-    bot.commandsArmedWaiters.splice(0).forEach((w: () => void) => w())
-    await cmd
-    expect(ran).to.deep.equal(['webhook', 'cmd'])
+    openWindow(bot, [{ id: BOT_ID, uuid: UUID }])
+    const sig = () => ({ action: 'startDeal', uuid: UUID, symbol: 'XRPUSDT' })
+    const started = Date.now()
+    const [a, b] = await Promise.all([
+      bot.webhookProcess(sig()),
+      bot.webhookProcess(sig()),
+    ])
+    const took = Date.now() - started
+    expect(a.status).to.equal(StatusEnum.notok)
+    expect(b.status).to.equal(StatusEnum.notok)
+    expect(took).to.be.lessThan(WEBHOOK_SIGNAL_MAX_AGE_MS + 1500)
+  })
+
+  it('does not wait or refuse a replayed signal', async () => {
+    const { bot } = harness()
+    openWindow(bot, [{ id: BOT_ID, uuid: UUID }])
+    const started = Date.now()
+    const res = await bot.singleWebhookProcess({
+      action: 'addFunds',
+      uuid: UUID,
+      qty: '10',
+      asset: 'quote',
+      replayed: true,
+      receivedAt: Date.now() - 60_000,
+    })
+    expect(Date.now() - started).to.be.lessThan(500)
+    // Straight to the pre-existing not-running answer: no wait, no wait refusal.
+    expect(res.reason).to.equal(
+      'Bot is restarting on our side, so "addFunds" was not executed.',
+    )
+    expect(bot.warnings.join('\n')).to.not.match(/still re-loading/)
+  })
+})
+
+describe('a signal runs at most once', () => {
+  it('skips a copy whose signal id already ran', async () => {
+    const { bot } = harness()
+    const claimed = new Set<string>()
+    bot.claimWebhookSignal = async (id: string) =>
+      claimed.has(id) ? false : (claimed.add(id), true)
+    const sig = {
+      action: 'addFunds',
+      uuid: UUID,
+      qty: '10',
+      asset: 'quote',
+      signalId: 'sig-1',
+    }
+    const first = await bot.singleWebhookProcess({ ...sig })
+    const copy = await bot.singleWebhookProcess({ ...sig, replayed: true })
+    expect(first.reason ?? '').to.not.match(/already executed/)
+    expect(copy.status).to.equal(StatusEnum.notok)
+    expect(copy.reason).to.equal('This "addFunds" signal was already executed.')
+  })
+  it('stamps a fresh id on every item at the API, over the sender value', async () => {
+    const { bot } = harness()
+    bot.useBots = false
+    bot.webhookBotType = async () => undefined
+    bot.entityNotFound = () => ({ status: StatusEnum.notok })
+    const items = [
+      { action: 'startDeal', uuid: 'a', signalId: 'mine', replayed: true },
+      { action: 'startDeal', uuid: 'b' },
+    ] as any[]
+    await bot.webhookProcess(items)
+    expect(items[0].signalId).to.be.a('string').and.not.equal('mine')
+    expect(items[0].signalId).to.not.equal(items[1].signalId)
+    expect(items[0].replayed).to.equal(undefined)
+  })
+})
+
+describe('webhook queues', () => {
+  const rabbitHarness = (consumers: number) => {
+    const { bot } = harness()
+    const sent: { queue: string; payload: any }[] = []
+    const rpc: { queue: string; payload: any }[] = []
+    const ensured: string[] = []
+    bot.intakeConsumerCache = new Map()
+    bot.rabbit = {
+      consumerCount: async () => consumers,
+      ensureQueue: async (q: string) => ensured.push(q),
+      send: (queue: string, payload: any) => sent.push({ queue, payload }),
+      sendWithCallback: async (queue: string, payload: any) => {
+        rpc.push({ queue, payload })
+        return { response: { status: StatusEnum.ok } }
+      },
+    }
+    bot.callExternalBotService = async (type: string, method: string) => {
+      rpc.push({ queue: `command:${type}`, payload: { method } })
+      return { status: StatusEnum.ok }
+    }
+    return { bot, sent, rpc, ensured }
+  }
+
+  it('gives every bot type its own replay and intake queue', () => {
+    const types = ['dca', 'combo', 'hedgeCombo', 'hedgeDca'] as any[]
+    expect(new Set(types.map(webhookReplayQueue)).size).to.equal(4)
+    expect(new Set(types.map(webhookIntakeQueue)).size).to.equal(4)
+    expect(types.map(webhookReplayQueue)).to.not.include('webhookQueue')
+  })
+
+  it('sends a signal to the intake queue while it has a consumer', async () => {
+    const { bot, rpc } = rabbitHarness(1)
+    await bot.sendWebhookToService(
+      'dca',
+      [{ action: 'startDeal', uuid: 'u' }],
+      false,
+    )
+    expect(rpc.map((r) => r.queue)).to.deep.equal([
+      webhookIntakeQueue('dca' as any),
+    ])
+  })
+
+  it('falls back to the command queue when nobody consumes the intake', async () => {
+    const { bot, rpc } = rabbitHarness(0)
+    await bot.sendWebhookToService(
+      'combo',
+      [{ action: 'startDeal', uuid: 'u' }],
+      false,
+    )
+    expect(rpc.map((r) => r.queue)).to.deep.equal(['command:combo'])
+  })
+
+  it('replays each type on its own queue when its service runs this version', async () => {
+    const { bot, sent, ensured } = rabbitHarness(1)
+    bot.useBots = false
+    const types: Record<string, string> = { d: 'dca', c: 'combo' }
+    bot.webhookBotType = async (uuid: string) => types[uuid]
+    bot.sendWebhookToService = async (type: string) => {
+      if (type === 'dca')
+        throw new Error('Bots service is unavailable, please try again later')
+      return { status: StatusEnum.ok }
+    }
+    const res = await bot.webhookProcess([
+      { action: 'startDeal', uuid: 'd' },
+      { action: 'startDeal', uuid: 'c' },
+    ])
+    // As before: queued for replay, no refusal reply.
+    expect(res).to.equal(undefined)
+    expect(sent.map((x) => x.queue)).to.deep.equal([
+      webhookReplayQueue('dca' as any),
+      webhookReplayQueue('combo' as any),
+    ])
+    expect(ensured).to.deep.equal(sent.map((x) => x.queue))
+    expect(sent[0].payload.uuid).to.equal('d')
+    expect(sent[0].payload.signalId).to.be.a('string')
+  })
+
+  it('replays on the legacy queue when no current-version service consumes', async () => {
+    const { bot, sent } = rabbitHarness(0)
+    bot.useBots = false
+    bot.webhookBotType = async () => 'dca'
+    bot.sendWebhookToService = async () => {
+      throw new Error('Bots service is unavailable, please try again later')
+    }
+    await bot.webhookProcess({ action: 'startDeal', uuid: 'd' })
+    expect(sent.map((x) => x.queue)).to.deep.equal(['webhookQueue'])
+  })
+
+  it('routes a stamped legacy replay to its type and drops an unstamped copy', async () => {
+    const { bot, sent } = rabbitHarness(1)
+    const types: Record<string, string> = { d: 'dca', c: 'combo' }
+    bot.webhookBotType = async (uuid: string) => types[uuid]
+    const handled: any[] = []
+    bot.webhookProcess = async (data: any) => handled.push(data)
+    await bot.routeLegacyReplay([
+      { action: 'startDeal', uuid: 'd', signalId: 's1' },
+      { action: 'startDeal', uuid: 'c', signalId: 's2' },
+      { action: 'addFunds', uuid: 'c' },
+      { action: 'startDeal', uuid: 'nobody', signalId: 's3' },
+    ])
+    expect(sent.map((x) => [x.queue, x.payload.uuid])).to.deep.equal([
+      [webhookReplayQueue('dca' as any), 'd'],
+      [webhookReplayQueue('combo' as any), 'c'],
+    ])
+    expect(handled).to.have.length(0)
+  })
+})
+
+describe('restart spread over worker threads', () => {
+  const w = (id: number, bots: number, userId?: string) => ({
+    id,
+    bots,
+    type: 'dca',
+    userId,
+  })
+  const spreadHarness = () => {
+    const { bot } = harness()
+    bot.personalLimits = new Map([['vip', 2000]])
+    Object.defineProperty(bot, 'botPerWorker', {
+      value: {
+        dca: 100,
+        combo: 100,
+        grid: 100,
+        hedgeCombo: 100,
+        hedgeDca: 100,
+      },
+    })
+    return bot
+  }
+  it('opens the threads the restart needs, then fills the emptiest', () => {
+    const bot = spreadHarness()
+    bot.beginRestartSpread('dca', [
+      ...Array.from({ length: 250 }, () => ({ userId: 'u' })),
+      ...Array.from({ length: 500 }, () => ({ userId: 'vip' })),
+    ])
+    expect(bot.restartSpreadWorkers).to.equal(3)
+    bot.workers = [w(1, 40), w(2, 10)]
+    expect(bot.pickWorkerForNewBot('dca', 100, false)).to.equal(undefined)
+    bot.workers.push(w(3, 20))
+    expect(bot.pickWorkerForNewBot('dca', 100, false).id).to.equal(2)
+    // A personal-limit user's worker is never part of the spread.
+    bot.workers.push(w(9, 5, 'vip'))
+    expect(bot.pickWorkerForNewBot('dca', 2000, false, 'vip').id).to.equal(9)
+  })
+  it('packs fullest-first once the restart dispatch is over', () => {
+    const bot = spreadHarness()
+    bot.endRestartSpread()
+    bot.workers = [w(1, 40), w(2, 10), w(3, 100)]
+    expect(bot.pickWorkerForNewBot('dca', 100, false).id).to.equal(1)
   })
 })

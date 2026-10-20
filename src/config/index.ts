@@ -61,8 +61,9 @@ export const {
   // the slowest type's re-hydration — observed 2026-08-05: combo 7m28s, DCA
   // 4m24s — or healthy-but-slow bots are reported as missing.
   BOT_RESTART_STRAGGLER_DELAY_MS = '600000',
-  // Consume webhook signals while bots are still being re-hydrated, instead of
-  // only once every bot is back. Other commands still wait for the arm. Set to
-  // 'false' to restore consume-on-arm for everything.
+  // Bot services consume webhook signals on a queue of their own from the
+  // start of a restart, instead of on the command queue once every bot is
+  // back. Other commands still wait for the arm. 'false' = signals go back to
+  // the command queue (the API falls back by itself when nobody consumes).
   BOT_EARLY_WEBHOOK_INTAKE = 'true',
 } = process.env

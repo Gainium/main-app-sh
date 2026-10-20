@@ -423,6 +423,56 @@ class Rabbit {
     return await Client.getClient()
   }
 
+  /**
+   * Consumers currently attached to `queue`; 0 when the queue does not exist
+   * or the check fails. Runs on a throwaway channel, because `checkQueue` on a
+   * missing queue closes the channel it ran on.
+   */
+  async consumerCount(queue: string, timeoutMs = 2000): Promise<number> {
+    try {
+      const { client } = await this.getClient()
+      if (!client) return 0
+      return await new Promise<number>((resolve) => {
+        const timer = setTimeout(() => resolve(0), timeoutMs)
+        client.createChannel((err, ch) => {
+          if (err || !ch) {
+            clearTimeout(timer)
+            resolve(0)
+            return
+          }
+          ch.on('error', () => undefined)
+          ch.checkQueue(queue, (e, ok) => {
+            clearTimeout(timer)
+            resolve(e || !ok ? 0 : ok.consumerCount)
+            if (!e) ch.close(() => undefined)
+          })
+        })
+      })
+    } catch {
+      return 0
+    }
+  }
+
+  /**
+   * Declare `queue` and bind it, so that a message published to it before any
+   * consumer has ever listened is kept rather than dropped by the exchange.
+   */
+  async ensureQueue(queue: string): Promise<void> {
+    try {
+      const { channelPool } = await this.getClient()
+      const channel = channelPool?.getChannel()
+      if (!channel) return
+      await new Promise<void>((resolve) =>
+        channel.assertQueue(queue, { durable: true }, () => resolve()),
+      )
+      await new Promise((resolve) =>
+        channel.bindQueue(queue, rabbitExchange, queue, undefined, resolve),
+      )
+    } catch (e) {
+      logger.error(`${prefix} Error in ensureQueue for ${queue}: ${e}`)
+    }
+  }
+
   @IdMute(sendWithCallbackMutex, (queue: string) => `sendWithCallback-${queue}`)
   async sendWithCallback<P, R>(
     queue: string,

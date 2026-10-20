@@ -9,9 +9,6 @@ import {
   webhookBotNotRunningReason,
   WEBHOOK_SIGNAL_MAX_AGE_MS,
   webhookSignalAgeMs,
-  webhookSignalDeadline,
-  webhookSignalExpired,
-  webhookSignalExpiredReason,
 } from '../server/tradeSignalContract'
 import { isPaper } from '../utils'
 import utils from '../utils'
@@ -200,6 +197,7 @@ import {
   HEDGE_PER_WORKER,
 } from '../config'
 import { applyGridFuturesConstraints } from '../server/v2/helpers'
+import RedisClient from '../db/redis'
 import {
   restartOrderProjection,
   restartResumeOrder,
@@ -245,6 +243,14 @@ export type WebhookData = {
    * a signal older than `WEBHOOK_SIGNAL_MAX_AGE_MS`.
    */
   receivedAt?: number
+  /** Set by the bot service on an item taken from a replay queue. */
+  replayed?: boolean
+  /**
+   * Stamped by the API on every item. A signal whose RPC timed out is still
+   * in the bot service's queue and runs when the service is back — and the
+   * API has also queued it for replay. The id lets only the first one run.
+   */
+  signalId?: string
 }
 
 const defaultBotsPerWorker = 100
@@ -274,7 +280,26 @@ const loggerPrefix = `${isMainThread ? 'Main thread' : `Worker ${threadId}`} |`
 
 const notAvailable = 'Bots service is unavailable, please try again later'
 
+/** Legacy replay queue, shared by every bot service type. See `routeLegacyReplay`. */
 const webhookQueue = 'webhookQueue'
+
+/** Where the API queues a signal its bot service could not take, per bot type. */
+export const webhookReplayQueue = (type: BotType) => `webhookQueue.${type}`
+
+/** The bot service's own queue for webhook signals, apart from its command queue. */
+export const webhookIntakeQueue = (type: BotType) => `${type}WebhookIntake`
+
+/** How long a signal id is remembered: covers any realistic replay delay. */
+const webhookSignalSeenTtlSec = 24 * 60 * 60
+
+/** How long the API trusts "this intake queue has a consumer". */
+const webhookIntakeCheckTtlMs = 2000
+
+/** Items coming back through a replay queue run exactly as they always did. */
+const markReplayed = (data: WebhookData[] | WebhookData) => {
+  for (const d of [data].flat()) if (d && typeof d === 'object') d.replayed = true
+  return data
+}
 
 /**
  * The actions `singleWebhookProcess` actually dispatches. Kept as an explicit
@@ -502,8 +527,7 @@ class Bot<T extends UserSchema = UserSchema> {
   // cold-starting a second copy of a bot the dispatch loop is about to create.
   private restartBotIdByUuid = new Map<string, string>()
   private restartWindowOpen = false
-  private serviceListenerSet = false
-  private commandsArmedWaiters: (() => void)[] = []
+  private webhookIntakeOpen = false
 
   public constructor(
     protected useBots?: boolean,
@@ -1262,6 +1286,67 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Shared workers to spread a restart's bots over; 0 outside a restart
+   * dispatch. See `beginRestartSpread`.
+   */
+  protected restartSpreadWorkers = 0
+
+  /**
+   * During a restart dispatch, spread bots over all the worker threads the
+   * restart needs from the start, least-loaded first, instead of filling one
+   * thread to its limit before opening the next. The thread count is the one
+   * packing would reach anyway (ceil(bots / limit)); what changes is that every
+   * thread starts loading at once, so the first bots resumed — the ones
+   * `restartResumeOrder` puts first — are not all queued on a single thread.
+   * Personal-limit users keep their own workers and are not counted.
+   */
+  protected beginRestartSpread(type: BotType, rows: { userId?: unknown }[]) {
+    const hedge = type === BotType.hedgeDca || type === BotType.hedgeCombo
+    const limit = this.limitPerWorkerFor(type)
+    const shared = rows.filter(
+      (r) => hedge || !this.personalLimits.has(`${r.userId}`),
+    ).length
+    this.restartSpreadWorkers = limit > 0 ? Math.ceil(shared / limit) : 0
+  }
+
+  protected endRestartSpread() {
+    this.restartSpreadWorkers = 0
+  }
+
+  protected limitPerWorkerFor(type: BotType) {
+    return type === BotType.combo
+      ? this.botPerWorker.combo
+      : type === BotType.dca
+        ? this.botPerWorker.dca
+        : type === BotType.hedgeCombo
+          ? this.botPerWorker.hedgeCombo
+          : type === BotType.hedgeDca
+            ? this.botPerWorker.hedgeDca
+            : this.botPerWorker.grid
+  }
+
+  /**
+   * The worker a new bot goes to, or undefined to open a new one: the fullest
+   * one with room (packing), or — during a restart spread, for shared workers
+   * — a new one until the spread count is reached, then the emptiest.
+   */
+  protected pickWorkerForNewBot(
+    type: BotType,
+    limit: number,
+    hedge: boolean,
+    userId?: string,
+  ) {
+    const mine = this.workers.filter(
+      (w) => w.type === type && (!hedge ? w.userId === userId : true),
+    )
+    const spread = this.restartSpreadWorkers > 0 && !userId
+    if (spread && mine.length < this.restartSpreadWorkers) return undefined
+    return mine
+      .filter((w) => w.bots < limit)
+      .sort((a, b) => (spread ? a.bots - b.bots : b.bots - a.bots))?.[0]
+  }
+
   @IdMute(mutex, () => 'workerUpdate')
   protected async getWorkerForNewBot(type: BotType, userId?: string) {
     const hedge = type === BotType.hedgeDca || type === BotType.hedgeCombo
@@ -1279,14 +1364,7 @@ class Bot<T extends UserSchema = UserSchema> {
       userId && !hedge
         ? (this.personalLimits.get(userId) ?? limitPerWorker)
         : limitPerWorker
-    const lowestWorker = [
-      ...this.workers.filter(
-        (w) =>
-          w.bots < limit &&
-          w.type === type &&
-          (!hedge ? w.userId === userId : true),
-      ),
-    ].sort((a, b) => b.bots - a.bots)?.[0]
+    const lowestWorker = this.pickWorkerForNewBot(type, limit, hedge, userId)
     if (lowestWorker && lowestWorker.bots < limit) {
       lowestWorker.updated = +new Date()
       this.workers = this.workers.map((w) => {
@@ -3744,10 +3822,6 @@ class Bot<T extends UserSchema = UserSchema> {
   public async processInternalApiCall({ method, params }: BotServicePayload) {
     if (!method) {
       return
-    }
-    // Early webhook intake: only signals run before the arm.
-    if (!this.commandListenerArmed && method !== 'webhookProcess') {
-      await this.commandsArmed()
     }
     this.handleDebug(
       `${loggerPrefix} Bot host | Internal api call ${method} ${
@@ -7752,9 +7826,9 @@ class Bot<T extends UserSchema = UserSchema> {
     if (this.useBots) {
       this.setServiceListener()
     }
-    if (this.useBots && BotServiceType !== BotType.grid) {
+    if (this.useBots && bosServiceType && BotServiceType !== BotType.grid) {
       this.rabbit.listenWithCallback<WebhookData[] | WebhookData, void>(
-        webhookQueue,
+        webhookReplayQueue(this.getServiceType()),
         (data) => {
           this.handleDebug(
             `Webhook data received for ${[data]
@@ -7762,10 +7836,131 @@ class Bot<T extends UserSchema = UserSchema> {
               .map((d) => d.uuid)
               .join(',')} after restart`,
           )
-          this.webhookProcess(data)
+          this.webhookProcess(markReplayed(data))
         },
       )
+      // Legacy shared replay queue: an API from before the per-type queues
+      // still sends here, and every bot service type listens on it. Remove
+      // once no API sends to this name. See `routeLegacyReplay`.
+      this.rabbit.listenWithCallback<WebhookData[] | WebhookData, void>(
+        webhookQueue,
+        (data) => this.routeLegacyReplay(data),
+      )
     }
+  }
+
+  /**
+   * An item on the legacy shared replay queue. Such an API replays a signal
+   * only after its RPC to the bot service timed out, and that RPC is still in
+   * the service's durable command queue and runs from there — so the replay
+   * is a second copy. It used to be dropped, in practice, whenever it landed
+   * on another bot type (most of the time) and to run twice when it landed on
+   * its own. An unstamped copy is now dropped with a log line; a stamped one
+   * (which the per-signal id dedupes) goes to its own type's queue.
+   */
+  private async routeLegacyReplay(data: WebhookData[] | WebhookData) {
+    for (const d of [data].flat()) {
+      if (!d?.signalId) {
+        logger.warn(
+          `${loggerPrefix} Legacy webhook replay for ${d?.uuid} (${d?.action}) dropped: its original is still queued on the bot service's command queue and runs from there`,
+        )
+        continue
+      }
+      const type = await this.webhookBotType(d.uuid)
+      if (!type) {
+        logger.warn(
+          `${loggerPrefix} Legacy webhook replay for ${d.uuid} (${d.action}) dropped: no bot holds this uuid`,
+        )
+        continue
+      }
+      const queue = webhookReplayQueue(type)
+      logger.info(
+        `${loggerPrefix} Legacy webhook replay for ${d.uuid} forwarded to ${queue}`,
+      )
+      await this.rabbit.ensureQueue(queue)
+      this.rabbit.send(queue, d)
+    }
+  }
+
+  /** Bot type holding a webhook uuid, looked up in the order the API always used. */
+  protected async webhookBotType(uuid?: string): Promise<BotType | undefined> {
+    if (!uuid) return undefined
+    if ((await this.dcaBotDb.readData({ uuid }))?.data?.result) return BotType.dca
+    if ((await this.comboBotDb.readData({ uuid }))?.data?.result)
+      return BotType.combo
+    if ((await hedgeComboBotDb.readData({ uuid }))?.data?.result)
+      return BotType.hedgeCombo
+    if ((await hedgeDCABotDb.readData({ uuid }))?.data?.result)
+      return BotType.hedgeDca
+    return undefined
+  }
+
+  /**
+   * Hand a signal to its bot service: on the service's webhook intake queue
+   * while it has a consumer, otherwise on the command queue as before.
+   */
+  protected async sendWebhookToService(
+    type: BotType,
+    items: WebhookData[],
+    ignoreSettings: boolean,
+  ) {
+    const payload = items.length === 1 ? items[0] : items
+    const intake = webhookIntakeQueue(type)
+    if (await this.webhookIntakeAvailable(intake)) {
+      const result = await this.rabbit.sendWithCallback<
+        BotServicePayload,
+        unknown
+      >(
+        intake,
+        { method: 'webhookProcess', params: [payload, ignoreSettings] },
+        botServiceRpcTimeoutMs,
+      )
+      if (!result) throw new Error(notAvailable)
+      return result.response
+    }
+    return await this.callExternalBotService(
+      type,
+      'webhookProcess',
+      false,
+      payload,
+      ignoreSettings,
+    )
+  }
+
+  private webhookSignalSeen = new Map<string, number>()
+
+  /**
+   * Claim a signal id for execution: true the first time, false for any later
+   * copy. Redis keeps the claim across bot-service restarts (the copies run
+   * in different processes when a worker restarts between them); without
+   * Redis this process remembers.
+   */
+  protected async claimWebhookSignal(signalId: string): Promise<boolean> {
+    const redis = await RedisClient.getInstance().catch(() => undefined)
+    const claimed = await redis?.setNx(
+      `gainium:webhookSignal:${signalId}`,
+      '1',
+      webhookSignalSeenTtlSec,
+    )
+    if (claimed !== undefined) return claimed
+    const now = Date.now()
+    for (const [id, at] of this.webhookSignalSeen) {
+      if (now - at > webhookSignalSeenTtlSec * 1000) this.webhookSignalSeen.delete(id)
+      else break
+    }
+    if (this.webhookSignalSeen.has(signalId)) return false
+    this.webhookSignalSeen.set(signalId, now)
+    return true
+  }
+
+  private intakeConsumerCache = new Map<string, { at: number; ok: boolean }>()
+
+  private async webhookIntakeAvailable(queue: string): Promise<boolean> {
+    const hit = this.intakeConsumerCache.get(queue)
+    if (hit && Date.now() - hit.at < webhookIntakeCheckTtlMs) return hit.ok
+    const ok = (await this.rabbit.consumerCount(queue)) > 0
+    this.intakeConsumerCache.set(queue, { at: Date.now(), ok })
+    return ok
   }
 
   private updateRestart(botId?: string) {
@@ -7818,11 +8013,11 @@ class Bot<T extends UserSchema = UserSchema> {
     )
     this.restartWindowOpen = estimated > 0
     if (this.stragglerTimer) clearTimeout(this.stragglerTimer)
+    this.openWebhookIntake()
     if (!estimated) {
       this.armCommandListener('no-bots')
       return
     }
-    this.openEarlyWebhookIntake()
     if (!armFallbackEnabled) {
       this.handleWarn(
         `${loggerPrefix} Restart arm fallback DISABLED — a stalled re-hydration will leave this service deaf to commands`,
@@ -7847,9 +8042,6 @@ class Bot<T extends UserSchema = UserSchema> {
   protected armCommandListener(reason: RestartArmReason) {
     if (this.commandListenerArmed) return
     this.commandListenerArmed = true
-    const waiters = this.commandsArmedWaiters
-    this.commandsArmedWaiters = []
-    waiters.forEach((w) => w())
     if (this.armWatchdog) {
       clearInterval(this.armWatchdog)
       this.armWatchdog = undefined
@@ -7937,33 +8129,46 @@ class Bot<T extends UserSchema = UserSchema> {
   ): void {}
 
   /**
-   * Start consuming the command queue before re-hydration is done, for
-   * webhook signals only: `processInternalApiCall` holds every other command
-   * until the listener arms, which keeps the ordering that stops a command
-   * from running against a bot that has not been recreated yet. A signal for a
-   * bot that is already back runs at once; one for a bot still loading waits
-   * for it, bounded by `WEBHOOK_SIGNAL_MAX_AGE_MS`. Without this, every signal
-   * that arrives in the ~30s the dispatch takes waited for the arm and then
-   * ran late. Kill switch: `BOT_EARLY_WEBHOOK_INTAKE=false`.
+   * Consume webhook signals on their own queue, from the moment the restart
+   * window opens and for the life of the process. The command queue is still
+   * consumed only once every bot is back (a command processed before its bot
+   * is recreated used to start the bot twice), and having signals on a queue
+   * of their own keeps them out of its prefetch: commands waiting there can
+   * never hold a signal back. A signal for a bot that is already back runs at
+   * once; one for a bot still loading waits for it, at most
+   * WEBHOOK_SIGNAL_MAX_AGE_MS. The API sends a signal here only while this
+   * queue has a consumer, and to the command queue otherwise, so an API and a
+   * bot service of different versions keep working.
+   * Kill switch: `BOT_EARLY_WEBHOOK_INTAKE=false` (signals then wait for the
+   * arm on the command queue, as before).
    */
-  protected openEarlyWebhookIntake() {
-    if (!earlyWebhookIntake || !this.useBots || BotServiceType === BotType.grid)
-      return
-    this.handleLog(
-      `${loggerPrefix} Early webhook intake open: ${this.restartBotIdByUuid.size} bots registered as restarting`,
+  protected openWebhookIntake() {
+    if (
+      this.webhookIntakeOpen ||
+      !earlyWebhookIntake ||
+      !this.useBots ||
+      !bosServiceType ||
+      BotServiceType === BotType.grid
     )
-    this.setServiceListener()
+      return
+    this.webhookIntakeOpen = true
+    const queue = webhookIntakeQueue(this.getServiceType())
+    this.handleLog(
+      `${loggerPrefix} Webhook intake open on ${queue}: ${this.restartBotIdByUuid.size} bots registered as restarting`,
+    )
+    this.rabbit.listenWithCallback<BotServicePayload, unknown>(
+      queue,
+      async ({ params }) =>
+        (await this.webhookProcess(
+          ...((params ?? []) as [WebhookData[] | WebhookData, boolean]),
+        )) ?? StatusEnum.ok,
+      100,
+    )
   }
 
   private closeRestartWindow() {
     this.restartWindowOpen = false
     this.restartBotIdByUuid = new Map()
-  }
-
-  /** Resolves once the command listener has armed. */
-  private commandsArmed(): Promise<void> {
-    if (this.commandListenerArmed) return Promise.resolve()
-    return new Promise((resolve) => this.commandsArmedWaiters.push(resolve))
   }
 
   /**
@@ -7998,8 +8203,6 @@ class Bot<T extends UserSchema = UserSchema> {
   }
 
   protected setServiceListener() {
-    if (this.serviceListenerSet) return
-    this.serviceListenerSet = true
     if (!!bosServiceType) {
       const queue = this.getRabbitQueueName()
       this.handleDebug(`Set service listener for ${queue}`)
@@ -8044,6 +8247,13 @@ class Bot<T extends UserSchema = UserSchema> {
       restartBots.map((b) => b.id),
       restartBots,
     )
+    this.beginRestartSpread(this.getServiceType(), [
+      ...(findBotsData ?? []),
+      ...(findDCABotsData ?? []),
+      ...(findComboBotsData ?? []),
+      ...(findHedgeComboBotsData ?? []),
+      ...(findHedgeDcaBotsData ?? []),
+    ])
     if (findDCABotsData && findDCABotsData.length > 0) {
       this.handleLog(`Found ${findDCABotsData.length} active DCA bots`)
       for (const bot of findDCABotsData) {
@@ -8143,6 +8353,7 @@ class Bot<T extends UserSchema = UserSchema> {
         )
       }
     }
+    this.endRestartSpread()
     // The empty-service case is armed by `beginRestartWindow('no-bots')`; this
     // is the belt-and-braces path for a service that found nothing to restart.
     if (!this.estimatedRestart) {
@@ -9459,113 +9670,28 @@ class Bot<T extends UserSchema = UserSchema> {
   ) {
     if (!this.useBots) {
       // The API is where a signal is received: stamp it here, over anything
-      // the sender sent in the field, so the bot service can hold it to
-      // WEBHOOK_SIGNAL_MAX_AGE_MS however long it sits in a queue.
+      // the sender put in the field (logging only), and never let a sender
+      // mark its own signal as a replay.
       const receivedAt = Date.now()
       for (const d of [data].flat()) {
-        if (d && typeof d === 'object') d.receivedAt = receivedAt
+        if (d && typeof d === 'object') {
+          d.receivedAt = receivedAt
+          d.signalId = v4()
+          delete d.replayed
+        }
       }
-      try {
-        const dcas: WebhookData[] = []
-        const combos: WebhookData[] = []
-        const hedgeCombos: WebhookData[] = []
-        const hedgeDcas: WebhookData[] = []
-        for (const d of [data].flat()) {
-          const dca = await this.dcaBotDb.readData({ uuid: d.uuid })
-          if (dca?.data?.result) {
-            dcas.push(d)
-          } else {
-            const combo = await this.comboBotDb.readData({ uuid: d.uuid })
-            if (combo?.data?.result) {
-              combos.push(d)
-            } else {
-              const hedgeCombo = await hedgeComboBotDb.readData({
-                uuid: d.uuid,
-              })
-              if (hedgeCombo?.data?.result) {
-                hedgeCombos.push(d)
-              } else {
-                const hedgeDca = await hedgeDCABotDb.readData({
-                  uuid: d.uuid,
-                })
-                if (hedgeDca?.data?.result) {
-                  hedgeDcas.push(d)
-                }
-              }
-            }
-          }
-        }
-        if (
-          dcas.length &&
-          combos.length &&
-          hedgeCombos.length &&
-          hedgeDcas.length
-        ) {
-          await this.callExternalBotService(
-            BotType.dca,
-            'webhookProcess',
-            false,
-            dcas,
-            ignoreSettings,
-          )
-          await this.callExternalBotService(
-            BotType.combo,
-            'webhookProcess',
-            false,
-            combos,
-            ignoreSettings,
-          )
-          await this.callExternalBotService(
-            BotType.hedgeCombo,
-            'webhookProcess',
-            false,
-            hedgeCombos,
-            ignoreSettings,
-          )
-          return await this.callExternalBotService(
-            BotType.hedgeDca,
-            'webhookProcess',
-            false,
-            hedgeDcas,
-            ignoreSettings,
-          )
-        }
-        if (dcas.length) {
-          return await this.callExternalBotService(
-            BotType.dca,
-            'webhookProcess',
-            false,
-            dcas,
-            ignoreSettings,
-          )
-        }
-        if (combos.length) {
-          return await this.callExternalBotService(
-            BotType.combo,
-            'webhookProcess',
-            false,
-            combos,
-            ignoreSettings,
-          )
-        }
-        if (hedgeCombos.length) {
-          return await this.callExternalBotService(
-            BotType.hedgeCombo,
-            'webhookProcess',
-            false,
-            hedgeCombos,
-            ignoreSettings,
-          )
-        }
-        if (hedgeDcas.length) {
-          return await this.callExternalBotService(
-            BotType.hedgeDca,
-            'webhookProcess',
-            false,
-            hedgeDcas,
-            ignoreSettings,
-          )
-        }
+      const byType: [BotType, WebhookData[]][] = [
+        [BotType.dca, []],
+        [BotType.combo, []],
+        [BotType.hedgeCombo, []],
+        [BotType.hedgeDca, []],
+      ]
+      for (const d of [data].flat()) {
+        const type = await this.webhookBotType(d?.uuid)
+        byType.find(([t]) => t === type)?.[1].push(d)
+      }
+      const toSend = byType.filter(([, items]) => items.length)
+      if (!toSend.length) {
         // Not one item resolved to a bot. This used to answer StatusEnum.ok,
         // so /trade_signal replied 200 to a signal it then dropped on the
         // floor — the single most misleading response the endpoint had, since
@@ -9580,41 +9706,47 @@ class Bot<T extends UserSchema = UserSchema> {
             .join(', ')} matched no bot`,
         )
         return this.entityNotFound('Bot')
-      } catch (e) {
-        if ((e as Error)?.message === notAvailable) {
-          // The replay is held to the same cap as everything else: once the
-          // signal is past WEBHOOK_SIGNAL_MAX_AGE_MS it is dropped here, and a
-          // replay that reaches the bot service later than that is dropped
-          // there, so this never executes a signal late.
-          const action = [data].flat()[0]?.action ?? 'signal'
-          const ageMs = webhookSignalAgeMs(receivedAt, Date.now())
-          if (webhookSignalExpired(receivedAt, Date.now())) {
-            this.handleWarn(
-              `External service not available in webhook process. ${action} dropped, not replayed: ${ageMs}ms old`,
-            )
-            return {
-              status: StatusEnum.notok as const,
-              reason: webhookSignalExpiredReason(action, ageMs),
-              data: null,
-            }
-          }
-          this.handleWarn(
-            'External service not available in webhook process. Queued for replay within the signal age cap',
+      }
+      let result: unknown
+      for (let i = 0; i < toSend.length; i++) {
+        const [type, items] = toSend[i]
+        try {
+          result = await this.sendWebhookToService(type, items, ignoreSettings)
+        } catch (e) {
+          if ((e as Error)?.message !== notAvailable) return
+          // As before: a signal the bot service could not take is queued and
+          // replayed once it is back — this type's items and every type's not
+          // tried yet. A type whose service runs this version (its webhook
+          // intake has a consumer) gets its own replay queue; otherwise the
+          // legacy shared queue, which an older service handles as it always
+          // did and a current one routes to the right type (`routeLegacyReplay`).
+          logger.warn(
+            `${loggerPrefix} External service not available in webhook process. Queued ${toSend
+              .slice(i)
+              .map(([t]) => t)
+              .join(', ')} for replay`,
           )
-          this.rabbit.send(webhookQueue, data)
-          return {
-            status: StatusEnum.notok as const,
-            reason: `Bot service is restarting on our side. "${action}" runs only if the bot is back within ${WEBHOOK_SIGNAL_MAX_AGE_MS / 1000}s of the signal; otherwise it is dropped, not executed late.`,
-            data: null,
+          for (const [t, rest] of toSend.slice(i)) {
+            const queue = (await this.webhookIntakeAvailable(
+              webhookIntakeQueue(t),
+            ))
+              ? webhookReplayQueue(t)
+              : webhookQueue
+            await this.rabbit.ensureQueue(queue)
+            this.rabbit.send(queue, rest.length === 1 ? rest[0] : rest)
           }
+          return
         }
       }
-      return
+      return result
     }
     if (BotServiceType === BotType.grid) {
       return StatusEnum.ok
     }
     const items = [data].flat()
+    // The restart wait is measured from here, before the per-bot lock, so a
+    // second signal queued behind the first does not get a fresh budget.
+    const intakeAt = Date.now()
     for (let i = 0; i < items.length; i++) {
       // Spec 078: only wait for a close to settle when something in THIS
       // payload still has to run against the account it is flattening. A
@@ -9626,6 +9758,7 @@ class Bot<T extends UserSchema = UserSchema> {
         items[i],
         ignoreSettings,
         i < items.length - 1,
+        intakeAt,
       )
       if (items.length === 1) {
         return result ?? StatusEnum.ok
@@ -9725,6 +9858,8 @@ class Bot<T extends UserSchema = UserSchema> {
     ignoreSettings = false,
     /** Spec 078: another action in this payload runs after this one. */
     moreToRun = false,
+    /** When this bot service took the signal; bounds the restart wait. */
+    intakeAt = Date.now(),
   ) {
     if (!data) {
       return {
@@ -9759,41 +9894,41 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
     if (action && uuid) {
-      // Bounded intake: a signal runs within WEBHOOK_SIGNAL_MAX_AGE_MS of
-      // reaching the API or not at all. This is where a signal that sat in an
-      // unconsumed queue, or came back through the replay queue, is dropped.
-      const intakeAt = Date.now()
-      if (webhookSignalExpired(data.receivedAt, intakeAt)) {
-        const reason = webhookSignalExpiredReason(
-          action,
-          webhookSignalAgeMs(data.receivedAt, intakeAt),
-        )
-        this.handleWarn(
-          `Webhook ${action} for ${uuid} dropped, not executed: ${webhookSignalAgeMs(data.receivedAt, intakeAt)}ms old`,
-        )
-        return { status: StatusEnum.notok as const, reason, data: null }
-      }
-      // A bot this restart is still re-loading: wait for it inside the
-      // signal's remaining budget, then refuse rather than run it late.
-      if (this.restartingBotIdForUuid(uuid)) {
+      // A bot this restart is still re-loading: wait for it, at most
+      // WEBHOOK_SIGNAL_MAX_AGE_MS, then refuse rather than run it late. This
+      // used to answer "Bot not found" at once (not dispatched yet) or queue
+      // behind the bot's load and run whenever it finished. A replayed signal
+      // runs exactly as it always did.
+      if (!data.replayed && this.restartingBotIdForUuid(uuid)) {
         const waitStart = Date.now()
         const outcome = await this.awaitRestartingBot(
           uuid,
-          webhookSignalDeadline(data.receivedAt, intakeAt),
+          intakeAt + WEBHOOK_SIGNAL_MAX_AGE_MS,
         )
+        const ageMs = webhookSignalAgeMs(data.receivedAt, Date.now())
         if (outcome === 'expired') {
           const reason = webhookBotNotRunningReason(
             await this.webhookBotStatus(uuid),
             action,
           )
-          this.handleWarn(
-            `Webhook ${action} for ${uuid} not executed: bot still re-loading after ${Date.now() - waitStart}ms wait (${reason})`,
+          logger.warn(
+            `${loggerPrefix} Webhook ${action} for ${uuid} not executed: bot still re-loading after ${Date.now() - waitStart}ms wait, ${ageMs}ms since received (${reason})`,
           )
           return { status: StatusEnum.notok as const, reason, data: null }
         }
-        this.handleLog(
-          `Webhook ${action} for ${uuid} waited ${Date.now() - waitStart}ms for its bot to re-load`,
+        logger.info(
+          `${loggerPrefix} Webhook ${action} for ${uuid} waited ${Date.now() - waitStart}ms for its bot to re-load, ${ageMs}ms since received`,
         )
+      }
+      if (data.signalId && !(await this.claimWebhookSignal(data.signalId))) {
+        logger.warn(
+          `${loggerPrefix} Webhook ${action} for ${uuid} skipped: signal ${data.signalId} already ran (${data.replayed ? 'replay' : 'queued original'} of a signal the API also replayed)`,
+        )
+        return {
+          status: StatusEnum.notok as const,
+          reason: `This "${action}" signal was already executed.`,
+          data: null,
+        }
       }
       let call: (() => unknown) | undefined
       // The cold-start path posts to the worker directly instead of setting

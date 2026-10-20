@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.108.16] - 2026-10-20
+
+### Fixed
+
+- A webhook signal that the API could not hand to its bot service is replayed once the service is back, as before, with no age limit. The 10-second limit now applies only to waiting for a bot that is still re-loading after a restart.
+- A replayed signal is delivered to its own bot type's queue. The shared replay queue could hand it to another bot type, which then answered that the bot was not running.
+- A signal runs at most once. The copy the API replays and the original still waiting in the bot service's queue carry the same signal id, so only the first one runs.
+- Webhook signals have their own queue on each bot service, separate from its command queue, so commands that wait for the restart to finish can no longer hold signals back.
+- A restarting bot service spreads its bots over all the worker threads it needs from the start, instead of filling one thread before opening the next.
+- Two copies of the same signal for a re-loading bot share one waiting period instead of each getting its own.
+
 ## [1.108.15] - 2026-10-20
 
 ### Fixed
