@@ -456,6 +456,21 @@ export type MergeDealsOptions = {
  * what its deal opened with (indicators, custom rows, ATR/ADR, volume
  * change, a share of the balance) and has no meaning for a merged deal.
  */
+/**
+ * Deal settings that only shape the take profit. A deal edit that changes
+ * nothing else replaces the take profit and leaves the safety orders resting.
+ */
+const tpOnlyDealKeys = new Set([
+  'tpPerc',
+  'useTp',
+  'trailingTp',
+  'trailingTpPerc',
+  'useMinTP',
+  'minTp',
+  'useMultiTp',
+  'multiTp',
+])
+
 export const mergeDcaSupported = (settings: {
   useDca?: boolean
   dcaCondition?: DCAConditionEnum
@@ -28445,6 +28460,7 @@ function createDCABotHelper<
             findDeal.deal.trailingLevel = 0
             findDeal.deal.trailingMode = undefined
           }
+          const tpOnly = this.isTpOnlyDealEdit(findDeal, settings)
           findDeal.deal.settings = {
             ...findDeal.deal.settings,
             ...settings,
@@ -28526,10 +28542,45 @@ function createDCABotHelper<
             changed: reset ? false : keysToCheck.filter((k) => !k).length !== 0,
             slChangedByUser: reset ? false : currentSlPerc !== settings.slPerc,
           }
-          await this.rebuildDealOrders(findDeal, dealId)
+          await this.rebuildDealOrders(findDeal, dealId, { tpOnly })
         }
       }
       await this.afterDealUpdate(dealId)
+    }
+
+    /**
+     * Whether a deal settings patch changes only how the deal takes profit.
+     * Such an edit has no business touching the safety-order ladder: the
+     * ladder's prices and sizes do not read any of these keys, so cancelling
+     * and re-placing it only re-prices it at today's price and costs every
+     * level its place in the book. Compared by value against the deal's
+     * effective setting (the deal's own, else the bot's), because clients
+     * send whole forms — Edit Deal and mass edit include every key, changed
+     * or not. Anything unrecognised falls back to the full rebuild.
+     * DCA only: a Combo rebuild also re-prepares its minigrids.
+     */
+    protected isTpOnlyDealEdit(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      patch: Partial<Deal['settings']>,
+    ): boolean {
+      if (this.botType !== BotType.dca) {
+        return false
+      }
+      const effective = (k: string) => {
+        // @ts-ignore keyed read of the settings shape
+        const own = findDeal.deal.settings?.[k]
+        // @ts-ignore keyed read of the settings shape
+        return own !== undefined ? own : this.data?.settings?.[k]
+      }
+      const same = (a: unknown, b: unknown) =>
+        a === b || JSON.stringify(a) === JSON.stringify(b)
+      const changed = Object.keys(patch).filter(
+        (k) =>
+          k !== 'changed' &&
+          // @ts-ignore keyed read of the patch
+          !same(patch[k], effective(k)),
+      )
+      return changed.length > 0 && changed.every((k) => tpOnlyDealKeys.has(k))
     }
     /**
      * Cancel a deal's resting orders, regenerate its ladder and take profit
@@ -28541,9 +28592,30 @@ function createDCABotHelper<
     protected async rebuildDealOrders(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       dealId: string,
-      opts: { keepLevels?: boolean } = {},
+      opts: { keepLevels?: boolean; tpOnly?: boolean } = {},
     ) {
-      await this.cancelAllOrder(findDeal.deal.lastPrice, dealId, true)
+      // A take-profit-only edit replaces the take profit and nothing else
+      // (see `isTpOnlyDealEdit`); the ladder stays on the book as it is.
+      const tpOnly =
+        !!opts.tpOnly && findDeal.deal.status !== DCADealStatusEnum.start
+      if (tpOnly) {
+        const restingTps = this.getOrdersByStatusAndDealId({
+          status: this.orderStatuses,
+          dealId,
+        }).filter(
+          // A reduce-funds order is a dealTP too; it is not the deal's take
+          // profit and must never be cancelled by a take-profit edit.
+          (o) => o.typeOrder === TypeOrderEnum.dealTP && !o.reduceFundsId,
+        )
+        for (const o of restingTps) {
+          const result = await this.cancelOrderOnExchange(o)
+          if (result?.status === 'FILLED') {
+            this.handleUnknownOrder(result)
+          }
+        }
+      } else {
+        await this.cancelAllOrder(findDeal.deal.lastPrice, dealId, true)
+      }
       if (findDeal.deal.status !== DCADealStatusEnum.start) {
         findDeal.initialOrders = await this.createInitialDealOrders(
           findDeal.deal.symbol.symbol,
@@ -28646,7 +28718,19 @@ function createDCABotHelper<
         }
       })
 
-      if (findDeal.deal.status !== DCADealStatusEnum.start) {
+      if (tpOnly) {
+        const toPlace = await this.getOrdersToRestartAfterSettingsUpdate(dealId)
+        await this.placeOrders(
+          this.botId,
+          findDeal.deal.symbol.symbol,
+          dealId,
+          {
+            ...toPlace,
+            new: toPlace.new.filter((o) => o.type === TypeOrderEnum.dealTP),
+            cancel: [],
+          },
+        )
+      } else if (findDeal.deal.status !== DCADealStatusEnum.start) {
         await this.placeOrders(
           this.botId,
           findDeal.deal.symbol.symbol,

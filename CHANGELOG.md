@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.10] - 2026-10-20
+
+### Changed
+
+- Editing only a DCA deal's take profit (target, trailing, minimum or multiple take profits, or switching it on or off) now replaces just the take-profit order. The deal's safety orders stay on the exchange as they are, at their original prices and with their place in the order book. Any other deal edit still rebuilds the deal's orders. A resting reduce-funds order is not the take profit and is left in place.
+
 ## [1.108.9] - 2026-10-20
 
 ### Fixed
