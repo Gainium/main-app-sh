@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.108.12] - 2026-10-20
+
+### Fixed
+
+- Combo: when several grid orders of a deal filled on the same price move, the first fill's rebuild could trim exit lines whose orders had already filled but were still waiting to be processed. The rebuild cancelled them too late and placed the trimmed copies, so their base was sold (or bought back) twice; on a short the same timing trimmed buy-backs the deal still needed. The exit cap now waits until no grid fill of the deal is still queued, and a grid line whose cancel finds it already filled is never placed again at a new size.
+- Combo: a grid exit that filled after its deal had closed was traded again at market as a "remainder". Only an entry filled after the close leaves base to sell; an exit already took its base out of the position.
+- Combo shorts: a new minigrid could open with only one buy-back and further entry sells above it, when a lower level's displaced sell price rounded onto the price the level filled at. A new minigrid is now always anchored at its top level for a short (bottom level for a long), so all of its exit lines are placed.
+
 ## [1.108.11] - 2026-10-20
 
 ### Fixed

@@ -48,6 +48,12 @@ const makeBot = (
     step?: string
     /** false: the engine without the spec 048 cap, to show the drift. */
     cap?: boolean
+    /** false: the cap without its queued-fill deferral (§3.2), as in 1.108.9. */
+    deferWhileQueued?: boolean
+    /** Base lot step and its decimals (ETH: 0.001, 3). */
+    lot?: [number, number]
+    minNotional?: number
+    initialPrice?: number
   } = {},
 ) => {
   const {
@@ -56,6 +62,10 @@ const makeBot = (
     gridLevel = '9',
     step = '1',
     cap = true,
+    deferWhileQueued = true,
+    lot = [0.001, 3],
+    minNotional = 5,
+    initialPrice = 2500,
   } = opts
   let seq = 0
   const deal: any = {
@@ -63,7 +73,7 @@ const makeBot = (
       _id: DEAL_ID,
       botId: BOT_ID,
       status: 'open',
-      initialPrice: 2500,
+      initialPrice,
       initialBalances: { base: 0, quote: 0 },
       symbol: { symbol: SYMBOL, baseAsset: 'ETH', quoteAsset: 'USDT' },
       settings: {},
@@ -135,7 +145,7 @@ const makeBot = (
     }
     // --- I/O, stubbed ---
     async baseAssetPrecision() {
-      return 3
+      return lot[1]
     }
     async getAggregatedSettings() {
       return {
@@ -154,8 +164,8 @@ const makeBot = (
         pair: SYMBOL,
         priceAssetPrecision: precision,
         maxOrders: 500,
-        baseAsset: { minAmount: 0.001, step: 0.001, name: 'ETH' },
-        quoteAsset: { minAmount: 5, step: 0.01, name: 'USDT' },
+        baseAsset: { minAmount: lot[0], step: lot[0], name: 'ETH' },
+        quoteAsset: { minAmount: minNotional, step: 0.01, name: 'USDT' },
       }
     }
     async getUserFee() {
@@ -217,6 +227,14 @@ const makeBot = (
         quote: 0,
       }
       deal.deal.initialBalances = { base: long ? 0 : this.position, quote: 0 }
+    }
+    queuedComboGridFills(...a: any[]) {
+      return deferWhileQueued ? super.queuedComboGridFills(...a) : []
+    }
+    /** What `sellRemainder` was asked to trade after a close. */
+    remainders: number[] = []
+    async sellRemainder(_d: string, qty: number) {
+      this.remainders.push(qty)
     }
     async capMinigridExitsAfterFill(input: any) {
       if (cap) {
@@ -295,6 +313,37 @@ const makeBot = (
         this.trail.push(`@${price} ${o.side} ${o.origPrice}`)
         this.clock += 10
         await this.updateMinigrid(o)
+      }
+    }
+    /**
+     * One trade at `price` fills every resting order it reaches AT ONCE (the
+     * venue reports them together); then each fill is processed in turn.
+     */
+    async tick(price: number, between?: () => Promise<void>) {
+      // In the order the price reaches them: buys from the highest down,
+      // sells from the lowest up.
+      const crossed = this.resting()
+        .filter((o) =>
+          o.side === 'BUY' ? +o.origPrice >= price : +o.origPrice <= price,
+        )
+        .sort((a, b) =>
+          a.side === 'BUY'
+            ? +b.origPrice - +a.origPrice
+            : +a.origPrice - +b.origPrice,
+        )
+      this.clock += 1000
+      for (const o of crossed) {
+        o.status = 'FILLED'
+        o.executedQty = o.origQty
+        o.updateTime = this.clock
+        this.filled[o.side as 'BUY' | 'SELL'] += +o.origQty
+        this.position += (o.side === 'BUY') === long ? +o.origQty : -o.origQty
+        this.trail.push(`@${price} ${o.side} ${o.origPrice} (tick)`)
+      }
+      for (const o of crossed) {
+        this.clock += 10
+        await this.updateMinigrid(o)
+        await between?.()
       }
     }
     handleLog(m: string) {
@@ -457,6 +506,106 @@ describe('combo minigrid exits held to what it holds across refills (main-app sp
     expect(round(without.position), without.trail.join('\n')).to.be.below(0)
     const bot = await sellOut(true)
     expect(round(bot.position), bot.trail.join('\n')).to.be.at.least(0)
+  })
+
+  it('§6 every sell of a minigrid filling on one tick: nothing sold twice (§3.2)', async () => {
+    // The local E2E shape: the base minigrid's three sells fill together and
+    // the price runs on through everything placed after.
+    const run = async (deferWhileQueued: boolean) => {
+      const bot = makeBot({ gridLevel: '3', deferWhileQueued })
+      await open(bot)
+      const [m] = bot.mgs
+      const top = Math.max(...m.initialGrids.map((l: any) => l.price.sell))
+      // The price stays above the ladder: whatever a fill places on the sell
+      // side is marketable and fills before the next queued fill is taken up.
+      await bot.tick(top, () => bot.touch(top + 100))
+      return bot
+    }
+    const before = await run(false)
+    expect(
+      round(before.filled.SELL - before.filled.BUY - OPEN_QTY),
+      before.trail.join('\n'),
+    ).to.be.greaterThan(0)
+    const bot = await run(true)
+    expect(round(bot.position), bot.trail.join('\n')).to.be.at.least(0)
+    expect(round(bot.filled.SELL), bot.trail.join('\n')).to.be.at.most(
+      round(OPEN_QTY + bot.filled.BUY),
+    )
+  })
+
+  it("§7 a short's buy-backs filling on one tick: none trimmed, the exits keep up with the position (§3.2)", async () => {
+    const run = async (deferWhileQueued: boolean) => {
+      const bot = makeBot({ long: false, gridLevel: '3', deferWhileQueued })
+      await open(bot, false)
+      const [m] = bot.mgs
+      const buys = m.initialGrids
+        .map((l: any) => l.price.buy)
+        .sort((x: number, y: number) => x - y)
+      const sells = m.initialGrids.map((l: any) => l.price.sell)
+      // Two buy-backs at once, then back up through what they handed back,
+      // three times over.
+      for (let i = 0; i < 3; i++) {
+        await bot.tick(buys[1])
+        await bot.tick(Math.max(...sells))
+      }
+      const trims = bot.logs.filter((l: string) =>
+        /^Minigrid \S+ after CMB-GR.*trimmed/.test(l),
+      )
+      return { bot, trims, gap: round(bot.position - restingExits(bot, false)) }
+    }
+    // As in 1.108.9: the first buy-back's rebuild is capped against a ledger
+    // that already counts the second, and trims real buy-backs.
+    const before = await run(false)
+    expect(before.trims, before.bot.trail.join('\n')).to.have.length(3)
+    const { bot, trims, gap } = await run(true)
+    expect(trims, bot.trail.join('\n')).to.deep.equal([])
+    expect(gap, bot.trail.join('\n')).to.be.at.least(0).and.at.most(0.003)
+  })
+
+  it("§8 a short safety level whose lower level's sell rounds onto its price opens as buy-backs only (§3.3)", async () => {
+    // Local E2E SOL short: level 105.04's displaced sell is 105.08, the
+    // fill price; anchored on the sell side the ladder opened 1 buy-back and
+    // 2 more sells for the 1.42 it sold.
+    const bot = makeBot({
+      long: false,
+      gridLevel: '3',
+      step: '0.05',
+      lot: [0.01, 2],
+      initialPrice: 105.03,
+    })
+    bot.position = 1.42
+    await bot.calculateDealBalances()
+    const grids = await bot.createMinigrid(
+      bot.deal.deal,
+      safetyOrder(105.08, 1.42, false),
+      false,
+    )
+    expect(
+      bot.mgs[0].initialGrids.some((l: any) => l.price.sell === 105.08),
+      'fixture: a level sells at the fill price',
+    ).to.equal(true)
+    const sides = grids.map((g: any) => g.side)
+    expect(sides, JSON.stringify(grids)).to.deep.equal(
+      sides.map(() => OrderSideEnum.buy),
+    )
+    expect(round(grids.reduce((a: number, g: any) => a + g.qty, 0)))
+      .to.be.at.most(1.42)
+      .and.at.least(1.4)
+    expect(bot.mgs[0].schema.lastSide).to.equal(OrderSideEnum.buy)
+  })
+
+  it('§9 a grid fill processed after the deal closed: an exit trades nothing more, an entry is sold (§3.4)', async () => {
+    const bot = makeBot()
+    await open(bot)
+    bot.deal.deal.status = 'closed'
+    const exit = { ...bot.resting().find((o: any) => o.side === 'SELL') }
+    exit.status = 'FILLED'
+    exit.executedQty = exit.origQty
+    await bot.updateMinigrid(exit)
+    expect(bot.remainders).to.deep.equal([])
+    const entry = { ...exit, side: 'BUY', clientOrderId: 'CMB-GR-late-entry' }
+    await bot.updateMinigrid(entry)
+    expect(bot.remainders).to.deep.equal([+entry.executedQty])
   })
 
   it('§5 a futures short buys back no more than it sold', async () => {

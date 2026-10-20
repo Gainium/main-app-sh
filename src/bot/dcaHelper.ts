@@ -18324,6 +18324,10 @@ function createDCABotHelper<
         // than it believes" is a real difference on a live position, and this
         // loop is a re-size rather than a teardown, so it is not one worth
         // trading for a round trip.
+        // Main-app spec 048 §3.2: combo grid lines whose cancel found them
+        // FILLED. Their base has already gone; a new order in this diff at the
+        // same level is their re-size, and placing it trades that base again.
+        const filledOnCancel: Grid[] = []
         for (const order of orders.cancel.sort((a) =>
           a.type === TypeOrderEnum.dealTP ? -1 : 1,
         )) {
@@ -18346,6 +18350,13 @@ function createDCABotHelper<
             false,
             !resizesTp,
           )
+          if (
+            o?.status === 'FILLED' &&
+            this.botType === BotType.combo &&
+            order.type === TypeOrderEnum.dealGrid
+          ) {
+            filledOnCancel.push(order)
+          }
           if (
             o?.status === 'FILLED' ||
             (o?.status === 'PARTIALLY_FILLED' &&
@@ -18372,6 +18383,21 @@ function createDCABotHelper<
          * Add new orders, add them to orders property
          */
         const toPlace = [...orders.new]
+          .filter((n) => {
+            const resize = filledOnCancel.find(
+              (f) =>
+                n.type === TypeOrderEnum.dealGrid &&
+                `${f.minigridId}` === `${n.minigridId}` &&
+                f.side === n.side &&
+                f.price === n.price,
+            )
+            if (resize) {
+              this.handleLog(
+                `Grid ${n.side} ${n.price} ${n.qty} not placed: the line it replaces (${resize.newClientOrderId}) filled before its cancel`,
+              )
+            }
+            return !resize
+          })
           .sort(
             (a, b) =>
               Math.abs(a.price - (deal?.deal?.lastPrice ?? 0)) -

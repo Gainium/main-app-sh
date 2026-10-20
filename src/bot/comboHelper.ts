@@ -168,6 +168,12 @@ function createComboBotHelper<
     private minigrids: Map<string, FullMinigrid> = new Map()
     transactionsDb = comboTransactionsDb
     private lastMinigridOrder: Map<string, LastMinigridOrdes> = new Map()
+    /**
+     * Main-app spec 048 §3.2: grid fills `updateMinigrid` has taken up, by
+     * client order id → when. A FILLED grid order of the deal that is not here
+     * is a fill still queued behind the one being processed.
+     */
+    private comboGridFillsTaken: Map<string, number> = new Map()
     private usedOrderId: Map<string, Set<string>> = new Map()
     /** Spec `120`: `closeDealById` calls in progress, per deal. */
     private closesRunning: Map<string, number> = new Map()
@@ -487,6 +493,16 @@ function createComboBotHelper<
       if (executed < budget && !this.futures) {
         budget = executed
       }
+      /**
+       * Main-app spec 048 §3.3. A new minigrid starts at a level's BUY price —
+       * the bottom one of a long, the top one of a short — and the ladder is
+       * anchored there. Anchored on the fill's own side, a short's SELL fill
+       * was matched against the levels' displaced sell prices: where a lower
+       * level's sell rounded onto the start price, the ladder anchored there
+       * and the levels above it opened as more entry sells instead of
+       * buy-backs, leaving most of the level it sold without an exit.
+       */
+      const openSide = OrderSideEnum.buy
       let grids = (
         (await this.generateGridsOnPrice(
           {
@@ -499,8 +515,7 @@ function createComboBotHelper<
             _budget: budget,
             _lastPrice: initialPrice,
             _initialPriceStart: initialPrice,
-            _side:
-              order.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell,
+            _side: openSide,
             all: true,
             profitCurrency,
             orderFixedIn,
@@ -545,7 +560,8 @@ function createComboBotHelper<
         initialPrice: initialPrice,
         realInitialPrice: +order.price,
         lastPrice: initialPrice,
-        lastSide: order.side === 'BUY' ? OrderSideEnum.buy : OrderSideEnum.sell,
+        // The anchor's side, so a restart regenerates the same ladder.
+        lastSide: openSide,
         profit: {
           total: 0,
           totalUsd: 0,
@@ -3088,11 +3104,9 @@ function createComboBotHelper<
             )
             if (dealInDb.data.result.status === DCADealStatusEnum.closed) {
               this.handleLog(`Deal is closed, sell remainder`)
-              await this.sellRemainder(
+              await this.sellLateGridFill(
                 `${dealInDb.data.result._id}`,
-                +order.origQty,
-                +order.price,
-                false,
+                order,
                 {
                   deal: {
                     ...dealInDb.data.result,
@@ -3116,6 +3130,7 @@ function createComboBotHelper<
       this.handleLog(
         `Update minigrid ${order.minigridId} ${order.clientOrderId}`,
       )
+      this.takeComboGridFill(order.clientOrderId)
       const { dealId } = minigrid.schema
       let deal = this.getDeal(dealId)
       const settings = await this.getAggregatedSettings(deal?.deal)
@@ -3431,14 +3446,7 @@ function createComboBotHelper<
         order.botId === this.botId &&
         (!deal || deal.deal.status === DCADealStatusEnum.closed)
       ) {
-        this.handleDebug(`Deal ${dealId} is closed, will sell the remainder`)
-        await this.sellRemainder(
-          dealId,
-          +order.origQty,
-          +order.price,
-          false,
-          deal,
-        )
+        await this.sellLateGridFill(dealId, order, deal)
         this.endMethod(_id)
         return
       }
@@ -3894,6 +3902,7 @@ function createComboBotHelper<
       super.clearClassProperties(clearRedis, start)
       this.minigrids = new Map()
       this.lastMinigridOrder = new Map()
+      this.comboGridFillsTaken = new Map()
       this.usedOrderId = new Map()
       this.closesRunning = new Map()
       this.closeRequested = new Set()
@@ -4758,6 +4767,19 @@ function createComboBotHelper<
       if (!this.comboExitsHeldInBase()) {
         return
       }
+      // §3.2: a fill still queued behind this one has already left the venue
+      // and the deal's ledger, but its line is still on the ladder the
+      // rebuild started from. Trimming against either would cut lines whose
+      // base is already gone, and the diff would cancel them (too late) and
+      // place the trimmed copies: base sold twice. Its own processing
+      // rebuilds the ladder; the cap runs once nothing is queued.
+      const queued = this.queuedComboGridFills(input.dealId, order)
+      if (queued.length) {
+        this.handleDebug(
+          `Minigrid ${input.minigridId ?? 'new'} after ${order.clientOrderId}: exit cap deferred, ${queued.length} grid fill(s) of the deal still queued (${queued.join(', ')})`,
+        )
+        return
+      }
       const step = await this.comboExitLotStep(input.symbol)
       const filled = +order.executedQty
       const exit = this.isLong ? OrderSideEnum.sell : OrderSideEnum.buy
@@ -4826,6 +4848,69 @@ function createComboBotHelper<
       // A ledger that reads no position while the minigrid still has exits to
       // rest is not trusted to cap them; the minigrid's own holding still is.
       return Number.isFinite(after) && after > 0 ? after : undefined
+    }
+
+    /**
+     * Spec 048 §3.4: a grid fill processed after its deal closed. An entry (a
+     * buy of a long, a sell of a short) left base the close did not trade, and
+     * that is sold (bought back) at market. An exit already took its base out
+     * of the position: trading its quantity again traded base the deal no
+     * longer had — a long sold twice, a futures short reversed.
+     */
+    private async sellLateGridFill(
+      dealId: string,
+      order: Order,
+      deal: Parameters<typeof this.sellRemainder>[4],
+      updateBalances = true,
+    ) {
+      const qty = +order.executedQty || +order.origQty
+      if ((order.side === OrderSideEnum.buy) !== this.isLong) {
+        this.handleWarn(
+          `Grid exit ${order.clientOrderId} filled ${qty} after deal ${dealId} closed: it took its base out of the position, nothing more to trade`,
+        )
+        return
+      }
+      this.handleDebug(`Deal ${dealId} is closed, will sell the remainder`)
+      await this.sellRemainder(
+        dealId,
+        qty,
+        +order.price,
+        false,
+        deal,
+        updateBalances,
+      )
+    }
+
+    /** Spec 048 §3.2: record a grid fill as taken up by `updateMinigrid`. */
+    private takeComboGridFill(clientOrderId: string) {
+      const now = Date.now()
+      this.comboGridFillsTaken.set(clientOrderId, now)
+      if (this.comboGridFillsTaken.size > 500) {
+        for (const [id, at] of this.comboGridFillsTaken) {
+          if (now - at > 10 * 60_000) {
+            this.comboGridFillsTaken.delete(id)
+          }
+        }
+      }
+    }
+
+    /**
+     * Spec 048 §3.2: the deal's grid fills that are FILLED in the order map but
+     * not yet taken up by `updateMinigrid` — filled on the same tick as
+     * `order`, queued behind it. Fills from before a restart (never taken up
+     * in this process) are older than the window and are not counted.
+     */
+    private queuedComboGridFills(dealId: string, order: Order) {
+      const since = +order.updateTime - 60_000
+      return this.getOrdersByStatusAndDealId({ status: 'FILLED', dealId })
+        .filter(
+          (o) =>
+            o.typeOrder === TypeOrderEnum.dealGrid &&
+            o.clientOrderId !== order.clientOrderId &&
+            !this.comboGridFillsTaken.has(o.clientOrderId) &&
+            +o.updateTime >= since,
+        )
+        .map((o) => o.clientOrderId)
     }
 
     /**
