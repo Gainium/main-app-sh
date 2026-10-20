@@ -325,9 +325,10 @@ describe('webhook queues', () => {
   const rabbitHarness = (consumers: number, intakeExists?: string) => {
     const { bot } = harness()
     const sent: { queue: string; payload: any }[] = []
-    const rpc: { queue: string; payload: any }[] = []
+    const rpc: { queue: string; payload: any; expirationMs?: number }[] = []
     const ensured: string[] = []
     bot.intakeConsumerCache = new Map()
+    bot.intakeConsumerSeenAt = new Map()
     bot.rabbit = {
       queueInfo: async (q: string) =>
         q === intakeExists || consumers
@@ -335,8 +336,13 @@ describe('webhook queues', () => {
           : null,
       ensureQueue: async (q: string) => ensured.push(q),
       send: (queue: string, payload: any) => sent.push({ queue, payload }),
-      sendWithCallback: async (queue: string, payload: any) => {
-        rpc.push({ queue, payload })
+      sendWithCallback: async (
+        queue: string,
+        payload: any,
+        _timeout?: number,
+        expirationMs?: number,
+      ) => {
+        rpc.push({ queue, payload, expirationMs })
         return { response: { status: StatusEnum.ok } }
       },
     }
@@ -372,16 +378,32 @@ describe('webhook queues', () => {
     expect(rpc.map((r) => r.queue)).to.deep.equal(['comboQueue'])
   })
 
-  it('uses the intake queue while its service is down, once the intake exists', async () => {
-    const { bot, rpc } = rabbitHarness(0, webhookIntakeQueue('dca' as any))
+  it('uses the intake queue while a recently seen current service is down', async () => {
+    const q = webhookIntakeQueue('dca' as any)
+    const { bot, rpc } = rabbitHarness(0, q)
+    bot.intakeConsumerSeenAt = new Map([[q, Date.now() - 60_000]])
+    await bot.sendWebhookToService(
+      'dca',
+      [{ action: 'startDeal', uuid: 'u', receivedAt: Date.now() - 20_000 }],
+      false,
+    )
+    expect(rpc.map((r) => r.queue)).to.deep.equal([q])
+    // RabbitMQ drops it when the signal's cap runs out.
+    expect(rpc[0].expirationMs).to.be.within(39_000, 40_000)
+  })
+
+  it('uses the command queue for a down service whose intake nobody read lately', async () => {
+    // An older service after a rollback: its intake queue is left over, but it
+    // never reads it — a signal sent there while it restarts would be lost.
+    const q = webhookIntakeQueue('dca' as any)
+    const { bot, rpc } = rabbitHarness(0, q)
+    bot.intakeConsumerSeenAt = new Map([[q, Date.now() - 6 * 60_000]])
     await bot.sendWebhookToService(
       'dca',
       [{ action: 'startDeal', uuid: 'u' }],
       false,
     )
-    expect(rpc.map((r) => r.queue)).to.deep.equal([
-      webhookIntakeQueue('dca' as any),
-    ])
+    expect(rpc.map((r) => r.queue)).to.deep.equal(['dcaQueue'])
   })
 
   it('drops instead of replaying a signal already past the cap', async () => {

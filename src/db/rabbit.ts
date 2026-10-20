@@ -481,6 +481,8 @@ class Rabbit {
     queue: string,
     payload: P,
     timeout?: number,
+    /** RabbitMQ drops the request if nobody has taken it within this many ms. */
+    expirationMs?: number,
   ): Promise<{ response: R | null } | null> {
     try {
       const startTime = performance.now()
@@ -534,6 +536,9 @@ class Rabbit {
         {
           correlationId,
           replyTo: replyQueue.queue,
+          ...(expirationMs !== undefined
+            ? { expiration: `${Math.max(1, Math.floor(expirationMs))}` }
+            : {}),
         },
       )
 

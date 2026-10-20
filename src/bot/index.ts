@@ -301,6 +301,17 @@ const webhookSignalSeenTtlSec = 24 * 60 * 60
  */
 const webhookRpcTimeoutMs = WEBHOOK_SIGNAL_MAX_AGE_MS + 30_000
 
+/**
+ * A bot service whose intake had a consumer this recently and now has none is
+ * taken to be a current-version service restarting, not an older one.
+ */
+const webhookIntakeRecentMs = 5 * 60_000
+
+/** Heartbeat key a current-version bot service of `type` refreshes. */
+const webhookIntakeBeatKey = (type: BotType) =>
+  `gainium:webhookIntake:alive:${type}`
+const webhookIntakeBeatMs = 30_000
+
 /** How long the API trusts "this intake queue has a consumer". */
 const webhookIntakeCheckTtlMs = 2000
 
@@ -7907,9 +7918,14 @@ class Bot<T extends UserSchema = UserSchema> {
   /**
    * Hand a signal to its bot service: on the service's webhook intake queue
    * while it has a consumer — or while the service is down altogether (no
-   * consumer on either queue) and the intake queue exists, because a current
-   * service reads its intake as soon as it starts, while the command queue
-   * waits until every bot is back. Otherwise the command queue, as before.
+   * consumer on either queue) and a current-version service of that type was
+   * alive within `webhookIntakeRecentMs` (its Redis heartbeat), because a
+   * current service reads its intake as soon as it starts, while the command
+   * queue waits until every bot is back. Otherwise the command queue, as
+   * before. The heartbeat is what keeps an older service (after a rollback,
+   * its intake queue left behind) from losing every signal sent while it
+   * restarts: it never reads the intake, and never writes the heartbeat. An intake request expires in RabbitMQ when the signal's cap
+   * runs out, so nothing piles up there either way.
    */
   protected async sendWebhookToService(
     type: BotType,
@@ -7922,6 +7938,7 @@ class Bot<T extends UserSchema = UserSchema> {
       (await this.webhookIntakeAvailable(intake)) ||
       (await this.webhookServiceDownWithIntake(type))
     ) {
+      const receivedAt = items[0]?.receivedAt ?? Date.now()
       const result = await this.rabbit.sendWithCallback<
         BotServicePayload,
         unknown
@@ -7929,6 +7946,7 @@ class Bot<T extends UserSchema = UserSchema> {
         intake,
         { method: 'webhookProcess', params: [payload, ignoreSettings] },
         webhookRpcTimeoutMs,
+        webhookSignalDeadline(receivedAt, Date.now()) - Date.now(),
       )
       if (!result) throw new Error(notAvailable)
       return result.response
@@ -7945,9 +7963,17 @@ class Bot<T extends UserSchema = UserSchema> {
     return result.response
   }
 
-  /** No consumer on the command queue or the intake, and the intake exists. */
+  /**
+   * No consumer on the command queue or the intake, and a current-version
+   * service of this type was alive recently — one that is restarting.
+   */
   private async webhookServiceDownWithIntake(type: BotType) {
-    const intake = await this.rabbit.queueInfo(webhookIntakeQueue(type))
+    const queue = webhookIntakeQueue(type)
+    const redis = await RedisClient.getInstance().catch(() => undefined)
+    const beatAt = Number(await redis?.get(webhookIntakeBeatKey(type)))
+    const seen = beatAt || this.intakeConsumerSeenAt.get(queue)
+    if (!seen || Date.now() - seen > webhookIntakeRecentMs) return false
+    const intake = await this.rabbit.queueInfo(queue)
     if (!intake) return false
     const command = await this.rabbit.queueInfo(this.getRabbitQueueName(type))
     return !intake.consumerCount && !command?.consumerCount
@@ -7980,12 +8006,14 @@ class Bot<T extends UserSchema = UserSchema> {
   }
 
   private intakeConsumerCache = new Map<string, { at: number; ok: boolean }>()
+  private intakeConsumerSeenAt = new Map<string, number>()
 
   private async webhookIntakeAvailable(queue: string): Promise<boolean> {
     const hit = this.intakeConsumerCache.get(queue)
     if (hit && Date.now() - hit.at < webhookIntakeCheckTtlMs) return hit.ok
     const ok = ((await this.rabbit.queueInfo(queue))?.consumerCount ?? 0) > 0
     this.intakeConsumerCache.set(queue, { at: Date.now(), ok })
+    if (ok) this.intakeConsumerSeenAt.set(queue, Date.now())
     return ok
   }
 
@@ -8182,6 +8210,21 @@ class Bot<T extends UserSchema = UserSchema> {
     this.handleLog(
       `${loggerPrefix} Webhook intake open on ${queue}: ${this.restartBotIdByUuid.size} bots registered as restarting`,
     )
+    // Tell the API this type runs a version that reads its intake, so the API
+    // may queue signals there while the service restarts (see
+    // `webhookServiceDownWithIntake`). An older service never writes it.
+    const beat = () =>
+      RedisClient.getInstance()
+        .then((r) =>
+          r?.set(
+            webhookIntakeBeatKey(this.getServiceType()),
+            `${Date.now()}`,
+            webhookIntakeRecentMs / 1000,
+          ),
+        )
+        .catch(() => undefined)
+    beat()
+    setInterval(beat, webhookIntakeBeatMs).unref?.()
     this.rabbit.listenWithCallback<BotServicePayload, unknown>(
       queue,
       async ({ params }) =>

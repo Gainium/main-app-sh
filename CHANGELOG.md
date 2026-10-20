@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.18] - 2026-10-20
+
+### Fixed
+
+- After a rollback to an older bot service, signals sent while it restarted could be queued where it never reads them, and were lost. Signals are now queued on the webhook queue during a restart only while a current-version service of that type has reported itself alive in the last five minutes; otherwise they go to the command queue as before.
+- A signal waiting on the webhook queue now expires there when its 60 seconds run out, instead of staying queued.
+
 ## [1.108.17] - 2026-10-20
 
 ### Fixed
