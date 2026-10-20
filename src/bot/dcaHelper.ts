@@ -276,6 +276,10 @@ import {
 } from './dca/gridBreakpoints'
 import { resolveLevelClientOrderId } from './clientOrderIdReissue'
 import { splitPendingFunds } from './dca/pendingFundsResend'
+import {
+  pendingReduceQty,
+  type PendingReduceEntry,
+} from './dca/pendingReduceQty'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
   tpPriceDisplacement,
@@ -11815,30 +11819,15 @@ function createDCABotHelper<
     }
 
     getPendingReduceFunds(deal: FullDeal<ExcludeDoc<Deal>>) {
-      const pendingReduceFunds =
-        deal.deal.pendingReduceFunds ??
-        ([] as unknown as NonNullable<Deal['pendingReduceFunds']>)
-      const base = pendingReduceFunds.reduce(
-        (acc, v) =>
-          acc +
-          (v.useLimitPrice
-            ? v.asset === OrderSizeTypeEnum.base
-              ? +v.qty
-              : +v.qty / +(v.limitPrice ?? '0')
-            : 0),
-        0,
+      // The resting reduce order, when there is one, is the withdrawal; a
+      // percentage request is not an amount. See `./dca/pendingReduceQty`.
+      return pendingReduceQty(
+        (deal.deal.pendingReduceFunds ?? []) as PendingReduceEntry[],
+        this.getOrdersByStatusAndDealId({
+          status: ['NEW', 'PARTIALLY_FILLED'],
+          dealId: `${deal.deal._id}`,
+        }),
       )
-      const quote = pendingReduceFunds.reduce(
-        (acc, v) =>
-          acc +
-          (v.useLimitPrice
-            ? v.asset === OrderSizeTypeEnum.base
-              ? +v.qty * +(v.limitPrice ?? '0')
-              : +v.qty
-            : 0),
-        0,
-      )
-      return { base, quote }
     }
     sendEightyAlert(_findDeal: FullDeal<ExcludeDoc<Deal>>) {
       return
@@ -28494,7 +28483,15 @@ function createDCABotHelper<
         const restingTps = this.getOrdersByStatusAndDealId({
           status: this.orderStatuses,
           dealId,
-        }).filter((o) => o.typeOrder === TypeOrderEnum.dealTP)
+        }).filter(
+          // A resting reduce-funds order is a dealTP too; it is not the deal's
+          // take profit and a take-profit edit must leave it resting — also a
+          // row that reached memory without its funds id (`D-TPR` client id).
+          (o) =>
+            o.typeOrder === TypeOrderEnum.dealTP &&
+            !o.reduceFundsId &&
+            !`${o.clientOrderId ?? ''}`.includes('D-TPR'),
+        )
         for (const o of restingTps) {
           const result = await this.cancelOrderOnExchange(o)
           if (result?.status === 'FILLED') {
