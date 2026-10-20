@@ -3698,24 +3698,8 @@ function createComboBotHelper<
       // refills them, and refills them only for deals still held — so the
       // lookup above comes back empty and the deal's ladders stay `active`
       // in the database for good. Close them there instead.
-      if (!mingrids.length && this.shouldProceed()) {
-        const closed = await this.minigridDb.updateManyData(
-          {
-            botId: this.botId,
-            dealId,
-            status: { $ne: ComboMinigridStatusEnum.closed },
-          } as any,
-          { $set: { status: ComboMinigridStatusEnum.closed } },
-        )
-        if (closed.status === StatusEnum.notok) {
-          this.handleWarn(
-            `Error closing minigrids of deal ${dealId}: ${closed.reason}`,
-          )
-        } else {
-          this.handleDebug(
-            `Minigrids of deal ${dealId} not in memory, closed in DB: ${closed.reason}`,
-          )
-        }
+      if (!mingrids.length) {
+        await this.closeDealMinigridsInDb(dealId)
       }
       this.saveMinigridToRedis(
         this.botId,
@@ -3725,6 +3709,45 @@ function createComboBotHelper<
       this.closeRequested.delete(dealId)
       this.updateUsedOrderId()
       this.updateBotDealStats(dealId)
+    }
+    /** Spec `173` §1.1.1 / §1.1.3: every minigrid of the deal not `closed` is closed in the database. */
+    private async closeDealMinigridsInDb(dealId: string) {
+      if (!this.shouldProceed()) {
+        return
+      }
+      const closed = await this.minigridDb.updateManyData(
+        {
+          botId: this.botId,
+          dealId,
+          status: { $ne: ComboMinigridStatusEnum.closed },
+        } as any,
+        { $set: { status: ComboMinigridStatusEnum.closed } },
+      )
+      if (closed.status === StatusEnum.notok) {
+        this.handleWarn(
+          `Error closing minigrids of deal ${dealId}: ${closed.reason}`,
+        )
+      } else {
+        this.handleDebug(
+          `Minigrids of deal ${dealId} not in memory, closed in DB: ${closed.reason}`,
+        )
+      }
+    }
+    /**
+     * Spec `182` §1.1.2. The interrupted close never reached `afterDealClose`,
+     * so the deal's minigrids were never closed. A copy restored from the
+     * minigrid snapshot is dropped from memory; the database rows are closed
+     * the spec `173` way.
+     */
+    protected override async afterCloseSweepResumed(dealId: string) {
+      for (const m of this.getMinigridByDealId({ dealId })) {
+        this.deleteMinigrid(m.schema._id, false)
+      }
+      await this.closeDealMinigridsInDb(dealId)
+      this.saveMinigridToRedis(
+        this.botId,
+        this.serviceRestart && !this.secondRestart,
+      )
     }
     /**
      * Spec `120`. Closing a deal cancels every resting grid order, and one
@@ -8811,6 +8834,8 @@ function createComboBotHelper<
       // A funds change the stop interrupted is finished first: the checks
       // below would otherwise place the book the change was replacing.
       await this.resumeComboFundsChanges()
+      // Spec `182`: before the order checks, which only see what was loaded.
+      await this.resumeCloseSweeps()
       if (serviceRestart) {
         await this.cancelClosedMinigridOrders()
         await this.checkOrders(this.botId)

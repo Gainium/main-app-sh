@@ -431,6 +431,7 @@ export type RedisKeys =
   | 'botData'
   | 'exchangeInfo'
   | 'userFee'
+  | 'closeSweeps'
 export const notEnoughErrors = [
   'The purchase amount of each order exceeds the estimated maximum purchase amount',
   'The sell quantity per order exceeds the estimated maximum sell quantity',

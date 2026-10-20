@@ -371,6 +371,11 @@ import { RunWithDelay } from '../utils/delay'
 import { DealStats } from './worker/statsService'
 import RedisClient from '../db/redis'
 import {
+  closeSweepsToResume,
+  parseCloseSweeps,
+  serializeCloseSweeps,
+} from './closeSweeps'
+import {
   BandsResult,
   PivotResult,
   PriorPivotResult,
@@ -813,6 +818,14 @@ function createDCABotHelper<
     dealSymbolMap: Map<string, Set<string>> = new Map()
     /** DB instance to work with deals */
     dealsDb: DB<Deal>
+    /**
+     * Spec `182`. Deal closes whose cancel sweep has started and not finished
+     * (dealId → start ms), mirrored to this bot's Redis hash so a start after a
+     * process stop can resume them. Never reset on reload.
+     */
+    closeSweeps: Map<string, number> = new Map()
+    /** Spec `182`. The sweeps running in THIS process. */
+    closeSweepsInFlight: Set<string> = new Set()
     /** Close after TP filled */
     closeAfterTpFilled: boolean
     /** Timer for time base trigger */
@@ -2082,6 +2095,7 @@ function createDCABotHelper<
 
     async loadOrders(): Promise<void> {
       const _id = this.startMethod('loadOrders')
+      await this.loadCloseSweeps()
       // Deals restored from Redis are SEEDED here and their orders generated
       // further down, AFTER `_loadOrders` has filled the order book. Generating
       // them here — which is what this used to do — sized every restored deal's
@@ -4483,6 +4497,129 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec `182` §4.2. Merge the sweeps a previous process recorded into this
+     * one's, so the next write cannot drop them.
+     */
+    protected async loadCloseSweeps() {
+      const stored = parseCloseSweeps(await this.getFromRedis('closeSweeps'))
+      for (const [dealId, at] of stored) {
+        if (!this.closeSweeps.has(dealId)) {
+          this.closeSweeps.set(dealId, at)
+        }
+      }
+    }
+
+    /**
+     * Written straight away and awaited, NOT through `@RunWithDelay` like the
+     * order snapshot: that debounce restarts on every order change, so during a
+     * long sweep — exactly when this matters — it would never fire.
+     */
+    protected async persistCloseSweeps() {
+      await this.setToRedis('closeSweeps', serializeCloseSweeps(this.closeSweeps))
+    }
+
+    /** Spec `182` §4.1. Recorded before the deal's first cancel is sent. */
+    protected async noteCloseSweep(dealId: string) {
+      this.closeSweepsInFlight.add(dealId)
+      this.closeSweeps.set(dealId, Date.now())
+      await this.persistCloseSweeps()
+    }
+
+    /**
+     * Spec `182` §4.1. The sweep is over. Its record stays while an order of the
+     * deal is still live (a refused cancel, spec `180`), for the next start.
+     */
+    protected async finishCloseSweep(dealId: string) {
+      this.closeSweepsInFlight.delete(dealId)
+      const live = this.getOrdersByStatusAndDealId({
+        status: this.orderStatuses,
+        dealId,
+      })
+      if (live.length) {
+        return
+      }
+      this.closeSweeps.delete(dealId)
+      await this.persistCloseSweeps()
+    }
+
+    /**
+     * Spec `182` §4.3. Finish the close sweeps a previous process recorded and
+     * never completed: the deal is closed, but its orders the sweep had not
+     * reached yet are still live on the venue, and the order snapshot this
+     * start restored may predate the whole deal. Read them from Mongo by deal
+     * and cancel them.
+     */
+    protected async resumeCloseSweeps() {
+      if (!this.closeSweeps?.size) {
+        return
+      }
+      const { resume, expired } = closeSweepsToResume(
+        this.closeSweeps,
+        Date.now(),
+        (dealId) =>
+          this.closeSweepsInFlight.has(dealId)
+            ? 'inFlight'
+            : this.getDeal(dealId)
+              ? 'held'
+              : null,
+      )
+      for (const dealId of expired) {
+        this.closeSweeps.delete(dealId)
+      }
+      for (const dealId of resume) {
+        const read = await this.ordersDb.readData(
+          {
+            botId: this.botId,
+            dealId,
+            status: { $in: ['NEW', 'PARTIALLY_FILLED'] },
+            typeOrder: {
+              $nin: [TypeOrderEnum.liquidation, TypeOrderEnum.br],
+            },
+          },
+          undefined,
+          {},
+          true,
+        )
+        if (read.status === StatusEnum.notok) {
+          this.handleWarn(
+            `Cannot read the open orders of closed deal ${dealId}: ${read.reason}`,
+          )
+          continue
+        }
+        const rows = read.data.result
+        if (rows.length) {
+          this.handleLog(
+            `Deal ${dealId} closed while its orders were being cancelled. Cancel the ${rows.length} still open`,
+          )
+        }
+        for (const row of rows) {
+          const order = this.getOrderFromMap(row.clientOrderId) ?? row
+          if (!this.getOrderFromMap(order.clientOrderId)) {
+            this.setOrder(order, false)
+          }
+          const result = await this.cancelOrderOnExchange(order)
+          if (result?.status === 'FILLED') {
+            this.handleUnknownOrder(result)
+          }
+        }
+        await this.afterCloseSweepResumed(dealId)
+        const live = this.getOrdersByStatusAndDealId({
+          status: this.orderStatuses,
+          dealId,
+        })
+        if (!live.length) {
+          this.closeSweeps.delete(dealId)
+        }
+      }
+      await this.persistCloseSweeps()
+    }
+
+    /** Spec `182` §4.3. What else a resumed sweep finishes, per bot type. */
+    protected async afterCloseSweepResumed(_dealId: string) {
+      return
+    }
+
+    /**
      * Volume this deal still holds on the exchange, or 0.
      *
      * A deal that ends without a closing order leaves this on the venue. It is
@@ -4828,6 +4965,7 @@ function createDCABotHelper<
           this.checkNotEnoughBalanceErrors(this.botId)
         }
         if (cancel) {
+          await this.noteCloseSweep(dealId)
           await this.cancelAllOrder(deal.deal.lastPrice, dealId, true)
           for (const o of this.getOrdersByStatusAndDealId({ dealId })) {
             this.partiallyFilledFilledSet.delete(o.clientOrderId)
@@ -4934,6 +5072,9 @@ function createDCABotHelper<
         const openDeals = this.getOpenDeals()
         await this.checkClosedDeals()
         await this.afterDealClose(dealId, profit)
+        if (cancel) {
+          await this.finishCloseSweep(dealId)
+        }
         this.handleDebug(`Closed after TP is: ${this.closeAfterTpFilled}`)
         this.processedFilled.delete(dealId)
         this.feeProcessed.delete(dealId)
@@ -13921,6 +14062,8 @@ function createDCABotHelper<
       const settings = await this.getAggregatedSettings()
       this.closeAfterTpFilled = settings.type === DCATypeEnum.terminal
       const asapSymbols = await this.getSymbolsToOpenAsapDeals()
+      // Spec `182`: before the order checks, which only see what was loaded.
+      await this.resumeCloseSweeps()
       if (serviceRestart || this.keepOrders) {
         // `keepOrders` is a settings save or a deal restore. It is not a cold
         // service restart, but it is emphatically not the user starting the bot
@@ -18687,6 +18830,23 @@ function createDCABotHelper<
             // so the deal may have closed since this burst started; the check
             // at the top of the method cannot see that. The block after the
             // loop pulls whatever ladder is left resting.
+            //
+            // Spec `182` §4.4: the same goes for a whole-deal close requested
+            // since — the flags the top of the method refuses on. The close is
+            // queued on this deal's lock and cancels whatever is on the book.
+            // A multi-TP `closeByTp` is one target, not the deal: the rest of
+            // the ladder still belongs on the book.
+            const closing = this.getDeal(dealId)
+            if (
+              !opts?.afterTerminalCloseRefusal &&
+              (closing?.closeBySl ||
+                (closing?.closeByTp && !settings.useMultiTp))
+            ) {
+              this.handleLog(
+                `Deal ${dealId} close requested while placing orders. Drop ${order.newClientOrderId} (${order.type}, qty ${order.qty}) and the rest`,
+              )
+              break
+            }
             if (
               this.dealReleased(dealId) ||
               (!opts?.afterTerminalCloseRefusal &&

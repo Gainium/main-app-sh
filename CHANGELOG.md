@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.20] - 2026-10-20
+
+### Fixed
+
+- When a deal closed, its remaining orders were cancelled one at a time, and if the bot service restarted during that sweep, the orders not yet reached stayed open on the exchange with nothing managing them. The bot now records the sweep before it starts and, on its next start, cancels whatever orders of that deal are still open and closes the deal's combo ladders.
+- A take profit or stop loss that fired while a deal's grid was still being placed let the whole grid be placed first and only then cancelled it. Placement now stops as soon as the close is requested.
+
 ## [1.108.19] - 2026-10-20
 
 ### Fixed
