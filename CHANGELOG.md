@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.108.19] - 2026-10-20
+
+### Fixed
+
+- An order lookup that the exchange refused for its rate limit was treated as answered, and the order was skipped until the next check. It is now asked again after a short, jittered backoff.
+- A single rate-limited batch order lookup turned batch lookups off until the bot service restarted. Only an answer saying the exchange cannot batch does that now.
+- Order checks after a restart and on reconnect now share a per-exchange-account budget of lookups per second, across all bots on the account. An account with many bots no longer hits the exchange's per-account rate limit after a restart, and an account with a few bots is not slowed down. Orders that a restart check could not reach in time are checked by a reconcile pass straight afterwards.
+
 ## [1.108.18] - 2026-10-20
 
 ### Fixed

@@ -5186,7 +5186,10 @@ function createComboBotHelper<
         dealId,
       }).filter((o) => o.addFundsId === marker || o.reduceFundsId === marker)
       for (const o of open) {
-        const venue = await this.getOrderForReconcile(o, { fromCache: true })
+        const venue = await this.getOrderForReconcile(o, {
+          fromCache: true,
+          pace: true,
+        })
         if (venue?.status !== StatusEnum.ok || !venue.data) {
           continue
         }

@@ -22,6 +22,7 @@ import {
 } from '../../types'
 import MainBot, {
   isDefinitiveOrderNotFound,
+  isReconcileDeferred,
   reconcileUnresolvedWarn,
 } from './main'
 import { observedFeeOnSide, observedFeeSplit } from './orderFee'
@@ -1309,6 +1310,7 @@ function createBotHelper<
         for (const o of toCheck) {
           let attemptsForOrder = 0
           const getOrder = await this.getOrderForReconcile(o, {
+            pace: true,
             onAttempts: (n) => (attemptsForOrder = n),
           })
           if (!getOrder || !getOrder.data) {
@@ -1589,8 +1591,11 @@ function createBotHelper<
               const exchangeData = await this.getOrderForReconcile(o, {
                 fromCache: true,
                 symbol: pair,
+                pace: true,
               })
-              if (isDefinitiveOrderNotFound(exchangeData)) {
+              if (isReconcileDeferred(exchangeData)) {
+                // Left for a later pass; counted in the probe summary.
+              } else if (isDefinitiveOrderNotFound(exchangeData)) {
                 this.handleWarn(
                   `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
                 )

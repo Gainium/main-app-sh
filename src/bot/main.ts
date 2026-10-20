@@ -224,6 +224,7 @@ import { zeroFeeApplies } from './zeroFee'
 import { isComboFundsOrderRow } from './combo/comboDealFunds'
 import Bot from '.'
 import { SKIP_REDIS } from '../config'
+import { paceAccountLookup } from './reconcilePacing'
 
 type AccountCBFunctions = {
   sort: (a: ExecutionReport, b: ExecutionReport) => number
@@ -590,6 +591,33 @@ const reconcileLookupBackoffMs = Number(
   process.env.BOT_RECONCILE_LOOKUP_BACKOFF_MS ?? 750,
 )
 const reconcileSpreadMs = Number(process.env.BOT_RECONCILE_SPREAD_MS ?? 15_000)
+/**
+ * First backoff step after a RATE-LIMITED reconcile lookup. Longer than the
+ * ordinary step: the answer arrives after the connector has already retried
+ * the call in one-second steps, so the account's window needs real room.
+ */
+/**
+ * The reason a paced reconcile lookup carries when it was not made: the
+ * account's lookup budget had no room before the caller's deadline. The order
+ * is left for a later pass — it is neither a venue answer nor a failure.
+ */
+export const reconcileDeferredReason =
+  'Reconcile lookup deferred: exchange account lookup budget in use'
+
+export function isReconcileDeferred(res?: { reason?: string | null }) {
+  return res?.reason === reconcileDeferredReason
+}
+
+/** Longest a paced reconcile-sweep lookup waits for its account's budget. */
+const reconcileSweepPaceMaxWaitMs = Number(
+  process.env.BOT_RECONCILE_PACE_MAX_WAIT_MS ?? 15 * 60_000,
+)
+
+/** Pace paper accounts too (local testing against a simulated limit). */
+const reconcilePacePaper = process.env.BOT_RECONCILE_PACE_PAPER === 'true'
+const reconcileRateLimitBackoffMs = Number(
+  process.env.BOT_RECONCILE_RATE_LIMIT_BACKOFF_MS ?? 1500,
+)
 
 /**
  * Does this failed lookup mean "the venue says this order does not exist", as
@@ -731,6 +759,31 @@ export function isRetirableNeverPlacedOrder(
  * 853 prod warns all read "after 3 attempts" on passes far too fast to have
  * slept even once. See `reconcileUnresolvedWarn`.
  */
+/**
+ * What a reconcile lookup should do after an answer: `done` (the order was
+ * read), `stop` (asking again cannot help) or `retry`.
+ *
+ * Only an OK answer that carries the order is `done`. A venue refusal can
+ * arrive as NOTOK *with* data — Bybit's per-account rate limit does — and was
+ * read as done: the pass logged "Cannot get order … Too many visits" and
+ * skipped the order. A rate limit is retried even though it carries the
+ * transport marker: the window it is waiting on is the account's, and it does
+ * open again within seconds, which is not true of a connector that has just
+ * failed six transport attempts in a row.
+ */
+export function reconcileRetryDecision(res?: {
+  status: StatusEnum
+  reason?: string | null
+  data?: unknown
+}): 'done' | 'stop' | 'retry' {
+  if (res?.status === StatusEnum.ok && res.data) return 'done'
+  if (isDefinitiveOrderNotFound(res)) return 'stop'
+  if (isReconcileDeferred(res ?? undefined)) return 'stop'
+  if (isRateLimitReason(res?.reason ?? undefined)) return 'retry'
+  if (isTransportRetryExhausted(res?.reason)) return 'stop'
+  return 'retry'
+}
+
 export async function reconcileLookup<
   T extends { status: StatusEnum; reason?: string | null; data?: unknown },
 >(
@@ -741,6 +794,8 @@ export async function reconcileLookup<
     sleep: (ms: number) => Promise<void>
     random?: () => number
     onAttempts?: (spent: number) => void
+    /** First backoff step after a rate-limited answer. */
+    rateLimitBackoffMs?: number
   },
 ): Promise<T | undefined> {
   const attempts = Math.max(1, opts.attempts)
@@ -748,10 +803,11 @@ export async function reconcileLookup<
   let spent = 1
   let last = await fetch()
   for (let attempt = 1; attempt < attempts; attempt++) {
-    if (last?.data) break
-    if (isDefinitiveOrderNotFound(last ?? undefined)) break
-    if (isTransportRetryExhausted(last?.reason)) break
-    const base = opts.backoffMs * 2 ** (attempt - 1)
+    if (reconcileRetryDecision(last ?? undefined) !== 'retry') break
+    const step = isRateLimitReason(last?.reason ?? undefined)
+      ? Math.max(opts.backoffMs, opts.rateLimitBackoffMs ?? 0)
+      : opts.backoffMs
+    const base = step * 2 ** (attempt - 1)
     await opts.sleep(Math.round(base * (0.5 + random())))
     last = await fetch()
     spent++
@@ -1233,6 +1289,19 @@ class MainBot<T extends IMainBot> {
       this.handleWarn(
         `Restart order check gave up after ${restartProbeBudgetMs}ms in ${context}: ${this.restartProbeSkipped} order(s) left unprobed — reconcile will pick them up`,
       )
+      // Make that true. Only some venues reconcile on the first user-stream
+      // subscribe, so on the others an order the probe could not reach — now
+      // routinely, when an account's lookup budget is shared by hundreds of
+      // bots — waited for the next reconnect. The sweep is paced on the same
+      // budget and collapses into one already running.
+      const sweep = this.callbackAfterUserStream
+      if (sweep) {
+        setTimeout(() => {
+          void Promise.resolve(sweep(this.botId)).catch((e) =>
+            this.handleDebug(`Post-restart reconcile failed: ${e}`),
+          )
+        }, 0)
+      }
     }
     this.restartProbeStartedAt = 0
     this.restartProbeSkipped = 0
@@ -1657,10 +1726,13 @@ class MainBot<T extends IMainBot> {
         newClientOrderIds: ids,
       })
       if (res.status !== StatusEnum.ok) {
-        // A venue or transport that cannot batch says so once and is not asked
-        // again by this process. The reason is not inspected: every non-ok
-        // answer means "resolve these yourself", which the caller does anyway.
-        unsupportedOrderBatch.add(this.data.exchange)
+        // Every non-ok answer means "resolve these yourself", which the caller
+        // does anyway. Only an answer that says the venue cannot batch latches
+        // that for the process: a rate limit or a timeout used to latch it too,
+        // so one bad call turned batching off until the next restart.
+        if (isBatchRouteUnavailable(res.reason)) {
+          unsupportedOrderBatch.add(this.data.exchange)
+        }
         return
       }
       if (!res.data?.length) {
@@ -1864,6 +1936,11 @@ class MainBot<T extends IMainBot> {
       fromCache?: boolean
       symbol?: string
       onAttempts?: (spent: number) => void
+      /**
+       * A bulk pass (restart probe, reconnect sweep): share the account's
+       * lookup budget with every other bot on it. See `reconcilePacing.ts`.
+       */
+      pace?: boolean
     } = {},
   ) {
     const symbol = opts.symbol ?? o.symbol
@@ -1876,15 +1953,55 @@ class MainBot<T extends IMainBot> {
       opts.onAttempts?.(1)
       return await this.getOrder(o.clientOrderId, symbol, fromCache)
     }
-    return await reconcileLookup(
-      () => this.getOrder(o.clientOrderId, symbol, fromCache),
+    // Inside the restart probe the wait may use what is left of the probe's
+    // budget and no more, so pacing never delays a bot's start beyond what the
+    // probe already allows; a sweep runs in the background and may wait longer.
+    const paceUntil = opts.pace
+      ? this.restartProbeStartedAt
+        ? this.restartProbeStartedAt + restartProbeBudgetMs
+        : Date.now() + reconcileSweepPaceMaxWaitMs
+      : undefined
+    const res = await reconcileLookup(
+      () => this.getOrder(o.clientOrderId, symbol, fromCache, paceUntil),
       {
         attempts: reconcileLookupAttempts,
         backoffMs: reconcileLookupBackoffMs,
+        rateLimitBackoffMs: reconcileRateLimitBackoffMs,
         sleep: utils.sleep,
         onAttempts: opts.onAttempts,
       },
     )
+    // Counted with the probe's other skipped orders, in its one summary line.
+    if (isReconcileDeferred(res) && this.restartProbeStartedAt) {
+      this.restartProbeSkipped += 1
+    }
+    return res
+  }
+
+  /**
+   * Hold one reconcile lookup to this bot's exchange account budget — shared
+   * with every other bot on the account, in every thread and bot service. See
+   * `reconcilePacing.ts`. Logged when it actually waited.
+   */
+  protected async paceReconcileLookup(until: number): Promise<boolean> {
+    const account = this.data?.exchangeUUID
+    if (!account) return true
+    // Paper accounts have no venue budget to protect, and one paper account
+    // routinely carries a user's whole fleet.
+    if (this.data?.paperContext && !reconcilePacePaper) return true
+    const redis = this.redisDb
+    const { waitedMs, admitted } = await paceAccountLookup(`${account}`, {
+      incr: async (key) =>
+        redis && redis.isReady ? await redis.incr(key) : undefined,
+      expire: async (key, sec) =>
+        redis && redis.isReady ? await redis.expire(key, sec) : undefined,
+      sleep: utils.sleep,
+      maxWaitMs: Math.max(0, until - Date.now()),
+    })
+    if (waitedMs >= 1000) {
+      this.handleDebug(`Reconcile lookup paced ${waitedMs}ms for its account`)
+    }
+    return admitted
   }
 
   /**
@@ -5979,7 +6096,16 @@ class MainBot<T extends IMainBot> {
   }
   /** Get order */
 
-  async getOrder(id: string, symbol: string, fromCache: boolean) {
+  async getOrder(
+    id: string,
+    symbol: string,
+    fromCache: boolean,
+    /**
+     * Bulk reconcile paths: hold the venue call to the account's lookup
+     * budget, until this epoch-ms deadline; past it the call is not made.
+     */
+    paceUntil?: number,
+  ) {
     const _id = this.startMethod('getOrder')
     try {
       if (fromCache && this.redisDb && this.redisDb.isReady) {
@@ -6028,6 +6154,10 @@ class MainBot<T extends IMainBot> {
         this.reconcileBatch?.delete(`${prefetched.clientOrderId}`)
         this.reconcileBatch?.delete(`${prefetched.orderId}`)
         this.reconcileBatch?.delete(id)
+      }
+      if (!prefetched && paceUntil && !(await this.paceReconcileLookup(paceUntil))) {
+        this.endMethod(_id)
+        return this.exchange.returnBad()(new Error(reconcileDeferredReason))
       }
       const result = prefetched
         ? {

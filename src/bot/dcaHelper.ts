@@ -136,6 +136,7 @@ import { MathHelper } from '../utils/math'
 import MainBot, {
   notEnoughErrors,
   isDefinitiveOrderNotFound,
+  isReconcileDeferred,
   isNotFoundUnreliableJustAfterPlacement,
   reconcileUnresolvedWarn,
   QUANT_RULES_RETRY_BUDGET_ASAP,
@@ -12700,6 +12701,7 @@ function createDCABotHelper<
           let attemptsForOrder = 0
           const getOrder = await this.getOrderForReconcile(o, {
             onAttempts: (n) => (attemptsForOrder = n),
+            pace: true,
           })
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
@@ -13196,7 +13198,7 @@ function createDCABotHelper<
               // way (see `isDefinitiveOrderNotFound`).
               const tpslOrderData = await this.getOrderForReconcile(
                 activeTPSLOrder,
-                { fromCache: true },
+                { fromCache: true, pace: true },
               )
               // `notok` is tested BEFORE `!data`: every failed lookup nulls
               // `data`, so testing `!data` first made this branch unreachable
@@ -13233,6 +13235,8 @@ function createDCABotHelper<
                 ) {
                   unsentTPs.add(activeTPSLOrder.clientOrderId)
                 }
+              } else if (isReconcileDeferred(tpslOrderData)) {
+                // Left for a later pass; counted in the probe summary.
               } else if (tpslOrderData?.status === StatusEnum.notok) {
                 this.handleWarn(`Cannot get order ${tpslOrderData.reason}`)
               } else if (!tpslOrderData || !tpslOrderData.data) {
@@ -13392,8 +13396,11 @@ function createDCABotHelper<
                 // read as the venue's answer.
                 const exchangeData = await this.getOrderForReconcile(o, {
                   fromCache: true,
+                  pace: true,
                 })
-                if (isDefinitiveOrderNotFound(exchangeData)) {
+                if (isReconcileDeferred(exchangeData)) {
+                  // Left for a later pass; counted in the probe summary.
+                } else if (isDefinitiveOrderNotFound(exchangeData)) {
                   this.handleWarn(
                     `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
                   )
