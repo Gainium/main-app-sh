@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.108.17] - 2026-10-20
+
+### Fixed
+
+- A webhook signal runs if it can run within 60 seconds of reaching the API, on every path: straight away, after waiting for a bot that is still re-loading, or when its bot service comes back and takes it from a queue or the replay queue. Otherwise it is dropped and the reason is logged and returned. (1.108.16 had replays uncapped and a 10-second wait.)
+- While a bot service is down, signals are queued on its webhook queue, which it reads as soon as it starts, instead of its command queue, which it reads only once every bot is back.
+- Combo, hedge combo and hedge DCA bots are now indexed by webhook uuid, like DCA bots.
+
 ## [1.108.16] - 2026-10-20
 
 ### Fixed

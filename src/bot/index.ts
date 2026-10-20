@@ -9,6 +9,9 @@ import {
   webhookBotNotRunningReason,
   WEBHOOK_SIGNAL_MAX_AGE_MS,
   webhookSignalAgeMs,
+  webhookSignalDeadline,
+  webhookSignalExpired,
+  webhookSignalExpiredReason,
 } from '../server/tradeSignalContract'
 import { isPaper } from '../utils'
 import utils from '../utils'
@@ -291,6 +294,12 @@ export const webhookIntakeQueue = (type: BotType) => `${type}WebhookIntake`
 
 /** How long a signal id is remembered: covers any realistic replay delay. */
 const webhookSignalSeenTtlSec = 24 * 60 * 60
+
+/**
+ * How long the API waits for a bot service to answer a signal: the cap plus
+ * room for a signal that started just inside it to finish.
+ */
+const webhookRpcTimeoutMs = WEBHOOK_SIGNAL_MAX_AGE_MS + 30_000
 
 /** How long the API trusts "this intake queue has a consumer". */
 const webhookIntakeCheckTtlMs = 2000
@@ -7897,7 +7906,10 @@ class Bot<T extends UserSchema = UserSchema> {
 
   /**
    * Hand a signal to its bot service: on the service's webhook intake queue
-   * while it has a consumer, otherwise on the command queue as before.
+   * while it has a consumer — or while the service is down altogether (no
+   * consumer on either queue) and the intake queue exists, because a current
+   * service reads its intake as soon as it starts, while the command queue
+   * waits until every bot is back. Otherwise the command queue, as before.
    */
   protected async sendWebhookToService(
     type: BotType,
@@ -7906,25 +7918,39 @@ class Bot<T extends UserSchema = UserSchema> {
   ) {
     const payload = items.length === 1 ? items[0] : items
     const intake = webhookIntakeQueue(type)
-    if (await this.webhookIntakeAvailable(intake)) {
+    if (
+      (await this.webhookIntakeAvailable(intake)) ||
+      (await this.webhookServiceDownWithIntake(type))
+    ) {
       const result = await this.rabbit.sendWithCallback<
         BotServicePayload,
         unknown
       >(
         intake,
         { method: 'webhookProcess', params: [payload, ignoreSettings] },
-        botServiceRpcTimeoutMs,
+        webhookRpcTimeoutMs,
       )
       if (!result) throw new Error(notAvailable)
       return result.response
     }
-    return await this.callExternalBotService(
-      type,
-      'webhookProcess',
-      false,
-      payload,
-      ignoreSettings,
+    const result = await this.rabbit.sendWithCallback<
+      BotServicePayload,
+      unknown
+    >(
+      this.getRabbitQueueName(type),
+      { method: 'webhookProcess', params: [payload, ignoreSettings] },
+      webhookRpcTimeoutMs,
     )
+    if (!result) throw new Error(notAvailable)
+    return result.response
+  }
+
+  /** No consumer on the command queue or the intake, and the intake exists. */
+  private async webhookServiceDownWithIntake(type: BotType) {
+    const intake = await this.rabbit.queueInfo(webhookIntakeQueue(type))
+    if (!intake) return false
+    const command = await this.rabbit.queueInfo(this.getRabbitQueueName(type))
+    return !intake.consumerCount && !command?.consumerCount
   }
 
   private webhookSignalSeen = new Map<string, number>()
@@ -7958,7 +7984,7 @@ class Bot<T extends UserSchema = UserSchema> {
   private async webhookIntakeAvailable(queue: string): Promise<boolean> {
     const hit = this.intakeConsumerCache.get(queue)
     if (hit && Date.now() - hit.at < webhookIntakeCheckTtlMs) return hit.ok
-    const ok = (await this.rabbit.consumerCount(queue)) > 0
+    const ok = ((await this.rabbit.queueInfo(queue))?.consumerCount ?? 0) > 0
     this.intakeConsumerCache.set(queue, { at: Date.now(), ok })
     return ok
   }
@@ -9714,12 +9740,27 @@ class Bot<T extends UserSchema = UserSchema> {
           result = await this.sendWebhookToService(type, items, ignoreSettings)
         } catch (e) {
           if ((e as Error)?.message !== notAvailable) return
-          // As before: a signal the bot service could not take is queued and
-          // replayed once it is back — this type's items and every type's not
-          // tried yet. A type whose service runs this version (its webhook
-          // intake has a consumer) gets its own replay queue; otherwise the
-          // legacy shared queue, which an older service handles as it always
-          // did and a current one routes to the right type (`routeLegacyReplay`).
+          // The bot service did not answer. Past the cap the signal is
+          // dropped: the service also drops any copy it takes that late.
+          const ageMs = webhookSignalAgeMs(receivedAt, Date.now())
+          if (webhookSignalExpired(receivedAt, Date.now())) {
+            const action = [data].flat()[0]?.action ?? 'signal'
+            logger.warn(
+              `${loggerPrefix} Webhook ${action} not answered by the ${type} bot service; ${ageMs}ms since received, dropped, not replayed`,
+            )
+            return {
+              status: StatusEnum.notok as const,
+              reason: `Bot service did not answer. "${action}" runs only if it can start within ${WEBHOOK_SIGNAL_MAX_AGE_MS / 1000}s of arrival; otherwise it is dropped, not executed late.`,
+              data: null,
+            }
+          }
+          // Otherwise queued and replayed once the service is back, as
+          // before — this type's items and every type's not tried yet, each
+          // still held to the cap. A type whose service runs this version (its
+          // webhook intake has a consumer) gets its own replay queue; otherwise
+          // the legacy shared queue, which an older service handles as it
+          // always did and a current one routes to the right type
+          // (`routeLegacyReplay`).
           logger.warn(
             `${loggerPrefix} External service not available in webhook process. Queued ${toSend
               .slice(i)
@@ -9894,16 +9935,30 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
     if (action && uuid) {
-      // A bot this restart is still re-loading: wait for it, at most
-      // WEBHOOK_SIGNAL_MAX_AGE_MS, then refuse rather than run it late. This
+      // A signal runs within WEBHOOK_SIGNAL_MAX_AGE_MS of reaching the API or
+      // not at all, on every path: taken late from a queue, replayed after
+      // its bot service came back, or waiting for a bot still re-loading.
+      const now = Date.now()
+      if (webhookSignalExpired(data.receivedAt, now)) {
+        const ageMs = webhookSignalAgeMs(data.receivedAt, now)
+        logger.warn(
+          `${loggerPrefix} Webhook ${action} for ${uuid} dropped, not executed: ${ageMs}ms since received${data.replayed ? ' (replay)' : ''}`,
+        )
+        return {
+          status: StatusEnum.notok as const,
+          reason: webhookSignalExpiredReason(action, ageMs),
+          data: null,
+        }
+      }
+      // A bot this restart is still re-loading: wait for it inside the
+      // signal's remaining budget, then refuse rather than run it late. This
       // used to answer "Bot not found" at once (not dispatched yet) or queue
-      // behind the bot's load and run whenever it finished. A replayed signal
-      // runs exactly as it always did.
-      if (!data.replayed && this.restartingBotIdForUuid(uuid)) {
+      // behind the bot's load and run whenever it finished.
+      if (this.restartingBotIdForUuid(uuid)) {
         const waitStart = Date.now()
         const outcome = await this.awaitRestartingBot(
           uuid,
-          intakeAt + WEBHOOK_SIGNAL_MAX_AGE_MS,
+          webhookSignalDeadline(data.receivedAt, intakeAt),
         )
         const ageMs = webhookSignalAgeMs(data.receivedAt, Date.now())
         if (outcome === 'expired') {

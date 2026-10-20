@@ -3598,6 +3598,8 @@ export const registerIndexes = () => {
   comboBotSchema.index({ userId: 1 })
   comboBotSchema.index({ userId: 1, status: 1, created: -1 })
   comboBotSchema.index({ userId: 1, created: -1 })
+  // Webhook path looks bots up by uuid in every bot collection — see dcaBotSchema.
+  comboBotSchema.index({ uuid: 1 })
   // Hedge-sibling lookup — see the dcaBotSchema note below; identical shape,
   // same call sites (`core/src/bot/main.ts` picks comboBotDb for combo bots).
   comboBotSchema.index({ parentBotId: 1 })
@@ -3665,9 +3667,11 @@ export const registerIndexes = () => {
   hedgeComboBotSchema.index({ userId: 1 })
   hedgeComboBotSchema.index({ userId: 1, status: 1, created: -1 })
   hedgeComboBotSchema.index({ userId: 1, created: -1 })
+  hedgeComboBotSchema.index({ uuid: 1 })
   hedgeDcaBotSchema.index({ userId: 1 })
   hedgeDcaBotSchema.index({ userId: 1, status: 1, created: -1 })
   hedgeDcaBotSchema.index({ userId: 1, created: -1 })
+  hedgeDcaBotSchema.index({ uuid: 1 })
 
   dcaDealSchema.index({ userId: 1 })
   dcaDealSchema.index({ botId: 1 })

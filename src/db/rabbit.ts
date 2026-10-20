@@ -424,32 +424,35 @@ class Rabbit {
   }
 
   /**
-   * Consumers currently attached to `queue`; 0 when the queue does not exist
-   * or the check fails. Runs on a throwaway channel, because `checkQueue` on a
+   * `{ consumerCount }` for `queue`, or null when it does not exist or the
+   * check fails. Runs on a throwaway channel, because `checkQueue` on a
    * missing queue closes the channel it ran on.
    */
-  async consumerCount(queue: string, timeoutMs = 2000): Promise<number> {
+  async queueInfo(
+    queue: string,
+    timeoutMs = 2000,
+  ): Promise<{ consumerCount: number } | null> {
     try {
       const { client } = await this.getClient()
-      if (!client) return 0
-      return await new Promise<number>((resolve) => {
-        const timer = setTimeout(() => resolve(0), timeoutMs)
+      if (!client) return null
+      return await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(null), timeoutMs)
         client.createChannel((err, ch) => {
           if (err || !ch) {
             clearTimeout(timer)
-            resolve(0)
+            resolve(null)
             return
           }
           ch.on('error', () => undefined)
           ch.checkQueue(queue, (e, ok) => {
             clearTimeout(timer)
-            resolve(e || !ok ? 0 : ok.consumerCount)
+            resolve(e || !ok ? null : { consumerCount: ok.consumerCount })
             if (!e) ch.close(() => undefined)
           })
         })
       })
     } catch {
-      return 0
+      return null
     }
   }
 
