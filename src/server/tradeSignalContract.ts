@@ -124,6 +124,25 @@ export function missingWebhookFields(data: unknown): string[] {
   ) as string[]
 }
 
+/**
+ * Why a signal for a uuid that no running bot holds was not executed, from the
+ * stored bot's status (`undefined` when no bot has that uuid). An active status
+ * with no running bot means the bot service is re-loading its bots.
+ */
+export function webhookBotNotRunningReason(
+  status: string | undefined,
+  action: string,
+): string {
+  if (!status) return 'Bot not found'
+  if (status === 'closed') {
+    return `Bot is stopped, so "${action}" was not executed. Start the bot first.`
+  }
+  if (status === 'archive') {
+    return `Bot is archived, so "${action}" was not executed.`
+  }
+  return `Bot is restarting on our side, so "${action}" was not executed.`
+}
+
 export function missingWebhookFieldsReason(missing: string[]): string {
   return (
     `Webhook payload is missing required field(s): ${missing.join(', ')}. ` +

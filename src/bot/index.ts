@@ -6,6 +6,7 @@ import logger from '../utils/logger'
 import {
   missingWebhookFields,
   missingWebhookFieldsReason,
+  webhookBotNotRunningReason,
 } from '../server/tradeSignalContract'
 import { isPaper } from '../utils'
 import utils from '../utils'
@@ -1354,6 +1355,22 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
   }
+  /** Stored status of the non-deleted bot holding a webhook uuid, if any. */
+  private async webhookBotStatus(uuid: string): Promise<string | undefined> {
+    const filter = { uuid, isDeleted: { $ne: true } }
+    for (const db of [
+      this.dcaBotDb,
+      this.comboBotDb,
+      hedgeComboBotDb,
+      hedgeDCABotDb,
+    ]) {
+      //@ts-ignore
+      const found = await db.readData(filter, { status: 1 })
+      if (found?.data?.result) return found.data.result.status
+    }
+    return undefined
+  }
+
   protected entityNotFound(entity?: string) {
     return {
       status: StatusEnum.notok as const,
@@ -9741,10 +9758,14 @@ class Bot<T extends UserSchema = UserSchema> {
         action !== WebhookActionEnum.startBot &&
         action !== WebhookActionEnum.changePairs
       ) {
-        this.handleDebug(
-          `Received ${action} signal for ${uuid}, but bot is not running`,
+        const reason = webhookBotNotRunningReason(
+          await this.webhookBotStatus(uuid),
+          action,
         )
-        return this.entityNotFound('Bot')
+        this.handleDebug(
+          `Received ${action} signal for ${uuid}, but bot is not running: ${reason}`,
+        )
+        return { status: StatusEnum.notok as const, reason, data: null }
       }
       if (
         !findBot &&
