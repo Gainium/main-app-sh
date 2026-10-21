@@ -2214,6 +2214,8 @@ export interface UserSchema extends SchemaI {
   timezone: string
   weekStart?: string
   theme?: ThemeModeEnum
+  /** Dashboard reporting fiat; USD when unset. */
+  reportingCurrency?: string
   picture?: string
   name?: string
   lastName?: string
@@ -3052,8 +3054,21 @@ export interface RateSchema extends SchemaI {
    * absent from every exchange's `getAllPrices` table, so without this the
    * holding values at $0. See `priceBalancesUsd` / `userSnapshots`.
    */
-  fiatRates?: { asset: string; usdRate: number }[]
+  fiatRates?: {
+    asset: string
+    usdRate: number
+    /** Where the rate came from on its last successful fetch. */
+    source?: FiatRateSource
+    /** When the rate was last fetched; carried-forward entries keep the old one. */
+    updated?: Date
+  }[]
 }
+
+/**
+ * kraken = live spot ticker; ecb = Frankfurter (ECB reference, daily);
+ * erApi = open.er-api.com (daily).
+ */
+export type FiatRateSource = 'kraken' | 'ecb' | 'erApi'
 
 export type ClearRateSchema = ExcludeDoc<RateSchema>
 

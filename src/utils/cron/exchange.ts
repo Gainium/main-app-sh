@@ -19,6 +19,7 @@ import { classifyAssetClass, resolveUnderlying } from '../assetClass'
 import { normalizePairLeverage } from '../pairLeverage'
 import { normalizeDeliveryTime } from '../../bot/deliveryCutoff'
 import { Kraken } from 'node-kraken-api'
+import { fetchReferenceRates, mergeFiatRates } from '../fiatRates'
 import axios from 'axios'
 
 const providers = [
@@ -638,17 +639,17 @@ const FIAT_USD_PAIRS = [
 /**
  * One ticker call per pair: Kraken answers with its own canonical key
  * (`EURUSD` → `ZEURZUSD`), so asking for a single pair lets us take the only
- * entry instead of guessing how to normalize the key. A pair that fails keeps
- * its previous rate — a transient Kraken hiccup must not zero out everyone's
- * fiat balances until the next run twelve hours later.
+ * entry instead of guessing how to normalize the key. A pair that fails is
+ * simply left out — `mergeFiatRates` then falls back to the reference sources
+ * and finally to the previous rate, so a Kraken hiccup never zeroes anyone's
+ * fiat balances.
  */
-const getFiatRates = async (
-  previous: RateSchema['fiatRates'] = [],
-): Promise<RateSchema['fiatRates']> => {
+const getKrakenFiatRates = async (): Promise<
+  { asset: string; usdRate: number }[]
+> => {
   const exchangeKraken = new Kraken()
-  const rates: NonNullable<RateSchema['fiatRates']> = []
+  const rates: { asset: string; usdRate: number }[] = []
   for (const { asset, pair, invert } of FIAT_USD_PAIRS) {
-    const prev = previous?.find((p) => p.asset === asset)
     try {
       const ticker = await exchangeKraken.ticker({ pair })
       const price = parseFloat(Object.values(ticker ?? {})[0]?.c?.[0] ?? '0')
@@ -658,10 +659,28 @@ const getFiatRates = async (
       rates.push({ asset, usdRate: invert ? 1 / price : price })
     } catch (e) {
       logger.error(`Get fiat rate ${pair} failed: ${e}`)
-      if (prev) rates.push(prev)
     }
   }
   return rates
+}
+
+/**
+ * Live Kraken rates for the fiat it lists, daily reference rates (ECB, then
+ * open.er-api) for every other reporting currency. Source failures are logged
+ * here; they are *alerted* by main-app's `fxRatesHealth`, which reads the
+ * `source`/`updated` stamps this writes.
+ */
+const getFiatRates = async (
+  previous: RateSchema['fiatRates'] = [],
+): Promise<RateSchema['fiatRates']> => {
+  const [kraken, reference] = await Promise.all([
+    getKrakenFiatRates(),
+    fetchReferenceRates(),
+  ])
+  for (const err of reference.errors) {
+    logger.error(`Get reference fiat rates failed: ${err}`)
+  }
+  return mergeFiatRates(kraken, reference, previous)
 }
 
 export const saveRate = async () => {

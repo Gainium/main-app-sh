@@ -31,6 +31,10 @@ export const BasicSchema = /* GraphQL */ `
   type fiatRate {
     asset: String
     usdRate: Float
+    # kraken | ecb | erApi
+    source: String
+    # Last successful fetch of this rate.
+    updated: Date
   }
   type getFiatRatesResponse implements BasicResponse {
     status: Status
@@ -521,6 +525,7 @@ export const UserSchema = /* GraphQL */ `
     timezone: String
     theme: ThemeMode
     weekStart: String
+    reportingCurrency: String
     name: String
     lastName: String
     picture: String
@@ -877,6 +882,7 @@ export const UserSchema = /* GraphQL */ `
   input userSettingsInput {
     timezone: String
     theme: ThemeMode
+    reportingCurrency: String
     paperContext: Boolean
     shouldOnBoard: Boolean
     shouldOnBoardExchange: Boolean

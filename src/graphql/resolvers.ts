@@ -74,7 +74,7 @@ import {
   PreviewHedgeFundingInput,
   baseFundingAccess,
 } from './handlers/funding.handler'
-import { usableFiatRates } from '../utils/fiatRates'
+import { isReportingCurrency, usableFiatRates } from '../utils/fiatRates'
 import {
   deleteBotMessage,
   getBotMessage,
@@ -6036,6 +6036,7 @@ const resolvers = <
         input: {
           timezone?: string
           theme?: string
+          reportingCurrency?: string
           paperContext?: boolean
           shouldOnBoard?: boolean
           shouldOnBoardExchange?: boolean
@@ -6052,6 +6053,7 @@ const resolvers = <
       const {
         timezone,
         theme,
+        reportingCurrency,
         paperContext,
         shouldOnBoardExchange,
         shouldOnBoard,
@@ -6068,6 +6070,12 @@ const resolvers = <
           reason: 'Invalid timezone',
         }
       }
+      if (reportingCurrency && !isReportingCurrency(reportingCurrency)) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Unsupported reporting currency',
+        }
+      }
       const user = await findUser(token)
       if (user.status === StatusEnum.notok) {
         return user
@@ -6075,6 +6083,7 @@ const resolvers = <
       const $set: {
         timezone?: string
         theme?: string
+        reportingCurrency?: string
         paperContext?: boolean
         shouldOnBoard?: boolean
         shouldOnBoardExchange?: boolean
@@ -6104,6 +6113,9 @@ const resolvers = <
       }
       if (theme) {
         $set.theme = theme
+      }
+      if (reportingCurrency) {
+        $set.reportingCurrency = reportingCurrency
       }
       if (paperContext !== undefined) {
         $set.paperContext = paperContext

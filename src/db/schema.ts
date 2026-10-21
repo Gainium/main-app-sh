@@ -458,6 +458,8 @@ const userSchema: Schema<UserSchema> = new Schema({
     type: String,
     enum: ThemeMode,
   },
+  // Dashboard reporting fiat (USD when unset); see REPORTING_FIATS.
+  reportingCurrency: String,
   ...CreatedUpdated,
   paperContext: Boolean,
   apiKeys: [userAPIKeys],
@@ -1085,6 +1087,8 @@ const rateSchema: Schema<RateSchema> = new Schema({
       _id: false,
       asset: RequiredString,
       usdRate: RequiredNumber,
+      source: String,
+      updated: Date,
     },
   ],
   ...CreatedUpdated,

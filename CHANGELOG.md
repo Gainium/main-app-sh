@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.109.0] - 2026-10-21
+
+### Added
+
+- Reporting currency: a per-account `reportingCurrency` setting (USD when unset) on the `user` type and `userSettings` input, accepted for USD plus 33 fiat currencies.
+- Fiat rates now cover every reporting currency. Kraken prices the fiat it lists live; the rest come from daily ECB reference rates (Frankfurter), with open.er-api.com as fallback. Each rate records its `source` and the time it was last `updated`, both exposed on `getFiatRates`.
+
+### Changed
+
+- A fiat rate Kraken cannot price falls back to the reference rates before reusing the previous value.
 ## [1.108.23] - 2026-10-21
 
 ### Fixed
