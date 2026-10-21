@@ -7132,6 +7132,37 @@ function createDCABotHelper<
       )
     }
     /**
+     * Whether a close request must not send its close order after all, because
+     * the deal is already being closed by a fill. The request's own cancel
+     * sweep can find the take-profit FILLED on the venue (its fill event was
+     * missed); `handleUnknownOrder` closes the deal from that fill in the
+     * background, and the order this request was about to send would sell
+     * coins the deal no longer holds. Spec `188`.
+     *
+     * `sweptFilledTp` is that finding. Without it only the live deal is read,
+     * which a close of a deal that is still open passes unchanged.
+     */
+    protected async closeSupersededByFill(
+      dealId: string,
+      sweptFilledTp: boolean,
+    ): Promise<boolean> {
+      const live = this.getDeal(dealId)
+      if (
+        !live ||
+        live.deal.status !== DCADealStatusEnum.open ||
+        this.pendingClose.has(dealId)
+      ) {
+        return true
+      }
+      return (
+        sweptFilledTp &&
+        this.dealClosedByFilledTp(
+          dealId,
+          await this.getAggregatedSettings(live.deal),
+        )
+      )
+    }
+    /**
      * Manualy close deal by id
      *
      * @param {string} dealId Id of the deal
@@ -7306,12 +7337,22 @@ function createDCABotHelper<
             dealId,
             true,
           ).then(() => this.allowToPlaceOrders.delete(dealId))
+        let swept: Order[] | void
         if (fastClose) {
-          await closeSell()
+          swept = await closeSell()
         } else {
-          await this.cancelAllOrder(0, dealId, true)
+          swept = await this.cancelAllOrder(0, dealId, true)
           this.allowToPlaceOrders.delete(dealId)
         }
+        // Spec `188`: the sweep can find the deal's take-profit already FILLED
+        // on the venue. That fill closes the deal in the background, so it is
+        // re-checked right before the close order below is sent.
+        const sweptFilledTp = (swept ?? []).some(
+          (o) =>
+            o.dealId === dealId &&
+            o.typeOrder === TypeOrderEnum.dealTP &&
+            !o.reduceFundsId,
+        )
         findDeal = this.getDeal(dealId)
         if (findDeal && findDeal.deal.status === DCADealStatusEnum.open) {
           if (closeTrigger) {
@@ -7404,6 +7445,16 @@ function createDCABotHelper<
               // real-fee close is NOT live on the venue — see the restore at
               // the end of the terminal-refusal branch.
               let realFeeFateUnconfirmed = false
+              if (await this.closeSupersededByFill(dealId, sweptFilledTp)) {
+                if (fastClose) {
+                  await closeBuy()
+                }
+                this.handleLog(
+                  `Deal ${dealId} is already being closed by its filled take-profit, not sending ${tpOrder.newClientOrderId}`,
+                )
+                this.endMethod(_id)
+                return
+              }
               let result = await this.sendGridToExchange(
                 {
                   ...realFeeOrder,
@@ -23741,6 +23792,8 @@ function createDCABotHelper<
      *
      * @param {string} [dealId] If specify - cancel order for specifi deal
      * @param {boolean} [cancelPartiallyFilled] cancel order with status PARTIALLY FILLED. Default = false
+     * @returns the orders whose cancel came back `FILLED` — each is also handed
+     * to `handleUnknownOrder`, which processes it in the background (spec `188`)
      */
 
     async cancelAllOrder(
@@ -23749,7 +23802,8 @@ function createDCABotHelper<
       cancelPartiallyFilled = false,
       excludeTP = false,
       side?: OrderSideEnum,
-    ): Promise<void> {
+    ): Promise<Order[]> {
+      const filled: Order[] = []
       if (this.exchange && this.data && this.orders) {
         let newOrders = this.getOrdersByStatusAndDealId({
           status: cancelPartiallyFilled ? this.orderStatuses : 'NEW',
@@ -23783,6 +23837,7 @@ function createDCABotHelper<
           for (const order of toCancel) {
             const result = await this.cancelOrderOnExchange(order)
             if (result?.status === 'FILLED') {
+              filled.push(result)
               this.handleUnknownOrder(result)
             }
           }
@@ -23790,6 +23845,7 @@ function createDCABotHelper<
           this.clearCancelBatch()
         }
       }
+      return filled
     }
 
     setEquityTimer() {

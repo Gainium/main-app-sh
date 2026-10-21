@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.3] - 2026-10-21
+
+### Fixed
+
+- A deal close that found the deal's take-profit already filled on the exchange (its fill event never arrived) still sent a new full-size take-profit while that fill closed the deal in the background. The new order was left resting with no deal behind it, and when it filled it sold coins outside any deal. The close now re-checks the deal right before sending and sends nothing when the filled take-profit already closed it.
+
 ## [1.109.2] - 2026-10-21
 
 ### Fixed
