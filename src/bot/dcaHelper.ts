@@ -576,6 +576,26 @@ const positionProbeBackoff = new RetryBackoff({
 })
 
 /**
+ * How many answered probes in a row found the deal's position gone (spec
+ * `185`). `reconcileDealPosition` books a deal closed on the second.
+ *
+ * Kept apart from `positionProbeBackoff` for two reasons. That throttle counts
+ * every probe, including ones the venue did not answer, so one timeout plus
+ * one empty answer passed as two readings. And its key lives only twice its
+ * window (10 min), while spec `175`'s grid-refusal probes come only when the
+ * bot re-places its ladders — reloads and reconnects, hours apart — so every
+ * reading found the last one forgotten and a flat deal waited for days. A day,
+ * as for `tpg`, because those passes come hours apart. Only `record` and
+ * `clear` are used; `check` never gates anything here.
+ */
+const positionGoneReadings = new RetryBackoff({
+  namespace: 'dpg',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+  memoryMs: 24 * 60 * 60 * 1000,
+})
+
+/**
  * How often one deal may re-arm its own close after the venue refused it
  * (spec `074` §4.2).
  *
@@ -27153,7 +27173,7 @@ function createDCABotHelper<
       if (probeCooldown.suppressed) {
         return false
       }
-      const probe = await positionProbeBackoff.record(
+      await positionProbeBackoff.record(
         [this.botId, dealId],
         outcome,
       )
@@ -27194,27 +27214,32 @@ function createDCABotHelper<
           // The position is there — any window opened by an earlier probe is
           // stale, so this cannot slide forward forever.
           await positionProbeBackoff.clear([this.botId, dealId])
+          await positionGoneReadings.clear([this.botId, dealId])
         }
         this.handleDebug(
           `Deal ${dealId} TP level close ${outcome}; ${verdict.verdict} — leaving the deal open`,
         )
         return false
       }
-      if (probe.attempt < 2) {
-        // Two agreeing probes, five minutes apart, before booking a deal
-        // closed. The cost is asymmetric: these deals have been gone for
-        // months, so waiting one more window costs nothing, while acting on a
-        // single `{status: ok, data: []}` from a venue mid-outage would abandon
-        // a live position with no take profit and no stop loss. `clear()` above
-        // resets the count the moment the position is seen again, so a real
-        // divergence still converges on the next window.
+      const reading = await positionGoneReadings.record(
+        [this.botId, dealId],
+        outcome,
+      )
+      if (reading.attempt < 2) {
+        // Two agreeing answered probes, at least five minutes apart, before
+        // booking a deal closed. The cost is asymmetric: these deals have been
+        // gone for months, so waiting one more window costs nothing, while
+        // acting on a single `{status: ok, data: []}` from a venue mid-outage
+        // would abandon a live position with no take profit and no stop
+        // loss. `clear()` above resets the count the moment the position is
+        // seen again, so a real divergence still converges on the next window.
         this.handleLog(
           `Deal ${dealId} TP level close ${outcome} and ${verdict.verdict} on ${this.data?.exchange} — waiting for a second reading before closing the deal`,
         )
         return false
       }
       this.handleLog(
-        `Deal ${dealId} TP level close ${outcome} and ${verdict.verdict} on ${this.data?.exchange} (${probe.attempt} readings) — closing the deal instead of re-arming against a position that is gone`,
+        `Deal ${dealId} TP level close ${outcome} and ${verdict.verdict} on ${this.data?.exchange} (${reading.attempt} readings) — closing the deal instead of re-arming against a position that is gone`,
       )
       if (this.shouldProceed()) {
         this.botEventDb.createData({
@@ -27235,6 +27260,7 @@ function createDCABotHelper<
         })
       }
       await positionProbeBackoff.clear([this.botId, dealId])
+      await positionGoneReadings.clear([this.botId, dealId])
       if (settle) {
         await settle()
         return true

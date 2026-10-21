@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.2] - 2026-10-21
+
+### Fixed
+
+- A futures deal whose exchange position was gone is closed after two readings that agree, but the bot forgot the first reading after ten minutes. Where those readings only come when the bot re-places its orders, hours apart, a flat combo deal could stay open for days and hold its pair's only deal slot. Readings are now remembered for a day, and a check the exchange did not answer no longer counts as one.
+
 ## [1.109.1] - 2026-10-21
 
 ### Fixed

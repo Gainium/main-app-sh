@@ -36,17 +36,24 @@ const PAIR = 'AAAUSDT'
 const ZERO_POSITION = 'current position is zero, cannot fix reduce-only order qty'
 
 const cooldownStore = new Map<string, string>()
+/** Each key's TTL in seconds, as `RetryBackoff` set it. */
+const cooldownTtl = new Map<string, number>()
 let previousGetInstance: unknown
 const useCooldownStore = () => {
   cooldownStore.clear()
+  cooldownTtl.clear()
   previousGetInstance = (RedisClient as any).getInstance
   ;(RedisClient as any).getInstance = async () => ({
     get: async (k: string) => cooldownStore.get(k) ?? null,
-    set: async (k: string, v: string) => {
+    set: async (k: string, v: string, ttl?: number) => {
       cooldownStore.set(k, v)
+      if (ttl) {
+        cooldownTtl.set(k, ttl)
+      }
     },
     del: async (k: string) => {
       cooldownStore.delete(k)
+      cooldownTtl.delete(k)
     },
   })
 }
@@ -62,6 +69,20 @@ const expireProbeWindow = () => {
       cooldownStore.set(k, JSON.stringify({ ...JSON.parse(v), until: 0 }))
     }
   }
+}
+
+/**
+ * `ms` pass with no refusal: every key Redis would have expired by then is
+ * gone, and every probe window has passed.
+ */
+const elapse = (ms: number) => {
+  for (const [k, ttl] of [...cooldownTtl]) {
+    if (ttl * 1000 <= ms) {
+      cooldownStore.delete(k)
+      cooldownTtl.delete(k)
+    }
+  }
+  expireProbeWindow()
 }
 
 class FakeBase {
@@ -209,6 +230,55 @@ describe('a flat combo deal re-sending refused grid buy-backs (spec 175)', () =>
     expireProbeWindow()
     await refuse(bot, gridOrder('BUY'))
     expect(bot.probes).to.equal(2)
+    expect(bot.closes).to.have.length(1)
+  })
+
+  it('§1.1.2 two flat readings an hour apart still count as two (spec 185)', async () => {
+    // In production these refusals come only when the bot re-places its
+    // ladders — a reload, a reconnect — so readings land hours apart.
+    const { bot } = buildBot({ isLong: true })
+    await refuse(bot, gridOrder('SELL'))
+    expect(bot.probes).to.equal(1)
+    expect(bot.closes).to.have.length(0)
+    elapse(60 * 60 * 1000)
+    await refuse(bot, gridOrder('SELL'))
+    expect(bot.probes).to.equal(2)
+    expect(bot.closes).to.have.length(1)
+    expect(bot.closes[0][10]).to.equal(DCACloseTriggerEnum.base)
+  })
+
+  it('§1.1.3 a reading that saw the position resets the count (spec 185)', async () => {
+    const held = [{ symbol: PAIR, positionAmt: '1133', positionSide: 'BOTH' }]
+    const positions: any[] = []
+    const { bot } = buildBot({ isLong: true, positions })
+    await refuse(bot, gridOrder('SELL'))
+    elapse(60 * 60 * 1000)
+    positions.push(...held)
+    await refuse(bot, gridOrder('SELL'))
+    elapse(60 * 60 * 1000)
+    positions.length = 0
+    await refuse(bot, gridOrder('SELL'))
+    expect(bot.probes).to.equal(3)
+    expect(bot.closes).to.have.length(0)
+  })
+
+  it('§1.1.3 a probe the venue did not answer is not a reading (spec 185)', async () => {
+    let answer: 'unavailable' | 'flat' = 'unavailable'
+    const { bot } = buildBot({ isLong: true })
+    const flat = bot.exchange.futures_getPositions
+    bot.exchange.futures_getPositions = async () =>
+      answer === 'unavailable'
+        ? (bot.probes++, { status: StatusEnum.notok, data: null, reason: 'timeout' })
+        : flat()
+    await refuse(bot, gridOrder('SELL'))
+    expireProbeWindow()
+    answer = 'flat'
+    await refuse(bot, gridOrder('SELL'))
+    expect(bot.probes).to.equal(2)
+    // One unanswered probe plus one flat reading is one reading, not two.
+    expect(bot.closes).to.have.length(0)
+    expireProbeWindow()
+    await refuse(bot, gridOrder('SELL'))
     expect(bot.closes).to.have.length(1)
   })
 
