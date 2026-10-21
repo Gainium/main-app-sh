@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.1] - 2026-10-21
+
+### Fixed
+
+- A Combo deal whose base order could not be built (for example a percentage-of-balance spot short on an account without the coin it sells, or a balance read the exchange refused) stayed in start with no order, holding one of the bot's deal slots. It is now cancelled, as a DCA deal already is, and the reason is still shown. A deal already stuck this way is cancelled the next time the bot starts.
+
 ## [1.109.0] - 2026-10-21
 
 ### Added

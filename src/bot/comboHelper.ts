@@ -29,6 +29,7 @@ import {
   type SignalDealOverrides,
 } from './signalDealOverrides'
 import { nextLadderLevel } from './dca/ladderLevels'
+import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
   pickRestoreBaseEntry,
   shouldSettlePartialBaseEntry,
@@ -7476,6 +7477,28 @@ function createComboBotHelper<
           _fixSize,
           sizes,
         )
+        if (
+          dealId &&
+          shouldDiscardUnbuiltBaseEntry({
+            baseOrderBuilt: !!baseOrder,
+            dealStatus: this.getDeal(dealId)?.deal.status,
+            orderCount: this.getOrdersByStatusAndDealId({ dealId }).length,
+          })
+        ) {
+          // Spec 187, the Combo copy of DCA's spec 039 guard: everything below
+          // is behind `if (baseOrder)`, so an entry that cannot be sized (a
+          // percentage-of-balance short on an account without the base coin,
+          // or a refused balance read) left the deal row in `start` holding no
+          // order, replayed silently by `restoreWork` on every start.
+          // `getBaseOrder` already reported why; `reopen` stays false because
+          // reopening re-enters this method for the same symbol.
+          this.handleLog(
+            `Cannot build a base order for deal ${dealId}. Cancelling it rather than leaving it in start holding no order`,
+          )
+          await this.retireUnfundedDeal(dealId)
+          this.endMethod(_id)
+          return
+        }
         if (forceMarket && sizes && this.useCompountReduce && baseOrder) {
           const deal = this.getDeal(dealId)
           if (deal && deal.deal.sizes) {
