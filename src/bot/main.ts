@@ -913,6 +913,14 @@ const unknownOrderMaxAttempts = 5
  * round trip.
  */
 const orderNeverReachedExchange = 'Order not found: no exchange order id'
+/**
+ * The not-found for a `'-1'` order the venue was ASKED about by client order id
+ * and does not hold — unlike {@link orderNeverReachedExchange}, which is the
+ * bot's own answer given without asking. Worded so
+ * {@link isDefinitiveOrderNotFound} matches it. Spec 184 §4.3.
+ */
+const orderAbsentOnVenue =
+  'Order not found: no order under this client order id on the exchange'
 /** Key-scheme version for `MainBot.getNotEnoughOrdersIdByOrder`. Bump when the
  *  key shape changes so counters written under the old scheme are discarded.
  *  Module-level rather than a static member: adding statics to `MainBot`
@@ -1372,8 +1380,10 @@ class MainBot<T extends IMainBot> {
     // write-off the unknown-order ladder gives a `-1` order (bug #369), so the
     // bot stops treating it as resting. Spec 109. Its own, shorter age floor
     // unless the venue's wording is one it gives about just-placed orders.
-    // Spec 177 §1.2.
+    // Spec 177 §1.2. Never on the bot's own "no exchange order id": that answer
+    // was given without asking the venue, so it confirms nothing. Spec 184 §4.4.
     if (
+      reason !== orderNeverReachedExchange &&
       isRetirableNeverPlacedOrder(
         order,
         now,
@@ -1664,22 +1674,49 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
-   * Coinbase cannot be asked about an order by our client order id, but its
-   * open-orders list carries it. Before a `'-1'` order is treated as "never
-   * reached the venue", look for it there and adopt its real id if found.
-   * Spec 154 §4.2/§4.5.
+   * The venues {@link MainBot#venueOrderId} addresses by exchange id cannot be
+   * asked about a `'-1'` order by that id. Before such an order is treated as
+   * "never reached the venue", look for it by our client order id and adopt
+   * its real id if found. Spec 154 §4.2/§4.5, spec 184 §4.2.
+   *
+   * Kraken spot answers a client-id `getOrder` exactly, from its open AND
+   * closed orders (`cl_ord_id`), so a filled order is found too. Coinbase and
+   * KuCoin full futures expose the client id only on their open-orders list.
    *
    * `null` = not applicable (another venue, or the order has a real id).
-   * `ok(true|false)` = the venue answered and the order was / was not open.
+   * `ok(true|false)` = the venue answered and does / does not hold the order.
    * `notok` = the lookup itself failed, so nothing is known.
    */
   protected async resolveNeverPlacedOrder(
     order: Order,
   ): Promise<BaseReturn<boolean> | null> {
+    if (!this.exchange || `${order.orderId ?? ''}` !== noExchangeOrderId) {
+      return null
+    }
+    if (this.data?.exchange === ExchangeEnum.kraken) {
+      const found = await this.exchange.getOrder({
+        symbol: order.symbol,
+        newClientOrderId: order.clientOrderId,
+      })
+      if (found.status === StatusEnum.ok && found.data) {
+        const adopted = await this.adoptExchangeOrderId(
+          order,
+          found.data.orderId,
+        )
+        return { status: StatusEnum.ok, reason: null, data: adopted }
+      }
+      if (isDefinitiveOrderNotFound(found)) {
+        return { status: StatusEnum.ok, reason: null, data: false }
+      }
+      return {
+        status: StatusEnum.notok,
+        reason: `Cannot look up ${order.symbol} order ${order.clientOrderId} by client order id: ${found.reason ?? 'no data'}`,
+        data: null,
+      }
+    }
     if (
-      !this.exchange ||
-      this.data?.exchange !== ExchangeEnum.coinbase ||
-      `${order.orderId ?? ''}` !== noExchangeOrderId
+      this.data?.exchange !== ExchangeEnum.coinbase &&
+      !this.kucoinFullFutures
     ) {
       return null
     }
@@ -6134,10 +6171,33 @@ class MainBot<T extends IMainBot> {
       )
     }
     if (this.exchange && this.data) {
-      const venueId = this.venueOrderId(id)
+      let venueId = this.venueOrderId(id)
       if (venueId === null) {
-        this.endMethod(_id)
-        return this.exchange.returnBad()(new Error(orderNeverReachedExchange))
+        // The `'-1'` placeholder is not proof the venue lacks the order: a
+        // placement whose answer was never recorded leaves exactly this while
+        // the order rests, or fills, there. Ask by client order id first, and
+        // only answer "not found" when the venue said so. Spec 184 §4.3.
+        // An order still being placed waits for that answer first. Spec 155.
+        const local = this.getOrderFromMap(id)
+        if (local) {
+          await this.awaitPlacementInFlight(local)
+        }
+        const resolved = local
+          ? await this.resolveNeverPlacedOrder(local)
+          : null
+        if (resolved?.status === StatusEnum.notok) {
+          this.endMethod(_id)
+          return this.exchange.returnBad()(
+            new Error(resolved.reason ?? 'Client order id lookup failed'),
+          )
+        }
+        venueId = this.venueOrderId(id)
+        if (venueId === null) {
+          this.endMethod(_id)
+          return this.exchange.returnBad()(
+            new Error(resolved ? orderAbsentOnVenue : orderNeverReachedExchange),
+          )
+        }
       }
       id = venueId
       // Served from the reconcile prefetch when this pass already asked the
@@ -10004,6 +10064,25 @@ class MainBot<T extends IMainBot> {
         }
         if (request.status === StatusEnum.ok) {
           processedOrder = request.data
+          // The answer is about the order this request named, whatever client
+          // id it echoes. Kraken spot's placement read-back can fall back to a
+          // lookup by txid and echo the txid as `clientOrderId`; the spread
+          // below then filed the order under the txid, left the `'-1'` copy
+          // under its real id, and the row write matched nothing. Spec 184 §4.1.
+          if (
+            processedOrder &&
+            processedOrder.clientOrderId !== order.clientOrderId
+          ) {
+            if (processedOrder.clientOrderId) {
+              this.handleWarn(
+                `Order ${order.clientOrderId} was accepted by ${this.data.exchange} as ${processedOrder.orderId}, but the answer names client order id ${processedOrder.clientOrderId} — keeping ${order.clientOrderId}`,
+              )
+            }
+            processedOrder = {
+              ...processedOrder,
+              clientOrderId: order.clientOrderId,
+            }
+          }
           // The venue took the opening order, so whatever was blocking it is
           // over. Cleared on ACCEPTANCE, not on fill: a resting limit base
           // order leaves the deal in `start` legitimately, and describing that

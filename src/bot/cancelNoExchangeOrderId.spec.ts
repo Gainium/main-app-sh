@@ -85,11 +85,18 @@ function botOn(
     async getAllOpenOrders() {
       return { status: StatusEnum.ok, reason: null, data: [] }
     },
-    async getOrder(req: unknown) {
+    async getOrder(req: { newClientOrderId?: string }) {
       rec.getOrder.push(req)
       return {
         status: StatusEnum.notok,
-        reason: 'Order not found in open orders',
+        // Spec 184: on kraken spot a `-1` order is first looked up by its
+        // client order id. The connector searches open AND closed orders by
+        // `cl_ord_id`, and for an order it never took it answers with this
+        // wording. Nothing has it here.
+        reason:
+          req.newClientOrderId === 'GRID-RO-LSPRHVhH667Jmh1Tn6rDZqwoE8o'
+            ? 'Order not found in history'
+            : 'Order not found in open orders',
         data: null,
       }
     },
@@ -166,12 +173,17 @@ describe('cancelOrderOnExchange with no exchange order id (spec 011)', () => {
     bot.orders.set(o.clientOrderId, o)
     const res = await bot.cancelOrderOnExchange(o)
     expect(res?.status, 'order not retired').to.equal('CANCELED')
-    // The wasted cancel was the only venue call the whole retirement made —
-    // the ladder's own `-1` guard already keeps it from asking (`main.ts:4753`).
+    // No cancel is ever addressed to `-1`. Since spec 184 the only venue calls
+    // are the lookups by client order id: a `-1` order can rest or fill on
+    // Kraken, and those lookups are what find it.
+    expect(rec.cancel.length, 'cancels sent').to.equal(0)
     expect(
-      rec.cancel.length + rec.getOrder.length,
-      'venue round trips',
-    ).to.equal(0)
+      rec.getOrder.map((r: any) => r.newClientOrderId),
+      'venue lookups',
+    ).to.satisfy((ids: string[]) =>
+      ids.length > 0 &&
+      ids.every((id) => id === 'GRID-RO-LSPRHVhH667Jmh1Tn6rDZqwoE8o'),
+    )
   })
 
   it('§4.3 cannot raise a bot error when the venue would have timed out', async () => {

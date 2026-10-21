@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.108.23] - 2026-10-21
+
+### Fixed
+
+- A Kraken order the exchange accepted could be saved under the exchange's order id instead of the bot's own, which left the bot's copy without its exchange id. After a restart the bot then wrote it off as never placed without asking the exchange, and its fills were not added to the deal. An accepted order is now always saved under the bot's own id. Before writing off an order that has no exchange id, the bot now looks it up on Kraken, Coinbase and KuCoin futures by its own id.
+
 ## [1.108.22] - 2026-10-21
 
 ### Added
