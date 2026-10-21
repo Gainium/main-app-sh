@@ -3235,6 +3235,8 @@ function createBotHelper<
       }
     }
     private async processFilledStop(order: Order) {
+      // Spec 189: every path that books the closing fill latches the close.
+      this.stopFilled = true
       if (this.closeOrderTimer) {
         clearTimeout(this.closeOrderTimer)
       }
@@ -4959,6 +4961,14 @@ function createBotHelper<
       if (!ed || !this.data) {
         return
       }
+      // Spec 189: one close per bot. Ticks that queued on this mutex while a
+      // close was in flight re-ran `tpSl()` against balances the close never
+      // updated in memory, and sold the whole grid amount again. A fresh
+      // trigger after the close started (`blockLimit`), or any re-entry after
+      // the stop order filled, has nothing left to do.
+      if (this.stopFilled || (!oldTpSl && this.blockLimit)) {
+        return
+      }
       if (oldTpSl) {
         const find = this.allOrders.find(
           (o) => o.typeOrder === TypeOrderEnum.stop,
@@ -5112,6 +5122,7 @@ function createBotHelper<
               return
             }
             if (resultOrder && resultOrder.status === 'FILLED') {
+              this.stopFilled = true
               this.handleLog('Stop order filled. Processing stop...')
             }
             if (

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.4] - 2026-10-21
+
+### Fixed
+
+- A grid bot whose take profit or stop loss closes it with "stop and sell" could place the closing sale again and again while it was stopping: price ticks that queued behind the first close re-checked the trigger against balances the close had not yet updated in memory, and each one sold the grid's full amount again. A close now runs once; later ticks, and any re-entry after the closing order filled, place nothing.
+
 ## [1.109.3] - 2026-10-21
 
 ### Fixed
