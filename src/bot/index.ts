@@ -8,6 +8,11 @@ import {
   missingWebhookFieldsReason,
   webhookBotNotRunningReason,
   WEBHOOK_SIGNAL_MAX_AGE_MS,
+  formatSignalCap,
+  lateCloseNoticeReason,
+  webhookCloseOpenedBefore,
+  webhookSignalMaxAgeMs,
+  type WebhookSignalNotice,
   webhookSignalAgeMs,
   webhookSignalDeadline,
   webhookSignalExpired,
@@ -1497,6 +1502,25 @@ class Bot<T extends UserSchema = UserSchema> {
       }
     }
   }
+  /**
+   * Tell the bot's owner about a signal that was not executed, or ran late.
+   * TradingView shows the sender a status code and nothing else, so without
+   * this the reason exists only in our logs. Core keeps no notification
+   * channel of its own; main-app overrides this. Fire-and-forget: it must
+   * never change or delay what the sender is told.
+   */
+  protected noticeWebhookSignal(notice: WebhookSignalNotice): void {
+    void Promise.resolve(this.onWebhookSignalNotice(notice)).catch((e) =>
+      logger.warn(
+        `${loggerPrefix} Webhook notice for ${notice.uuid} failed: ${(e as Error)?.message ?? e}`,
+      ),
+    )
+  }
+
+  protected async onWebhookSignalNotice(
+    _notice: WebhookSignalNotice,
+  ): Promise<void> {}
+
   /** Stored status of the non-deleted bot holding a webhook uuid, if any. */
   private async webhookBotStatus(uuid: string): Promise<string | undefined> {
     const filter = { uuid, isDeleted: { $ne: true } }
@@ -7939,6 +7963,7 @@ class Bot<T extends UserSchema = UserSchema> {
       (await this.webhookServiceDownWithIntake(type))
     ) {
       const receivedAt = items[0]?.receivedAt ?? Date.now()
+      const cap = Math.max(...items.map((d) => webhookSignalMaxAgeMs(d?.action)))
       const result = await this.rabbit.sendWithCallback<
         BotServicePayload,
         unknown
@@ -7946,7 +7971,7 @@ class Bot<T extends UserSchema = UserSchema> {
         intake,
         { method: 'webhookProcess', params: [payload, ignoreSettings] },
         webhookRpcTimeoutMs,
-        webhookSignalDeadline(receivedAt, Date.now()) - Date.now(),
+        webhookSignalDeadline(receivedAt, Date.now(), cap) - Date.now(),
       )
       if (!result) throw new Error(notAvailable)
       return result.response
@@ -9786,16 +9811,28 @@ class Bot<T extends UserSchema = UserSchema> {
           // The bot service did not answer. Past the cap the signal is
           // dropped: the service also drops any copy it takes that late.
           const ageMs = webhookSignalAgeMs(receivedAt, Date.now())
-          if (webhookSignalExpired(receivedAt, Date.now())) {
+          const pending = toSend.slice(i).flatMap(([, rest]) => rest)
+          const cap = Math.max(
+            ...pending.map((d) => webhookSignalMaxAgeMs(d?.action)),
+          )
+          if (webhookSignalExpired(receivedAt, Date.now(), cap)) {
             const action = [data].flat()[0]?.action ?? 'signal'
             logger.warn(
               `${loggerPrefix} Webhook ${action} not answered by the ${type} bot service; ${ageMs}ms since received, dropped, not replayed`,
             )
-            return {
-              status: StatusEnum.notok as const,
-              reason: `Bot service did not answer. "${action}" runs only if it can start within ${WEBHOOK_SIGNAL_MAX_AGE_MS / 1000}s of arrival; otherwise it is dropped, not executed late.`,
-              data: null,
+            const reason = `Bot service did not answer. "${action}" runs only if it can start within ${formatSignalCap(cap)} of arrival; otherwise it is dropped, not executed late.`
+            for (const d of pending) {
+              if (d?.uuid && d.action) {
+                this.noticeWebhookSignal({
+                  uuid: d.uuid,
+                  action: d.action,
+                  kind: 'expired',
+                  reason: webhookSignalExpiredReason(d.action, ageMs),
+                  receivedAt,
+                })
+              }
             }
+            return { status: StatusEnum.notok as const, reason, data: null }
           }
           // Otherwise queued and replayed once the service is back, as
           // before — this type's items and every type's not tried yet, each
@@ -9982,16 +10019,21 @@ class Bot<T extends UserSchema = UserSchema> {
       // not at all, on every path: taken late from a queue, replayed after
       // its bot service came back, or waiting for a bot still re-loading.
       const now = Date.now()
-      if (webhookSignalExpired(data.receivedAt, now)) {
+      const maxAgeMs = webhookSignalMaxAgeMs(action)
+      if (webhookSignalExpired(data.receivedAt, now, maxAgeMs)) {
         const ageMs = webhookSignalAgeMs(data.receivedAt, now)
         logger.warn(
           `${loggerPrefix} Webhook ${action} for ${uuid} dropped, not executed: ${ageMs}ms since received${data.replayed ? ' (replay)' : ''}`,
         )
-        return {
-          status: StatusEnum.notok as const,
-          reason: webhookSignalExpiredReason(action, ageMs),
-          data: null,
-        }
+        const reason = webhookSignalExpiredReason(action, ageMs)
+        this.noticeWebhookSignal({
+          uuid,
+          action,
+          kind: 'expired',
+          reason,
+          receivedAt: data.receivedAt,
+        })
+        return { status: StatusEnum.notok as const, reason, data: null }
       }
       // A bot this restart is still re-loading: wait for it inside the
       // signal's remaining budget, then refuse rather than run it late. This
@@ -10001,7 +10043,7 @@ class Bot<T extends UserSchema = UserSchema> {
         const waitStart = Date.now()
         const outcome = await this.awaitRestartingBot(
           uuid,
-          webhookSignalDeadline(data.receivedAt, intakeAt),
+          webhookSignalDeadline(data.receivedAt, intakeAt, maxAgeMs),
         )
         const ageMs = webhookSignalAgeMs(data.receivedAt, Date.now())
         if (outcome === 'expired') {
@@ -10012,6 +10054,13 @@ class Bot<T extends UserSchema = UserSchema> {
           logger.warn(
             `${loggerPrefix} Webhook ${action} for ${uuid} not executed: bot still re-loading after ${Date.now() - waitStart}ms wait, ${ageMs}ms since received (${reason})`,
           )
+          this.noticeWebhookSignal({
+            uuid,
+            action,
+            kind: 'expired',
+            reason,
+            receivedAt: data.receivedAt,
+          })
           return { status: StatusEnum.notok as const, reason, data: null }
         }
         logger.info(
@@ -10202,13 +10251,22 @@ class Bot<T extends UserSchema = UserSchema> {
         action !== WebhookActionEnum.startBot &&
         action !== WebhookActionEnum.changePairs
       ) {
-        const reason = webhookBotNotRunningReason(
-          await this.webhookBotStatus(uuid),
-          action,
-        )
+        const status = await this.webhookBotStatus(uuid)
+        const reason = webhookBotNotRunningReason(status, action)
         this.handleDebug(
           `Received ${action} signal for ${uuid}, but bot is not running: ${reason}`,
         )
+        // Only a bot that exists is told: a sender repeating a dead uuid
+        // has no one to tell.
+        if (status) {
+          this.noticeWebhookSignal({
+            uuid,
+            action,
+            kind: 'refused',
+            reason,
+            receivedAt: data.receivedAt,
+          })
+        }
         return { status: StatusEnum.notok as const, reason, data: null }
       }
       if (
@@ -10288,6 +10346,28 @@ class Bot<T extends UserSchema = UserSchema> {
           event.metadata = JSON.stringify({ action, symbol })
           event.symbol = symbol
           this.handleDebug(`Received ${action} signal for ${uuid}`)
+          // Past the ordinary cap a close may still run (its own cap is
+          // longer), but only against deals that were already open when the
+          // signal arrived — never one a newer signal opened in between.
+          const openedBefore = webhookCloseOpenedBefore(
+            data.receivedAt,
+            Date.now(),
+          )
+          if (openedBefore && data.receivedAt) {
+            const reason = lateCloseNoticeReason(
+              action,
+              data.receivedAt,
+              Date.now(),
+            )
+            logger.warn(`${loggerPrefix} Webhook ${action} for ${uuid}: ${reason}`)
+            this.noticeWebhookSignal({
+              uuid,
+              action,
+              kind: 'lateClose',
+              reason,
+              receivedAt: data.receivedAt,
+            })
+          }
           call = () =>
             findBot &&
             this.getWorkerById(findBot.worker)?.postMessage({
@@ -10299,6 +10379,7 @@ class Bot<T extends UserSchema = UserSchema> {
                 symbol,
                 ignoreSettings,
                 action === WebhookActionEnum.closeSl,
+                openedBefore,
               ],
             })
         }

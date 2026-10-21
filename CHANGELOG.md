@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.108.22] - 2026-10-21
+
+### Added
+
+- When a webhook signal is not executed (the bot is stopped, archived or restarting, or the signal could not run in time), or a close signal runs late, the bot's owner is told why. The cloud edition writes it to the bot's log and sends a bot alert; self-hosted keeps the reason in the webhook reply and the server log.
+
+### Changed
+
+- A close signal (`closeDeal`, `closeDealSl`) may still run up to 15 minutes after it reached us, instead of 60 seconds: closing late takes risk off a position rather than adding it. Past 60 seconds it closes only deals that were already open when the signal arrived, never one opened after it. Every other action keeps the 60-second limit.
+
 ## [1.108.21] - 2026-10-20
 
 ### Fixed

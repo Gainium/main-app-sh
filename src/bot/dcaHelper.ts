@@ -7914,6 +7914,8 @@ function createDCABotHelper<
       slSource = false,
       liquidationPrice?: number,
       closeTrigger?: DCACloseTriggerEnum,
+      /** Only deals created before this instant (a late close signal). */
+      openedBefore?: number,
     ) {
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
@@ -7926,6 +7928,7 @@ function createDCABotHelper<
             slSource,
             liquidationPrice,
             closeTrigger,
+            openedBefore,
           ),
         )
         return this.handleLog('Loading not complete yet')
@@ -7939,6 +7942,12 @@ function createDCABotHelper<
         }
       }[] = []
       for (const d of this.getOpenDeals(ignoreStart, symbol)) {
+        if (openedBefore && !(d.deal.createTime < openedBefore)) {
+          this.handleLog(
+            `Deal ${d.deal._id} opened after the late close signal arrived; not closed by it`,
+          )
+          continue
+        }
         const settings = await this.getAggregatedSettings(d.deal)
         if (
           force ||
@@ -18149,6 +18158,8 @@ function createDCABotHelper<
       _symbol?: string,
       ignoreSettings = false,
       sl = false,
+      /** Late close signal: only deals created before this instant. */
+      openedBefore?: number,
     ) {
       this.handleLog(`Close by signal${_symbol ? ` symbol:${_symbol}` : ''}`)
 
@@ -18183,6 +18194,7 @@ function createDCABotHelper<
           sl,
           undefined,
           DCACloseTriggerEnum.webhook,
+          openedBefore,
         )
       } else {
         // Deliberately ignored (no take profit / stop loss set to close by
