@@ -75,10 +75,12 @@ const buildBot = (opts: {
     dealsDb = {
       readData: async (q: any) => {
         const nin = (q._id?.$nin ?? []).map(String)
+        const ids = q._id?.$in?.map(String)
         const result = DB_DEALS.filter(
           (d) =>
             (!q.status?.$in || q.status.$in.includes(d.status)) &&
-            !nin.includes(`${d._id}`),
+            !nin.includes(`${d._id}`) &&
+            (!ids || ids.includes(`${d._id}`)),
         ).map((d) => ({ ...d }))
         return { status: StatusEnum.ok, data: { result } }
       },
@@ -90,6 +92,7 @@ const buildBot = (opts: {
     async getFromRedis(key: string) {
       return key === 'deals' ? JSON.parse(JSON.stringify(opts.snapshot)) : null
     }
+    async setToRedis() {}
     async _loadOrders() {
       return []
     }
@@ -163,11 +166,10 @@ describe('restart deal counter (spec 183)', () => {
   it('§1.1.1/§1.1.2 restart between TP-close and reopen ends at {57,1}', async () => {
     const bot = buildBot({ deals: { all: 56, active: 0 }, snapshot: SNAPSHOT })
     await bot.loadOrders()
-    // Both deals are in memory: the stale-open old one and the recovered new one.
-    expect(bot.data.deals).to.deep.equal({ all: 57, active: 2 })
-    expect(bot.writes).to.deep.include({ deals: { all: 57, active: 2 } })
-    // The restart re-closes the old deal (processDealClose → decrement).
-    await bot.updateBotDeals(BOT_ID, false)
+    // Only the recovered new deal is in memory: the old one is closed in Mongo,
+    // so spec 190 no longer restores it from the stale-open snapshot (before,
+    // it was loaded — `active: 2` — and closed a second time).
+    expect([...bot.deals.keys()]).to.deep.equal([NEW_DEAL])
     expect(bot.data.deals).to.deep.equal({ all: 57, active: 1 })
     expect(bot.writes[bot.writes.length - 1]).to.deep.equal({
       deals: { all: 57, active: 1 },
@@ -175,9 +177,9 @@ describe('restart deal counter (spec 183)', () => {
   })
 
   it('§1.1.3 no write when the counter already agrees', async () => {
-    const bot = buildBot({ deals: { all: 57, active: 2 }, snapshot: SNAPSHOT })
+    const bot = buildBot({ deals: { all: 57, active: 1 }, snapshot: SNAPSHOT })
     await bot.loadOrders()
-    expect(bot.data.deals).to.deep.equal({ all: 57, active: 2 })
+    expect(bot.data.deals).to.deep.equal({ all: 57, active: 1 })
     expect(bot.writes.filter((w: any) => w.deals)).to.deep.equal([])
   })
 
@@ -188,6 +190,6 @@ describe('restart deal counter (spec 183)', () => {
       countFails: true,
     })
     await bot.loadOrders()
-    expect(bot.data.deals).to.deep.equal({ all: 56, active: 2 })
+    expect(bot.data.deals).to.deep.equal({ all: 56, active: 1 })
   })
 })

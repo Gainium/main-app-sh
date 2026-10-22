@@ -2148,6 +2148,47 @@ function createDCABotHelper<
             }
           }
         }
+        // The snapshot's own status is not the last word: a deal closed in the
+        // seconds before a stop is `closed` in Mongo, but the debounced write
+        // that would have dropped it from the snapshot died with the process.
+        // Restoring it revived the deal for good — the bot traded it and kept
+        // re-saving it `open`. Drop the ones Mongo holds closed, and hand them
+        // to the spec `182` sweep resume, which cancels what they still rest
+        // and closes a combo deal's minigrids. Spec 190.
+        if (restoredFromRedis.length) {
+          const closed = await this.dealsDb.readData(
+            {
+              botId: this.botId,
+              _id: { $in: restoredFromRedis.map((d) => `${d.deal._id}`) },
+              status: {
+                $in: [DCADealStatusEnum.closed, DCADealStatusEnum.canceled],
+              },
+            } as any,
+            { status: 1 },
+            {},
+            true,
+          )
+          if (closed.status === StatusEnum.notok) {
+            this.handleWarn(
+              `Cannot check DB status of deals restored from redis: ${closed.reason}`,
+            )
+          } else if (closed.data.result.length) {
+            const drop = new Set(closed.data.result.map((d) => `${d._id}`))
+            this.handleLog(
+              `Deals restored from redis are closed in DB, dropping them: ${[
+                ...drop,
+              ].join(', ')}`,
+            )
+            for (const id of drop) {
+              this.deleteDeal(id)
+              this.closeSweeps.set(id, Date.now())
+            }
+            restoredFromRedis = restoredFromRedis.filter(
+              (d) => !drop.has(`${d.deal._id}`),
+            )
+            await this.persistCloseSweeps()
+          }
+        }
       }
       const loadFromDb =
         !(this.serviceRestart && !this.secondRestart) || !this.deals.size

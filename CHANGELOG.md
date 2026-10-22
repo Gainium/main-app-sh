@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.6] - 2026-10-22
+
+### Fixed
+
+- A deal that closed in the seconds before the bot's worker restarted could come back after the restart: the restart restored it from the bot's saved state, which had not yet recorded the close, and the bot went on trading it as open. A restart now checks the restored deals against their stored status and drops the ones already closed or canceled; their remaining orders are cancelled and a combo deal's grids are closed. Open deals restore as before.
+
 ## [1.109.5] - 2026-10-22
 
 ### Fixed

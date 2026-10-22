@@ -334,8 +334,13 @@ describe('a restart in the middle of opening a deal (spec 172)', () => {
     it('§1.1.2 no filled entry in the order map: no extra Mongo read', async () => {
       const bot = buildBot({ dbStatus: 'start', snapshotOrders: [] })
       await bot.loadOrders()
-      // Only spec 151's read of the deals the snapshot lacks.
-      expect(bot.raised.dealQueries).to.have.length(1)
+      // Only spec 151's read of the deals the snapshot lacks (beside spec
+      // 190's status check of the restored ones).
+      expect(
+        bot.raised.dealQueries.filter(
+          (q: any) => !q.status?.$in?.includes('closed'),
+        ),
+      ).to.have.length(1)
       expect(bot.getDeal(DEAL_ID).deal.status).to.equal('open')
     })
   })

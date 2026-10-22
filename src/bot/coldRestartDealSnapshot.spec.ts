@@ -289,7 +289,11 @@ describe('cold restart deal snapshot (spec 151)', () => {
   it('§1.1.3 reads Mongo only for deals the snapshot lacks', async () => {
     const bot = buildBot({ snapshot: [SNAPSHOT_DEAL], dbDeals: DB_DEALS })
     await bot.loadOrders()
-    const q = bot.raised.dealQueries
+    // Spec 190 adds a `{status: 1}` read of the restored ids for closed deals;
+    // this one is the spec 151 read of the live deals.
+    const q = bot.raised.dealQueries.filter(
+      (d: any) => !d.status?.$in?.includes('closed'),
+    )
     expect(q).to.have.length(1)
     expect(q[0].botId).to.equal(BOT_ID)
     expect(q[0].status).to.deep.equal({ $in: LIVE })
