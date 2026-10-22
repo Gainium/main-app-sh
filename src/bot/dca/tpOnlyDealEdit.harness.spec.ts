@@ -187,6 +187,29 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
       expect(bot.isTpOnlyDealEdit(deal, { ...BOT_SETTINGS })).to.equal(false)
     })
 
+    // Spec 191 §2. The patch the dashboard sends when a take profit is set
+    // as a fixed price: the percentage it implies, the fixed target on the
+    // multi-TP row, and the two fixed-price keys.
+    const fixedTpPatch = {
+      ...BOT_SETTINGS,
+      tpPerc: '20.974',
+      multiTp: [{ target: '20.974', amount: '100', uuid: 'tp-52', fixed: '3600' }],
+      useFixedTPPrices: true,
+      fixedTpPrice: '3600',
+    }
+
+    it('a take profit set as a fixed price is take-profit only', () => {
+      const { bot, deal } = buildBot()
+      expect(bot.isTpOnlyDealEdit(deal, fixedTpPatch)).to.equal(true)
+    })
+
+    it('a fixed take-profit price alongside a ladder change is not', () => {
+      const { bot, deal } = buildBot()
+      expect(
+        bot.isTpOnlyDealEdit(deal, { ...fixedTpPatch, ordersCount: 7 }),
+      ).to.equal(false)
+    })
+
     it('a Combo deal is never', () => {
       const { bot, deal } = buildBot(BotType.combo)
       expect(bot.isTpOnlyDealEdit(deal, { tpPerc: '3' })).to.equal(false)
@@ -230,6 +253,38 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
     it('passes tpOnly for a take-profit edit', async () => {
       expect(await run({ ...BOT_SETTINGS, tpPerc: '3' })).to.deep.equal([
         { tpOnly: true },
+      ])
+    })
+
+    it('passes tpOnly for a take profit set as a fixed price', async () => {
+      expect(
+        await run({
+          ...BOT_SETTINGS,
+          tpPerc: '20.974',
+          multiTp: [
+            { target: '20.974', amount: '100', uuid: 'tp-52', fixed: '3600' },
+          ],
+          useFixedTPPrices: true,
+          fixedTpPrice: '3600',
+        }),
+      ).to.deep.equal([{ tpOnly: true }])
+    })
+
+    it('a fixed-price take-profit save cancels and places the take profit only', async () => {
+      const { bot, raised } = buildBot()
+      await bot.updateDealSettings(DEAL_ID, {
+        ...BOT_SETTINGS,
+        tpPerc: '20.974',
+        multiTp: [
+          { target: '20.974', amount: '100', uuid: 'tp-52', fixed: '3600' },
+        ],
+        useFixedTPPrices: true,
+        fixedTpPrice: '3600',
+      })
+      expect(raised.cancelAll).to.have.length(0)
+      expect(raised.cancelled).to.deep.equal(['D-TP-52'])
+      expect(raised.placed.map((o: any) => o.type)).to.deep.equal([
+        TypeOrderEnum.dealTP,
       ])
     })
 

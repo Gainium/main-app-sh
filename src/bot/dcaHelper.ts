@@ -480,6 +480,9 @@ const tpOnlyDealKeys = new Set([
   'minTp',
   'useMultiTp',
   'multiTp',
+  // A take profit set as a fixed price (spec 191).
+  'useFixedTPPrices',
+  'fixedTpPrice',
 ])
 
 export const mergeDcaSupported = (settings: {

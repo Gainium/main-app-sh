@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.7] - 2026-10-22
+
+### Fixed
+
+- Changing an open DCA deal's take profit to a fixed price cancelled and re-placed every resting safety order before placing the new take profit, so each level lost its place in the book. A take-profit-only edit set as a fixed price now replaces only the take-profit order, as a percentage edit already did; edits that change anything else still rebuild the ladder.
+
 ## [1.109.6] - 2026-10-22
 
 ### Fixed
