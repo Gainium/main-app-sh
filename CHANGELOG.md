@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.5] - 2026-10-22
+
+### Fixed
+
+- A futures grid level sent reduce-only that the exchange refused because there was no position left for it to reduce was sent again on every grid rebuild, so the bot kept asking the exchange the same refused order after every fill. The level is now held back for a widening interval (one minute, doubling up to 15 minutes) after a refusal and re-tried after it; the refusal is still reported to the user each time the exchange is asked. The rest of the grid is unaffected.
+
 ## [1.109.4] - 2026-10-21
 
 ### Fixed
