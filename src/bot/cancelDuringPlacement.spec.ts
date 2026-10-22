@@ -14,10 +14,11 @@ process.env.NODE_ENV = 'testing'
  * and unknown-order ladder run off the prototype against a fake venue whose
  * `openOrder` answer the test releases by hand.
  */
-import { describe, it } from 'mocha'
+import { describe, it, before, after, beforeEach } from 'mocha'
 import { expect } from 'chai'
 import MainBot from './main'
 import { ExchangeEnum, StatusEnum } from '../../types'
+import RedisClient from '../db/redis'
 
 const CLIENT_ID = 'D-ROA-gw7TVxJUwkORPTIZ06HySkCcxGsA2'
 const VENUE_ID = '5b1f0c2e-77aa-4d55-9d0e-1d1c1a2b3c4d'
@@ -112,7 +113,11 @@ function coinbaseBot(
     reason,
     data: null,
   })
-  const good = (data: unknown) => ({ status: StatusEnum.ok, reason: null, data })
+  const good = (data: unknown) => ({
+    status: StatusEnum.ok,
+    reason: null,
+    data,
+  })
   bot.exchange = {
     returnBad: () => (e: Error) => bad(e.message),
     returnGood: () => good,
@@ -319,5 +324,192 @@ describe('cancel during an in-flight placement (spec 155)', () => {
     expect(line).to.not.contain('2000 ms')
     expect(line).to.not.contain('5 attempts')
     expect(line).to.contain('1 lookup')
+  })
+})
+
+/**
+ * Spec 192. The `'-1'` row is written ahead BEFORE the pre-send guards run, and
+ * the spec 155 handle used to start only at the venue call. A Hyperliquid grid
+ * close cancelled its own take-profit while the not-enough-balance guard was
+ * still fetching balances, wrote it off as CANCELED, and the venue filled it a
+ * second later.
+ */
+const HL_CLIENT_ID = '0xdfcd0e23cfa2944ff1dfbcc8937b9497'
+const HL_VENUE_ID = '581443545717'
+
+const hlFakeRedis = (() => {
+  const store = new Map<string, string>()
+  return {
+    store,
+    get: async (k: string) => store.get(k) ?? null,
+    set: async (k: string, v: string) => {
+      store.set(k, v)
+    },
+    del: async (k: string) => {
+      store.delete(k)
+    },
+  }
+})()
+
+function hyperliquidBot(guard: 'hold' | 'throw' = 'hold') {
+  const { bot, rec } = coinbaseBot('FILLED')
+  let placedOnVenue = false
+  let releaseGuard: () => void = () => undefined
+  const guardOpen = new Promise<void>((r) => (releaseGuard = r))
+  const order = roa({
+    symbol: 'BTC-USDC',
+    clientOrderId: HL_CLIENT_ID,
+    side: 'SELL',
+    type: 'MARKET',
+    typeOrder: 'stop',
+    origQty: '0.02797',
+    price: '108000',
+    origPrice: '108000',
+    baseAsset: 'BTC',
+    quoteAsset: 'USDC',
+    exchange: ExchangeEnum.hyperliquid,
+    dealId: undefined,
+  })
+  const venueOrder = () => ({
+    ...order,
+    orderId: HL_VENUE_ID,
+    status: 'FILLED',
+    executedQty: '0.02797',
+    cummulativeQuoteQty: `${0.02797 * 108000}`,
+  })
+  const bad = (reason: string) => ({
+    status: StatusEnum.notok,
+    reason,
+    data: null,
+  })
+  const good = (data: unknown) => ({
+    status: StatusEnum.ok,
+    reason: null,
+    data,
+  })
+  bot.data.exchange = ExchangeEnum.hyperliquid
+  // The latch that sends every order through the balance check first.
+  bot.data.notEnoughBalance = {
+    thresholdPassed: true,
+    orders: { nb: 10 },
+  }
+  bot.getAssetBalanceAndRequiredByOrder = async () => {
+    await guardOpen
+    if (guard === 'throw') {
+      throw new Error('balance fetch failed')
+    }
+    return { asset: 'BTC', balance: { free: 1 }, required: 0.02797 }
+  }
+  bot.spendableForNotEnoughBalance = async (_a: string, free: number) => free
+  bot.clearsRefusedConstraint = () => true
+  bot.updateNotEnoughBalanceErrors = () => undefined
+  bot.requiredForOrder = () => 0.02797
+  bot.notEnoughBalanceThreshold = 10
+  bot.getExchangeInfo = async () => ({
+    pair: 'BTC-USDC',
+    priceAssetPrecision: 1,
+    baseAsset: { minAmount: 0.00001, step: 0.00001, name: 'BTC' },
+    quoteAsset: { minAmount: 10, name: 'USDC', precision: 6 },
+  })
+  bot.exchange.openOrder = async (req: { newClientOrderId: string }) => {
+    rec.open.push(req.newClientOrderId)
+    placedOnVenue = true
+    return good(venueOrder())
+  }
+  // Hyperliquid addresses a cancel by client order id. Before the placement it
+  // does not know the order; after it, the market order has already filled.
+  bot.exchange.cancelOrder = async (req: { newClientOrderId: string }) => {
+    rec.cancel.push(req.newClientOrderId)
+    return bad('Order was never placed, already canceled, or filled. asset=3')
+  }
+  bot.exchange.getOrder = async (req: { newClientOrderId: string }) => {
+    rec.getOrder.push(req.newClientOrderId)
+    return placedOnVenue ? good(venueOrder()) : bad('unknownOid')
+  }
+  return { bot, rec, order, releaseGuard }
+}
+
+describe('cancel during the pre-send guards (spec 192)', () => {
+  // Captured when the block runs, not at load: other spec files install their
+  // own stub at module load, and restoring the original would undo theirs.
+  let previousGetInstance: typeof RedisClient.getInstance
+  before(() => {
+    previousGetInstance = RedisClient.getInstance
+    ;(RedisClient as any).getInstance = async () => hlFakeRedis
+  })
+  after(() => {
+    ;(RedisClient as any).getInstance = previousGetInstance
+  })
+  beforeEach(() => hlFakeRedis.store.clear())
+
+  it('§5.1 a cancel while a guard is awaited waits, and the fill is booked, not written off', async () => {
+    const { bot, rec, order, releaseGuard } = hyperliquidBot()
+    const sending = bot.sendOrderToExchange(order)
+    await tick()
+    expect(rec.open, 'still in the guard').to.deep.equal([])
+    expect(bot.orders.get(HL_CLIENT_ID)?.orderId).to.equal('-1')
+
+    const cancelling = bot.cancelOrderOnExchange(order)
+    await tick()
+    releaseGuard()
+    await Promise.all([sending, cancelling])
+
+    expect(rec.open).to.deep.equal([HL_CLIENT_ID])
+    expect(
+      rec.logs.some((l) => l.includes('is still being placed, waiting')),
+      'the cancel waited for the placement',
+    ).to.equal(true)
+    expect(
+      rec.db.filter((d) => d.status === 'CANCELED'),
+      'never written off as CANCELED',
+    ).to.deep.equal([])
+    const last = rec.db[rec.db.length - 1]
+    expect(last.status, 'final row').to.equal('FILLED')
+    expect(last.orderId).to.equal(HL_VENUE_ID)
+    expect(
+      rec.errorLogs.filter((e) => e.includes('written off as CANCELED')),
+    ).to.deep.equal([])
+    expect(bot.placementsInFlight?.size ?? 0).to.equal(0)
+  })
+
+  it('§5.2 a guard that short-circuits the send still releases a waiting cancel', async () => {
+    const { bot, rec, order, releaseGuard } = hyperliquidBot()
+    hlFakeRedis.store.set(
+      'nb:cd:bot:nb',
+      JSON.stringify({
+        until: Date.now() + 60_000,
+        reason: 'Not enough balance',
+        interval: 300_000,
+        attempt: 1,
+      }),
+    )
+    // The venue never saw it, and says so for good (skips the ladder's waits).
+    bot.exchange.getOrder = async () => ({
+      status: StatusEnum.notok,
+      reason: 'Order does not exist',
+      data: null,
+    })
+    const sending = bot.sendOrderToExchange(order)
+    await tick()
+    const cancelling = bot.cancelOrderOnExchange(order)
+    await tick()
+    releaseGuard()
+    await Promise.all([sending, cancelling])
+    expect(rec.open, 'never sent').to.deep.equal([])
+    expect(
+      rec.logs.some((l) => l.includes('is still being placed, waiting')),
+    ).to.equal(true)
+    expect(bot.placementsInFlight?.size ?? 0).to.equal(0)
+  })
+
+  it('§5.3 a guard that throws leaves no placement in flight', async () => {
+    const { bot, order, releaseGuard } = hyperliquidBot('throw')
+    const sending = bot.sendOrderToExchange(order)
+    await tick()
+    releaseGuard()
+    let thrown: unknown = null
+    await sending.catch((e: unknown) => (thrown = e))
+    expect((thrown as Error)?.message).to.equal('balance fetch failed')
+    expect(bot.placementsInFlight?.size ?? 0).to.equal(0)
   })
 })

@@ -987,6 +987,16 @@ type LastMethod = {
   end: number
 }
 /**
+ * One placement's in-flight handle. See {@link MainBot#beginPlacement}.
+ */
+type PlacementInFlight = {
+  send: (
+    send: () => Promise<BaseReturn<CommonOrder>>,
+  ) => Promise<BaseReturn<CommonOrder>>
+  settle: () => void
+}
+
+/**
  * Common functions for bot
  */
 class MainBot<T extends IMainBot> {
@@ -1584,35 +1594,53 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
-   * Run a placement's venue call and, while it is outstanding, let a cancel or
-   * the unknown-order ladder wait for its answer instead of reading the `'-1'`
-   * placeholder as "never placed". Covers the venue call only: the caller's
-   * post-processing is outside it, so a waiter cannot deadlock on a lock that
-   * processing takes. Spec 155 §4.1.
+   * Mark a placement as in flight from the moment its `'-1'` row is written
+   * ahead, so a cancel or the unknown-order ladder waits for its answer instead
+   * of reading the placeholder as "never placed". Spec 155 §4.1, widened by
+   * spec 192 §4.1 to cover the pre-send guards as well as the venue call.
+   *
+   * `send` runs the venue call and resolves the handle with the id the venue
+   * returned (nothing on refusal / failure). `settle` resolves it with nothing
+   * when the placement leaves without sending; call it before any follow-up
+   * work on that path, so a waiter cannot deadlock on a lock that work takes.
+   * The first of the two wins.
    */
-  protected trackPlacement(
-    clientOrderId: string,
-    send: () => Promise<BaseReturn<CommonOrder>>,
-  ): Promise<BaseReturn<CommonOrder>> {
-    const request = send()
-    const venueId = request.then(
-      (r) =>
-        r.status === StatusEnum.ok &&
-        r.data?.orderId &&
-        `${r.data.orderId}` !== noExchangeOrderId
-          ? `${r.data.orderId}`
-          : null,
-      () => null,
-    )
+  protected beginPlacement(clientOrderId: string): PlacementInFlight {
+    let resolve: (venueId: string | null) => void = () => undefined
+    const venueId = new Promise<string | null>((r) => (resolve = r))
     const inFlight = (this.placementsInFlight ??= new Map())
     inFlight.set(clientOrderId, venueId)
-    const done = () => {
+    let settled = false
+    const settle = (id: string | null) => {
+      if (settled) {
+        return
+      }
+      settled = true
       if (inFlight.get(clientOrderId) === venueId) {
         inFlight.delete(clientOrderId)
       }
+      resolve(id)
     }
-    venueId.then(done)
-    return request
+    return {
+      send: (
+        send: () => Promise<BaseReturn<CommonOrder>>,
+      ): Promise<BaseReturn<CommonOrder>> => {
+        const request = send()
+        request.then(
+          (r) =>
+            settle(
+              r.status === StatusEnum.ok &&
+                r.data?.orderId &&
+                `${r.data.orderId}` !== noExchangeOrderId
+                ? `${r.data.orderId}`
+                : null,
+            ),
+          () => settle(null),
+        )
+        return request
+      },
+      settle: () => settle(null),
+    }
   }
 
   /**
@@ -8849,6 +8877,31 @@ class MainBot<T extends IMainBot> {
     force?: boolean,
     skipBr?: boolean,
   ): Promise<Order | string | void> {
+    // Spec 192 §4.2: however the attempt ends — a throw included — its
+    // placement stops counting as in flight, or a waiting cancel hangs forever.
+    const slot: { placement?: PlacementInFlight } = {}
+    try {
+      return await this._sendOrderToExchange(
+        order,
+        returnError,
+        count,
+        force,
+        skipBr,
+        slot,
+      )
+    } finally {
+      slot.placement?.settle()
+    }
+  }
+
+  private async _sendOrderToExchange(
+    order: Order,
+    returnError: boolean,
+    count: number,
+    force: boolean | undefined,
+    skipBr: boolean | undefined,
+    slot: { placement?: PlacementInFlight },
+  ): Promise<Order | string | void> {
     const _id = this.startMethod('sendOrderToExchange')
     // Spec `025` §4.1 (#715). The money-safety boundary: this method has no
     // opinion about the numbers it is handed, and on 2026-09-08 it took a
@@ -8936,6 +8989,11 @@ class MainBot<T extends IMainBot> {
     const fee = await this.getUserFee(order.symbol)
     if (this.data && this.exchange && fee) {
       this.setOrder(order)
+      // From here the row says `'-1'` while the guards below are awaited, so
+      // the placement is in flight from here, not from the venue call. Spec 192.
+      const placement = (slot.placement = this.beginPlacement(
+        order.clientOrderId,
+      ))
       if (count === 0) {
         await this.saveOrderToDb(order)
       }
@@ -9026,6 +9084,7 @@ class MainBot<T extends IMainBot> {
         // Bybit refuses as `An unknown parameter was sent.`. Refuse it locally
         // and take back the write-ahead row, as the local short-circuits do.
         if (!(requestData.quantity > 0)) {
+          placement.settle()
           this.deleteOrder(order.clientOrderId)
           if (count === 0) {
             await this.deleteOrderFromDb(order.clientOrderId)
@@ -9112,6 +9171,10 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
+      }
+      if (processedOrder) {
+        // Sent as splits under their own client order ids.
+        placement.settle()
       }
       if (!processedOrder) {
         let request: BaseReturn<CommonOrder> | undefined
@@ -9275,6 +9338,7 @@ class MainBot<T extends IMainBot> {
                 requestData.symbol,
               )
               if (recheck.restricted) {
+                placement.settle()
                 await this.markDealStartBlocked(
                   order,
                   quantRulesRejection,
@@ -9292,6 +9356,7 @@ class MainBot<T extends IMainBot> {
               // (RECONCILE_SWEEP_ENABLED), so we cannot rely on it to re-send an
               // order that was never placed. The deferred retry below is the
               // self-heal path; it dedups on clientOrderId.
+              placement.settle()
               await this.markDealStartBlocked(
                 order,
                 quantRulesRejection,
@@ -9445,11 +9510,13 @@ class MainBot<T extends IMainBot> {
         const exchange = this.exchange
         request =
           request ??
-          (await this.trackPlacement(order.clientOrderId, () =>
+          (await placement.send(() =>
             batcher?.has(requestData.newClientOrderId)
               ? batcher.send(requestData)
               : exchange.openOrder(requestData),
           ))
+        // A guard answered instead of the venue: nothing was sent.
+        placement.settle()
         // Accepted, but the venue said something the user should know (a
         // Bitget Reality token with nobody on the other side of its book, so
         // the order will wait). The order stands; this is a warning only.

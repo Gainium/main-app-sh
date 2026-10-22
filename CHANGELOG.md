@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.8] - 2026-10-22
+
+### Fixed
+
+- An order cancelled while its placement was still running its pre-send checks (for example a balance re-check) was written off as cancelled, and then went out to the exchange and could fill with no deal tracking it. A cancel now waits for the placement's answer for the whole time the order has no exchange id yet, not only during the exchange call.
+
 ## [1.109.7] - 2026-10-22
 
 ### Fixed
