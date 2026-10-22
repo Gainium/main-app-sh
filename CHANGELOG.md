@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.109.9] - 2026-10-22
+
+### Fixed
+
+- A limit order that filled part of itself the moment it reached the book, and the rest a moment later, could be recorded as filled for only the first part: the exchange's answer to the placement arrived after the live updates and its smaller executed amount overwrote them. The deal then counted less than it held, and its size, average price and used funds were understated. A placement answer can no longer lower the executed amount the live updates already reported.
+
 ## [1.109.8] - 2026-10-22
 
 ### Fixed

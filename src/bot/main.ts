@@ -64,6 +64,7 @@ import { isFillEvidenceFree, statesQuantity } from './fillEvidence'
 import {
   executionReportRewindsOrder,
   executionReportUnfillsOrder,
+  heldExecutionAheadOfAnswer,
 } from './staleExecutionReport'
 import {
   canRecoverReduceOnlyRemainder,
@@ -10435,6 +10436,19 @@ class MainBot<T extends IMainBot> {
               processedOrder.cummulativeQuoteQty,
             )
           }
+        }
+        // The status above already keeps a fill the user stream delivered
+        // before this answer; the quantities have to as well. A limit entry
+        // that traded part of itself the moment it reached the book is
+        // answered with that part, and if the stream's later reports beat the
+        // answer here, spreading it over `ord` booked the part-fill as the
+        // whole FILLED order. Spec 193.
+        const keptExecution = heldExecutionAheadOfAnswer(ord, orderToPush)
+        if (keptExecution) {
+          this.handleLog(
+            `Order ${order.clientOrderId} placement answer states ${orderToPush.executedQty} executed (${processedOrder.status}), behind the ${ord.executedQty} (${ord.status}) the user stream already delivered. Keeping the stream's figures`,
+          )
+          Object.assign(orderToPush, keptExecution)
         }
         // Retired as CANCELED while it still had no exchange id, so no cancel
         // ever reached the venue — yet the venue just accepted it. Spec 155 §4.4.

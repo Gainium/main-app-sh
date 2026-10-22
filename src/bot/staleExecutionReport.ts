@@ -100,3 +100,75 @@ export function executionReportUnfillsOrder(
     (report?.status === 'NEW' || report?.status === 'PARTIALLY_FILLED')
   )
 }
+
+/** The execution figures of an order row. Matches `Order` structurally. */
+export type ExecutedOrderState = {
+  executedQty?: string | null
+  cummulativeQuoteQty?: string | null
+  price?: string | null
+  feePaid?: string | null
+  feeAsset?: string | null
+  feeTradeId?: number | null
+  feeBreakdown?: { asset: string; amount: string }[] | null
+  feePaidUsd?: string | null
+}
+
+/**
+ * The held row's execution figures, when the venue's answer to a placement
+ * states LESS executed than the engine already holds; `null` otherwise.
+ *
+ * Spec `193`. The quantity half of the rule `sendOrderToExchange` already
+ * applies to status. A limit entry that trades against several resting orders
+ * the moment it reaches the book is answered `PARTIALLY_FILLED` with that
+ * part; when the answer is slower than the user stream, the engine already
+ * holds the streamed `FILLED` row. The merge kept that status and took the
+ * answer's quantities, so the engine held a `FILLED` row for the part-fill,
+ * every ledger that recomputes from the order map booked the fraction, and
+ * the Redis order snapshot carried it across restarts. An order's executed
+ * quantity never decreases (see `settledBaseEntryFill`, spec `059`), so an
+ * answer stating less than the held row is older, not a correction.
+ *
+ * Both rows must be in the same units — compare after the venue's figures
+ * are converted. Unparseable figures on either side return `null`: the merge
+ * stays as it was. Pure.
+ */
+export function heldExecutionAheadOfAnswer(
+  held: ExecutedOrderState | null | undefined,
+  answer: ExecutedOrderState | null | undefined,
+): ExecutedOrderState | null {
+  const heldQty = Number(held?.executedQty)
+  const answerQty = Number(answer?.executedQty)
+  if (
+    !held ||
+    !Number.isFinite(heldQty) ||
+    !Number.isFinite(answerQty) ||
+    heldQty <= 0 ||
+    answerQty >= heldQty
+  ) {
+    return null
+  }
+  // Only what the held row states: an absent figure must not blank the
+  // answer's. A fee the held row does not state is "not observed", not zero,
+  // so the answer's own is kept then — at least a lower bound.
+  const keys: (keyof ExecutedOrderState)[] = [
+    'executedQty',
+    'cummulativeQuoteQty',
+    'price',
+    ...(held.feePaid !== undefined && held.feePaid !== null
+      ? ([
+          'feePaid',
+          'feeAsset',
+          'feeTradeId',
+          'feeBreakdown',
+          'feePaidUsd',
+        ] as const)
+      : []),
+  ]
+  const kept: ExecutedOrderState = {}
+  for (const key of keys) {
+    if (held[key] !== undefined && held[key] !== null) {
+      ;(kept as Record<string, unknown>)[key] = held[key]
+    }
+  }
+  return kept
+}

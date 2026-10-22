@@ -17,6 +17,7 @@ import { expect } from 'chai'
 import {
   executionReportRewindsOrder,
   executionReportUnfillsOrder,
+  heldExecutionAheadOfAnswer,
 } from './staleExecutionReport'
 
 const FILLED_AT = 1789907750866
@@ -158,5 +159,56 @@ describe('a part-fill report over a filled row (spec 114)', () => {
   it('answers false rather than throwing on a missing side', () => {
     expect(executionReportUnfillsOrder(null, filled)).to.equal(false)
     expect(executionReportUnfillsOrder(filled, undefined)).to.equal(false)
+  })
+})
+
+/**
+ * Spec `193` §4.1/§4.2 — a placement answer slower than the user stream. The
+ * production shape (Binance spot base entry, 2026-10-22): the stream delivered
+ * `FILLED` 3085.69 before the answer, which still said `PARTIALLY_FILLED`
+ * 2116.29 — the part that traded the moment the order reached the book.
+ */
+describe('§4.1 a placement answer behind the streamed row (spec 193)', () => {
+  const streamed = {
+    executedQty: '3085.69000000',
+    cummulativeQuoteQty: '1251.11931100',
+    price: '0.4055',
+  }
+  const answer = {
+    executedQty: '2116.29000000',
+    cummulativeQuoteQty: '858.02761100',
+    price: '0.4055',
+  }
+
+  it('keeps the held execution figures when the answer states less', () => {
+    expect(heldExecutionAheadOfAnswer(streamed, answer)).to.deep.equal(streamed)
+  })
+
+  it('keeps the held fee only when the held row states one', () => {
+    const fee = { feePaid: '3.0856', feeAsset: 'LDO', feeTradeId: 77 }
+    expect(
+      heldExecutionAheadOfAnswer({ ...streamed, ...fee }, answer),
+    ).to.deep.equal({ ...streamed, ...fee })
+    expect(
+      heldExecutionAheadOfAnswer(streamed, { ...answer, feePaid: '2.1' }),
+      'no held fee: the answer keeps its own',
+    ).to.not.have.property('feePaid')
+  })
+
+  it('§4.2 leaves an answer stating as much or more alone', () => {
+    expect(heldExecutionAheadOfAnswer(streamed, streamed)).to.equal(null)
+    expect(heldExecutionAheadOfAnswer(answer, streamed)).to.equal(null)
+    expect(
+      heldExecutionAheadOfAnswer({ executedQty: '0' }, answer),
+      'a fresh write-ahead row',
+    ).to.equal(null)
+  })
+
+  it('§4.2 leaves unparseable or missing figures alone', () => {
+    expect(heldExecutionAheadOfAnswer(null, answer)).to.equal(null)
+    expect(heldExecutionAheadOfAnswer(streamed, undefined)).to.equal(null)
+    expect(
+      heldExecutionAheadOfAnswer(streamed, { executedQty: 'undefined' }),
+    ).to.equal(null)
   })
 })
