@@ -925,6 +925,11 @@ export const BotSchema = /* GraphQL */ `
     getHedgeDcaDeals: getComboDealsResponse
     getBotOrders(input: getBotOrdersInput!): botOrdersResponse
     getDealOrders(input: getDealOrdersInput!): dealOrdersResponse
+    # Closed-deal fees + slippage of the account, one row per quote asset
+    # (main-app spec 050 §5.2).
+    tradingCostsSummary(
+      input: tradingCostsSummaryInput
+    ): tradingCostsSummaryResponse
     getComboDealOrders(input: getDealOrdersInput!): dealOrdersResponse
     getHedgeComboDealOrders(input: getDealOrdersInput!): dealOrdersResponse
     getHedgeDCADealOrders(input: getDealOrdersInput!): dealOrdersResponse
@@ -1668,6 +1673,48 @@ export const BotSchema = /* GraphQL */ `
     shareId: String
     dealId: String!
     all: Boolean
+  }
+  input tradingCostsSummaryInput {
+    # ms epoch bounds on the deal's closeTime, inclusive.
+    from: Float
+    to: Float
+    # dca | terminal | combo | hedgeDca | hedgeCombo; omitted = all.
+    botType: String
+  }
+  type tradingCostsSummaryResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: [TradingCosts]
+  }
+  # Slippage of a deal's executed MARKET orders. Null when none counted.
+  type DealSlippage {
+    # Sum of the orders' slippageQuote; positive = adverse.
+    quote: Float
+    # Reference-notional weighted average bps.
+    bps: Float
+    # MARKET orders counted.
+    orders: Int
+    # True if any counted order's reference was reconstructed.
+    reconstructed: Boolean
+  }
+  # A finished deal's booked result, decomposed:
+  # grossQuote - feesQuote - slippageQuote = netQuote = profit.total in quote.
+  type DealCostBreakdown {
+    grossQuote: Float
+    feesQuote: Float
+    feesEstimated: Boolean
+    slippageQuote: Float
+    netQuote: Float
+  }
+  type TradingCosts {
+    feesQuote: Float
+    slippageQuote: Float
+    grossQuote: Float
+    netQuote: Float
+    deals: Int
+    slippageReconstructed: Boolean
+    feesEstimated: Boolean
+    quoteAsset: String
   }
   input getBotTransactionsInput {
     id: String!
@@ -3157,6 +3204,26 @@ export const BotSchema = /* GraphQL */ `
     sl: Boolean
     acBefore: Float
     acAfter: Float
+    # MARKET orders only (main-app spec 050). refPrice is the reference the
+    # slippage is measured against (the stored refPrice, or one reconstructed
+    # from the order's origPrice); null whenever slippage is null.
+    refPrice: String
+    refPriceAt: Float
+    sentAt: Float
+    ackAt: Float
+    # Signed, positive = adverse (paid more on a buy / received less on a sell).
+    slippageBps: Float
+    slippageQuote: Float
+    # recorded (stored refPrice only) | reconstructed (from origPrice or the
+    # DCA-entry shift) | null (LIMIT, inverse, unknown or out of range).
+    slippageSource: String
+    # Fee for this order in the pair's quote currency: the venue-reported fee
+    # where it resolves to the pair, else the stored-rate estimate; null for a
+    # third-asset fee (BNB/BGB/KCS) with no safe conversion, an order that did
+    # not execute, or an inverse contract.
+    feeQuote: Float
+    # true when feeQuote is the estimate; false when venue-reported; null when unknown.
+    feeEstimated: Boolean
   }
   type multiPairBotOrders {
     key: String
@@ -4034,6 +4101,8 @@ export const BotSchema = /* GraphQL */ `
     symbol: String
   }
   type fullDCABot {
+    # Closed-deal fees + slippage in the bot's main quote asset (spec 050 §5.1).
+    tradingCosts: TradingCosts
     _id: String
     userId: String
     status: BotStatus
@@ -4144,6 +4213,8 @@ export const BotSchema = /* GraphQL */ `
     short: usedBotAssets
   }
   type fullHedgeComboBot {
+    # Closed-deal fees + slippage in the bot's main quote asset (spec 050 §5.1).
+    tradingCosts: TradingCosts
     _id: String
     created: Date
     updated: Date
@@ -4173,6 +4244,8 @@ export const BotSchema = /* GraphQL */ `
     cost: Float
   }
   type fullComboBot {
+    # Closed-deal fees + slippage in the bot's main quote asset (spec 050 §5.1).
+    tradingCosts: TradingCosts
     _id: String
     userId: String
     status: BotStatus
@@ -4623,6 +4696,8 @@ export const BotSchema = /* GraphQL */ `
     funding: Funding
     feePaid: FeePaid
     feeByAsset: [FeeByAsset]
+    slippage: DealSlippage
+    costBreakdown: DealCostBreakdown
     avgPrice: Float
     displayAvg: Float
     commission: Float
@@ -4733,6 +4808,8 @@ export const BotSchema = /* GraphQL */ `
     funding: Funding
     feePaid: FeePaid
     feeByAsset: [FeeByAsset]
+    slippage: DealSlippage
+    costBreakdown: DealCostBreakdown
     avgPrice: Float
     displayAvg: Float
     commission: Float

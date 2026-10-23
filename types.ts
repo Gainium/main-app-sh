@@ -1644,6 +1644,25 @@ export interface DCADealsSchema extends SchemaI {
    */
   baseFundingBeta?: boolean
   fullFee?: number
+  /**
+   * Slippage of the deal's executed MARKET trades, written once when the deal
+   * closes (`bot/orderSlippage.ts` `dealSlippage`). Absent on deals closed
+   * before it was recorded and on deals where no MARKET trade counted; the
+   * API computes those at read time.
+   */
+  slippage?: {
+    quote: number
+    bps: number | null
+    orders: number
+    reconstructed: boolean
+    notional: number
+  }
+  /**
+   * Written with `slippage` at close (present = the close-time cost facts are
+   * recorded): true when at least one executed trade had no venue-reported
+   * fee, so the books' fee figure includes the stored-rate estimate.
+   */
+  feesEstimated?: boolean
   fixSize?: number
   /**
    * What the `startDeal` webhook that opened this deal overrode (already
@@ -3947,6 +3966,21 @@ export type Order = CommonOrder & {
   baseAsset: string
   quoteAsset: string
   origPrice: string
+  /**
+   * The market price the engine held when it sent this MARKET order — the
+   * reference its slippage is measured against (`bot/orderSlippage.ts`).
+   * Never the protective, slippage-shifted `price`/`origPrice` a base order
+   * may be sent at. NO default: absent means "not observed" (orders sent
+   * before this was recorded, LIMIT orders, no fresh price held), and readers
+   * fall back to reconstruction rather than to a zero.
+   */
+  refPrice?: string
+  /** ms epoch of the price observation behind `refPrice` (its stream tick's own time). */
+  refPriceAt?: number
+  /** ms epoch on our clock immediately before the placement request left this process. */
+  sentAt?: number
+  /** ms epoch on our clock when the placement answer came back to this process. */
+  ackAt?: number
   tpSlTarget?: string
   dcaLevel?: number
   minigridId?: string

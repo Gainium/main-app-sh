@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.110.0] - 2026-10-23
+
+### Added
+
+- Market orders now record the market price the bot acted on (`refPrice`, with the time that price was observed), when the order left for the exchange (`sentAt`) and when the exchange answered (`ackAt`). Slippage is measured from that recorded price.
+- Per-order slippage and fee in the order's quote currency (`slippageBps`, `slippageQuote`, `slippageSource`, `feeQuote`, `feeEstimated`). For older orders without a recorded price, slippage is estimated from the order's own data and marked as reconstructed; estimates that cannot be trusted are left empty rather than shown.
+- A cost breakdown on closed DCA and combo deals (`costBreakdown`: gross, fees, slippage, net), where net is the deal's existing profit, plus bot-level `tradingCosts` and an account-level `tradingCostsSummary` over closed deals.
+- `getDCABotDealsById` returns the requested deals of the caller's bot.
+
+### Changed
+
+- Deal lookups by id read deals of the requesting account only.
+
 ## [1.109.9] - 2026-10-22
 
 ### Fixed

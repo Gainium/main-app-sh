@@ -106,6 +106,11 @@ import {
   OrderAdditionalParams,
 } from '../../types'
 import { observedFeeSplit } from './orderFee'
+import {
+  dealSlippage,
+  feesEstimatedOf,
+  slippageContextFromBot,
+} from './orderSlippage'
 import { ORDER_ID_MARKER, markOrderId } from './orderIdMarker'
 import { hasConsecutiveStreak } from './consecutiveStreak'
 import {
@@ -4899,6 +4904,39 @@ function createDCABotHelper<
     }
 
     /**
+     * Write the deal's close-time cost facts (main-app spec 050 §4.1): the
+     * slippage of its executed MARKET trades and whether its fee figure
+     * includes an estimate. From the orders this process already holds, once,
+     * so the API never has to rescan a closed deal's orders. Forward-only:
+     * nothing rewrites deals closed before this existed; the API computes
+     * those at read time.
+     */
+    recordDealCostFacts(fullDeal: FullDeal<ExcludeDoc<Deal>>) {
+      try {
+        const orders = this.getOrdersByStatusAndDealId({
+          dealId: `${fullDeal.deal._id}`,
+          status: ['FILLED', 'CANCELED'],
+        })
+        const ctx = slippageContextFromBot(
+          this.combo ? 'combo' : 'dca',
+          this.data?.settings as Record<string, unknown> | undefined,
+        )
+        const slippage = dealSlippage(orders, () => ctx)
+        const facts: Record<string, unknown> = {
+          feesEstimated: feesEstimatedOf(orders),
+        }
+        if (slippage) {
+          facts.slippage = slippage
+        }
+        this.saveDeal(fullDeal, facts, false)
+      } catch (e) {
+        this.handleDebug(
+          `Deal ${fullDeal.deal._id} cost facts not recorded: ${(e as Error)?.message ?? e}`,
+        )
+      }
+    }
+
+    /**
      * Process deal close
      *
      * @param {string} dealId Id of the deal
@@ -4933,6 +4971,7 @@ function createDCABotHelper<
         this.handleWarn(`Deal ${dealId} not found in local deals`)
         return false
       }
+      this.recordDealCostFacts(deal)
       if (!this.combo) {
         const botUpdate = {
           dealsReduceForBot:

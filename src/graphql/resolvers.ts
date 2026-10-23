@@ -199,6 +199,7 @@ import { JWT_SECRET } from '../config'
 import { DataResponse, ErrorResponse } from '../db/crud'
 import { LargeAccountService } from '../bot/largeAccount/largeAccountService'
 import { getInPositions } from './handlers/inPositions.handler'
+import { TradingCostsService } from './handlers/tradingCosts.handler'
 import { DEAL_TOTALS_ARGS } from '../bot/dealListFilter'
 
 /**
@@ -311,11 +312,44 @@ const dealTotalsOf = (parent: DealTotalsParent) => {
   return BotInstance.getInstance().getDealListTotals(args.combo, args.search)
 }
 
+const tradingCosts = () => TradingCostsService.getInstance()
+
+/** Fees + slippage on a deal type (main-app spec 050 §4). */
+const dealCostFields = {
+  slippage: (deal: object) => tradingCosts().dealSlippage(deal),
+  costBreakdown: (deal: object) => tradingCosts().dealCostBreakdown(deal),
+}
+
+/** Closed-deal cost aggregate on a bot type (main-app spec 050 §5.1). */
+const botCostFields = {
+  tradingCosts: (bot: { _id?: unknown; bots?: unknown[] }) =>
+    tradingCosts().botTradingCosts(bot),
+}
+
 /**
  * Field resolvers on object types. Exported so a host that assembles its own
  * resolver map (main-app) can spread them next to `Query`/`Mutation`.
  */
 export const typeResolvers = {
+  // MARKET-order slippage, computed from the order row (main-app spec 050 §4).
+  botOrder: {
+    refPrice: async (o: object) => {
+      const s = await tradingCosts().orderSlippage(o)
+      return s ? `${s.refPrice}` : null
+    },
+    slippageBps: async (o: object) =>
+      (await tradingCosts().orderSlippage(o))?.bps ?? null,
+    slippageQuote: async (o: object) =>
+      (await tradingCosts().orderSlippage(o))?.quote ?? null,
+    slippageSource: async (o: object) =>
+      (await tradingCosts().orderSlippage(o))?.source ?? null,
+    feeQuote: async (o: object) => (await tradingCosts().orderFee(o)).feeQuote,
+    feeEstimated: async (o: object) =>
+      (await tradingCosts().orderFee(o)).feeEstimated,
+  },
+  fullDCABot: botCostFields,
+  fullComboBot: botCostFields,
+  fullHedgeComboBot: botCostFields,
   botDashboardStats: {
     inPositionsUsd: async (parent: InPositionsParent) =>
       (await inPositionsOf(parent))?.inPositionsUsd ?? null,
@@ -326,6 +360,7 @@ export const typeResolvers = {
   },
   dcaDeal: {
     updatedAt: (deal: { updated?: Date | null }) => deal?.updated ?? null,
+    ...dealCostFields,
   },
   getDCADealsResponse: {
     totals: (parent: DealTotalsParent) => dealTotalsOf(parent),
@@ -335,6 +370,7 @@ export const typeResolvers = {
   },
   comboDeal: {
     updatedAt: (deal: { updated?: Date | null }) => deal?.updated ?? null,
+    ...dealCostFields,
   },
 }
 
@@ -1703,6 +1739,33 @@ const resolvers = <
         input.all,
       )
     },
+    tradingCostsSummary: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input?: {
+          from?: number | null
+          to?: number | null
+          botType?: string | null
+        }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const data = await tradingCosts().accountTradingCosts(
+        `${user.data._id}`,
+        !!paperContext,
+        input ?? {},
+      )
+      return { status: StatusEnum.ok, reason: null, data }
+    },
     getComboDealOrders: async (
       _parent: any,
       {
@@ -1991,6 +2054,31 @@ const resolvers = <
         return user
       }
       return await Bot.getComboBotDealsById(
+        user.data._id.toString(),
+        input.botId,
+        input.id,
+        paperContext,
+      )
+    },
+    // DCA twin of getComboBotDealsById. Both return only the caller's own
+    // deals of their own bot (see Bot.get*BotDealsById).
+    getDCABotDealsById: async (
+      _parent: any,
+      {
+        input,
+      }: {
+        input: { botId: string; id: string[] }
+      },
+      { token, req, paperContext }: InputRequest,
+    ) => {
+      if (token !== 'demo' && !req.user?.authorized) {
+        return errorAccess()
+      }
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      return await Bot.getDCABotDealsById(
         user.data._id.toString(),
         input.botId,
         input.id,

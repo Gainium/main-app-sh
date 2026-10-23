@@ -852,6 +852,12 @@ const orderSchema: Schema<OrderSchema> = new Schema({
   transactTime: Number,
   price: RequiredString,
   origPrice: String,
+  // Placement stamps for MARKET orders (see `Order.refPrice`). No defaults:
+  // absent means "not observed", like `feePaid` below.
+  refPrice: String,
+  refPriceAt: Number,
+  sentAt: Number,
+  ackAt: Number,
   origQty: RequiredString,
   executedQty: RequiredString,
   cummulativeQuoteQty: String,
@@ -2239,6 +2245,20 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   avgPrice: Number,
   displayAvg: Number,
   commission: Number,
+  // Close-time cost facts (`DCADealsSchema.slippage` / `feesEstimated`).
+  // No defaults: absent means "not recorded", and the API computes it.
+  slippage: {
+    type: {
+      quote: Number,
+      bps: Number,
+      orders: Number,
+      reconstructed: Boolean,
+      notional: Number,
+    },
+    required: false,
+    default: undefined,
+  },
+  feesEstimated: Boolean,
   createTime: Number,
   updateTime: Number,
   closeTime: Number,
@@ -2446,6 +2466,20 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   avgPrice: Number,
   displayAvg: Number,
   commission: Number,
+  // Close-time cost facts (`DCADealsSchema.slippage` / `feesEstimated`).
+  // No defaults: absent means "not recorded", and the API computes it.
+  slippage: {
+    type: {
+      quote: Number,
+      bps: Number,
+      orders: Number,
+      reconstructed: Boolean,
+      notional: Number,
+    },
+    required: false,
+    default: undefined,
+  },
+  feesEstimated: Boolean,
   createTime: Number,
   updateTime: Number,
   closeTime: Number,

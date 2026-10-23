@@ -61,6 +61,7 @@ import {
   streamFeeFields,
 } from './orderFee'
 import { isFillEvidenceFree, statesQuantity } from './fillEvidence'
+import { marketReference, placementStampsOf } from './orderSlippage'
 import {
   executionReportRewindsOrder,
   executionReportUnfillsOrder,
@@ -7000,6 +7001,8 @@ class MainBot<T extends IMainBot> {
       baseAsset: o.baseAsset,
       quoteAsset: o.quoteAsset,
       origPrice: o.origPrice,
+      // Placement stamps never come back from a venue payload (spec 050 §3.3).
+      ...placementStampsOf(o),
       price: `${price}` || o.price,
       executedQty,
       cummulativeQuoteQty,
@@ -8989,6 +8992,16 @@ class MainBot<T extends IMainBot> {
     }
     const fee = await this.getUserFee(order.symbol)
     if (this.data && this.exchange && fee) {
+      // The slippage reference of a MARKET order (main-app spec 050 §3.1): the
+      // price the engine holds for the symbol now, stamped with that price's
+      // OWN observation time, ahead of the write-ahead row below so it is
+      // stored whatever the venue answers. Set once: a retry or a re-sent
+      // sibling keeps the first attempt's decision price. Never derived from
+      // `order.price`, which a base order carries shifted by its protective
+      // allowance.
+      if (order.type === OrderTypeEnum.market && order.refPrice === undefined) {
+        this.stampMarketReference(order)
+      }
       this.setOrder(order)
       // From here the row says `'-1'` while the guards below are awaited, so
       // the placement is in flight from here, not from the venue call. Spec 192.
@@ -9511,11 +9524,22 @@ class MainBot<T extends IMainBot> {
         const exchange = this.exchange
         request =
           request ??
-          (await placement.send(() =>
-            batcher?.has(requestData.newClientOrderId)
+          (await placement.send(async () => {
+            // MARKET only, and a MARKET order never takes the batch seam
+            // above (LIMIT only), so `sentAt` is always the moment of the
+            // venue call itself, never a batch enqueue. Spec 050 §3.2.
+            const market = order.type === OrderTypeEnum.market
+            if (market) {
+              this.stampPlacementTime(order, 'sentAt')
+            }
+            const answer = await (batcher?.has(requestData.newClientOrderId)
               ? batcher.send(requestData)
-              : exchange.openOrder(requestData),
-          ))
+              : exchange.openOrder(requestData))
+            if (market) {
+              this.stampPlacementTime(order, 'ackAt')
+            }
+            return answer
+          }))
         // A guard answered instead of the venue: nothing was sent.
         placement.settle()
         // Accepted, but the venue said something the user should know (a
@@ -10996,6 +11020,70 @@ class MainBot<T extends IMainBot> {
   /**
    * Save order to db
    */
+
+  /**
+   * Stamp `refPrice` / `refPriceAt` on a MARKET order (spec 050 §3.1). A stamp
+   * must never cost the placement it describes, so a failure leaves the order
+   * unstamped — which readers treat as "not observed".
+   */
+  stampMarketReference(order: Order) {
+    try {
+      Object.assign(
+        order,
+        marketReference(
+          this.getLastStreamData(order.symbol),
+          +new Date(),
+          this.priceTimeout,
+        ) ?? {},
+      )
+    } catch (e) {
+      this.handleDebug(
+        `Order ${order.clientOrderId} reference price not stamped: ${e}`,
+      )
+    }
+  }
+
+  /**
+   * Record a MARKET order's placement times on our clock (spec 050 §3.2):
+   * `sentAt` immediately before the placement request leaves this process,
+   * `ackAt` when its answer comes back. Each is written as its own
+   * single-field `$set` without the status guard `updateOrderOnDb` applies,
+   * because a market order is routinely FILLED by the user stream before its
+   * placement answer returns and that guard would then drop the stamp. A
+   * retry overwrites both: the attempt that fills is the last one sent.
+   */
+  stampPlacementTime(order: Order, field: 'sentAt' | 'ackAt') {
+    // A stamp must never cost the placement it describes: nothing here is
+    // awaited, and a failure is a debug line, not an error.
+    try {
+      const at = +new Date()
+      order[field] = at
+      const held = this.getOrderFromMap(order.clientOrderId)
+      if (held && held !== order) {
+        held[field] = at
+      }
+      void Promise.resolve(
+        this.ordersDb.updateData(
+          { clientOrderId: order.clientOrderId },
+          { $set: { [field]: at } },
+        ),
+      )
+        .then((res) => {
+          if (res?.status === StatusEnum.notok) {
+            this.handleDebug(
+              `Order ${order.clientOrderId} ${field} not saved: ${res.reason}`,
+            )
+          }
+        })
+        .catch((e) =>
+          this.handleDebug(
+            `Order ${order.clientOrderId} ${field} not saved: ${e}`,
+          ),
+        )
+    } catch (e) {
+      this.handleDebug(`Order ${order.clientOrderId} ${field} not saved: ${e}`)
+    }
+  }
 
   async saveOrderToDb(order: Order) {
     await this.ordersDb

@@ -12898,10 +12898,21 @@ class Bot<T extends UserSchema = UserSchema> {
       paperContext ?? false,
     )
     if (bot.status === StatusEnum.ok && bot.data) {
+      // The caller's own deals only: the deal read carries their userId as
+      // well as the bot id. An id that is not an ObjectId matches nothing
+      // rather than throwing.
+      const ids = (Array.isArray(id) ? id : [])
+        .slice(0, 200)
+        .filter((i) => typeof i === 'string' && /^[0-9a-f]{24}$/i.test(i))
+        .map((i) => new Types.ObjectId(i))
+      if (!ids.length) {
+        return { status: StatusEnum.ok, data: { deals: [] } }
+      }
       const findTransactionsRequest = await this.comboDealsDb.readData(
         {
           botId: botId.toString(),
-          _id: { $in: id.slice(0, 200).map((ids) => new Types.ObjectId(ids)) },
+          userId,
+          _id: { $in: ids },
         },
         undefined,
         {},
@@ -12937,10 +12948,21 @@ class Bot<T extends UserSchema = UserSchema> {
       paperContext ?? false,
     )
     if (bot.status === StatusEnum.ok && bot.data) {
+      // The caller's own deals only: the deal read carries their userId as
+      // well as the bot id. An id that is not an ObjectId matches nothing
+      // rather than throwing.
+      const ids = (Array.isArray(id) ? id : [])
+        .slice(0, 200)
+        .filter((i) => typeof i === 'string' && /^[0-9a-f]{24}$/i.test(i))
+        .map((i) => new Types.ObjectId(i))
+      if (!ids.length) {
+        return { status: StatusEnum.ok, data: { deals: [] } }
+      }
       const findTransactionsRequest = await this.dcaDealsDb.readData(
         {
           botId: botId.toString(),
-          _id: { $in: id.slice(0, 200).map((ids) => new Types.ObjectId(ids)) },
+          userId,
+          _id: { $in: ids },
         },
         undefined,
         {},
