@@ -182,9 +182,11 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
       expect(bot.isTpOnlyDealEdit(deal, { slPerc: '-5' })).to.equal(false)
     })
 
-    it('a patch that changes nothing is not', () => {
+    // Spec 194 §1.1.1. A save that changes nothing has no ladder input to
+    // apply either, so it must not re-place the safety orders.
+    it('a patch that changes nothing is take-profit only', () => {
       const { bot, deal } = buildBot()
-      expect(bot.isTpOnlyDealEdit(deal, { ...BOT_SETTINGS })).to.equal(false)
+      expect(bot.isTpOnlyDealEdit(deal, { ...BOT_SETTINGS })).to.equal(true)
     })
 
     // Spec 191 §2. The patch the dashboard sends when a take profit is set
@@ -284,6 +286,35 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
       expect(raised.cancelAll).to.have.length(0)
       expect(raised.cancelled).to.deep.equal(['D-TP-52'])
       expect(raised.placed.map((o: any) => o.type)).to.deep.equal([
+        TypeOrderEnum.dealTP,
+      ])
+    })
+
+    // Spec 194 §2. The same take-profit save sent twice: the first call
+    // stores it on the deal, so the second one changes nothing.
+    const repeatedTpPatch = {
+      tpPerc: '24.300',
+      multiTp: [{ target: '24.300', amount: '100', uuid: 'tp-194' }],
+    }
+
+    it('passes tpOnly for the same take-profit save sent twice', async () => {
+      const { bot, raised } = buildBot()
+      bot.rebuildDealOrders = async (_d: any, _id: string, opts: any) => {
+        raised.rebuilt.push(opts)
+      }
+      await bot.updateDealSettings(DEAL_ID, repeatedTpPatch)
+      await bot.updateDealSettings(DEAL_ID, repeatedTpPatch)
+      expect(raised.rebuilt).to.deep.equal([{ tpOnly: true }, { tpOnly: true }])
+    })
+
+    it('the repeated save cancels and places the take profit only', async () => {
+      const { bot, raised } = buildBot()
+      await bot.updateDealSettings(DEAL_ID, repeatedTpPatch)
+      await bot.updateDealSettings(DEAL_ID, repeatedTpPatch)
+      expect(raised.cancelAll).to.have.length(0)
+      expect(raised.cancelled).to.deep.equal(['D-TP-52', 'D-TP-52'])
+      expect(raised.placed.map((o: any) => o.type)).to.deep.equal([
+        TypeOrderEnum.dealTP,
         TypeOrderEnum.dealTP,
       ])
     })

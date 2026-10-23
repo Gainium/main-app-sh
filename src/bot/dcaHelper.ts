@@ -28919,7 +28919,9 @@ function createDCABotHelper<
      * level its place in the book. Compared by value against the deal's
      * effective setting (the deal's own, else the bot's), because clients
      * send whole forms — Edit Deal and mass edit include every key, changed
-     * or not. Anything unrecognised falls back to the full rebuild.
+     * or not. Anything unrecognised falls back to the full rebuild. A patch
+     * that changes nothing (the same save sent twice) has no ladder input to
+     * apply either, so it counts as take-profit only (spec 194).
      * DCA only: a Combo rebuild also re-prepares its minigrids.
      */
     protected isTpOnlyDealEdit(
@@ -28943,7 +28945,7 @@ function createDCABotHelper<
           // @ts-ignore keyed read of the patch
           !same(patch[k], effective(k)),
       )
-      return changed.length > 0 && changed.every((k) => tpOnlyDealKeys.has(k))
+      return changed.every((k) => tpOnlyDealKeys.has(k))
     }
     /**
      * Cancel a deal's resting orders, regenerate its ladder and take profit
