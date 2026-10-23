@@ -28824,6 +28824,8 @@ function createDCABotHelper<
             findDeal.deal.trailingMode = undefined
           }
           const tpOnly = this.isTpOnlyDealEdit(findDeal, settings)
+          const activeOrdersOnly =
+            !tpOnly && this.isActiveOrdersCountOnlyDealEdit(findDeal, settings)
           findDeal.deal.settings = {
             ...findDeal.deal.settings,
             ...settings,
@@ -28905,7 +28907,11 @@ function createDCABotHelper<
             changed: reset ? false : keysToCheck.filter((k) => !k).length !== 0,
             slChangedByUser: reset ? false : currentSlPerc !== settings.slPerc,
           }
-          await this.rebuildDealOrders(findDeal, dealId, { tpOnly })
+          await this.rebuildDealOrders(
+            findDeal,
+            dealId,
+            activeOrdersOnly ? { tpOnly, activeOrdersOnly } : { tpOnly },
+          )
         }
       }
       await this.afterDealUpdate(dealId)
@@ -28931,6 +28937,20 @@ function createDCABotHelper<
       if (this.botType !== BotType.dca) {
         return false
       }
+      return this.changedDealSettingKeys(findDeal, patch).every((k) =>
+        tpOnlyDealKeys.has(k),
+      )
+    }
+
+    /**
+     * The keys of a deal settings patch whose value differs from the deal's
+     * effective setting (the deal's own, else the bot's). Clients send whole
+     * forms, so a key's presence in the patch does not mean it changed.
+     */
+    protected changedDealSettingKeys(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      patch: Partial<Deal['settings']>,
+    ): string[] {
       const effective = (k: string) => {
         // @ts-ignore keyed read of the settings shape
         const own = findDeal.deal.settings?.[k]
@@ -28939,13 +28959,31 @@ function createDCABotHelper<
       }
       const same = (a: unknown, b: unknown) =>
         a === b || JSON.stringify(a) === JSON.stringify(b)
-      const changed = Object.keys(patch).filter(
+      return Object.keys(patch).filter(
         (k) =>
           k !== 'changed' &&
           // @ts-ignore keyed read of the patch
           !same(patch[k], effective(k)),
       )
-      return changed.every((k) => tpOnlyDealKeys.has(k))
+    }
+
+    /**
+     * Whether a deal settings patch changes the number of active smart orders
+     * and nothing else (spec 195). The ladder's prices and sizes do not read
+     * it — it only decides how many of the nearest unfilled levels rest on the
+     * book — so such an edit cancels the levels it drops and places the ones
+     * it adds; the levels that stay and the take profit are left resting.
+     * DCA only, like {@link isTpOnlyDealEdit}.
+     */
+    protected isActiveOrdersCountOnlyDealEdit(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      patch: Partial<Deal['settings']>,
+    ): boolean {
+      if (this.botType !== BotType.dca) {
+        return false
+      }
+      const changed = this.changedDealSettingKeys(findDeal, patch)
+      return changed.length === 1 && changed[0] === 'activeOrdersCount'
     }
     /**
      * Cancel a deal's resting orders, regenerate its ladder and take profit
@@ -28957,12 +28995,29 @@ function createDCABotHelper<
     protected async rebuildDealOrders(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       dealId: string,
-      opts: { keepLevels?: boolean; tpOnly?: boolean } = {},
+      opts: {
+        keepLevels?: boolean
+        tpOnly?: boolean
+        activeOrdersOnly?: boolean
+      } = {},
     ) {
       // A take-profit-only edit replaces the take profit and nothing else
       // (see `isTpOnlyDealEdit`); the ladder stays on the book as it is.
       const tpOnly =
         !!opts.tpOnly && findDeal.deal.status !== DCADealStatusEnum.start
+      // An active-smart-orders-only edit (see
+      // `isActiveOrdersCountOnlyDealEdit`) cancels the levels it drops and
+      // places the levels it adds once the ladder is regenerated below. A
+      // partly filled resting level takes the full rebuild, as before: the
+      // re-size diff does not cancel a partly filled level.
+      const activeOrdersOnly =
+        !tpOnly &&
+        !!opts.activeOrdersOnly &&
+        findDeal.deal.status !== DCADealStatusEnum.start &&
+        !this.getOrdersByStatusAndDealId({
+          status: 'PARTIALLY_FILLED',
+          dealId,
+        }).some((o) => isLadderOrder(o))
       if (tpOnly) {
         const restingTps = this.getOrdersByStatusAndDealId({
           status: this.orderStatuses,
@@ -28981,7 +29036,7 @@ function createDCABotHelper<
             this.handleUnknownOrder(result)
           }
         }
-      } else {
+      } else if (!activeOrdersOnly) {
         await this.cancelAllOrder(findDeal.deal.lastPrice, dealId, true)
       }
       if (findDeal.deal.status !== DCADealStatusEnum.start) {
@@ -29102,6 +29157,25 @@ function createDCABotHelper<
             new: toPlace.new.filter((o) => o.type === TypeOrderEnum.dealTP),
             cancel: [],
           },
+        )
+      } else if (activeOrdersOnly) {
+        // The routine re-size diff, on the safety orders alone: resting
+        // levels the regenerated ladder no longer holds are cancelled, its
+        // levels with nothing resting are placed. A level is matched by price
+        // and side — the active count does not size it.
+        await this.placeOrders(
+          this.botId,
+          findDeal.deal.symbol.symbol,
+          dealId,
+          this.findDiff(
+            findDeal.currentOrders.filter(
+              (o) => o.type === TypeOrderEnum.dealRegular,
+            ),
+            this.getOrdersByStatusAndDealId({ status: 'NEW', dealId })
+              .filter((o) => isLadderOrder(o))
+              .map((o) => this.mapOrderToGrid(o)),
+            true,
+          ),
         )
       } else if (findDeal.deal.status !== DCADealStatusEnum.start) {
         await this.placeOrders(
