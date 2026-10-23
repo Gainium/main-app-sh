@@ -674,6 +674,11 @@ export type SettingsIndicators = {
   obfvgRef?: OBFVGRefEnum
   sessionDays?: number[]
   sessionRule?: SessionRuleEnum
+  /** Local HH:MM in sessionTimezone; with sessionEnd, limits the session to those hours. */
+  sessionStart?: string
+  sessionEnd?: string
+  /** IANA time zone the session hours and days are read in (default UTC). */
+  sessionTimezone?: string
   lwThreshold?: string
   lwMaxDuration?: string
   lwValue?: LWValueEnum

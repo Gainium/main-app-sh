@@ -15565,6 +15565,11 @@ function createDCABotHelper<
       }
       const days = sessionIndicator.sessionDays ?? [1, 2, 3, 4, 5]
       const rule = sessionIndicator.sessionRule ?? 'in'
+      const hours = {
+        start: sessionIndicator.sessionStart,
+        end: sessionIndicator.sessionEnd,
+        timezone: sessionIndicator.sessionTimezone,
+      }
       const { uuid, indicatorAction, section, groupId } = sessionIndicator
       // Register session indicator in the map for the first symbol
       // Session is time-based, not symbol-specific, so one entry per symbol
@@ -15593,7 +15598,7 @@ function createDCABotHelper<
       }
       const check = () => {
         this.handleDebug('Checking session indicator status')
-        const inSession = isInSession(Date.now(), days, rule)
+        const inSession = isInSession(Date.now(), days, rule, hours)
         const toProcess: (() => void)[] = []
         for (const [key, ind] of this.indicators.entries()) {
           if (ind.uuid === uuid) {

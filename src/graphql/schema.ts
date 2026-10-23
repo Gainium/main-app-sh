@@ -3496,6 +3496,9 @@ export const BotSchema = /* GraphQL */ `
     dcValue: String
     sessionDays: [Int]
     sessionRule: String
+    sessionStart: String
+    sessionEnd: String
+    sessionTimezone: String
     lwMaxDuration: String
     lwThreshold: StringOrNumber
     lwValue: StringOrNumber
@@ -5292,6 +5295,9 @@ export const BotSchema = /* GraphQL */ `
     dcValue: String
     sessionDays: [Int]
     sessionRule: String
+    sessionStart: String
+    sessionEnd: String
+    sessionTimezone: String
     lwMaxDuration: String
     lwThreshold: StringOrNumber
     lwValue: StringOrNumber

@@ -3450,7 +3450,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     type: 'SESSION',
     name: 'Session Selector',
     description:
-      'Filters signals based on the day of the week (UTC). Select which days are active and whether to trade in or out of the selected sessions.',
+      'Filters signals by day of the week and, optionally, time of day. sessionDays are the active weekdays (0=Sunday). sessionStart/sessionEnd (local HH:MM, end exclusive) limit the session to those hours, read in sessionTimezone (IANA name, default UTC, follows daylight saving). An end before the start is an overnight session belonging to the day it opens. Without start/end the whole day counts. sessionRule picks trading in or out of the session.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -3466,6 +3466,24 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
         required: false,
         validators: ['mustBeOneOfEnum'],
         enum: ['in', 'out'],
+      },
+      {
+        name: 'sessionStart',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString', 'canBeEmptyString'],
+      },
+      {
+        name: 'sessionEnd',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString', 'canBeEmptyString'],
+      },
+      {
+        name: 'sessionTimezone',
+        type: 'string',
+        required: false,
+        validators: ['mustBeString', 'canBeEmptyString'],
       },
       {
         name: 'section',
@@ -3502,6 +3520,9 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       indicatorInterval: '1h',
       sessionDays: [1, 2, 3, 4, 5],
       sessionRule: 'in',
+      sessionStart: '09:30',
+      sessionEnd: '16:00',
+      sessionTimezone: 'America/New_York',
       indicatorAction: 'startDeal',
       groupId: '<group-uuid>',
       uuid: '<indicator-uuid>',

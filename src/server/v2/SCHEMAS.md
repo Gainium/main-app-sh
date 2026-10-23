@@ -1912,6 +1912,9 @@ SettingsIndicators configuration
 | `obfvgRef` | enum: `high|low|middle` | No | Order block/FVG reference |
 | `sessionDays` | Array<number> | No |  |
 | `sessionRule` | enum: `in|out` | No |  |
+| `sessionStart` | string | No | Session open, local HH:MM in sessionTimezone. With sessionEnd, limits the session to those hours; omit both for the whole day. |
+| `sessionEnd` | string | No | Session close (exclusive), local HH:MM. Before sessionStart means an overnight session that belongs to the day it opens. |
+| `sessionTimezone` | string | No | IANA time zone the session days and hours are read in. Defaults to UTC; follows daylight saving. |
 | `lwThreshold` | string | No |  |
 | `lwMaxDuration` | string | No |  |
 | `lwValue` | enum: `top|bottom|any` | No |  |
@@ -2020,6 +2023,9 @@ SettingsIndicators configuration
     0
   ],
   "sessionRule": "in",
+  "sessionStart": "09:30",
+  "sessionEnd": "16:00",
+  "sessionTimezone": "America/New_York",
   "lwThreshold": "example-string",
   "lwMaxDuration": "example-string",
   "lwValue": "top",

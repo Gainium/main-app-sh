@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.111.0] - 2026-10-23
+
+### Added
+
+- Session indicator hours: `sessionStart` / `sessionEnd` (local `HH:MM`) and `sessionTimezone` (IANA, default UTC) limit a session to its trading hours on the session's local clock, through daylight saving. Without them a session still covers whole days. Accepted by GraphQL, the v2 API and stored on the bot.
+
 ## [1.110.0] - 2026-10-23
 
 ### Added

@@ -4392,6 +4392,18 @@ components:
           enum:
             - in
             - out
+        sessionStart:
+          type: string
+          description: Session open, local HH:MM in sessionTimezone. With sessionEnd, limits the session to those hours; omit both for the whole day.
+          example: '09:30'
+        sessionEnd:
+          type: string
+          description: Session close (exclusive), local HH:MM. Before sessionStart means an overnight session that belongs to the day it opens.
+          example: '16:00'
+        sessionTimezone:
+          type: string
+          description: IANA time zone the session days and hours are read in. Defaults to UTC; follows daylight saving.
+          example: America/New_York
         lwThreshold:
           type: string
           example: null

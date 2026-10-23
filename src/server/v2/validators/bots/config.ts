@@ -854,6 +854,27 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: [SessionRuleEnum.in, SessionRuleEnum.out],
   },
+  sessionStart: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.canBeEmptyString,
+    ],
+  },
+  sessionEnd: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.canBeEmptyString,
+    ],
+  },
+  sessionTimezone: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.canBeEmptyString,
+    ],
+  },
   lwThreshold: {
     required: false,
     validators: [
