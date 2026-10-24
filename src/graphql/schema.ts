@@ -3503,6 +3503,10 @@ export const BotSchema = /* GraphQL */ `
     lwThreshold: StringOrNumber
     lwValue: StringOrNumber
     lwCondition: String
+    oteLeftBars: StringOrNumber
+    oteMinLegSize: StringOrNumber
+    oteLevel: StringOrNumber
+    oteLeg: String
   }
   enum MAEnum {
     sma
@@ -5170,6 +5174,7 @@ export const BotSchema = /* GraphQL */ `
     OBFVG
     LW
     SESSION
+    OTE
   }
   enum BBCrossingEnum {
     middle
@@ -5302,6 +5307,10 @@ export const BotSchema = /* GraphQL */ `
     lwThreshold: StringOrNumber
     lwValue: StringOrNumber
     lwCondition: String
+    oteLeftBars: StringOrNumber
+    oteMinLegSize: StringOrNumber
+    oteLevel: StringOrNumber
+    oteLeg: String
   }
   enum IndicatorSection {
     sl

@@ -4,6 +4,7 @@ import {
   BotStartTypeEnum,
   BotStatusEnum,
   LWConditionEnum,
+  OTELegEnum,
   CloseConditionEnum,
   CloseDCATypeEnum,
   BaseFundingEnum,
@@ -899,6 +900,33 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(LWConditionEnum),
+  },
+  oteLeftBars: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+  },
+  oteMinLegSize: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+    ],
+  },
+  oteLevel: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBeNonNegative,
+    ],
+  },
+  oteLeg: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(OTELegEnum),
   },
   percentile: {
     required: false,

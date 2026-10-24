@@ -3754,6 +3754,7 @@ components:
             - OBFVG
             - SESSION
             - LW
+            - OTE
           example: RSI
         indicatorLength:
           type: number
@@ -4421,6 +4422,25 @@ components:
           enum:
             - onStart
             - during
+        oteLeftBars:
+          type: string
+          description: OTE Levels — bars to the left a swing high/low must dominate (pivots confirm one bar later). Default 10.
+          example: '10'
+        oteMinLegSize:
+          type: string
+          description: OTE Levels — minimum leg size, in percent of the leg's low. Default 1.
+          example: '1'
+        oteLevel:
+          type: string
+          description: OTE Levels — retracement level of the latest leg the close is compared with (indicatorCondition cd/cu/gt/lt). 0 = the leg's end, 1 = its origin, 0.5 = equilibrium, 0.618–0.79 = OTE zone. Default 0.705.
+          example: '0.705'
+        oteLeg:
+          type: string
+          description: OTE Levels — which leg direction is read. Bullish = swing low up to swing high.
+          enum:
+            - bullish
+            - bearish
+            - any
       description: SettingsIndicators configuration
     UpdateComboBotInput:
       type: object

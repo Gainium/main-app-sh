@@ -115,6 +115,7 @@ import {
   LWValueEnum,
   RRSlTypeEnum,
   LWConditionEnum,
+  OTELegEnum,
   StreamWatchdogConfigTypeEnum,
   StreamWatchdogConfigStatusEnum,
 } from '../../types'
@@ -1424,6 +1425,10 @@ const indicatorsSettings = new Schema({
   lwMaxDuration: Schema.Types.Mixed,
   lwValue: { type: String, enum: LWValueEnum },
   lwCondition: { type: String, enum: LWConditionEnum },
+  oteLeftBars: Schema.Types.Mixed,
+  oteMinLegSize: Schema.Types.Mixed,
+  oteLevel: Schema.Types.Mixed,
+  oteLeg: { type: String, enum: OTELegEnum },
 })
 
 const multiTP = new Schema({

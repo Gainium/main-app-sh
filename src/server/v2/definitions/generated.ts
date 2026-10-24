@@ -170,6 +170,7 @@ export const indicatorCoreFieldDefinitions: FieldDefinition[] = [
       'OBFVG',
       'SESSION',
       'LW',
+      'OTE',
     ],
   },
   {
@@ -3595,6 +3596,80 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       uuid: '<indicator-uuid>',
     },
   },
+  {
+    type: 'OTE',
+    name: 'Discount/Premium OTE Levels',
+    description:
+      "Tracks the latest valid price leg between a swing low and a swing high (oteLeftBars bars to the left, confirmed one bar later) that is at least oteMinLegSize percent long, and compares the close with one Fibonacci retracement level of it (oteLevel: 0 = the leg's end, 1 = its origin, 0.5 = equilibrium, 0.618-0.79 = the optimal trade entry zone). oteLeg picks bullish legs (swing low up to swing high), bearish legs or any. indicatorCondition: cd/cu = the close crossed the level on the same leg, gt/lt = the close is above/below it. A long entry in the OTE zone of an up-move is oteLeg bullish, oteLevel 0.705, indicatorCondition cd.",
+    coreFields: indicatorCoreFieldDefinitions,
+    typeSpecificFields: [
+      {
+        name: 'oteLeftBars',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+      },
+      {
+        name: 'oteMinLegSize',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive'],
+      },
+      {
+        name: 'oteLevel',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBeNonNegative'],
+      },
+      {
+        name: 'oteLeg',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['bullish', 'bearish', 'any'],
+      },
+      {
+        name: 'section',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['tp', 'sl', 'dca', 'controller'],
+      },
+      {
+        name: 'minPercFromLast',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber'],
+      },
+      {
+        name: 'keepConditionBars',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber', 'mustBeInteger'],
+      },
+    ],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'OTE',
+      indicatorLength: 1,
+      indicatorValue: '0',
+      indicatorCondition: 'cd',
+      indicatorInterval: '1h',
+      oteLeftBars: 10,
+      oteMinLegSize: 1,
+      oteLevel: 0.705,
+      oteLeg: 'bullish',
+      indicatorAction: 'startDeal',
+      groupId: '<group-uuid>',
+      uuid: '<indicator-uuid>',
+    },
+  },
 ]
 
 // -----------------------------------------------------------------------
@@ -5044,8 +5119,8 @@ export const dcaBotSchemaDefinition: BotSchemaDefinition = {
           type: 'number',
           required: true,
           validators: ['mustBeNumber', 'mustBePositive'],
-          default: 1791820800000,
-          example: 1791820800000,
+          default: 1792857600000,
+          example: 1792857600000,
         },
         {
           name: 'hodlHourly',

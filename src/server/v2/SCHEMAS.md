@@ -1813,7 +1813,7 @@ SettingsIndicators configuration
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|BullBear|UO|IC|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW` | No | Bot or indicator type |
+| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|BullBear|UO|IC|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
 | `indicatorValue2` | string | No | Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile. |
@@ -1919,6 +1919,10 @@ SettingsIndicators configuration
 | `lwMaxDuration` | string | No |  |
 | `lwValue` | enum: `top|bottom|any` | No |  |
 | `lwCondition` | enum: `onStart|during` | No |  |
+| `oteLeftBars` | string | No | OTE Levels — bars to the left a swing high/low must dominate (pivots confirm one bar later). Default 10. |
+| `oteMinLegSize` | string | No | OTE Levels — minimum leg size, in percent of the leg's low. Default 1. |
+| `oteLevel` | string | No | OTE Levels — retracement level of the latest leg the close is compared with (indicatorCondition cd/cu/gt/lt). 0 = the leg's end, 1 = its origin, 0.5 = equilibrium, 0.618–0.79 = OTE zone. Default 0.705. |
+| `oteLeg` | enum: `bullish|bearish|any` | No | OTE Levels — which leg direction is read. Bullish = swing low up to swing high. |
 
 ### Example
 
@@ -2029,7 +2033,11 @@ SettingsIndicators configuration
   "lwThreshold": "example-string",
   "lwMaxDuration": "example-string",
   "lwValue": "top",
-  "lwCondition": "onStart"
+  "lwCondition": "onStart",
+  "oteLeftBars": "10",
+  "oteMinLegSize": "1",
+  "oteLevel": "0.705",
+  "oteLeg": "bullish"
 }
 ```
 

@@ -130,6 +130,28 @@ describe('spec 126 — REST bot update replaces indicators', () => {
         errorsOf(r).filter(([, m]) => m.includes('lwCondition')),
       ).to.deep.equal([])
     })
+    it('accepts the OTE Levels fields and rejects an unknown leg', () => {
+      const update = (oteLeg: string) =>
+        applyIndicatorSettingsUpdate(
+          { ...tiBot(), startCondition: StartConditionEnum.ti },
+          {
+            indicators: [
+              {
+                ...rsi('ote'),
+                type: IndicatorEnum.ote,
+                oteLeftBars: '10',
+                oteMinLegSize: '1.5',
+                oteLevel: '0.705',
+                oteLeg,
+              } as unknown as SettingsIndicators,
+            ],
+          },
+        )
+      const oteErrors = (r: ReturnType<typeof update>) =>
+        errorsOf(r).filter(([f]) => f.includes('ote'))
+      expect(oteErrors(update('bullish'))).to.deep.equal([])
+      expect(oteErrors(update('sideways')).length).to.equal(1)
+    })
   })
 
   describe('§2.4 round trip', () => {

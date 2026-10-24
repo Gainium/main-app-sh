@@ -75,6 +75,7 @@ export const INDICATOR_CONDITION_KINDS: Record<
   [IndicatorEnum.obfvg]: { source: 'room' },
   [IndicatorEnum.session]: { source: 'clock' },
   [IndicatorEnum.lw]: { source: 'room' },
+  [IndicatorEnum.ote]: { source: 'room' },
 }
 
 /** Every type `evaluateIndicatorCondition` evaluates from room bars. */
@@ -95,6 +96,7 @@ const OWN_RULE_TYPES = [
   IndicatorEnum.obfvg,
   IndicatorEnum.pc,
   IndicatorEnum.lw,
+  IndicatorEnum.ote,
   IndicatorEnum.st,
   IndicatorEnum.div,
   IndicatorEnum.qfl,

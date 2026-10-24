@@ -20,7 +20,12 @@
  *    consumed.
  */
 import { gt, lt, lte, gte, eq } from '@gainium/indicators'
-import type { OBFVGResult, LongWickResult } from '@gainium/indicators'
+import { oteCondition } from '@gainium/indicators'
+import type {
+  OBFVGResult,
+  LongWickResult,
+  OTEResult,
+} from '@gainium/indicators'
 import type {
   DIVResult,
   PCResult,
@@ -156,6 +161,8 @@ export function evaluateIndicatorCondition(
     obfvgValue,
     lwValue,
     lwCondition,
+    oteLevel,
+    oteLeg,
   } = find
   const uuid = find.uuid
   const { symbol, showLog } = ctx
@@ -315,6 +322,15 @@ export function evaluateIndicatorCondition(
             ? !isNaN(last.bear)
             : isNaN(prev.bear) && !isNaN(last.bear)))
     }
+  } else if (type === IndicatorEnum.ote) {
+    // the decision lives in @gainium/indicators so the backtester, which
+    // calls the same function, fires on the same bars
+    const [ld, pd] = sortedByTime
+    action = oteCondition(ld?.value as OTEResult, pd?.value as OTEResult, {
+      level: +(oteLevel || 0.705),
+      leg: oteLeg,
+      condition: indicatorCondition,
+    })
   } else if (type === IndicatorEnum.st) {
     const [ld, pd] = sortedByTime
     const lastData = ld?.value as SuperTrendResult

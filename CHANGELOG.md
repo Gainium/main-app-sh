@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.112.0] - 2026-10-24
+
+### Added
+
+- Discount / Premium OTE Levels indicator (`OTE`): tracks the latest valid leg between a swing low and a swing high (`oteLeftBars`, `oteMinLegSize` in % of the leg's low) and compares the close with one retracement level of it (`oteLevel`, default 0.705) for bullish, bearish or any legs (`oteLeg`), with `indicatorCondition` crossing down/up, greater or lower than. The decision is `@gainium/indicators`' `oteCondition`, the same one backtests use. Accepted by GraphQL, the v2 API (validators, defaults, OpenAPI, indicator definitions) and stored on the bot.
+
 ## [1.111.1] - 2026-10-24
 
 ### Fixed

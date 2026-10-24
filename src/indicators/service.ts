@@ -50,6 +50,7 @@ import type {
   DonchianChannels,
   OBFVG,
   LongWick,
+  OTELevels,
 } from '@gainium/indicators'
 import { v4 } from 'uuid'
 import {
@@ -318,6 +319,7 @@ class InternalIndicator {
     | DonchianChannels
     | OBFVG
     | LongWick
+    | OTELevels
   private data: IndicatorHistory[]
   private lastPrice = 0
   private subscribers: IndicatorSubscribers[]

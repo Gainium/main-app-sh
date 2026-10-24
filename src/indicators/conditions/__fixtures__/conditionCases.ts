@@ -34,6 +34,7 @@ import {
   OBFVGValueEnum,
   LWValueEnum,
   LWConditionEnum,
+  OTELegEnum,
   STConditionEnum,
   DivTypeEnum,
   TradingviewAnalysisSignalEnum,
@@ -947,6 +948,38 @@ export function conditionCases(): ConditionCase[] {
       ] as unknown as IndicatorHistory[],
   )
 
+  // ── OTE levels (appended; leg 100 -> 120, its 0.5 level is 110) ─────────
+  const oteBar = (price: number | null, direction: number | null, high = 120) =>
+    ({ high, low: 100, direction, price }) as unknown
+  for (const oteLeg of [
+    OTELegEnum.bullish,
+    OTELegEnum.bearish,
+    OTELegEnum.any,
+    undefined,
+  ])
+    for (const indicatorCondition of [C.cd, C.cu, C.gt, C.lt, undefined])
+      for (const oteLevel of ['0.5', undefined])
+        for (const [pp, lp, dir, prevHigh] of [
+          [112, 108, 1, 120],
+          [108, 112, 1, 120],
+          [112, 110, 1, 120],
+          [108, 110, -1, 120],
+          [112, 108, 1, 130],
+          [112, 108, null, 120],
+          [112, null, 1, 120],
+        ] as [number, number | null, number | null, number][])
+          for (const layout of ['two', 'one'] as Layout[])
+            push(
+              `OTE|${fmt(oteLeg)}|${fmt(indicatorCondition)}|${fmt(oteLevel)}|${pp}>${fmt(lp)}|${fmt(dir)}|${prevHigh}|${layout}`,
+              base(IndicatorEnum.ote, { oteLeg, indicatorCondition, oteLevel }),
+              series(
+                IndicatorEnum.ote,
+                oteBar(pp, dir, prevHigh),
+                oteBar(lp, dir),
+                layout,
+              ),
+            )
+
   return out
 }
 
@@ -1019,6 +1052,8 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
     kcRangeLength: 25,
     lwThreshold: '3',
     lwMaxDuration: '500',
+    oteLeftBars: '7',
+    oteMinLegSize: '2.5',
     percentile: true,
     percentileLookback: 100,
     percentilePercentage: 70,

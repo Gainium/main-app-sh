@@ -67,6 +67,7 @@ import {
   SessionRuleEnum,
   LWValueEnum,
   LWConditionEnum,
+  OTELegEnum,
 } from '../../../types'
 
 export const DCA_FORM_DEFAULTS: DCABotSettings = {
@@ -630,6 +631,15 @@ export const indicatorConfigDefaults: {
     lwMaxDuration: '1000',
     lwValue: LWValueEnum.any,
     lwCondition: LWConditionEnum.during,
+    ...base,
+  },
+  [IndicatorEnum.ote]: {
+    indicatorLength: 20,
+    indicatorValue: '0',
+    oteLeftBars: '10',
+    oteMinLegSize: '1',
+    oteLevel: '0.705',
+    oteLeg: OTELegEnum.bullish,
     ...base,
   },
   [IndicatorEnum.session]: {
