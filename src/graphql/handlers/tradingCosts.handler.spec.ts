@@ -433,7 +433,9 @@ describe('TradingCostsService', () => {
         exchange: 'binance',
         symbol: 'BNBUSDT',
         interval: '1m',
-        from: 1_792_674_060_000,
+        // the fill's whole UTC day
+        from: 1_792_627_200_000,
+        to: 1_792_627_200_000 + 86_400_000 - 1,
       })
       // a venue-reported fee: no stored-rate read
       expect(calls.feeDb).to.equal(undefined)

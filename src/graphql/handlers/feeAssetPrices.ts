@@ -10,10 +10,12 @@
  *
  * Cost bounds:
  *   - pairs: one `pairs` read per (venue, base asset), cached for hours;
- *   - candles: the minutes asked for in one call are grouped per venue pair
- *     into windows (`WINDOW_GAP_MS`, `WINDOW_MAX_MINUTES`), at most
- *     `MAX_WINDOWS_PER_CALL` windows per call and `MAX_IN_FLIGHT` source calls
- *     at a time across the process. Minutes beyond the cap stay unknown for
+ *   - candles: one read per (venue pair, UTC day) any minute of that day is
+ *     needed for — the whole day's 1440 one-minute candles, one archive page —
+ *     so a bot's or an account's history costs one read per trading day per
+ *     pair, however its fills are spread inside the day. At most
+ *     `MAX_WINDOWS_PER_CALL` day reads per call and `MAX_IN_FLIGHT` source
+ *     calls at a time across the process. Days beyond the cap stay unknown for
  *     that call and are not remembered as missing, so a later call reads them;
  *   - every minute read is cached (history does not change): a price for a
  *     day, a confirmed miss for minutes.
@@ -51,9 +53,8 @@ export type FeePriceRequest = {
   at: number
 }
 
-export const WINDOW_GAP_MS = 60 * MINUTE_MS
-export const WINDOW_MAX_MINUTES = 1_000
-export const MAX_WINDOWS_PER_CALL = 60
+export const DAY_MS = 24 * 60 * MINUTE_MS
+export const MAX_WINDOWS_PER_CALL = 120
 export const MAX_IN_FLIGHT = 4
 
 const PAIRS_TTL_MS = 6 * 60 * 60_000
@@ -193,29 +194,25 @@ export class FeeAssetPrices {
   }
 
   private async readCandles(need: Map<string, Set<number>>) {
-    const windows: { venue: string; pair: string; minutes: number[] }[] = []
+    const windows: ({ venue: string; pair: string } & FeeWindow)[] = []
     for (const [k, set] of need) {
       const [venue, pair] = [
         k.slice(0, k.indexOf('|')),
         k.slice(k.indexOf('|') + 1),
       ]
-      for (const w of windowsOf([...set]))
-        windows.push({ venue, pair, minutes: w })
+      for (const w of windowsOf([...set], +new Date()))
+        windows.push({ venue, pair, ...w })
     }
     const run = windows.slice(0, MAX_WINDOWS_PER_CALL)
     if (windows.length > run.length) {
       logger.info(
-        `${logPrefix} ${windows.length - run.length} candle window(s) over the per-call cap left unknown`,
+        `${logPrefix} ${windows.length - run.length} candle day(s) over the per-call cap left unknown`,
       )
     }
     await Promise.all(run.map((w) => this.readWindow(w)))
   }
 
-  private async readWindow(w: {
-    venue: string
-    pair: string
-    minutes: number[]
-  }) {
+  private async readWindow(w: { venue: string; pair: string } & FeeWindow) {
     const source = this.source
     if (!source) return
     await this.acquire()
@@ -225,8 +222,8 @@ export class FeeAssetPrices {
         exchange: w.venue,
         symbol: w.pair,
         interval: FEE_PRICE_INTERVAL,
-        from: w.minutes[0],
-        to: w.minutes[w.minutes.length - 1] + MINUTE_MS - 1,
+        from: w.from,
+        to: w.to,
       })
     } catch (e) {
       logger.warn(
@@ -318,28 +315,28 @@ export class FeeAssetPrices {
   }
 }
 
-/**
- * Sorted minutes grouped into source windows: a new window starts after a
- * gap longer than `WINDOW_GAP_MS` or once a window spans
- * `WINDOW_MAX_MINUTES` minutes.
- */
-export function windowsOf(minutes: number[]): number[][] {
-  const sorted = [...new Set(minutes)].sort((a, b) => a - b)
-  const out: number[][] = []
-  let cur: number[] = []
-  for (const m of sorted) {
-    if (
-      cur.length &&
-      (m - cur[cur.length - 1] > WINDOW_GAP_MS ||
-        m - cur[0] >= WINDOW_MAX_MINUTES * MINUTE_MS)
-    ) {
-      out.push(cur)
-      cur = []
-    }
-    cur.push(m)
+/** One source read: a whole UTC day (cut at `now`), and the minutes wanted from it. */
+export type FeeWindow = { from: number; to: number; minutes: number[] }
+
+/** The needed minutes grouped into one window per UTC day, oldest first. */
+export function windowsOf(minutes: number[], now: number): FeeWindow[] {
+  const byDay = new Map<number, number[]>()
+  for (const m of [...new Set(minutes)].sort((a, b) => a - b)) {
+    const day = Math.floor(m / DAY_MS) * DAY_MS
+    const list = byDay.get(day) ?? []
+    list.push(m)
+    byDay.set(day, list)
   }
-  if (cur.length) out.push(cur)
-  return out
+  return [...byDay.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([day, list]) => ({
+      from: day,
+      to: Math.max(
+        Math.min(day + DAY_MS - 1, now),
+        list[list.length - 1] + MINUTE_MS - 1,
+      ),
+      minutes: list,
+    }))
 }
 
 export const feeAssetPrices = () => FeeAssetPrices.getInstance()

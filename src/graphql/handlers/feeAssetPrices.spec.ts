@@ -18,6 +18,8 @@ const { FeeAssetPrices, MAX_WINDOWS_PER_CALL, priceKey, windowsOf } =
 
 const MIN = 60_000
 const T0 = 1_792_674_060_000 // a minute boundary
+const DAY = 24 * 60 * MIN
+const D0 = Math.floor(T0 / DAY) * DAY // its UTC day
 
 const PAIRS: Record<string, { pair: string; base: string; quote: string }[]> = {
   'binance|BNB': [
@@ -107,13 +109,14 @@ describe('FeeAssetPrices', () => {
         exchange: 'binance',
         symbol: 'BNBUSDT',
         interval: '1m',
-        from: T0 + 2 * MIN,
-        to: T0 + 3 * MIN - 1,
+        // the whole UTC day, one read
+        from: D0,
+        to: D0 + DAY - 1,
       },
     ])
   })
 
-  it('one tick of requests is one window per pair; repeats are cached', async () => {
+  it('one tick of requests is one day read per pair; repeats are cached', async () => {
     const svc = fresh()
     const reqs = [0, 1, 5].map((i) => ({
       venue: 'binance',
@@ -124,7 +127,7 @@ describe('FeeAssetPrices', () => {
     const ps = await Promise.all(reqs.map((r) => svc.priceOne(r)))
     expect(ps).to.deep.equal([600, 601, 605])
     expect(sourceCalls).to.have.length(1)
-    expect(sourceCalls[0]).to.deep.include({ from: T0, to: T0 + 6 * MIN - 1 })
+    expect(sourceCalls[0]).to.deep.include({ from: D0, to: D0 + DAY - 1 })
     expect(pairReads).to.have.length(2) // BNB and USDT as bases, once each
     await svc.prices(reqs)
     expect(sourceCalls).to.have.length(1)
@@ -174,7 +177,7 @@ describe('FeeAssetPrices', () => {
       venue: 'binance',
       asset: 'BNB',
       quote: 'USDT',
-      at: T0 + i * 2 * 60 * MIN, // two hours apart: one window each
+      at: T0 + i * DAY, // one day apart: one day read each
     }))
     const first = await svc.prices(reqs)
     expect(sourceCalls).to.have.length(MAX_WINDOWS_PER_CALL)
@@ -185,15 +188,32 @@ describe('FeeAssetPrices', () => {
     for (const r of unknown) expect(second.get(priceKey(r))).to.be.a('number')
   })
 
+  it('fills spread over a day cost one read, not one per gap', async () => {
+    const svc = fresh()
+    const spread = [0, 90, 300, 700].map((h) => ({
+      venue: 'binance',
+      asset: 'BNB',
+      quote: 'USDT',
+      at: D0 + h * MIN,
+    }))
+    await svc.prices(spread)
+    expect(sourceCalls).to.have.length(1)
+  })
+
   describe('windowsOf', () => {
-    it('splits on gaps over an hour and on a 1000-minute span', () => {
-      expect(windowsOf([T0, T0 + 60 * MIN, T0 + 122 * MIN])).to.deep.equal([
-        [T0, T0 + 60 * MIN],
-        [T0 + 122 * MIN],
+    it('one window per UTC day, cut at now', () => {
+      const w = windowsOf(
+        [D0 + MIN, D0 + 1439 * MIN, D0 + DAY + 5 * MIN],
+        D0 + DAY + 10 * MIN,
+      )
+      expect(w).to.deep.equal([
+        { from: D0, to: D0 + DAY - 1, minutes: [D0 + MIN, D0 + 1439 * MIN] },
+        {
+          from: D0 + DAY,
+          to: D0 + DAY + 10 * MIN,
+          minutes: [D0 + DAY + 5 * MIN],
+        },
       ])
-      const dense = Array.from({ length: 1500 }, (_, i) => T0 + i * MIN)
-      const w = windowsOf(dense)
-      expect(w.map((x: number[]) => x.length)).to.deep.equal([1000, 500])
     })
   })
 })

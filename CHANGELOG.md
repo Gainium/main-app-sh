@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.115.1] - 2026-10-24
+
+### Fixed
+
+- Valuing fees paid in another token read candles one window per gap between fills, so a long bot or account history hit the per-call cap and stayed partial. Prices are now read once per pair and trading day, so a history costs one read per day per pair.
+
 ## [1.115.0] - 2026-10-24
 
 ### Added
