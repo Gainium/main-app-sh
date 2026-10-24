@@ -3724,9 +3724,7 @@ components:
             - AO
             - StochRSI
             - WR
-            - BullBear
             - UO
-            - IC
             - TV
             - MA
             - SR

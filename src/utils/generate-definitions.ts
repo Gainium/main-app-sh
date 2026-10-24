@@ -32,8 +32,6 @@ import {
   ValidatorsEnum,
   type NestedFieldConfig,
 } from '../server/v2/validators/bots/config'
-import { INDICATOR_CONDITION_KINDS } from '../indicators/conditions/catalog'
-import type { IndicatorEnum } from '../../types'
 import {
   DCA_FORM_DEFAULTS,
   COMBO_FORM_DEFAULTS,
@@ -879,15 +877,11 @@ const FIELD_NOTES: Record<string, { note?: string; example?: unknown }> = {
 
 // Import IndicatorEnum values at runtime from types
 // We resolve them from the compiled validator config where they already appear
-// as enum values, keeping only the types the engine can evaluate as a
-// condition: a type the condition catalog marks `source: 'none'` is never
-// advertised by discovery, so no API client is told a bot can run it.
+// as enum values.
 function getIndicatorEnumValues(): string[] {
-  // Read from the indicatorCoreConfig's 'type' field which has enum: Object.values(IndicatorEnum)
-  return ((indicatorCoreConfig['type']?.enum as string[]) ?? []).filter(
-    (type) =>
-      INDICATOR_CONDITION_KINDS[type as IndicatorEnum]?.source !== 'none',
-  )
+  // Read from the indicatorCoreConfig's 'type' field: CONDITION_INDICATOR_TYPES,
+  // the types a bot can run, so discovery never advertises any other.
+  return (indicatorCoreConfig['type']?.enum as string[]) ?? []
 }
 
 const INDICATOR_META: Record<
@@ -2086,11 +2080,7 @@ function run() {
     buildField(
       name,
       indAstProps.get(name),
-      {
-        ...indicatorCoreConfig[name],
-        ...(name === 'type' ? { enum: indicatorTypes } : {}),
-        required: true,
-      },
+      { ...indicatorCoreConfig[name], required: true },
       undefined,
       FIELD_NOTES,
     ),

@@ -61,6 +61,7 @@ import {
   SessionRuleEnum,
   SessionLevelEnum,
 } from '../../../../../types'
+import { CONDITION_INDICATOR_TYPES } from '../../../../indicators/conditions/catalog'
 import {
   COMBO_FORM_DEFAULTS,
   DCA_FORM_DEFAULTS,
@@ -207,7 +208,7 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
   type: {
     required: true,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(IndicatorEnum),
+    enum: CONDITION_INDICATOR_TYPES,
   },
   indicatorLength: {
     required: true,

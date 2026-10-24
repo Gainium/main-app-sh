@@ -83,6 +83,15 @@ export const INDICATOR_CONDITION_KINDS: Record<
   [IndicatorEnum.ote]: { source: 'room' },
 }
 
+/**
+ * Every type a bot can run as a condition, in `IndicatorEnum` order. The
+ * public API accepts and advertises only these: a `source: 'none'` type would
+ * be stored as a condition that never signals.
+ */
+export const CONDITION_INDICATOR_TYPES: IndicatorEnum[] = Object.values(
+  IndicatorEnum,
+).filter((t) => INDICATOR_CONDITION_KINDS[t].source !== 'none')
+
 /** Every type `evaluateIndicatorCondition` evaluates from room bars. */
 export const ROOM_CONDITION_TYPES: IndicatorEnum[] = (
   Object.keys(INDICATOR_CONDITION_KINDS) as IndicatorEnum[]

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.115.3] - 2026-10-24
+
+### Changed
+
+- The public API (v1 and v2 bot create, update and clone) rejects indicator types bots cannot evaluate as a condition — Ichimoku Cloud (`IC`) and Bull Bear Power (`BullBear`) — instead of storing a condition that never signals. They are also gone from the OpenAPI document, the v1 Swagger document and `SCHEMAS.md`. The accepted list is `CONDITION_INDICATOR_TYPES`, derived from the condition catalog, and drives validation, discovery and the OpenAPI generator. A bot that already has one of them still reads, and updates that do not resend its indicators still apply.
+
 ## [1.115.2] - 2026-10-24
 
 ### Fixed

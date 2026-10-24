@@ -16,6 +16,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as yaml from 'js-yaml'
 import { findEnumExampleMismatches } from './openapiEnumExamples'
+import { IndicatorEnum } from '../../types'
+import { CONDITION_INDICATOR_TYPES } from '../indicators/conditions/catalog'
 
 interface EnumInfo {
   name: string
@@ -943,10 +945,19 @@ const fieldMetadata: Record<
 // things on different schemas (the flat map above is keyed by field name only).
 const schemaFieldMetadata: Record<
   string,
-  Record<string, Partial<{ description: string; example: any }>>
+  Record<
+    string,
+    Partial<{ description: string; example: any; excludeEnum: string[] }>
+  >
 > = {
   SettingsIndicators: {
-    type: { example: 'RSI' },
+    // The validator accepts only the types a bot can run as a condition.
+    type: {
+      example: 'RSI',
+      excludeEnum: Object.values(IndicatorEnum).filter(
+        (t) => !CONDITION_INDICATOR_TYPES.includes(t),
+      ),
+    },
   },
 }
 

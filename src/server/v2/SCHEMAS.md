@@ -1813,7 +1813,7 @@ SettingsIndicators configuration
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|BullBear|UO|IC|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE` | No | Bot or indicator type |
+| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|UO|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
 | `indicatorValue2` | string | No | Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile. |
