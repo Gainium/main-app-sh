@@ -16,6 +16,17 @@
  *     `botId` (`botId_1`) or `userId` (`userId_1_status_1_createTime_-1`,
  *     `userId_1`); historical deals without recorded facts read the bot's
  *     MARKET orders once by `botId` (`botId_1`), cached for hours.
+ *
+ * Fees charged in a third asset (an exchange token) are valued from that
+ * asset's market price at the fill (`feeAssetPrices.ts`), only for deals and
+ * orders on a venue that lets fees be paid in its token
+ * (`FEE_TOKEN_VENUES`): per order, through the per-tick price batch; per
+ * deal, from the same `orders` read by `dealId` (now also for deals whose
+ * close-time facts are recorded); per bot / account, from one read of the
+ * bot's fee-bearing FILLED deal orders by `botId` (`botId_1`). Those fees
+ * are reported beside the breakdown (`unbookedFees*`) and never change
+ * `feesQuote`, `grossQuote` or `netQuote`: the deal's books did not deduct
+ * them.
  */
 import {
   BotType,
@@ -35,6 +46,17 @@ import {
 import { zeroFeeApplies } from '../../bot/zeroFee'
 import logger from '../../utils/logger'
 import {
+  convertedFeeQuote,
+  feeLegsByPair,
+  feePriceVenueOf,
+  feeTimeOf,
+} from '../../bot/feeAssetPrice'
+import {
+  type FeePriceRequest,
+  feeAssetPrices,
+  priceKey,
+} from './feeAssetPrices'
+import {
   type CostDeal,
   type DealCostBreakdown,
   type DealSlippageFacts,
@@ -43,16 +65,22 @@ import {
   type SlippageBotContext,
   type SlippageOrder,
   type TradingCostsRow,
+  type UnbookedFees,
   dealCostBreakdown,
   dealSlippage,
   feesEstimatedOf,
+  fillOf,
   isMarketOrder,
+  isUnbookedFeeOrder,
   needsBotContext,
   needsStoredFeeRate,
   orderFeeQuote,
   orderSlippage,
   slippageContextFromBot,
   sumTradingCosts,
+  sumUnbookedFees,
+  usdProfitFeeDeduction,
+  withUnbookedFees,
 } from '../../bot/orderSlippage'
 
 const logPrefix = 'TradingCosts |'
@@ -97,6 +125,12 @@ const ORDER_PROJECTION = {
   dealId: 1,
   feePaid: 1,
   feeBreakdown: 1,
+  feeAsset: 1,
+  feeSide: 1,
+  baseAsset: 1,
+  quoteAsset: 1,
+  transactTime: 1,
+  updateTime: 1,
 }
 
 const BOT_PROJECTION = {
@@ -123,8 +157,11 @@ const DEAL_PROJECTION = {
   'settings.futures': 1,
   'settings.coinm': 1,
   'symbol.quoteAsset': 1,
+  'symbol.baseAsset': 1,
   slippage: 1,
   feesEstimated: 1,
+  flags: 1,
+  feeByAsset: 1,
 }
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i
@@ -136,10 +173,18 @@ type DealFacts = {
   ordersUnavailable?: boolean
 }
 
+/** Unbooked fees by dealId for one bot; `complete` = nothing left unpriced. */
+type BotUnbooked = { byDeal: Map<string, UnbookedFees>; complete: boolean }
+
+const UNBOOKED_COMPLETE_TTL_MS = 6 * 60 * 60_000
+const UNBOOKED_PARTIAL_TTL_MS = 5 * 60_000
+
 type DealDoc = CostDeal & {
   _id?: unknown
   botId?: string
-  symbol?: { quoteAsset?: string }
+  symbol?: { quoteAsset?: string; baseAsset?: string }
+  flags?: string[]
+  feeByAsset?: { asset?: string; total?: number; totalUsd?: number }[]
   slippage?: DealSlippageFacts
   feesEstimated?: boolean
 }
@@ -247,6 +292,14 @@ export class TradingCostsService {
     null,
   )
   private dealMemo = new WeakMap<object, Promise<DealFacts>>()
+  private unbookedMemo = new WeakMap<object, Promise<UnbookedFees | null>>()
+  private closedUnbookedCache = new TtlCache<UnbookedFees | null>(
+    CLOSED_DEAL_TTL_MS,
+  )
+  private botUnbookedCache = new Map<
+    string,
+    { at: number; ttl: number; value: Promise<BotUnbooked> }
+  >()
 
   private botContexts = new KeyBatcher<SlippageBotContext | null>(
     (ids) => this.readBotContexts(ids),
@@ -291,10 +344,71 @@ export class TradingCostsService {
         needsStoredFeeRate(order)
           ? this.storedFeeRate(order)
           : Promise.resolve(null)
-      ).then((rate) => orderFeeQuote(order, rate))
+      )
+        .then((rate) => orderFeeQuote(order, rate))
+        .then(async (fee) => {
+          // A venue-reported fee with no pair-side value: an off-pair leg.
+          if (fee.feeQuote !== null || fee.feeEstimated !== false) return fee
+          const [converted] = await this.offPairFeesQuote([order])
+          return converted === null
+            ? fee
+            : { feeQuote: converted, feeEstimated: false, feeConverted: true }
+        })
       this.feeMemo.set(order, memo)
     }
     return memo
+  }
+
+  /**
+   * Each order's whole fee in quote, valuing its off-pair legs at the fee
+   * asset's price in the minute of the fill. Null per order where any leg
+   * cannot be valued, or the order has no off-pair leg. One price batch for
+   * all of them.
+   */
+  private async offPairFeesQuote(
+    orders: FeeOrder[],
+  ): Promise<(number | null)[]> {
+    const plans = orders.map((o) => {
+      const venue = feePriceVenueOf(o.exchange)
+      const fill = fillOf(o)
+      const at = feeTimeOf(o)
+      const quote = o.quoteAsset ? `${o.quoteAsset}` : ''
+      if (!venue || !fill || at === null || !quote) return null
+      const legs = feeLegsByPair(o)
+      if (!legs.offPair.length) return null
+      const reqs: FeePriceRequest[] = legs.offPair.map((l) => ({
+        venue,
+        asset: l.asset,
+        quote,
+        at,
+      }))
+      return { o, fill, reqs }
+    })
+    const reqs = plans.flatMap((p) => p?.reqs ?? [])
+    if (!reqs.length) return orders.map(() => null)
+    const prices = feeAssetPrices().hasSource()
+      ? await feeAssetPrices().prices(reqs)
+      : new Map<string, number | null>()
+    return plans.map((p) => {
+      if (!p) return null
+      return convertedFeeQuote(p.o, p.fill.price, (asset) => {
+        const r = p.reqs.find((x) => x.asset === asset)
+        return r ? prices.get(priceKey(r)) : null
+      })
+    })
+  }
+
+  /** Off-pair fees of a deal's orders that its books record as 0. */
+  private async unbookedOf(orders: FeeOrder[]): Promise<UnbookedFees | null> {
+    const rows = orders.filter((o) => isUnbookedFeeOrder(o))
+    if (!rows.length) return null
+    const values = await this.offPairFeesQuote(rows)
+    return sumUnbookedFees(
+      rows.map((o, i) => ({
+        assets: feeLegsByPair(o).offPair.map((l) => l.asset),
+        feeQuote: values[i],
+      })),
+    )
   }
 
   private async storedFeeRate(order: FeeOrder): Promise<FeeRate | null> {
@@ -433,9 +547,45 @@ export class TradingCostsService {
     }
     // A deal whose orders cannot be read still has its booked result; it is
     // decomposed with no slippage and its fee figure marked as estimated.
-    return this.dealFacts(deal).then((f) =>
-      f ? dealCostBreakdown(deal, f.slippage, f.feesEstimated) : null,
+    return Promise.all([this.dealFacts(deal), this.dealUnbooked(deal)]).then(
+      ([f, unbooked]) =>
+        f
+          ? withUnbookedFees(
+              dealCostBreakdown(deal, f.slippage, f.feesEstimated),
+              unbooked,
+              usdProfitFeeDeduction(deal),
+            )
+          : null,
     )
+  }
+
+  /**
+   * The deal's off-pair fees. Only for a closed deal on a fee-token venue;
+   * reads the deal's orders through the same per-page batch as the facts.
+   */
+  private dealUnbooked(deal: DealDoc): Promise<UnbookedFees | null> {
+    if (
+      deal.status !== DCADealStatusEnum.closed ||
+      !feePriceVenueOf(deal.exchange)
+    ) {
+      return Promise.resolve(null)
+    }
+    const id = deal._id ? `${deal._id}` : ''
+    if (!id) return Promise.resolve(null)
+    let memo = this.unbookedMemo.get(deal)
+    if (!memo) {
+      const cached = this.closedUnbookedCache.get(id)
+      memo =
+        cached !== undefined
+          ? Promise.resolve(cached)
+          : this.dealOrders.load(id).then(async (orders) => {
+              const u = orders?.length ? await this.unbookedOf(orders) : null
+              if (!u?.partial) this.closedUnbookedCache.set(id, u)
+              return u
+            })
+      this.unbookedMemo.set(deal, memo)
+    }
+    return memo
   }
 
   private dealFacts(deal: DealDoc | null | undefined) {
@@ -658,9 +808,18 @@ export class TradingCostsService {
           feesEstimated: hist.feesEstimated,
         }
       }
+      const unbooked =
+        deal.botId && feePriceVenueOf(deal.exchange)
+          ? ((await this.botUnbooked(deal.botId)).byDeal.get(`${deal._id}`) ??
+            null)
+          : null
       rows.push({
         quoteAsset: deal.symbol?.quoteAsset ?? null,
-        breakdown: dealCostBreakdown(deal, facts.slippage, facts.feesEstimated),
+        breakdown: withUnbookedFees(
+          dealCostBreakdown(deal, facts.slippage, facts.feesEstimated),
+          unbooked,
+          usdProfitFeeDeduction(deal),
+        ),
         reconstructed: !!facts.slippage?.reconstructed,
       })
     }
@@ -685,6 +844,78 @@ export class TradingCostsService {
     })
     this.historicalCache.set(botId, run)
     return run
+  }
+
+  /**
+   * Off-pair fees per deal of a bot, from ONE read of its fee-bearing FILLED
+   * deal orders by `botId`. Cached for hours when every fee was valued, for
+   * minutes when some were not (so the next view values more of them).
+   */
+  private botUnbooked(botId: string): Promise<BotUnbooked> {
+    const hit = this.botUnbookedCache.get(botId)
+    if (hit && +new Date() - hit.at <= hit.ttl) {
+      return hit.value
+    }
+    const entry = {
+      at: +new Date(),
+      ttl: UNBOOKED_PARTIAL_TTL_MS,
+      value: this.readBotUnbooked(botId).catch((e) => {
+        logger.warn(
+          `${logPrefix} unbooked fees for ${botId} failed: ${(e as Error)?.message ?? e}`,
+        )
+        return { byDeal: new Map(), complete: false } as BotUnbooked
+      }),
+    }
+    if (this.botUnbookedCache.size >= CACHE_MAX) this.botUnbookedCache.clear()
+    this.botUnbookedCache.set(botId, entry)
+    void entry.value.then((v) => {
+      if (v.complete) entry.ttl = UNBOOKED_COMPLETE_TTL_MS
+    })
+    return entry.value
+  }
+
+  private async readBotUnbooked(botId: string): Promise<BotUnbooked> {
+    const res = await orderDb.readData(
+      {
+        botId,
+        status: 'FILLED',
+        dealId: { $exists: true },
+        $or: [
+          { feeAsset: { $exists: true } },
+          { 'feeBreakdown.0': { $exists: true } },
+        ],
+      } as never,
+      ORDER_PROJECTION as never,
+      undefined,
+      true,
+    )
+    const byDealOrders = new Map<string, FeeOrder[]>()
+    for (const o of (res.data?.result ?? []) as (FeeOrder & {
+      dealId?: string
+    })[]) {
+      if (!o.dealId || !isUnbookedFeeOrder(o)) continue
+      const list = byDealOrders.get(o.dealId) ?? []
+      list.push(o)
+      byDealOrders.set(o.dealId, list)
+    }
+    const all = [...byDealOrders.values()].flat()
+    const values = await this.offPairFeesQuote(all)
+    const valueOf = new Map(all.map((o, i) => [o, values[i]]))
+    const byDeal = new Map<string, UnbookedFees>()
+    let complete = true
+    for (const [dealId, orders] of byDealOrders) {
+      const u = sumUnbookedFees(
+        orders.map((o) => ({
+          assets: feeLegsByPair(o).offPair.map((l) => l.asset),
+          feeQuote: valueOf.get(o) ?? null,
+        })),
+      )
+      if (u) {
+        byDeal.set(dealId, u)
+        complete = complete && !u.partial
+      }
+    }
+    return { byDeal, complete: complete && res.status === StatusEnum.ok }
   }
 
   private async readHistoricalFacts(botId: string): Promise<HistoricalFacts> {

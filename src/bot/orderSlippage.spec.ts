@@ -21,6 +21,10 @@ import {
   placementStampsOf,
   slippageContextFromBot,
   sumTradingCosts,
+  isUnbookedFeeOrder,
+  sumUnbookedFees,
+  usdProfitFeeDeduction,
+  withUnbookedFees,
   type SlippageBotContext,
 } from './orderSlippage'
 
@@ -786,6 +790,171 @@ describe('orderSlippage', () => {
           rate,
         ),
       ).to.deep.equal({ feeQuote: null, feeEstimated: null })
+    })
+  })
+  describe('fees charged off-pair (unbooked)', () => {
+    const bnb = (over: Record<string, unknown>) =>
+      market({
+        typeOrder: 'dealTP',
+        baseAsset: 'HYPE',
+        quoteAsset: 'USDT',
+        executedQty: '1',
+        cummulativeQuoteQty: '100',
+        feePaid: '0.00001',
+        feeAsset: 'BNB',
+        ...over,
+      })
+    it('a FILLED deal trade charged in a third asset is unbooked', () => {
+      expect(isUnbookedFeeOrder(bnb({}))).to.equal(true)
+      expect(
+        isUnbookedFeeOrder(
+          bnb({
+            feeBreakdown: [
+              { asset: 'BGB', amount: '1' },
+              { asset: 'USDT', amount: '1' },
+            ],
+          }),
+        ),
+      ).to.equal(true)
+    })
+    it('not: on-pair fee, combo grid leg, split / funding rows, cancelled, inverse', () => {
+      expect(isUnbookedFeeOrder(bnb({ feeAsset: 'USDT' }))).to.equal(false)
+      expect(isUnbookedFeeOrder(bnb({ typeOrder: 'dealGrid' }))).to.equal(false)
+      expect(isUnbookedFeeOrder(bnb({ typeOrder: 'split' }))).to.equal(false)
+      expect(isUnbookedFeeOrder(bnb({ typeOrder: 'funding' }))).to.equal(false)
+      expect(isUnbookedFeeOrder(bnb({ status: 'CANCELED' }))).to.equal(false)
+      expect(isUnbookedFeeOrder(bnb({ exchange: 'binanceCoinm' }))).to.equal(
+        false,
+      )
+    })
+    it('sums the valued ones, marks the rest partial, null with none', () => {
+      expect(sumUnbookedFees([])).to.equal(null)
+      expect(
+        sumUnbookedFees([
+          { assets: ['BNB'], feeQuote: 0.01 },
+          { assets: ['BNB'], feeQuote: null },
+          { assets: ['BGB', 'BNB'], feeQuote: 0.02 },
+        ]),
+      ).to.deep.equal({ quote: 0.03, partial: true, assets: ['BGB', 'BNB'] })
+      expect(
+        sumUnbookedFees([{ assets: ['BNB'], feeQuote: null }]),
+      ).to.deep.equal({ quote: null, partial: true, assets: ['BNB'] })
+    })
+    it('rides beside the breakdown and never moves gross / fees / net', () => {
+      const b = dealCostBreakdown(
+        {
+          status: 'closed',
+          profit: { total: 3 },
+          commission: 0.2,
+          settings: { profitCurrency: 'quote' },
+        },
+        { quote: 1, bps: 1, orders: 1, reconstructed: false, notional: 1 },
+        false,
+      )
+      const w = withUnbookedFees(b, {
+        quote: 0.5,
+        partial: false,
+        assets: ['BNB'],
+      })
+      expect(w).to.deep.equal({
+        ...b,
+        unbookedFeesQuote: 0.5,
+        unbookedFeesPartial: false,
+        unbookedFeeAssets: ['BNB'],
+        unbookedFeesInUsdProfit: false,
+        unbookedFeesUsd: null,
+      })
+      expect(withUnbookedFees(b, null)).to.equal(b)
+      const [row] = sumTradingCosts([
+        { quoteAsset: 'USDT', breakdown: w },
+        { quoteAsset: 'USDT', breakdown: b },
+        {
+          quoteAsset: 'USDT',
+          breakdown: withUnbookedFees(b, {
+            quote: null,
+            partial: true,
+            assets: ['BNB'],
+          }),
+        },
+      ])
+      expect(row.unbookedFeesQuote).to.equal(0.5)
+      expect(row.unbookedFeesPartial).to.equal(true)
+      expect(row.unbookedFeesInUsdProfitQuote).to.equal(null)
+      expect(row.netQuote).to.equal(9)
+      expect(row.feesQuote).to.be.closeTo(0.6, 1e-12)
+    })
+  })
+  describe('fee-ledger deals: off-pair fees already inside profit.totalUsd', () => {
+    const ledgerDeal = (over: Record<string, unknown> = {}) => ({
+      flags: ['newMultiTp', 'feeByAsset'],
+      symbol: { baseAsset: 'HYPE', quoteAsset: 'USDT' },
+      feeByAsset: [
+        { asset: 'BNB', total: 0.00002, totalUsd: 0.0146 },
+        { asset: 'USDT', total: 0.1, totalUsd: 0.1 },
+        { asset: 'HYPE', total: 0.001, totalUsd: 0.08 },
+      ],
+      ...over,
+    })
+    it('reads the USD subtracted from the ledger’s off-pair entries only', () => {
+      expect(usdProfitFeeDeduction(ledgerDeal())).to.deep.equal({
+        usd: 0.0146,
+        assets: ['BNB'],
+      })
+    })
+    it('none without the flag, or with only on-pair entries', () => {
+      expect(
+        usdProfitFeeDeduction(ledgerDeal({ flags: ['newMultiTp'] })),
+      ).to.equal(null)
+      expect(
+        usdProfitFeeDeduction(
+          ledgerDeal({
+            feeByAsset: [{ asset: 'USDT', total: 1, totalUsd: 1 }],
+          }),
+        ),
+      ).to.equal(null)
+      expect(usdProfitFeeDeduction(null)).to.equal(null)
+    })
+    it('a ledger deal says so beside an unchanged breakdown; aggregates keep the split', () => {
+      const deal = {
+        status: 'closed',
+        profit: { total: 2 },
+        commission: 0.1,
+        settings: { profitCurrency: 'quote' },
+      }
+      const b = dealCostBreakdown(deal, null, false)
+      const ledger = withUnbookedFees(
+        b,
+        { quote: 0.015, partial: false, assets: ['BNB'] },
+        usdProfitFeeDeduction(ledgerDeal()),
+      )
+      expect(ledger).to.deep.include({
+        netQuote: 2,
+        feesQuote: 0.1,
+        grossQuote: 2.1,
+        unbookedFeesQuote: 0.015,
+        unbookedFeesInUsdProfit: true,
+        unbookedFeesUsd: 0.0146,
+      })
+      // grid-leg-only fees: no unbooked order, the deduction still shows
+      expect(
+        withUnbookedFees(b, null, usdProfitFeeDeduction(ledgerDeal())),
+      ).to.deep.include({
+        unbookedFeesQuote: null,
+        unbookedFeesInUsdProfit: true,
+      })
+      const plain = withUnbookedFees(b, {
+        quote: 0.02,
+        partial: false,
+        assets: ['BNB'],
+      })
+      const [row] = sumTradingCosts([
+        { quoteAsset: 'USDT', breakdown: ledger },
+        { quoteAsset: 'USDT', breakdown: plain },
+      ])
+      expect(row.netQuote).to.equal(4)
+      expect(row.grossQuote).to.be.closeTo(4.2, 1e-12)
+      expect(row.unbookedFeesQuote).to.be.closeTo(0.035, 1e-12)
+      expect(row.unbookedFeesInUsdProfitQuote).to.be.closeTo(0.015, 1e-12)
     })
   })
 })

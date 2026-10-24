@@ -1705,6 +1705,24 @@ export const BotSchema = /* GraphQL */ `
     feesEstimated: Boolean
     slippageQuote: Float
     netQuote: Float
+    # Fees the venue charged in a third asset (BNB/BGB/KCS), valued in quote
+    # at each fill's market price. NOT included in feesQuote or netQuote: the
+    # deal's books did not deduct them. Null when the deal has none, or none
+    # could be valued.
+    unbookedFeesQuote: Float
+    # true when at least one such fee could not be valued; unbookedFeesQuote
+    # covers only the others.
+    unbookedFeesPartial: Boolean
+    # The assets those fees were charged in.
+    unbookedFeeAssets: [String]
+    # true when profit.totalUsd already has these fees' USD value subtracted
+    # (deals carrying the fee ledger); profit.total never does. For such a
+    # deal totalUsd / total is not a plain quote->USD rate:
+    # (totalUsd + unbookedFeesUsd) / total is.
+    unbookedFeesInUsdProfit: Boolean
+    # The USD amount subtracted from profit.totalUsd (fee ledger, priced when
+    # the deal closed); null when unbookedFeesInUsdProfit is not true.
+    unbookedFeesUsd: Float
   }
   type TradingCosts {
     feesQuote: Float
@@ -1715,6 +1733,13 @@ export const BotSchema = /* GraphQL */ `
     slippageReconstructed: Boolean
     feesEstimated: Boolean
     quoteAsset: String
+    # Sum of the deals' DealCostBreakdown.unbookedFeesQuote (not in
+    # feesQuote / netQuote); null when no deal had any.
+    unbookedFeesQuote: Float
+    unbookedFeesPartial: Boolean
+    # The part of unbookedFeesQuote whose deals' USD profit already has them
+    # subtracted. Never part of netQuote; null when none.
+    unbookedFeesInUsdProfitQuote: Float
   }
   input getBotTransactionsInput {
     id: String!
@@ -3218,12 +3243,17 @@ export const BotSchema = /* GraphQL */ `
     # DCA-entry shift) | null (LIMIT, inverse, unknown or out of range).
     slippageSource: String
     # Fee for this order in the pair's quote currency: the venue-reported fee
-    # where it resolves to the pair, else the stored-rate estimate; null for a
-    # third-asset fee (BNB/BGB/KCS) with no safe conversion, an order that did
-    # not execute, or an inverse contract.
+    # where it resolves to the pair, else the stored-rate estimate. A fee the
+    # venue charged in a third asset (BNB/BGB/KCS) is valued at that asset's
+    # market price in the minute of the fill (see feeConverted); null when it
+    # cannot be valued, for an order that did not execute, or an inverse
+    # contract.
     feeQuote: Float
     # true when feeQuote is the estimate; false when venue-reported; null when unknown.
     feeEstimated: Boolean
+    # true when feeQuote includes a third-asset fee valued at market prices
+    # at the fill; false for any other known fee; null when feeQuote is null.
+    feeConverted: Boolean
   }
   type multiPairBotOrders {
     key: String

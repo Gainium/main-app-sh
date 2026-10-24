@@ -346,6 +346,10 @@ export const typeResolvers = {
     feeQuote: async (o: object) => (await tradingCosts().orderFee(o)).feeQuote,
     feeEstimated: async (o: object) =>
       (await tradingCosts().orderFee(o)).feeEstimated,
+    feeConverted: async (o: object) => {
+      const f = await tradingCosts().orderFee(o)
+      return f.feeQuote === null ? null : !!f.feeConverted
+    },
   },
   fullDCABot: botCostFields,
   fullComboBot: botCostFields,

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.113.0] - 2026-10-24
+
+### Added
+
+- Fees an exchange charges in a token that is neither side of the pair (for example BNB, BGB or KCS) are valued in the pair's quote currency at the market price of the fill's minute. Orders expose the converted amount (`feeQuote`, `feeConverted`); deals, bots and the account summary report these fees separately (`unbookedFeesQuote`, `unbookedFeesPartial`, `unbookedFeeAssets`), since the deal's own profit in quote does not deduct them.
+- Deals whose USD profit already deducts those fees say so (`unbookedFeesInUsdProfit`, `unbookedFeesUsd`), so the cost breakdown converts with a plain quote-to-USD rate and adds up to the USD profit shown.
+
 ## [1.112.0] - 2026-10-24
 
 ### Added

@@ -38,6 +38,7 @@
  */
 import type { Order } from '../../types'
 import {
+  DCADealFlags,
   DCADealStatusEnum,
   DCATypeEnum,
   OrderSideEnum,
@@ -48,6 +49,7 @@ import {
 } from '../../types'
 import { isCoinm } from '../utils'
 import { hasObservedFee, observedFeeOnSide, observedFeeSplit } from './orderFee'
+import { feeLegsByPair } from './feeAssetPrice'
 
 /** `getBaseOrder`'s MARKET allowance for a regular DCA bot at `count = 0`. */
 export const DCA_START_MARKET_SHIFT = 0.005
@@ -108,6 +110,8 @@ export type SlippageOrder = Partial<
     | 'feeAsset'
     | 'baseAsset'
     | 'quoteAsset'
+    | 'transactTime'
+    | 'updateTime'
   >
 >
 
@@ -134,6 +138,36 @@ export type DealCostBreakdown = {
   feesEstimated: boolean
   slippageQuote: number | null
   netQuote: number
+  /**
+   * Fees the venue charged in an asset that is neither side of the pair,
+   * valued in quote at each fill. NOT part of `feesQuote` or `netQuote`: the
+   * deal's books did not deduct them. Absent / null when the deal has none.
+   */
+  unbookedFeesQuote?: number | null
+  /** At least one such fee could not be valued; the figure covers the rest. */
+  unbookedFeesPartial?: boolean
+  /** The assets those fees were charged in. */
+  unbookedFeeAssets?: string[]
+  /**
+   * True when the deal's `profit.totalUsd` already has these fees' USD value
+   * subtracted (a deal carrying the fee-ledger flag), so `totalUsd / total`
+   * is NOT a plain quote→USD rate for it. `profit.total` never has them.
+   */
+  unbookedFeesInUsdProfit?: boolean
+  /** The USD amount subtracted from `profit.totalUsd`, from the deal's fee
+   *  ledger (priced when the deal closed); null when not subtracted. */
+  unbookedFeesUsd?: number | null
+}
+
+/** What a fee-ledger deal already subtracted from its USD profit. */
+export type UsdProfitFeeDeduction = { usd: number; assets: string[] }
+
+/** A deal's fees charged off-pair, which its books record as 0. */
+export type UnbookedFees = {
+  /** Sum of the ones that could be valued, in quote; null when none could. */
+  quote: number | null
+  partial: boolean
+  assets: string[]
 }
 
 export type TradingCostsRow = {
@@ -145,6 +179,15 @@ export type TradingCostsRow = {
   deals: number
   slippageReconstructed: boolean
   feesEstimated: boolean
+  /** Sum of the deals' `unbookedFeesQuote`; null when no deal had any. */
+  unbookedFeesQuote: number | null
+  unbookedFeesPartial: boolean
+  /**
+   * The part of `unbookedFeesQuote` from deals whose `profit.totalUsd`
+   * already subtracts them (see `DealCostBreakdown.unbookedFeesInUsdProfit`);
+   * null when none.
+   */
+  unbookedFeesInUsdProfitQuote: number | null
 }
 
 const num = (v: unknown): number => {
@@ -369,6 +412,12 @@ export type OrderFeeQuote = {
   feeQuote: number | null
   /** True when `feeQuote` is the stored-rate estimate; null when unknown. */
   feeEstimated: boolean | null
+  /**
+   * True when `feeQuote` includes a fee charged in a third asset, valued at
+   * that asset's market price at the fill. Set only by the read-time service
+   * (`orderFeeQuote` itself never converts).
+   */
+  feeConverted?: boolean
 }
 
 const NO_FEE: OrderFeeQuote = { feeQuote: null, feeEstimated: null }
@@ -390,8 +439,10 @@ export function needsStoredFeeRate(o: SlippageOrder): boolean {
  *     (`observedFeeSplit`), converted to quote at the order's fill price
  *     (`observedFeeOnSide`);
  *   - a reported fee in a third asset (BNB / BGB / KCS…), or split across
- *     currencies not all on the pair, has no safe conversion here: null, and
- *     NOT an estimate — the books book 0 for it, never the estimate;
+ *     currencies not all on the pair, has no conversion here: null, and NOT
+ *     an estimate — the books book 0 for it, never the estimate. The
+ *     read-time service may value it from market prices at the fill
+ *     (`convertedFeeQuote`), reported with `feeConverted: true`;
  *   - otherwise the stored-rate estimate `qty · fill · rate`, taker for
  *     MARKET, maker for LIMIT. `rate` is 0 on a zero-fee connection, as the
  *     engine's `getUserFee` makes it.
@@ -491,6 +542,101 @@ export function dealCostBreakdown(
   }
 }
 
+/**
+ * True for an order whose fee the deal's `commission` records as 0 although
+ * the venue charged one: a FILLED deal trade charged at least partly in an
+ * asset that is neither side of the pair (`getCommDeal` books such an order
+ * at 0, never at the estimate). Combo grid legs are left out — their fees
+ * are netted inside grid profit, outside `commission`.
+ */
+export function isUnbookedFeeOrder(o: SlippageOrder): boolean {
+  return (
+    o.status === 'FILLED' &&
+    isExecutedDealTrade(o) &&
+    o.typeOrder !== TypeOrderEnum.dealGrid &&
+    !(o.exchange && isCoinm(o.exchange)) &&
+    !!fillOf(o) &&
+    feeLegsByPair(o).offPair.length > 0
+  )
+}
+
+/**
+ * Sum the off-pair fees of a deal's orders, each already valued in quote
+ * (`null` = could not be valued). Null when the deal has none.
+ */
+export function sumUnbookedFees(
+  rows: { assets: string[]; feeQuote: number | null }[],
+): UnbookedFees | null {
+  if (!rows.length) return null
+  let quote: number | null = null
+  let partial = false
+  const assets = new Set<string>()
+  for (const r of rows) {
+    for (const a of r.assets) assets.add(a)
+    if (typeof r.feeQuote === 'number' && Number.isFinite(r.feeQuote)) {
+      quote = (quote ?? 0) + r.feeQuote
+    } else {
+      partial = true
+    }
+  }
+  return { quote, partial, assets: [...assets].sort() }
+}
+
+/**
+ * The off-pair fees a deal carrying the fee-ledger flag subtracted from
+ * `profit.totalUsd` when it closed: the USD of every ledger entry whose asset
+ * is neither side of the pair. Null for a deal without the flag or without
+ * such an entry. (`closeDeal` subtracts these legs' USD from `totalUsd` only;
+ * `total` is never touched.)
+ */
+export function usdProfitFeeDeduction(
+  deal:
+    | {
+        flags?: string[]
+        feeByAsset?: { asset?: string; total?: number; totalUsd?: number }[]
+        symbol?: { baseAsset?: string; quoteAsset?: string }
+      }
+    | null
+    | undefined,
+): UsdProfitFeeDeduction | null {
+  if (!deal?.flags?.includes(DCADealFlags.feeByAsset)) return null
+  const base = `${deal.symbol?.baseAsset ?? ''}`.toUpperCase()
+  const quote = `${deal.symbol?.quoteAsset ?? ''}`.toUpperCase()
+  let usd = 0
+  const assets = new Set<string>()
+  for (const e of deal.feeByAsset ?? []) {
+    const asset = `${e?.asset ?? ''}`.toUpperCase()
+    const v = num(e?.totalUsd)
+    if (!asset || asset === base || asset === quote) continue
+    if (!Number.isFinite(v) || v <= 0) continue
+    usd += v
+    assets.add(asset)
+  }
+  return assets.size ? { usd, assets: [...assets].sort() } : null
+}
+
+/**
+ * The breakdown with a deal's off-pair fees attached as their own fields;
+ * unchanged for a deal that has none.
+ */
+export function withUnbookedFees(
+  breakdown: DealCostBreakdown | null,
+  unbooked: UnbookedFees | null | undefined,
+  deduction?: UsdProfitFeeDeduction | null,
+): DealCostBreakdown | null {
+  if (!breakdown || (!unbooked && !deduction)) return breakdown
+  return {
+    ...breakdown,
+    unbookedFeesQuote: unbooked?.quote ?? null,
+    unbookedFeesPartial: !!unbooked?.partial,
+    unbookedFeeAssets: [
+      ...new Set([...(unbooked?.assets ?? []), ...(deduction?.assets ?? [])]),
+    ].sort(),
+    unbookedFeesInUsdProfit: !!deduction,
+    unbookedFeesUsd: deduction?.usd ?? null,
+  }
+}
+
 /** Sum breakdowns per quote asset. */
 export function sumTradingCosts(
   rows: {
@@ -514,6 +660,9 @@ export function sumTradingCosts(
       deals: 0,
       slippageReconstructed: false,
       feesEstimated: false,
+      unbookedFeesQuote: null,
+      unbookedFeesPartial: false,
+      unbookedFeesInUsdProfitQuote: null,
     }
     acc.feesQuote += r.breakdown.feesQuote
     acc.slippageQuote += r.breakdown.slippageQuote ?? 0
@@ -522,6 +671,18 @@ export function sumTradingCosts(
     acc.deals += 1
     acc.slippageReconstructed = acc.slippageReconstructed || !!r.reconstructed
     acc.feesEstimated = acc.feesEstimated || r.breakdown.feesEstimated
+    const unbooked = r.breakdown.unbookedFeesQuote
+    if (typeof unbooked === 'number' && Number.isFinite(unbooked)) {
+      acc.unbookedFeesQuote = (acc.unbookedFeesQuote ?? 0) + unbooked
+      // Kept apart, never added twice: `netQuote` is `profit.total`, which
+      // has none of these fees, whether or not `totalUsd` does.
+      if (r.breakdown.unbookedFeesInUsdProfit) {
+        acc.unbookedFeesInUsdProfitQuote =
+          (acc.unbookedFeesInUsdProfitQuote ?? 0) + unbooked
+      }
+    }
+    acc.unbookedFeesPartial =
+      acc.unbookedFeesPartial || !!r.breakdown.unbookedFeesPartial
     byQuote.set(key, acc)
   }
   return [...byQuote.values()].sort((a, b) => b.deals - a.deals)

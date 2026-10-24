@@ -15,6 +15,7 @@ import { StatusEnum } from '../../../types'
 const load = createRequire(__filename)
 const dbInit = load('../../db/dbInit')
 const { TradingCostsService } = load('./tradingCosts.handler')
+const { FeeAssetPrices } = load('./feeAssetPrices')
 
 const DAOS = [
   'orderDb',
@@ -24,6 +25,7 @@ const DAOS = [
   'comboDealsDb',
   'feeDb',
   'userDb',
+  'pairDb',
 ]
 const saved: Record<string, any> = {}
 let calls: Record<string, any[]> = {}
@@ -55,6 +57,7 @@ describe('TradingCostsService', () => {
   beforeEach(() => {
     calls = {}
     answers = {}
+    ;(FeeAssetPrices as any)._instance = null
   })
 
   it('order slippage from a recorded reference reads nothing', async () => {
@@ -372,6 +375,237 @@ describe('TradingCostsService', () => {
       ]
       const f = await fresh().orderFee(order({ exchangeUUID: 'acc-2' }))
       expect(f).to.deep.equal({ feeQuote: 0, feeEstimated: true })
+    })
+  })
+  describe('fees charged in a third asset', () => {
+    const USER = 'cccccccccccccccccccccccc'
+    const T = 1_792_674_087_768
+    let sourceCalls: any[] = []
+    const withPrices = (mid: number | null) => {
+      sourceCalls = []
+      answers.pairDb = (search) =>
+        search.exchange === 'binance' && search['baseAsset.name'] === 'BNB'
+          ? [
+              {
+                pair: 'BNBUSDT',
+                baseAsset: { name: 'BNB' },
+                quoteAsset: { name: 'USDT' },
+              },
+            ]
+          : []
+      FeeAssetPrices.getInstance().setCandleSource(async (q: any) => {
+        sourceCalls.push(q)
+        if (mid === null) return []
+        const rows = []
+        for (let t = q.from; t <= q.to; t += 60_000) {
+          rows.push({ t, o: mid, h: mid, l: mid, c: mid })
+        }
+        return rows
+      })
+    }
+    const bnbOrder = (over: any) => ({
+      userId: USER,
+      exchange: 'binance',
+      exchangeUUID: 'acc-1',
+      symbol: 'HYPEUSDT',
+      baseAsset: 'HYPE',
+      quoteAsset: 'USDT',
+      type: 'MARKET',
+      status: 'FILLED',
+      side: 'SELL',
+      typeOrder: 'dealTP',
+      executedQty: '1',
+      cummulativeQuoteQty: '100',
+      transactTime: T,
+      feePaid: '0.00001',
+      feeAsset: 'BNB',
+      ...over,
+    })
+
+    it('an order fee in BNB is valued at the fill minute and flagged converted', async () => {
+      withPrices(600)
+      const f = await fresh().orderFee(bnbOrder({}))
+      expect(f.feeEstimated).to.equal(false)
+      expect(f.feeConverted).to.equal(true)
+      expect(f.feeQuote).to.be.closeTo(0.006, 1e-12)
+      expect(sourceCalls).to.have.length(1)
+      expect(sourceCalls[0]).to.deep.include({
+        exchange: 'binance',
+        symbol: 'BNBUSDT',
+        interval: '1m',
+        from: 1_792_674_060_000,
+      })
+      // a venue-reported fee: no stored-rate read
+      expect(calls.feeDb).to.equal(undefined)
+    })
+
+    it('an unpriced BNB fee stays unknown — never 0, never the estimate', async () => {
+      withPrices(null)
+      const f = await fresh().orderFee(bnbOrder({}))
+      expect(f).to.deep.equal({ feeQuote: null, feeEstimated: false })
+      expect(calls.feeDb).to.equal(undefined)
+    })
+
+    it('without a candle source nothing is read for it', async () => {
+      const f = await fresh().orderFee(bnbOrder({}))
+      expect(f).to.deep.equal({ feeQuote: null, feeEstimated: false })
+      expect(calls).to.deep.equal({})
+    })
+
+    it('a closed deal reports them beside the breakdown; fees / gross / net unchanged', async () => {
+      withPrices(600)
+      answers.orderDb = () => [
+        bnbOrder({ dealId: 'd1' }),
+        bnbOrder({
+          dealId: 'd1',
+          type: 'LIMIT',
+          side: 'BUY',
+          typeOrder: 'dealStart',
+          transactTime: T - 3_600_000,
+          updateTime: T - 60_000,
+          feePaid: '0.00002',
+        }),
+        // on-pair fee: booked, not reported here
+        bnbOrder({
+          dealId: 'd1',
+          typeOrder: 'dealRegular',
+          feeAsset: 'USDT',
+          feePaid: '0.1',
+        }),
+      ]
+      const deal = {
+        _id: 'd1',
+        status: 'closed',
+        exchange: 'binance',
+        profit: { total: -1 },
+        commission: 0.4,
+        settings: { profitCurrency: 'quote' },
+        slippage: {
+          quote: 0.1,
+          bps: 2,
+          orders: 2,
+          reconstructed: false,
+          notional: 500,
+        },
+        feesEstimated: false,
+      }
+      const b = await fresh().dealCostBreakdown(deal)
+      expect(b?.netQuote).to.equal(-1)
+      expect(b?.feesQuote).to.equal(0.4)
+      expect(b?.grossQuote).to.be.closeTo(-0.5, 1e-12)
+      expect(b?.unbookedFeesQuote).to.be.closeTo(0.018, 1e-12)
+      expect(b?.unbookedFeesPartial).to.equal(false)
+      expect(b?.unbookedFeeAssets).to.deep.equal(['BNB'])
+      expect(calls.orderDb).to.have.length(1)
+      expect(calls.orderDb[0].dealId.$in).to.deep.equal(['d1'])
+      // both minutes in one window
+      expect(sourceCalls).to.have.length(1)
+    })
+
+    it('a deal with an unpriced one is partial; with none priced the amount is null', async () => {
+      withPrices(null)
+      answers.orderDb = () => [bnbOrder({ dealId: 'd1' })]
+      const b = await fresh().dealCostBreakdown({
+        _id: 'd1',
+        status: 'closed',
+        exchange: 'binance',
+        profit: { total: 1 },
+        commission: 0,
+        settings: { profitCurrency: 'quote' },
+        feesEstimated: false,
+      })
+      expect(b?.netQuote).to.equal(1)
+      expect(b?.unbookedFeesQuote).to.equal(null)
+      expect(b?.unbookedFeesPartial).to.equal(true)
+    })
+
+    it('bot aggregate: one read of the bot’s fee-bearing orders, summed separately', async () => {
+      withPrices(600)
+      answers.dcaDealsDb = () => [
+        {
+          _id: 'd1',
+          botId: BOT,
+          status: 'closed',
+          exchange: 'binance',
+          profit: { total: 2 },
+          commission: 0.5,
+          settings: { profitCurrency: 'quote' },
+          symbol: { quoteAsset: 'USDT' },
+          feesEstimated: false,
+        },
+        {
+          _id: 'd2',
+          botId: BOT,
+          status: 'closed',
+          exchange: 'binance',
+          profit: { total: 1 },
+          commission: 0.5,
+          settings: { profitCurrency: 'quote' },
+          symbol: { quoteAsset: 'USDT' },
+          feesEstimated: false,
+        },
+      ]
+      answers.orderDb = (search) =>
+        search.botId === BOT && search.$or
+          ? [bnbOrder({ dealId: 'd1' }), bnbOrder({ dealId: 'd2' })]
+          : []
+      const row = await fresh().botTradingCosts({ _id: BOT })
+      expect(row).to.deep.include({
+        deals: 2,
+        netQuote: 3,
+        feesQuote: 1,
+        unbookedFeesPartial: false,
+      })
+      expect(row.grossQuote).to.be.closeTo(4, 1e-12)
+      expect(row.unbookedFeesQuote).to.be.closeTo(0.012, 1e-12)
+      expect(calls.orderDb).to.have.length(1)
+      expect(calls.orderDb[0]).to.deep.include({ botId: BOT, status: 'FILLED' })
+    })
+    it('fee-ledger vs plain deal: same breakdown, only the ledger deal reports the USD deduction', async () => {
+      withPrices(600)
+      answers.orderDb = (search) =>
+        search.dealId.$in.flatMap((dealId: string) => [bnbOrder({ dealId })])
+      const common = {
+        status: 'closed',
+        exchange: 'binance',
+        profit: { total: 2, totalUsd: 2 - 0.0061 },
+        commission: 0.1,
+        settings: { profitCurrency: 'quote' },
+        symbol: { baseAsset: 'HYPE', quoteAsset: 'USDT' },
+        feesEstimated: false,
+      }
+      const svc = fresh()
+      const [ledger, plain] = await Promise.all([
+        svc.dealCostBreakdown({
+          ...common,
+          _id: 'd1',
+          flags: ['feeByAsset'],
+          feeByAsset: [{ asset: 'BNB', total: 0.00001, totalUsd: 0.0061 }],
+        }),
+        svc.dealCostBreakdown({
+          ...common,
+          _id: 'd2',
+          profit: { total: 2, totalUsd: 2 },
+        }),
+      ])
+      for (const b of [ledger, plain]) {
+        expect(b).to.deep.include({
+          netQuote: 2,
+          feesQuote: 0.1,
+          grossQuote: 2.1,
+        })
+        expect(b?.unbookedFeesQuote).to.be.closeTo(0.006, 1e-12)
+      }
+      expect(ledger).to.deep.include({
+        unbookedFeesInUsdProfit: true,
+        unbookedFeesUsd: 0.0061,
+      })
+      expect(plain).to.deep.include({
+        unbookedFeesInUsdProfit: false,
+        unbookedFeesUsd: null,
+      })
+      // one orders read for the page, both deals
+      expect(calls.orderDb).to.have.length(1)
     })
   })
 })
