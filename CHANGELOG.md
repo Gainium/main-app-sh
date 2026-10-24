@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.115.0] - 2026-10-24
+
+### Added
+
+- Session indicator Price levels: new level `curMid` (current session midpoint) — (highest high + lowest low) / 2 of the session in progress so far, none outside a session. Accepted as `sessionLevelA` / `sessionLevelB` by GraphQL, the v2 API (validators, OpenAPI, indicator definitions) and the bot schema; decided by `@gainium/indicators` 1.9.0.
+
 ## [1.114.0] - 2026-10-24
 
 ### Added

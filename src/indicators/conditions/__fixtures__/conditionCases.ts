@@ -1075,6 +1075,69 @@ export function conditionCases(): ConditionCase[] {
         ),
       )
 
+  // ── Session current session midpoint (appended) ──────────────────────────
+  // curMid moves with the session's running high/low; none outside a session
+  const midBar = (
+    price: number | null,
+    curMid: number | null,
+    o: Parameters<typeof sessionBar>[1] = {},
+  ) => ({
+    ...(sessionBar(price, o) as object),
+    curMid: (o.inSession ?? 1) === 1 ? curMid : null,
+  })
+  // [prev price, prev curMid, last price, last curMid]
+  const MID_PAIRS: (number | null)[][] = [
+    [118, 119, 122, 120], // price crosses up a rising midpoint
+    [122, 120, 118, 121], // price crosses down
+    [118, 117, 118, 119], // the midpoint rises through a flat price
+    [118, 119, 118, 117], // the midpoint falls through a flat price
+    [118, 119, 120, 120], // touching on the latest bar
+    [118, 119, 122, null], // no midpoint on the latest bar
+    [null, 119, 122, 120], // no price on the previous bar
+  ]
+  for (const [a, b] of [
+    [SessionLevelEnum.price, SessionLevelEnum.curMid],
+    [SessionLevelEnum.curMid, SessionLevelEnum.price],
+    [SessionLevelEnum.curMid, SessionLevelEnum.prevMid],
+    [SessionLevelEnum.curMid, SessionLevelEnum.curOpen],
+    [SessionLevelEnum.curMid, SessionLevelEnum.curMid],
+  ] as SessionLevelEnum[][])
+    for (const cond of [C.cd, C.cu, C.gt, C.lt, undefined])
+      for (const [pp, pm, lp, lm] of MID_PAIRS)
+        for (const layout of ['two', 'one'] as Layout[])
+          push(
+            `SESSION|levels|mid|${a}|${b}|${fmt(cond)}|${fmt(pp)}/${fmt(pm)}>${fmt(lp)}/${fmt(lm)}|${layout}`,
+            levels(a, b, cond),
+            series(
+              IndicatorEnum.session,
+              midBar(pp, pm),
+              midBar(lp, lm),
+              layout,
+            ),
+          )
+  // a crossing of the midpoint never counts across a rollover
+  for (const cond of [C.cu, C.gt])
+    for (const [label, prevOpts, lastOpts] of [
+      ['out', {}, { inSession: 0 }],
+      ['prevOut', { inSession: 0 }, {}],
+      ['newSession', { key: 20231114 }, {}],
+      ['newPrev', { prevKey: 20231113 }, {}],
+      ['noPrevBoth', { prevKey: null }, { prevKey: null }],
+    ] as [
+      string,
+      Parameters<typeof sessionBar>[1],
+      Parameters<typeof sessionBar>[1],
+    ][])
+      push(
+        `SESSION|levels|mid|boundary|${label}|${fmt(cond)}`,
+        levels(SessionLevelEnum.price, SessionLevelEnum.curMid, cond),
+        series(
+          IndicatorEnum.session,
+          midBar(118, 119, prevOpts),
+          midBar(122, 120, lastOpts),
+        ),
+      )
+
   return out
 }
 

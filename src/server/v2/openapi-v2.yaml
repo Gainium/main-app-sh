@@ -4409,7 +4409,7 @@ components:
           example: America/New_York
         sessionLevelA:
           type: string
-          description: Session Price levels rule — left operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress (none outside a session), price = latest close. Default price.
+          description: Session Price levels rule — left operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress, curMid = (highest high + lowest low) / 2 of the session in progress so far (both none outside a session), price = latest close. Default price.
           enum:
             - prevOpen
             - prevHigh
@@ -4417,11 +4417,12 @@ components:
             - prevLow
             - prevClose
             - curOpen
+            - curMid
             - price
           example: price
         sessionLevelB:
           type: string
-          description: Session Price levels rule — right operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress (none outside a session), price = latest close. Default prevHigh. Must differ from sessionLevelA.
+          description: Session Price levels rule — right operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress, curMid = (highest high + lowest low) / 2 of the session in progress so far (both none outside a session), price = latest close. Default prevHigh. Must differ from sessionLevelA.
           enum:
             - prevOpen
             - prevHigh
@@ -4429,6 +4430,7 @@ components:
             - prevLow
             - prevClose
             - curOpen
+            - curMid
             - price
           example: prevHigh
         lwThreshold:

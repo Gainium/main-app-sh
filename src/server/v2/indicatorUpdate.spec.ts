@@ -178,6 +178,7 @@ describe('spec 126 — REST bot update replaces indicators', () => {
         errorsOf(r).filter(([f]) => f.includes('session'))
       expect(sessionErrors(update('price'))).to.deep.equal([])
       expect(sessionErrors(update('curOpen'))).to.deep.equal([])
+      expect(sessionErrors(update('curMid'))).to.deep.equal([])
       expect(sessionErrors(update('lastHigh')).length).to.equal(1)
       expect(sessionErrors(update('price', 'between')).length).to.equal(1)
     })

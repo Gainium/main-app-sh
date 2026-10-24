@@ -719,6 +719,7 @@ export enum SessionLevelEnum {
   prevLow = 'prevLow',
   prevClose = 'prevClose',
   curOpen = 'curOpen',
+  curMid = 'curMid',
   price = 'price',
 }
 
