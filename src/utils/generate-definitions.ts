@@ -32,6 +32,8 @@ import {
   ValidatorsEnum,
   type NestedFieldConfig,
 } from '../server/v2/validators/bots/config'
+import { INDICATOR_CONDITION_KINDS } from '../indicators/conditions/catalog'
+import type { IndicatorEnum } from '../../types'
 import {
   DCA_FORM_DEFAULTS,
   COMBO_FORM_DEFAULTS,
@@ -877,10 +879,15 @@ const FIELD_NOTES: Record<string, { note?: string; example?: unknown }> = {
 
 // Import IndicatorEnum values at runtime from types
 // We resolve them from the compiled validator config where they already appear
-// as enum values.
+// as enum values, keeping only the types the engine can evaluate as a
+// condition: a type the condition catalog marks `source: 'none'` is never
+// advertised by discovery, so no API client is told a bot can run it.
 function getIndicatorEnumValues(): string[] {
   // Read from the indicatorCoreConfig's 'type' field which has enum: Object.values(IndicatorEnum)
-  return (indicatorCoreConfig['type']?.enum as string[]) ?? []
+  return ((indicatorCoreConfig['type']?.enum as string[]) ?? []).filter(
+    (type) =>
+      INDICATOR_CONDITION_KINDS[type as IndicatorEnum]?.source !== 'none',
+  )
 }
 
 const INDICATOR_META: Record<
@@ -1180,31 +1187,6 @@ const INDICATOR_META: Record<
       indicatorAction: 'startDeal',
     },
   },
-  BullBear: {
-    name: 'Bull Bear Power',
-    description:
-      'EMA-based oscillator measuring the difference between bulls and bears power.',
-    typeSpecificFields: [
-      'percentile',
-      'percentileLookback',
-      'percentilePercentage',
-    ],
-    supportedActions: [
-      'startDeal',
-      'closeDeal',
-      'startDca',
-      'stopBot',
-      'startBot',
-    ],
-    example: {
-      type: 'BullBear',
-      indicatorLength: 13,
-      indicatorValue: '0',
-      indicatorCondition: 'cd',
-      indicatorInterval: '1h',
-      indicatorAction: 'startDeal',
-    },
-  },
   UO: {
     name: 'Ultimate Oscillator',
     description:
@@ -1237,31 +1219,6 @@ const INDICATOR_META: Record<
       uoFast: 7,
       uoMiddle: 14,
       uoSlow: 28,
-      indicatorAction: 'startDeal',
-    },
-  },
-  IC: {
-    name: 'Ichimoku Cloud',
-    description:
-      'Multi-component indicator defining support, resistance, momentum and trend direction.',
-    typeSpecificFields: [
-      'percentile',
-      'percentileLookback',
-      'percentilePercentage',
-    ],
-    supportedActions: [
-      'startDeal',
-      'closeDeal',
-      'startDca',
-      'stopBot',
-      'startBot',
-    ],
-    example: {
-      type: 'IC',
-      indicatorLength: 9,
-      indicatorValue: '0',
-      indicatorCondition: 'cd',
-      indicatorInterval: '1h',
       indicatorAction: 'startDeal',
     },
   },
@@ -2129,7 +2086,11 @@ function run() {
     buildField(
       name,
       indAstProps.get(name),
-      { ...indicatorCoreConfig[name], required: true },
+      {
+        ...indicatorCoreConfig[name],
+        ...(name === 'type' ? { enum: indicatorTypes } : {}),
+        required: true,
+      },
       undefined,
       FIELD_NOTES,
     ),

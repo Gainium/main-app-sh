@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.115.2] - 2026-10-24
+
+### Fixed
+
+- `/api/v2/discovery/indicators` (and `/:type`) listed Ichimoku Cloud (`IC`) and Bull Bear Power (`BullBear`), which bots cannot evaluate as a condition. Discovery now lists only types the condition catalog can run; the generator reads that catalog, so a type without an engine condition is never advertised.
+
 ## [1.115.1] - 2026-10-24
 
 ### Fixed
