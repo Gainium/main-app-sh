@@ -7555,7 +7555,13 @@ class MainBot<T extends IMainBot> {
     }
     if (!this.lockProcessQueueMethod && this.orderQueue.length > 0) {
       const next = () => {
-        this.orderQueue.shift()
+        // Remove the report just processed, not whatever is first now:
+        // `accountCallback` re-sorts the queue while this one is awaited, and a
+        // report that sorts ahead of it (same venue time) would be dropped.
+        const at = this.orderQueue.indexOf(msg)
+        if (at !== -1) {
+          this.orderQueue.splice(at, 1)
+        }
         this.lockProcessQueueMethod = false
         this.processOrderQueue(
           this.botId,
@@ -7571,7 +7577,11 @@ class MainBot<T extends IMainBot> {
       const ed = await this.getExchangeInfo(msg.symbol)
       const orderId = this.getOrderStatus(msg)
       const base = parseFloat(msg.totalTradeQuantity)
-      const key = `${orderId}${msg.orderStatus}${base}`
+      // A venue can stamp every liquidation on an account with one client id
+      // (Binance `autoclose-…`); only its order id and side tell them apart.
+      const key = `${orderId}${msg.orderStatus}${base}${
+        msg.liquidation ? `${msg.orderId}${msg.side}` : ''
+      }`
       if (!this.processedOrders.has(key)) {
         this.processedOrders.set(key, {
           id: orderId,

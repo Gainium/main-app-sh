@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.113.2] - 2026-10-24
+
+### Fixed
+
+- When a hedge-mode futures account has its long and short positions liquidated in the same instant, both bots now close their deals. The second liquidation report was removed from the order queue unprocessed when it sorted ahead of the one being handled, and two equal-size liquidations on one symbol were taken for duplicates. The "closed due to position liquidation" message now appears only on the bot that actually closed deals.
+
 ## [1.113.1] - 2026-10-24
 
 ### Fixed

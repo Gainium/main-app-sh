@@ -23317,18 +23317,20 @@ function createDCABotHelper<
           DCACloseTriggerEnum.liquidation,
         )
         await this.linkLiquidationOrderToDeals(order, openBefore)
+        // Only the bot whose side was liquidated closed anything: a hedge
+        // partner on the same symbol receives the same report.
+        this.handleErrors(
+          `Deals on ${
+            order.symbol
+          } closed due to position liquidation at ${new Date(
+            order.updateTime,
+          ).toUTCString()}`,
+          'processLiquidationOrder',
+          '',
+          false,
+          true,
+        )
       }
-      this.handleErrors(
-        `Deals on ${
-          order.symbol
-        } closed due to position liquidation at ${new Date(
-          order.updateTime,
-        ).toUTCString()}`,
-        'processLiquidationOrder',
-        '',
-        false,
-        true,
-      )
     }
 
     /**
