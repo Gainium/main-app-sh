@@ -13,6 +13,7 @@ import {
   IndicatorEnum,
   MAEnum,
   RangeType,
+  SessionRuleEnum,
   TradingviewAnalysisConditionEnum,
 } from '../../../types'
 import type { IndicatorConfig, SettingsIndicators } from '../../../types'
@@ -24,6 +25,16 @@ import { smoothingConfig } from './smoothing'
  */
 export const indicatorLengthOf = (i: SettingsIndicators): number =>
   +(i.indicatorLength ?? 14)
+
+/**
+ * A Session indicator with the Price levels rule: unlike the in / out rules
+ * (a clock filter), it compares session price levels and is evaluated from
+ * the candles of a `SessionLevels` indicator room.
+ */
+export const isSessionLevels = (
+  i: Pick<SettingsIndicators, 'type' | 'sessionRule'>,
+): boolean =>
+  i.type === IndicatorEnum.session && i.sessionRule === SessionRuleEnum.levels
 
 /** The timeframe the engine subscribes: ADR always runs daily. */
 export const indicatorSubscribeInterval = (
@@ -99,6 +110,10 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
     lwThreshold,
     oteLeftBars,
     oteMinLegSize,
+    sessionDays,
+    sessionStart,
+    sessionEnd,
+    sessionTimezone,
   } = i
   let { percentileLookback, percentilePercentage } = i
   percentileLookback = percentileLookback ?? 150
@@ -132,6 +147,19 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
   const bbwMaLength = +(_bbwMaLength ?? 20)
   const pump = +(_pump ?? 3)
   const baseCrack = +(_baseCrack ?? 3)
+  // Price levels: only the session window shapes the levels; A, B and the
+  // condition are read by the decision, so they share one room.
+  if (isSessionLevels(i))
+    return {
+      type: IndicatorEnum.session,
+      sessionRule: SessionRuleEnum.levels,
+      sessionDays: [...(sessionDays ?? [1, 2, 3, 4, 5])]
+        .map(Number)
+        .sort((a, b) => a - b),
+      sessionStart: sessionStart || '',
+      sessionEnd: sessionEnd || '',
+      sessionTimezone: sessionTimezone || 'UTC',
+    }
   return type === IndicatorEnum.lw
     ? {
         type: IndicatorEnum.lw,

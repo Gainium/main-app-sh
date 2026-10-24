@@ -20,11 +20,12 @@
  *    consumed.
  */
 import { gt, lt, lte, gte, eq } from '@gainium/indicators'
-import { oteCondition } from '@gainium/indicators'
+import { oteCondition, sessionLevelsCondition } from '@gainium/indicators'
 import type {
   OBFVGResult,
   LongWickResult,
   OTEResult,
+  SessionLevelsResult,
 } from '@gainium/indicators'
 import type {
   DIVResult,
@@ -163,6 +164,8 @@ export function evaluateIndicatorCondition(
     lwCondition,
     oteLevel,
     oteLeg,
+    sessionLevelA,
+    sessionLevelB,
   } = find
   const uuid = find.uuid
   const { symbol, showLog } = ctx
@@ -331,6 +334,16 @@ export function evaluateIndicatorCondition(
       leg: oteLeg,
       condition: indicatorCondition,
     })
+  } else if (type === IndicatorEnum.session) {
+    // Price levels (the only Session rule evaluated from room bars; in / out
+    // are the bot's clock filter). The decision lives in @gainium/indicators
+    // so the backtester fires on the same bars.
+    const [ld, pd] = sortedByTime
+    action = sessionLevelsCondition(
+      ld?.value as SessionLevelsResult,
+      pd?.value as SessionLevelsResult,
+      { a: sessionLevelA, b: sessionLevelB, condition: indicatorCondition },
+    )
   } else if (type === IndicatorEnum.st) {
     const [ld, pd] = sortedByTime
     const lastData = ld?.value as SuperTrendResult

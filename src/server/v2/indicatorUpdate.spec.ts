@@ -152,6 +152,35 @@ describe('spec 126 — REST bot update replaces indicators', () => {
       expect(oteErrors(update('bullish'))).to.deep.equal([])
       expect(oteErrors(update('sideways')).length).to.equal(1)
     })
+    it('accepts the Session Price levels rule and rejects an unknown level', () => {
+      const update = (sessionLevelA: string, sessionRule = 'levels') =>
+        applyIndicatorSettingsUpdate(
+          { ...tiBot(), startCondition: StartConditionEnum.ti },
+          {
+            indicators: [
+              {
+                ...rsi('levels'),
+                type: IndicatorEnum.session,
+                sessionDays: [1, 2, 3, 4, 5],
+                sessionRule,
+                sessionStart: '09:30',
+                sessionEnd: '16:00',
+                sessionTimezone: 'America/New_York',
+                sessionLevelA,
+                sessionLevelB: 'prevHigh',
+                indicatorCondition: 'cu',
+                indicatorInterval: '15m',
+              } as unknown as SettingsIndicators,
+            ],
+          },
+        )
+      const sessionErrors = (r: ReturnType<typeof update>) =>
+        errorsOf(r).filter(([f]) => f.includes('session'))
+      expect(sessionErrors(update('price'))).to.deep.equal([])
+      expect(sessionErrors(update('curOpen'))).to.deep.equal([])
+      expect(sessionErrors(update('lastHigh')).length).to.equal(1)
+      expect(sessionErrors(update('price', 'between')).length).to.equal(1)
+    })
   })
 
   describe('§2.4 round trip', () => {

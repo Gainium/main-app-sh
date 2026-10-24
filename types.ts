@@ -15,6 +15,7 @@ import {
   OBFVGResult,
   LongWickResult,
   OTEResult,
+  SessionLevelsResult,
 } from '@gainium/indicators'
 import {
   DCABacktestingInput,
@@ -680,6 +681,10 @@ export type SettingsIndicators = {
   sessionEnd?: string
   /** IANA time zone the session hours and days are read in (default UTC). */
   sessionTimezone?: string
+  /** Session rule `levels`: left operand of indicatorCondition (default price). */
+  sessionLevelA?: SessionLevelEnum
+  /** Session rule `levels`: right operand of indicatorCondition (default prevHigh). */
+  sessionLevelB?: SessionLevelEnum
   lwThreshold?: string
   lwMaxDuration?: string
   lwValue?: LWValueEnum
@@ -702,6 +707,19 @@ export enum LWConditionEnum {
 export enum SessionRuleEnum {
   in = 'in',
   out = 'out',
+  /** Price levels: compare two session levels, evaluated from candles */
+  levels = 'levels',
+}
+
+/** A value a Session "Price levels" condition compares (same values as `@gainium/indicators`). */
+export enum SessionLevelEnum {
+  prevOpen = 'prevOpen',
+  prevHigh = 'prevHigh',
+  prevMid = 'prevMid',
+  prevLow = 'prevLow',
+  prevClose = 'prevClose',
+  curOpen = 'curOpen',
+  price = 'price',
 }
 
 export enum LWValueEnum {
@@ -4545,6 +4563,7 @@ export type IndicatorHistory = { time: number } & (
   | { type: IndicatorEnum.lw; value: LongWickResult }
   | { type: IndicatorEnum.ote; value: OTEResult }
   | { type: IndicatorEnum.session; value: boolean }
+  | { type: IndicatorEnum.session; value: SessionLevelsResult }
 )
 
 type Percentile = {
@@ -4591,6 +4610,14 @@ type Smoothing = {
 export type IndicatorConfig =
   | { type: IndicatorEnum.lw; lwThreshold: number; lwMaxDuration: number }
   | { type: IndicatorEnum.ote; oteLeftBars: number; oteMinLegSize: number }
+  | {
+      type: IndicatorEnum.session
+      sessionRule: SessionRuleEnum.levels
+      sessionDays: number[]
+      sessionStart?: string
+      sessionEnd?: string
+      sessionTimezone?: string
+    }
   | { type: IndicatorEnum.obfvg }
   | { type: IndicatorEnum.dc; length: number }
   | {

@@ -1900,13 +1900,15 @@ const INDICATOR_META: Record<
   SESSION: {
     name: 'Session Selector',
     description:
-      'Filters signals by day of the week and, optionally, time of day. sessionDays are the active weekdays (0=Sunday). sessionStart/sessionEnd (local HH:MM, end exclusive) limit the session to those hours, read in sessionTimezone (IANA name, default UTC, follows daylight saving). An end before the start is an overnight session belonging to the day it opens. Without start/end the whole day counts. sessionRule picks trading in or out of the session.',
+      'Filters signals by day of the week and, optionally, time of day. sessionDays are the active weekdays (0=Sunday). sessionStart/sessionEnd (local HH:MM, end exclusive) limit the session to those hours, read in sessionTimezone (IANA name, default UTC, follows daylight saving). An end before the start is an overnight session belonging to the day it opens. Without start/end the whole day counts. sessionRule in / out picks trading in or out of the session. sessionRule levels (Price levels) compares sessionLevelA with sessionLevelB using indicatorCondition (cd/cu/gt/lt) on indicatorInterval candles (default 15m), and only fires during the session. Levels: prevOpen, prevHigh, prevMid, prevLow, prevClose of the last completed session, curOpen (open of the session in progress), price (latest close). A level with no value yet, or A equal to B, never fires; crossings never count across a new session. Example: price crossing up prevHigh = breakout of the previous session high.',
     typeSpecificFields: [
       'sessionDays',
       'sessionRule',
       'sessionStart',
       'sessionEnd',
       'sessionTimezone',
+      'sessionLevelA',
+      'sessionLevelB',
     ],
     supportedActions: [
       'startDeal',

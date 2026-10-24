@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.114.0] - 2026-10-24
+
+### Added
+
+- Session indicator "Price levels" rule (`sessionRule: levels`): compares `sessionLevelA` with `sessionLevelB` (previous session open / high / midpoint / low / close, current session open, price) by `indicatorCondition` (cd / cu / gt / lt) on `indicatorInterval` candles, only during the session. It is subscribed and evaluated from candles like any other indicator, decided by `@gainium/indicators`' `sessionLevelsCondition` (the same decision backtests use); the in / out rules stay the bot's clock filter, and a bot can combine both. Accepted by GraphQL, the v2 API (validators, defaults with a 15m interval, OpenAPI, indicator definitions) and stored on the bot.
+
+### Changed
+
+- The indicator service passes each candle's open time to the indicators it feeds.
+
 ## [1.113.2] - 2026-10-24
 
 ### Fixed

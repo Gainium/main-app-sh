@@ -65,6 +65,7 @@ import {
   TrendFilterOperatorEnum,
   DivergenceOscillators,
   SessionRuleEnum,
+  SessionLevelEnum,
   LWValueEnum,
   LWConditionEnum,
   OTELegEnum,
@@ -648,5 +649,10 @@ export const indicatorConfigDefaults: {
     sessionDays: [1, 2, 3, 4, 5],
     sessionRule: SessionRuleEnum.in,
     ...base,
+    // read by the Price levels rule only (in / out ignore them)
+    sessionLevelA: SessionLevelEnum.price,
+    sessionLevelB: SessionLevelEnum.prevHigh,
+    indicatorCondition: IndicatorStartConditionEnum.cu,
+    indicatorInterval: ExchangeIntervals.fifteenM,
   },
 }

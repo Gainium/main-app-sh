@@ -164,6 +164,7 @@ import {
   buildXoReferenceConfig,
   evaluateIndicatorCondition,
   indicatorSubscribeInterval,
+  isClockCondition,
   isConditionActive,
   keepConditionBarsMultiplier,
 } from '../indicators/conditions'
@@ -14980,11 +14981,7 @@ function createDCABotHelper<
         const indicatorTypeMap: Map<string, SettingsIndicators[]> = new Map()
         const groupsId = this.indicatorGroupsToUse.map((g) => g.id)
         const filteredIndicators = (settings.indicators ?? [])
-          .filter(
-            (i) =>
-              i.type !== IndicatorEnum.unpnl &&
-              i.type !== IndicatorEnum.session,
-          )
+          .filter((i) => i.type !== IndicatorEnum.unpnl && !isClockCondition(i))
           .filter(
             (i) => !i.groupId || (i.groupId && groupsId.includes(i.groupId)),
           )
@@ -15130,8 +15127,7 @@ function createDCABotHelper<
         }
       }
       const filteredIndicators = (settings.indicators ?? []).filter(
-        (i) =>
-          i.type !== IndicatorEnum.unpnl && i.type !== IndicatorEnum.session,
+        (i) => i.type !== IndicatorEnum.unpnl && !isClockCondition(i),
       )
       for (const key of due) {
         if (this.indicators.has(key)) {
@@ -15568,8 +15564,10 @@ function createDCABotHelper<
 
     private startSessionCheckTimer() {
       this.stopSessionCheckTimer()
-      const sessionIndicator = this.data?.settings.indicators?.find(
-        (i) => i.type === IndicatorEnum.session,
+      // only the in / out rules are a clock filter; a Price levels Session is
+      // subscribed and evaluated from candles like any other indicator
+      const sessionIndicator = this.data?.settings.indicators?.find((i) =>
+        isClockCondition(i),
       )
       if (!sessionIndicator) {
         return

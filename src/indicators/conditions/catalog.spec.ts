@@ -14,12 +14,16 @@ import {
   IndicatorEnum,
   IndicatorStartConditionEnum,
   MAEnum,
+  SessionLevelEnum,
+  SessionRuleEnum,
 } from '../../../types'
 import type { SettingsIndicators } from '../../../types'
 import {
   INDICATOR_CONDITION_KINDS,
   ROOM_CONDITION_TYPES,
+  conditionKindOf,
   conditionSettingsGaps,
+  isClockCondition,
   isRoomConditionType,
 } from './catalog'
 import { conditionCases, configCases } from './__fixtures__/conditionCases'
@@ -112,5 +116,58 @@ describe('indicators/conditions — catalog', () => {
         }),
       ),
     ).to.deep.equal([])
+  })
+
+  describe('Session: the rule picks the kind', () => {
+    const session = (o: Partial<SettingsIndicators>) =>
+      base({ type: IndicatorEnum.session, indicatorValue: undefined, ...o })
+    it('in / out (and missing) are clock rules, Price levels a room condition', () => {
+      for (const sessionRule of [
+        undefined,
+        SessionRuleEnum.in,
+        SessionRuleEnum.out,
+      ]) {
+        expect(isClockCondition(session({ sessionRule })), `${sessionRule}`).to
+          .be.true
+        expect(conditionKindOf(session({ sessionRule }))?.source).to.equal(
+          'clock',
+        )
+      }
+      const levels = session({ sessionRule: SessionRuleEnum.levels })
+      expect(isClockCondition(levels)).to.be.false
+      expect(conditionKindOf(levels)?.source).to.equal('room')
+      // the per-type kind stays clock: automations refuse a Session, any rule
+      expect(isRoomConditionType(IndicatorEnum.session)).to.be.false
+      expect(conditionKindOf(base({}))).to.equal(
+        INDICATOR_CONDITION_KINDS[IndicatorEnum.rsi],
+      )
+    })
+    it('Price levels gaps: unknown level, A equal to B, no between', () => {
+      const gaps = (o: Partial<SettingsIndicators>) =>
+        conditionSettingsGaps(
+          session({ sessionRule: SessionRuleEnum.levels, ...o }),
+        ).map((g) => g.field)
+      expect(gaps({})).to.deep.equal([])
+      expect(gaps({ indicatorCondition: undefined })).to.deep.equal([])
+      expect(
+        gaps({
+          sessionLevelA: SessionLevelEnum.curOpen,
+          sessionLevelB: SessionLevelEnum.prevMid,
+          indicatorCondition: IndicatorStartConditionEnum.cu,
+        }),
+      ).to.deep.equal([])
+      expect(
+        gaps({
+          sessionLevelA: SessionLevelEnum.prevHigh,
+          sessionLevelB: SessionLevelEnum.prevHigh,
+        }),
+      ).to.deep.equal(['sessionLevelB'])
+      expect(
+        gaps({ sessionLevelA: 'lastHigh' as SessionLevelEnum }),
+      ).to.deep.equal(['sessionLevelA'])
+      expect(
+        gaps({ indicatorCondition: IndicatorStartConditionEnum.bw }),
+      ).to.deep.equal(['indicatorCondition'])
+    })
   })
 })

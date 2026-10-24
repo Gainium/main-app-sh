@@ -51,6 +51,7 @@ import type {
   OBFVG,
   LongWick,
   OTELevels,
+  SessionLevels,
 } from '@gainium/indicators'
 import { v4 } from 'uuid'
 import {
@@ -320,6 +321,7 @@ class InternalIndicator {
     | OBFVG
     | LongWick
     | OTELevels
+    | SessionLevels
   private data: IndicatorHistory[]
   private lastPrice = 0
   private subscribers: IndicatorSubscribers[]
@@ -805,12 +807,15 @@ class InternalIndicator {
     }
     // Per-class instanceof dispatch lives in @gainium/indicators' feedCandle —
     // one source of truth for "which input shape goes to which indicator."
+    // `t` is the candle's open time (every caller passes it as `time`):
+    // Session Price levels groups candles into sessions by it.
     feedCandle(this.indicator, {
       o: +value.o,
       h: +value.h,
       l: +value.l,
       c: +value.c,
       v: +value.v,
+      t: time,
     })
     try {
       const result = this.indicator ? this.indicator.result : undefined

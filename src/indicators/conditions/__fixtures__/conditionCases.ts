@@ -35,6 +35,8 @@ import {
   LWValueEnum,
   LWConditionEnum,
   OTELegEnum,
+  SessionLevelEnum,
+  SessionRuleEnum,
   STConditionEnum,
   DivTypeEnum,
   TradingviewAnalysisSignalEnum,
@@ -980,6 +982,99 @@ export function conditionCases(): ConditionCase[] {
               ),
             )
 
+  // ── Session Price levels (appended) ──────────────────────────────────────
+  // previous session 100..120 (open 105, close 115, mid 110), current open 108
+  const sessionBar = (
+    price: number | null,
+    o: {
+      inSession?: number
+      key?: number | null
+      prevKey?: number | null
+    } = {},
+  ) =>
+    ({
+      prevOpen: o.prevKey === null ? null : 105,
+      prevHigh: o.prevKey === null ? null : 120,
+      prevMid: o.prevKey === null ? null : 110,
+      prevLow: o.prevKey === null ? null : 100,
+      prevClose: o.prevKey === null ? null : 115,
+      curOpen: (o.inSession ?? 1) === 1 ? 108 : null,
+      price,
+      inSession: o.inSession ?? 1,
+      sessionKey:
+        (o.inSession ?? 1) === 1
+          ? o.key === undefined
+            ? 20231115
+            : o.key
+          : null,
+      prevSessionKey: o.prevKey === undefined ? 20231114 : o.prevKey,
+    }) as unknown
+  const levels = (
+    sessionLevelA: SessionLevelEnum | undefined,
+    sessionLevelB: SessionLevelEnum | undefined,
+    indicatorCondition: C | undefined,
+  ) =>
+    base(IndicatorEnum.session, {
+      sessionRule: SessionRuleEnum.levels,
+      sessionDays: [1, 2, 3, 4, 5],
+      sessionLevelA,
+      sessionLevelB,
+      indicatorCondition,
+    })
+  for (const [a, b] of [
+    [SessionLevelEnum.price, SessionLevelEnum.prevHigh],
+    [SessionLevelEnum.price, SessionLevelEnum.prevMid],
+    [SessionLevelEnum.price, SessionLevelEnum.curOpen],
+    [SessionLevelEnum.prevLow, SessionLevelEnum.price],
+    [SessionLevelEnum.price, SessionLevelEnum.price],
+    [undefined, undefined],
+    ['lastHigh' as SessionLevelEnum, SessionLevelEnum.prevHigh],
+  ] as (SessionLevelEnum | undefined)[][])
+    for (const cond of [C.cd, C.cu, C.gt, C.lt, C.bw, undefined])
+      for (const [pp, lp] of [
+        [118, 122],
+        [122, 118],
+        [118, 120],
+        [109, 111],
+        [111, 109],
+        [118, null],
+      ] as (number | null)[][])
+        for (const layout of ['two', 'one'] as Layout[])
+          push(
+            `SESSION|levels|${fmt(a)}|${fmt(b)}|${fmt(cond)}|${fmt(pp)}>${fmt(lp)}|${layout}`,
+            levels(a, b, cond),
+            series(
+              IndicatorEnum.session,
+              sessionBar(pp),
+              sessionBar(lp),
+              layout,
+            ),
+          )
+  // session boundaries: out of session, a new session, a new previous
+  // session, no previous session yet
+  for (const cond of [C.cu, C.gt])
+    for (const [label, prevOpts, lastOpts] of [
+      ['out', {}, { inSession: 0 }],
+      ['prevOut', { inSession: 0 }, {}],
+      ['newSession', { key: 20231114 }, {}],
+      ['newPrev', { prevKey: 20231113 }, {}],
+      ['noPrevBoth', { prevKey: null }, { prevKey: null }],
+      ['noPrevLast', {}, { prevKey: null }],
+    ] as [
+      string,
+      Parameters<typeof sessionBar>[1],
+      Parameters<typeof sessionBar>[1],
+    ][])
+      push(
+        `SESSION|levels|boundary|${label}|${fmt(cond)}`,
+        levels(SessionLevelEnum.price, SessionLevelEnum.prevHigh, cond),
+        series(
+          IndicatorEnum.session,
+          sessionBar(118, prevOpts),
+          sessionBar(122, lastOpts),
+        ),
+      )
+
   return out
 }
 
@@ -1119,6 +1214,39 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
       },
     })
   }
+  // Session Price levels (appended): only the session window is in the room
+  const sessionMin = {
+    type: IndicatorEnum.session,
+    uuid: 'cond',
+    groupId: 'g1',
+    indicatorAction: IndicatorAction.startDeal,
+    indicatorInterval: ExchangeIntervals.fifteenM,
+    indicatorCondition: C.cu,
+    sessionRule: SessionRuleEnum.levels,
+  } as unknown as SettingsIndicators
+  out.push({ id: 'SESSION|levels|min', settings: sessionMin })
+  out.push({
+    id: 'SESSION|levels|full',
+    settings: {
+      ...sessionMin,
+      sessionDays: [5, 1, 3],
+      sessionStart: '09:30',
+      sessionEnd: '16:00',
+      sessionTimezone: 'America/New_York',
+      sessionLevelA: SessionLevelEnum.prevLow,
+      sessionLevelB: SessionLevelEnum.price,
+    },
+  })
+  out.push({
+    id: 'SESSION|levels|empty',
+    settings: {
+      ...sessionMin,
+      sessionDays: [],
+      sessionStart: '',
+      sessionEnd: '',
+      sessionTimezone: '',
+    },
+  })
   return out
 }
 

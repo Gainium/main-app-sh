@@ -4390,9 +4390,11 @@ components:
           example: null
         sessionRule:
           type: string
+          description: in = trade inside the session, out = outside it (both a time filter); levels = Price levels, compare sessionLevelA with sessionLevelB by indicatorCondition on indicatorInterval candles, only during the session.
           enum:
             - in
             - out
+            - levels
         sessionStart:
           type: string
           description: Session open, local HH:MM in sessionTimezone. With sessionEnd, limits the session to those hours; omit both for the whole day.
@@ -4405,6 +4407,30 @@ components:
           type: string
           description: IANA time zone the session days and hours are read in. Defaults to UTC; follows daylight saving.
           example: America/New_York
+        sessionLevelA:
+          type: string
+          description: Session Price levels rule — left operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress (none outside a session), price = latest close. Default price.
+          enum:
+            - prevOpen
+            - prevHigh
+            - prevMid
+            - prevLow
+            - prevClose
+            - curOpen
+            - price
+          example: price
+        sessionLevelB:
+          type: string
+          description: Session Price levels rule — right operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress (none outside a session), price = latest close. Default prevHigh. Must differ from sessionLevelA.
+          enum:
+            - prevOpen
+            - prevHigh
+            - prevMid
+            - prevLow
+            - prevClose
+            - curOpen
+            - price
+          example: prevHigh
         lwThreshold:
           type: string
           example: null

@@ -59,6 +59,7 @@ import {
   OBFVGRefEnum,
   TrendFilterOperatorEnum,
   SessionRuleEnum,
+  SessionLevelEnum,
 } from '../../../../../types'
 import {
   COMBO_FORM_DEFAULTS,
@@ -853,7 +854,7 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
   sessionRule: {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: [SessionRuleEnum.in, SessionRuleEnum.out],
+    enum: [SessionRuleEnum.in, SessionRuleEnum.out, SessionRuleEnum.levels],
   },
   sessionStart: {
     required: false,
@@ -875,6 +876,16 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
       ValidatorsEnum.shouldBeString,
       ValidatorsEnum.canBeEmptyString,
     ],
+  },
+  sessionLevelA: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(SessionLevelEnum),
+  },
+  sessionLevelB: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(SessionLevelEnum),
   },
   lwThreshold: {
     required: false,

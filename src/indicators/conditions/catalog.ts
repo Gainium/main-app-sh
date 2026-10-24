@@ -10,9 +10,14 @@ import {
   IndicatorEnum,
   IndicatorStartConditionEnum,
   MAEnum,
+  SessionLevelEnum,
 } from '../../../types'
 import type { SettingsIndicators } from '../../../types'
-import { indicatorLengthOf, referenceSubscription } from './config'
+import {
+  indicatorLengthOf,
+  isSessionLevels,
+  referenceSubscription,
+} from './config'
 import { getSmoothingMode, smoothingSettingsGaps } from './smoothing'
 
 export type IndicatorConditionSource =
@@ -87,6 +92,26 @@ export const isRoomConditionType = (t: unknown): t is IndicatorEnum =>
   typeof t === 'string' &&
   INDICATOR_CONDITION_KINDS[t as IndicatorEnum]?.source === 'room'
 
+const SESSION_LEVELS_KIND: IndicatorConditionKind = { source: 'room' }
+
+/**
+ * The condition kind of one configured indicator. It is the kind of its type
+ * (`INDICATOR_CONDITION_KINDS`), except for a Session, whose rule decides:
+ * in / out (missing = in) stay a `clock` rule, Price levels is a `room`
+ * condition. The bot engine subscribes and evaluates by this. Per-type users
+ * (automations, `ROOM_CONDITION_TYPES`) keep the type's kind, so a Session
+ * stays bot-only whatever its rule.
+ */
+export const conditionKindOf = (
+  i: Pick<SettingsIndicators, 'type' | 'sessionRule'>,
+): IndicatorConditionKind | undefined =>
+  isSessionLevels(i) ? SESSION_LEVELS_KIND : INDICATOR_CONDITION_KINDS[i.type]
+
+/** Decided by the bot's clock (Session in / out), not by an indicator room. */
+export const isClockCondition = (
+  i: Pick<SettingsIndicators, 'type' | 'sessionRule'>,
+): boolean => conditionKindOf(i)?.source === 'clock'
+
 /** Bars the decision needs before it can signal (1 or 2). */
 export const barsNeeded = (type: IndicatorEnum): 1 | 2 =>
   INDICATOR_CONDITION_KINDS[type]?.newestBarOnly ? 1 : 2
@@ -124,6 +149,28 @@ export function conditionSettingsGaps(
     gaps.push({ field: 'indicatorInterval', message: 'Choose a timeframe.' })
   gaps.push(...smoothingSettingsGaps(i))
   if (OWN_RULE_TYPES.includes(type)) return gaps
+  if (isSessionLevels(i)) {
+    // sessionLevelsCondition: missing A = price, B = prevHigh, condition = cu
+    const levels = Object.values(SessionLevelEnum) as string[]
+    const a = i.sessionLevelA ?? SessionLevelEnum.price
+    const b = i.sessionLevelB ?? SessionLevelEnum.prevHigh
+    if (!levels.includes(a))
+      gaps.push({ field: 'sessionLevelA', message: 'Choose a level.' })
+    if (!levels.includes(b) || a === b)
+      gaps.push({
+        field: 'sessionLevelB',
+        message: 'Choose a different level to compare with.',
+      })
+    if (
+      indicatorCondition !== undefined &&
+      indicatorCondition !== IndicatorStartConditionEnum.cd &&
+      indicatorCondition !== IndicatorStartConditionEnum.cu &&
+      indicatorCondition !== IndicatorStartConditionEnum.gt &&
+      indicatorCondition !== IndicatorStartConditionEnum.lt
+    )
+      gaps.push({ field: 'indicatorCondition', message: 'Choose a condition.' })
+    return gaps
+  }
   if (type === IndicatorEnum.tv) {
     if (!i.checkLevel)
       gaps.push({ field: 'checkLevel', message: 'Choose a level.' })

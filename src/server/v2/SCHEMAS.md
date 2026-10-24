@@ -1911,10 +1911,12 @@ SettingsIndicators configuration
 | `obfvgValue` | enum: `bullish|bearish|any` | No | Order block/FVG type |
 | `obfvgRef` | enum: `high|low|middle` | No | Order block/FVG reference |
 | `sessionDays` | Array<number> | No |  |
-| `sessionRule` | enum: `in|out` | No |  |
+| `sessionRule` | enum: `in|out|levels` | No | in = trade inside the session, out = outside it (both a time filter); levels = Price levels, compare sessionLevelA with sessionLevelB by indicatorCondition on indicatorInterval candles, only during the session. |
 | `sessionStart` | string | No | Session open, local HH:MM in sessionTimezone. With sessionEnd, limits the session to those hours; omit both for the whole day. |
 | `sessionEnd` | string | No | Session close (exclusive), local HH:MM. Before sessionStart means an overnight session that belongs to the day it opens. |
 | `sessionTimezone` | string | No | IANA time zone the session days and hours are read in. Defaults to UTC; follows daylight saving. |
+| `sessionLevelA` | enum: `prevOpen|prevHigh|prevMid|prevLow|prevClose|curOpen|price` | No | Session Price levels rule — left operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress (none outside a session), price = latest close. Default price. |
+| `sessionLevelB` | enum: `prevOpen|prevHigh|prevMid|prevLow|prevClose|curOpen|price` | No | Session Price levels rule — right operand of indicatorCondition (cd/cu/gt/lt). prev* = the last completed session (open, high, midpoint, low, close), curOpen = open of the session in progress (none outside a session), price = latest close. Default prevHigh. Must differ from sessionLevelA. |
 | `lwThreshold` | string | No |  |
 | `lwMaxDuration` | string | No |  |
 | `lwValue` | enum: `top|bottom|any` | No |  |
@@ -2030,6 +2032,8 @@ SettingsIndicators configuration
   "sessionStart": "09:30",
   "sessionEnd": "16:00",
   "sessionTimezone": "America/New_York",
+  "sessionLevelA": "price",
+  "sessionLevelB": "prevHigh",
   "lwThreshold": "example-string",
   "lwMaxDuration": "example-string",
   "lwValue": "top",
