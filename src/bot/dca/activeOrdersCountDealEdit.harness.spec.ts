@@ -49,6 +49,9 @@ const BOT_SETTINGS = {
 
 /** The deal's unfilled ladder, nearest level first (a long deal). */
 const LADDER = [2900, 2800, 2700, 2600, 2500, 2400, 2300, 2200]
+/** The ladder a total order count generates: a level's price reads only its index. */
+const ladder = (count: number) =>
+  Array.from({ length: count }, (_, i) => 2900 - 100 * i)
 const QTY = 0.01
 
 const restingRegular = (price: number, status = 'NEW') => ({
@@ -144,12 +147,17 @@ const buildBot = (
       raised.cancelAll.push(args)
     }
     async createInitialDealOrders() {
-      return LADDER.map(grid)
+      return ladder(+deal.deal.settings.ordersCount).map(grid)
     }
-    /** The real slicing in short: the nearest `activeOrdersCount` levels. */
+    /**
+     * The real slicing in short: the `ordersCount` levels (none has filled),
+     * then the nearest `activeOrdersCount` of them.
+     */
     async createCurrentDealOrders() {
       return [
-        ...LADDER.slice(0, +deal.deal.settings.activeOrdersCount).map(grid),
+        ...ladder(+deal.deal.settings.ordersCount)
+          .slice(0, +deal.deal.settings.activeOrdersCount)
+          .map(grid),
         {
           type: TypeOrderEnum.dealTP,
           side: OrderSideEnum.sell,
@@ -215,17 +223,78 @@ describe('an active-smart-orders-only deal edit (spec 195)', () => {
       ).to.equal(true)
     })
 
-    it('alongside a step / size / count / scale change is not', () => {
+    it('alongside a step / size / scale change is not', () => {
       const { bot, deal } = buildBot(5)
       for (const k of [
         { step: '2' },
         { orderSize: '20' },
-        { ordersCount: 9 },
+        { stepScale: '1.2' },
         { volumeScale: '1.5' },
       ]) {
         expect(
           bot.isActiveOrdersCountOnlyDealEdit(deal, {
             activeOrdersCount: 3,
+            ...k,
+          }),
+        ).to.equal(false)
+      }
+    })
+
+    it('a total-order-count change is, alone or with the active count (spec 196 §1.1.1)', () => {
+      const { bot, deal } = buildBot(5)
+      for (const patch of [
+        { ordersCount: 12 },
+        { ordersCount: 3 },
+        { ordersCount: 12, activeOrdersCount: 3 },
+        { ...BOT_SETTINGS, ordersCount: 12 },
+      ]) {
+        expect(
+          bot.isActiveOrdersCountOnlyDealEdit(deal, patch),
+          JSON.stringify(patch),
+        ).to.equal(true)
+      }
+    })
+
+    it('"Change DCA levels" sends `useDca: true`; unchanged, it does not count (spec 196 §1.1.1)', () => {
+      const { bot, deal } = buildBot(5)
+      expect(
+        bot.isActiveOrdersCountOnlyDealEdit(deal, {
+          ordersCount: 12,
+          useDca: true,
+        }),
+      ).to.equal(true)
+    })
+
+    it('switching DCA on or off is not (spec 196 §1.1.4)', () => {
+      const { bot, deal } = buildBot(5)
+      deal.deal.settings.useDca = false
+      bot.data.settings.useDca = false
+      expect(
+        bot.isActiveOrdersCountOnlyDealEdit(deal, {
+          ordersCount: 12,
+          useDca: true,
+        }),
+      ).to.equal(false)
+      const on = buildBot(5)
+      expect(
+        on.bot.isActiveOrdersCountOnlyDealEdit(on.deal, {
+          ordersCount: 12,
+          useDca: false,
+        }),
+      ).to.equal(false)
+    })
+
+    it('a total-order-count change with a step / size / scale change is not (spec 196 §1.1.4)', () => {
+      const { bot, deal } = buildBot(5)
+      for (const k of [
+        { step: '2' },
+        { orderSize: '20' },
+        { stepScale: '1.2' },
+        { volumeScale: '1.5' },
+      ]) {
+        expect(
+          bot.isActiveOrdersCountOnlyDealEdit(deal, {
+            ordersCount: 12,
             ...k,
           }),
         ).to.equal(false)
@@ -286,13 +355,51 @@ describe('an active-smart-orders-only deal edit (spec 195)', () => {
     })
   })
 
-  describe('NOT CHANGING: every other ladder edit still rebuilds the whole ladder (§1.1.5)', () => {
+  describe('a total-order-count edit (spec 196 §1.1.2, §1.1.3)', () => {
+    it('8 → 12 with `useDca: true` (the "Change DCA levels" patch) cancels and places nothing; the take profit stays', async () => {
+      const { bot, deal, raised } = buildBot(5)
+      await bot.updateDealSettings(DEAL_ID, { ordersCount: 12, useDca: true })
+      expect(raised.cancelAll).to.have.length(0)
+      expect(raised.cancelled).to.deep.equal([])
+      expect(raised.placedCancel).to.deep.equal([])
+      expect(raised.placedNew).to.deep.equal([])
+      expect(raised.resent).to.equal(0)
+      // The deal's level count still follows the new total.
+      expect(deal.deal.levels.all).to.equal(13)
+      expect(deal.deal.settings.ordersCount).to.equal(12)
+    })
+
+    it('8 → 12 without smart orders places only the four added levels', async () => {
+      const { bot, deal, raised } = buildBot(8)
+      deal.deal.settings.activeOrdersCount = 12
+      bot.data.settings.activeOrdersCount = 12
+      await bot.updateDealSettings(DEAL_ID, { ordersCount: 12 })
+      expect(raised.cancelAll).to.have.length(0)
+      expect(raised.placedCancel).to.deep.equal([])
+      expect(prices(raised.placedNew)).to.deep.equal([2100, 2000, 1900, 1800])
+    })
+
+    it('8 → 3 with five resting cancels the two dropped levels only', async () => {
+      const { bot, deal, raised } = buildBot(5)
+      await bot.updateDealSettings(DEAL_ID, { ordersCount: 3 })
+      expect(raised.cancelAll).to.have.length(0)
+      expect(raised.cancelled).to.deep.equal([])
+      expect(prices(raised.placedCancel)).to.deep.equal([2600, 2500])
+      expect(raised.placedNew).to.deep.equal([])
+      expect(deal.deal.levels.all).to.equal(4)
+    })
+  })
+
+  describe('NOT CHANGING: every other ladder edit still rebuilds the whole ladder (§1.1.5, spec 196 §1.1.4)', () => {
     for (const patch of [
       { step: '2' },
       { orderSize: '20' },
-      { ordersCount: 9 },
+      { stepScale: '1.2' },
       { volumeScale: '1.5' },
       { activeOrdersCount: 3, step: '2' },
+      { ordersCount: 12, step: '2' },
+      { ordersCount: 12, orderSize: '20' },
+      { ordersCount: 12, volumeScale: '1.5' },
     ]) {
       it(`${JSON.stringify(patch)}`, async () => {
         const { bot, raised } = buildBot(5)

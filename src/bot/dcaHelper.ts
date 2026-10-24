@@ -490,6 +490,17 @@ const tpOnlyDealKeys = new Set([
   'fixedTpPrice',
 ])
 
+/**
+ * Deal settings that only count ladder levels: how many rest on the book
+ * (spec 195) and how many the ladder has (spec 196). A deal edit that changes
+ * nothing else cancels and places only the levels the new count drops or adds.
+ */
+const ladderCountDealKeys = new Set([
+  'activeOrdersCount',
+  'ordersCount',
+  'dcaLevelsCap',
+])
+
 export const mergeDcaSupported = (settings: {
   useDca?: boolean
   dcaCondition?: DCAConditionEnum
@@ -28968,12 +28979,17 @@ function createDCABotHelper<
     }
 
     /**
-     * Whether a deal settings patch changes the number of active smart orders
-     * and nothing else (spec 195). The ladder's prices and sizes do not read
-     * it — it only decides how many of the nearest unfilled levels rest on the
-     * book — so such an edit cancels the levels it drops and places the ones
-     * it adds; the levels that stay and the take profit are left resting.
-     * DCA only, like {@link isTpOnlyDealEdit}.
+     * Whether a deal settings patch changes only how many ladder levels the
+     * deal has or rests: the number of active smart orders (spec 195) and/or
+     * the total number of safety orders (spec 196 — with `dcaLevelsCap`, the
+     * form that count takes on an indicator / custom ladder). No level's price
+     * or size reads them — a level is generated from its index alone, and the
+     * take profit from the filled position — so such an edit cancels the
+     * levels it drops and places the ones it adds; the levels that stay and
+     * the take profit are left resting. "Change DCA levels" also sends
+     * `useDca: true`, which is not a change while DCA is already on
+     * (`changedDealSettingKeys` compares by value). DCA only, like
+     * {@link isTpOnlyDealEdit}.
      */
     protected isActiveOrdersCountOnlyDealEdit(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
@@ -28983,7 +28999,9 @@ function createDCABotHelper<
         return false
       }
       const changed = this.changedDealSettingKeys(findDeal, patch)
-      return changed.length === 1 && changed[0] === 'activeOrdersCount'
+      return (
+        changed.length > 0 && changed.every((k) => ladderCountDealKeys.has(k))
+      )
     }
     /**
      * Cancel a deal's resting orders, regenerate its ladder and take profit

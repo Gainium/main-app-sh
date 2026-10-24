@@ -122,6 +122,17 @@ class FakeBase {
     paperContext: true,
   }
   constructor(..._a: any[]) {}
+  /**
+   * MainBot's diff, reduced to what a recorder needs: a count-only edit
+   * (spec 196) hands `placeOrders` this diff instead of the full rebuild.
+   */
+  findDiff(newGrids: any[], oldGrids: any[]) {
+    const same = (a: any, b: any) => a.price === b.price && a.side === b.side
+    return {
+      new: newGrids.filter((n) => !oldGrids.some((o) => same(n, o))),
+      cancel: oldGrids.filter((o) => !newGrids.some((n) => same(n, o))),
+    }
+  }
 }
 
 const loadModule = createRequire(__filename)

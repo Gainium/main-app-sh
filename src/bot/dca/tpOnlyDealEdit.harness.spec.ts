@@ -320,7 +320,8 @@ describe('a take-profit-only deal edit leaves the safety orders resting', () => 
     })
 
     it('does not for a ladder edit', async () => {
-      expect(await run({ ...BOT_SETTINGS, ordersCount: 7 })).to.deep.equal([
+      // Not `ordersCount`: a count-only edit takes its own path (spec 196).
+      expect(await run({ ...BOT_SETTINGS, step: '2' })).to.deep.equal([
         { tpOnly: false },
       ])
     })

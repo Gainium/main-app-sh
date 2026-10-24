@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.111.1] - 2026-10-24
+
+### Fixed
+
+- Changing the number of DCA levels on an open deal cancels and places only the safety orders that the new count adds or removes. The take profit and the safety orders that stay are no longer cancelled and placed again.
+
 ## [1.111.0] - 2026-10-23
 
 ### Added
