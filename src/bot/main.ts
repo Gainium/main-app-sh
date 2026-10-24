@@ -56,6 +56,7 @@ import {
 } from '../../types'
 import {
   accrueStreamFee,
+  feeAfterAnswerFills,
   hasObservedFee,
   observedFeeOf,
   streamFeeFields,
@@ -6984,6 +6985,10 @@ class MainBot<T extends IMainBot> {
       // time; keeping a stale one can only ever skip an old trade, which is
       // the safe direction to be wrong in.
       feeTradeId: o.feeTradeId,
+      // A payload whose fills name the venue's trade ids decides the fee and
+      // moves the mark up to them, so the stream's reports of those same
+      // trades are not counted on top (see `feeAfterAnswerFills`).
+      ...feeAfterAnswerFills(o.exchange, o, co),
       _id: o._id,
       // Our local order id is authoritative — never let the exchange's echoed
       // clientOrderId win. For most exchanges co.clientOrderId === o.clientOrderId
@@ -10473,6 +10478,20 @@ class MainBot<T extends IMainBot> {
             `Order ${order.clientOrderId} placement answer states ${orderToPush.executedQty} executed (${processedOrder.status}), behind the ${ord.executedQty} (${ord.status}) the user stream already delivered. Keeping the stream's figures`,
           )
           Object.assign(orderToPush, keptExecution)
+        }
+        // The answer's fee is the sum of its fills, and the user stream reports
+        // the same trades again one by one. On a venue whose fills carry the
+        // stream's trade ids, settle the fee here so each trade counts once
+        // whichever arrived first: the mark moves up to the answer's highest
+        // fill, and the stream's reports of those trades then add nothing.
+        // Fills without real trade ids keep the merge above unchanged.
+        const answerFee = feeAfterAnswerFills(
+          order.exchange,
+          ord,
+          processedOrder,
+        )
+        if (answerFee) {
+          Object.assign(orderToPush, answerFee)
         }
         // Retired as CANCELED while it still had no exchange id, so no cancel
         // ever reached the venue — yet the venue just accepted it. Spec 155 §4.4.

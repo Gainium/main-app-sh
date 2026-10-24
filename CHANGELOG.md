@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.113.1] - 2026-10-24
+
+### Fixed
+
+- Binance: an order whose fee came from the fills in the placement answer could have the same trades' fees added again when the user stream reported them, so the order and its deal counted those fees twice. When the answer's fills carry the exchange's trade ids, they now settle the fee and mark those trades as counted, so the stream adds only trades the answer did not include, in either arrival order. Fills without trade ids behave as before.
+
 ## [1.113.0] - 2026-10-24
 
 ### Added

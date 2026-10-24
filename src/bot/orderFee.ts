@@ -1,4 +1,5 @@
 import type { CommonOrder, ExecutionReport, Order } from '../../types'
+import { ExchangeEnum } from '../../types'
 
 /**
  * Turning the fee a venue reported into the base/quote split a deal books.
@@ -215,6 +216,113 @@ export function accrueStreamFee(
     feePaid: `${(prior > 0 ? prior : 0) + amount}`,
     feeAsset: asset,
     feeTradeId: tradeId,
+  }
+}
+
+/**
+ * The venues whose placement answer lists per-trade `fills[]` under the SAME
+ * trade ids the user stream reports as `executionReport.t` — Binance spot's
+ * FULL response. Only there can an answer's fills and the stream's reports be
+ * recognised as the same trades.
+ */
+const FILL_TRADE_ID_VENUES = new Set<string>([
+  ExchangeEnum.binance,
+  ExchangeEnum.binanceUS,
+])
+
+/**
+ * The highest venue trade id among an answer's fills, or `null` unless EVERY
+ * fill names a real one (a positive integer).
+ *
+ * Older connectors and Binance's SOR allocations (`-1`) carry a synthetic
+ * `${orderId}-${index}` or no usable id at all. Such an id says nothing about
+ * where the stream's trade ids stand, so one of them anywhere in the list
+ * means the fills cannot be lined up against the stream, and the caller keeps
+ * its previous behaviour.
+ */
+export function fillsTradeIdMark(
+  fills?: { tradeId?: string | number | null }[] | null,
+): number | null {
+  if (!fills?.length) {
+    return null
+  }
+  let mark = 0
+  for (const fill of fills) {
+    const raw = fill?.tradeId
+    const id =
+      typeof raw === 'number'
+        ? raw
+        : typeof raw === 'string' && /^[1-9]\d*$/.test(raw)
+          ? Number(raw)
+          : NaN
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return null
+    }
+    mark = Math.max(mark, id)
+  }
+  return mark
+}
+
+/** The fee fields `feeAfterAnswerFills` decides, every key present. */
+export type AnswerFeeFields = {
+  feePaid: string | undefined
+  feeAsset: string | undefined
+  feeSide: 'base' | 'quote' | undefined
+  feeBreakdown: { asset: string; amount: string }[] | undefined
+  feePaidUsd: string | undefined
+  feeTradeId: number
+}
+
+/**
+ * The fee an order carries once a venue answer with per-trade fills is merged
+ * over the row the engine holds, counting every trade exactly once.
+ *
+ * The answer's `feePaid` is the sum of its fills: the venue's own statement of
+ * every trade the order had made by then. The user stream reports the same
+ * trades again, one by one, and `accrueStreamFee` adds each report whose trade
+ * id is above `feeTradeId`. So whichever source arrives first, the mark has to
+ * cover what has been counted:
+ *
+ * - The held row's mark is at or below the answer's highest fill (nothing
+ *   counted yet, or the stream counted some of the answer's own trades): every
+ *   trade the stream counted is in the fills, since trade ids grow and the
+ *   fills list all the order's trades up to the highest. The answer's total
+ *   replaces the held one and the mark moves up to the highest fill, so the
+ *   stream reports of those trades still to come add nothing.
+ * - The held row's mark is beyond the answer's highest fill: the stream has
+ *   already counted a trade the answer does not know about, and with it, the
+ *   stream being delivered in order, the earlier ones. The held fee stands.
+ *
+ * Returns `null` — the caller keeps its previous merge exactly — for any other
+ * venue, an answer without a fee, or fills without real trade ids.
+ */
+export function feeAfterAnswerFills(
+  exchange: string | undefined,
+  held: Partial<Order> | null | undefined,
+  answer: Partial<CommonOrder> | null | undefined,
+): AnswerFeeFields | null {
+  if (!exchange || !FILL_TRADE_ID_VENUES.has(exchange)) {
+    return null
+  }
+  if (!answer || !hasObservedFee(answer)) {
+    return null
+  }
+  const mark = fillsTradeIdMark(answer.fills)
+  if (mark === null) {
+    return null
+  }
+  const seen = Number(held?.feeTradeId)
+  const source =
+    held && Number.isFinite(seen) && seen > mark && hasObservedFee(held)
+      ? held
+      : answer
+  return {
+    feePaid: source.feePaid,
+    feeAsset: source.feeAsset,
+    feeSide: source.feeSide,
+    feeBreakdown: source.feeBreakdown,
+    feePaidUsd: source.feePaidUsd,
+    feeTradeId: source === held ? seen : mark,
   }
 }
 
