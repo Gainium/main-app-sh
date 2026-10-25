@@ -14,8 +14,9 @@
  *     deals are immutable, so their result is cached.
  *   - bot / account aggregates: one projected read of the closed deals by
  *     `botId` (`botId_1`) or `userId` (`userId_1_status_1_createTime_-1`,
- *     `userId_1`); historical deals without recorded facts read the bot's
- *     MARKET orders once by `botId` (`botId_1`), cached for hours.
+ *     `userId_1`); historical deals without recorded facts read their bots'
+ *     MARKET orders by `botId` (`botId_1`), `IN_CHUNK` bots per read, one
+ *     chunk after another, cached per bot for hours.
  *
  * Fees charged in a third asset (an exchange token) are valued from that
  * asset's market price at the fill (`feeAssetPrices.ts`), only for deals and
@@ -23,8 +24,9 @@
  * (`FEE_TOKEN_VENUES`): per order, through the per-tick price batch; per
  * deal, from the same `orders` read by `dealId` (now also for deals whose
  * close-time facts are recorded); per bot / account, from one read of the
- * bot's fee-bearing FILLED deal orders by `botId` (`botId_1`). Those fees
- * are reported beside the breakdown (`unbookedFees*`) and never change
+ * bots' fee-bearing FILLED deal orders by `botId` (`botId_1`) per chunk of
+ * bots, valued in one price batch per bot after the chunk's candle days are
+ * read ahead together (`FeeAssetPrices.warm`). Those fees are reported beside the breakdown (`unbookedFees*`) and never change
  * `feesQuote`, `grossQuote` or `netQuote`: the deal's books did not deduct
  * them.
  */
@@ -193,6 +195,25 @@ type HistoricalFacts = {
   byDeal: Map<string, DealSlippageFacts>
   feesEstimated: boolean
 }
+
+/** Per order: its fill and one price request per off-pair fee leg, or null. */
+const offPairPlans = (orders: FeeOrder[]) =>
+  orders.map((o) => {
+    const venue = feePriceVenueOf(o.exchange)
+    const fill = fillOf(o)
+    const at = feeTimeOf(o)
+    const quote = o.quoteAsset ? `${o.quoteAsset}` : ''
+    if (!venue || !fill || at === null || !quote) return null
+    const legs = feeLegsByPair(o)
+    if (!legs.offPair.length) return null
+    const reqs: FeePriceRequest[] = legs.offPair.map((l) => ({
+      venue,
+      asset: l.asset,
+      quote,
+      at,
+    }))
+    return { o, fill, reqs }
+  })
 
 const chunks = <T>(items: T[], size = IN_CHUNK): T[][] => {
   const out: T[][] = []
@@ -368,22 +389,7 @@ export class TradingCostsService {
   private async offPairFeesQuote(
     orders: FeeOrder[],
   ): Promise<(number | null)[]> {
-    const plans = orders.map((o) => {
-      const venue = feePriceVenueOf(o.exchange)
-      const fill = fillOf(o)
-      const at = feeTimeOf(o)
-      const quote = o.quoteAsset ? `${o.quoteAsset}` : ''
-      if (!venue || !fill || at === null || !quote) return null
-      const legs = feeLegsByPair(o)
-      if (!legs.offPair.length) return null
-      const reqs: FeePriceRequest[] = legs.offPair.map((l) => ({
-        venue,
-        asset: l.asset,
-        quote,
-        at,
-      }))
-      return { o, fill, reqs }
-    })
+    const plans = offPairPlans(orders)
     const reqs = plans.flatMap((p) => p?.reqs ?? [])
     if (!reqs.length) return orders.map(() => null)
     const prices = feeAssetPrices().hasSource()
@@ -791,6 +797,7 @@ export class TradingCostsService {
             )
       deals.push(...((res.data?.result ?? []) as DealDoc[]))
     }
+    this.prefetchBots(deals)
     const rows = []
     for (const deal of deals) {
       let facts: DealFacts
@@ -827,57 +834,156 @@ export class TradingCostsService {
   }
 
   /**
+   * Starts the per-bot reads the deals of an aggregate need — historical
+   * facts and off-pair fees — for every bot not cached yet, `IN_CHUNK` bots
+   * per query, so an account with thousands of bots costs a few reads per
+   * chunk of bots instead of several per bot. The deal loop then finds every
+   * bot in the caches.
+   */
+  private prefetchBots(deals: DealDoc[]) {
+    const historical = new Set<string>()
+    const unbooked = new Set<string>()
+    for (const deal of deals) {
+      if (!deal.botId) continue
+      if (typeof deal.feesEstimated !== 'boolean') {
+        historical.add(`${deal.botId}`)
+      }
+      if (feePriceVenueOf(deal.exchange)) unbooked.add(`${deal.botId}`)
+    }
+    this.loadHistoricalFacts([...historical])
+    this.loadBotUnbooked([...unbooked])
+  }
+
+  /**
    * Slippage per deal for a bot's historical deals (closed before close-time
    * facts were recorded), from its MARKET orders only. Closed deals do not
    * change, so this is cached for hours.
    */
   private historicalFacts(botId: string): Promise<HistoricalFacts> {
-    const cached = this.historicalCache.get(botId)
-    if (cached) {
-      return cached
+    return this.loadHistoricalFacts([botId]).get(
+      botId,
+    ) as Promise<HistoricalFacts>
+  }
+
+  /** `historicalFacts` of many bots: the uncached ones read per chunk, one chunk at a time. */
+  private loadHistoricalFacts(ids: string[]) {
+    const out = new Map<string, Promise<HistoricalFacts>>()
+    const missing: string[] = []
+    for (const id of ids) {
+      const cached = this.historicalCache.get(id)
+      if (cached) out.set(id, cached)
+      else missing.push(id)
     }
-    const run = this.readHistoricalFacts(botId).catch((e) => {
-      logger.warn(
-        `${logPrefix} historical facts for ${botId} failed: ${(e as Error)?.message ?? e}`,
-      )
-      return { byDeal: new Map(), feesEstimated: true }
-    })
-    this.historicalCache.set(botId, run)
-    return run
+    let prev: Promise<unknown> = Promise.resolve()
+    for (const part of chunks(missing)) {
+      const read = prev
+        .then(() => this.readHistoricalFacts(part))
+        .catch((e) => {
+          logger.warn(
+            `${logPrefix} historical facts for ${part.length} bot(s) from ${part[0]} failed: ${(e as Error)?.message ?? e}`,
+          )
+          return null
+        })
+      prev = read
+      for (const id of part) {
+        const run = read.then(
+          (byBot): HistoricalFacts =>
+            byBot?.get(id) ?? { byDeal: new Map(), feesEstimated: true },
+        )
+        this.historicalCache.set(id, run)
+        out.set(id, run)
+      }
+    }
+    return out
   }
 
   /**
-   * Off-pair fees per deal of a bot, from ONE read of its fee-bearing FILLED
-   * deal orders by `botId`. Cached for hours when every fee was valued, for
-   * minutes when some were not (so the next view values more of them).
+   * Off-pair fees per deal of a bot, from its fee-bearing FILLED deal orders.
+   * Cached for hours when every fee was valued, for minutes when some were
+   * not (so the next view values more of them).
    */
   private botUnbooked(botId: string): Promise<BotUnbooked> {
-    const hit = this.botUnbookedCache.get(botId)
-    if (hit && +new Date() - hit.at <= hit.ttl) {
-      return hit.value
-    }
-    const entry = {
-      at: +new Date(),
-      ttl: UNBOOKED_PARTIAL_TTL_MS,
-      value: this.readBotUnbooked(botId).catch((e) => {
-        logger.warn(
-          `${logPrefix} unbooked fees for ${botId} failed: ${(e as Error)?.message ?? e}`,
-        )
-        return { byDeal: new Map(), complete: false } as BotUnbooked
-      }),
-    }
-    if (this.botUnbookedCache.size >= CACHE_MAX) this.botUnbookedCache.clear()
-    this.botUnbookedCache.set(botId, entry)
-    void entry.value.then((v) => {
-      if (v.complete) entry.ttl = UNBOOKED_COMPLETE_TTL_MS
-    })
-    return entry.value
+    return this.loadBotUnbooked([botId]).get(botId) as Promise<BotUnbooked>
   }
 
-  private async readBotUnbooked(botId: string): Promise<BotUnbooked> {
+  /** `botUnbooked` of many bots: the uncached ones read per chunk, one chunk at a time. */
+  private loadBotUnbooked(ids: string[]) {
+    const out = new Map<string, Promise<BotUnbooked>>()
+    const missing: string[] = []
+    for (const id of ids) {
+      const hit = this.botUnbookedCache.get(id)
+      if (hit && +new Date() - hit.at <= hit.ttl) out.set(id, hit.value)
+      else missing.push(id)
+    }
+    let prev: Promise<unknown> = Promise.resolve()
+    for (const part of chunks(missing)) {
+      const read = prev
+        .then(() => this.readBotUnbooked(part))
+        .catch((e) => {
+          logger.warn(
+            `${logPrefix} unbooked fees for ${part.length} bot(s) from ${part[0]} failed: ${(e as Error)?.message ?? e}`,
+          )
+          return null
+        })
+      prev = read
+      for (const id of part) {
+        const entry = {
+          at: +new Date(),
+          ttl: UNBOOKED_PARTIAL_TTL_MS,
+          value: read.then(
+            (byBot): BotUnbooked =>
+              byBot?.get(id) ?? { byDeal: new Map(), complete: false },
+          ),
+        }
+        if (this.botUnbookedCache.size >= CACHE_MAX) {
+          this.botUnbookedCache.clear()
+        }
+        this.botUnbookedCache.set(id, entry)
+        void entry.value.then((v) => {
+          if (v.complete) entry.ttl = UNBOOKED_COMPLETE_TTL_MS
+        })
+        out.set(id, entry.value)
+      }
+    }
+    return out
+  }
+
+  /**
+   * Reads the candle days the chunk's off-pair fees will be valued from,
+   * all bots' days at once (`FeeAssetPrices.warm`), so the bot-by-bot
+   * valuation that follows answers from memory instead of awaiting each
+   * bot's days in turn. Values nothing itself.
+   */
+  private async warmOffPairPrices(orders: FeeOrder[]) {
+    if (!feeAssetPrices().hasSource()) return
+    const reqs = offPairPlans(orders).flatMap((p) => p?.reqs ?? [])
+    if (!reqs.length) return
+    const started = +new Date()
+    try {
+      const days = await feeAssetPrices().warm(reqs)
+      if (days) {
+        logger.info(
+          `${logPrefix} warmed ${days} candle day(s) for ${reqs.length} off-pair fee(s) in ${+new Date() - started}ms`,
+        )
+      }
+    } catch (e) {
+      logger.warn(
+        `${logPrefix} warming fee-asset prices failed: ${(e as Error)?.message ?? e}`,
+      )
+    }
+  }
+
+  /**
+   * ONE read of the bots' fee-bearing FILLED deal orders by `botId`
+   * (`botId_1`); each bot's off-pair fees are then valued in one price batch
+   * of its own, bot after bot.
+   */
+  private async readBotUnbooked(
+    ids: string[],
+  ): Promise<Map<string, BotUnbooked>> {
     const res = await orderDb.readData(
       {
-        botId,
+        botId: { $in: ids },
         status: 'FILLED',
         dealId: { $exists: true },
         $or: [
@@ -889,39 +995,60 @@ export class TradingCostsService {
       undefined,
       true,
     )
-    const byDealOrders = new Map<string, FeeOrder[]>()
+    const byBot = new Map<string, Map<string, FeeOrder[]>>()
     for (const o of (res.data?.result ?? []) as (FeeOrder & {
       dealId?: string
     })[]) {
-      if (!o.dealId || !isUnbookedFeeOrder(o)) continue
+      if (!o.botId || !o.dealId || !isUnbookedFeeOrder(o)) continue
+      const byDealOrders =
+        byBot.get(`${o.botId}`) ?? new Map<string, FeeOrder[]>()
       const list = byDealOrders.get(o.dealId) ?? []
       list.push(o)
       byDealOrders.set(o.dealId, list)
+      byBot.set(`${o.botId}`, byDealOrders)
     }
-    const all = [...byDealOrders.values()].flat()
-    const values = await this.offPairFeesQuote(all)
-    const valueOf = new Map(all.map((o, i) => [o, values[i]]))
-    const byDeal = new Map<string, UnbookedFees>()
-    let complete = true
-    for (const [dealId, orders] of byDealOrders) {
-      const u = sumUnbookedFees(
-        orders.map((o) => ({
-          assets: feeLegsByPair(o).offPair.map((l) => l.asset),
-          feeQuote: valueOf.get(o) ?? null,
-        })),
-      )
-      if (u) {
-        byDeal.set(dealId, u)
-        complete = complete && !u.partial
+    await this.warmOffPairPrices(
+      [...byBot.values()].flatMap((b) => [...b.values()].flat()),
+    )
+    const out = new Map<string, BotUnbooked>()
+    for (const id of ids) {
+      const byDealOrders = byBot.get(id) ?? new Map<string, FeeOrder[]>()
+      const all = [...byDealOrders.values()].flat()
+      const values = await this.offPairFeesQuote(all)
+      const valueOf = new Map(all.map((o, i) => [o, values[i]]))
+      const byDeal = new Map<string, UnbookedFees>()
+      let complete = true
+      for (const [dealId, orders] of byDealOrders) {
+        const u = sumUnbookedFees(
+          orders.map((o) => ({
+            assets: feeLegsByPair(o).offPair.map((l) => l.asset),
+            feeQuote: valueOf.get(o) ?? null,
+          })),
+        )
+        if (u) {
+          byDeal.set(dealId, u)
+          complete = complete && !u.partial
+        }
       }
+      out.set(id, {
+        byDeal,
+        complete: complete && res.status === StatusEnum.ok,
+      })
     }
-    return { byDeal, complete: complete && res.status === StatusEnum.ok }
+    return out
   }
 
-  private async readHistoricalFacts(botId: string): Promise<HistoricalFacts> {
+  /**
+   * ONE read of the bots' MARKET orders by `botId` (`botId_1`), their bot
+   * settings in one batch, and one grouped probe for which of them have an
+   * executed deal trade without a venue-reported fee.
+   */
+  private async readHistoricalFacts(
+    ids: string[],
+  ): Promise<Map<string, HistoricalFacts>> {
     const res = await orderDb.readData(
       {
-        botId,
+        botId: { $in: ids },
         type: 'MARKET',
         status: { $in: ['FILLED', 'CANCELED'] },
       } as never,
@@ -929,42 +1056,53 @@ export class TradingCostsService {
       undefined,
       true,
     )
-    const byDealOrders = new Map<string, SlippageOrder[]>()
+    const byBot = new Map<string, Map<string, SlippageOrder[]>>()
     for (const o of (res.data?.result ?? []) as (SlippageOrder & {
       dealId?: string
     })[]) {
-      if (!o.dealId) continue
+      if (!o.botId || !o.dealId) continue
+      const byDealOrders =
+        byBot.get(`${o.botId}`) ?? new Map<string, SlippageOrder[]>()
       const list = byDealOrders.get(o.dealId) ?? []
       list.push(o)
       byDealOrders.set(o.dealId, list)
+      byBot.set(`${o.botId}`, byDealOrders)
     }
-    const ctx = await this.botContext(botId)
-    const byDeal = new Map<string, DealSlippageFacts>()
-    for (const [dealId, orders] of byDealOrders) {
-      const s = dealSlippage(orders, () => ctx)
-      if (s) byDeal.set(dealId, s)
-    }
+    // One batch: the keys asked for in the same tick load together.
+    const contexts = await Promise.all(ids.map((id) => this.botContext(id)))
     // Conservative: any of the bot's executed deal trades without a
-    // venue-reported fee. First match ends the read.
-    const estimated = await orderDb.readData(
+    // venue-reported fee.
+    const estimated = await orderDb.aggregate<{ _id: string }>([
       {
-        botId,
-        status: 'FILLED',
-        dealId: { $exists: true },
-        typeOrder: { $nin: ['br', 'rebalance', 'funding', 'split'] },
-        feePaid: { $exists: false },
-        'feeBreakdown.0': { $exists: false },
-      } as never,
-      { _id: 1 } as never,
-      { limit: 1 },
-      true,
+        $match: {
+          botId: { $in: ids },
+          status: 'FILLED',
+          dealId: { $exists: true },
+          typeOrder: { $nin: ['br', 'rebalance', 'funding', 'split'] },
+          feePaid: { $exists: false },
+          'feeBreakdown.0': { $exists: false },
+        },
+      },
+      { $group: { _id: '$botId' } },
+    ])
+    const withEstimated = new Set(
+      (estimated.data?.result ?? []).map((r) => `${r._id}`),
     )
-    return {
-      byDeal,
-      feesEstimated:
-        estimated.status !== StatusEnum.ok ||
-        (estimated.data?.result?.length ?? 0) > 0,
-    }
+    const out = new Map<string, HistoricalFacts>()
+    ids.forEach((id, i) => {
+      const ctx = contexts[i]
+      const byDeal = new Map<string, DealSlippageFacts>()
+      for (const [dealId, orders] of byBot.get(id) ?? []) {
+        const s = dealSlippage(orders, () => ctx)
+        if (s) byDeal.set(dealId, s)
+      }
+      out.set(id, {
+        byDeal,
+        feesEstimated:
+          estimated.status !== StatusEnum.ok || withEstimated.has(id),
+      })
+    })
+    return out
   }
 }
 

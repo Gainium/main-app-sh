@@ -200,6 +200,57 @@ describe('FeeAssetPrices', () => {
     expect(sourceCalls).to.have.length(1)
   })
 
+  it('warm reads the days ahead, together; prices then values the same without reading (198 §3.3)', async () => {
+    const reqs = [0, 1, 2, 3, 4, 5].map((d) => ({
+      venue: 'binance',
+      asset: 'BNB',
+      quote: 'USDT',
+      at: T0 - d * DAY,
+    }))
+    const cold = new Map<string, number | null>()
+    for (const r of reqs) {
+      for (const [k, v] of await fresh().prices([r])) cold.set(k, v)
+    }
+    const svc = fresh()
+    let inFlight = 0
+    let maxInFlight = 0
+    const source = (svc as any).source
+    svc.setCandleSource(async (q: any) => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise((r) => setTimeout(r, 5))
+      inFlight -= 1
+      return source(q)
+    })
+    sourceCalls = []
+    expect(await svc.warm(reqs)).to.equal(6)
+    expect(sourceCalls).to.have.length(6)
+    expect(maxInFlight).to.be.greaterThan(1)
+    // one bot after another, as the trading-costs aggregate values them
+    for (const r of reqs) {
+      expect((await svc.prices([r])).get(priceKey(r))).to.equal(
+        cold.get(priceKey(r)),
+      )
+    }
+    expect(sourceCalls).to.have.length(6)
+  })
+
+  it('a day warm could not read is read again by prices', async () => {
+    const svc = fresh()
+    let fail = true
+    const source = (svc as any).source
+    svc.setCandleSource(async (q: any) => {
+      sourceCalls.push(q)
+      return fail ? null : source(q)
+    })
+    const r = { venue: 'binance', asset: 'BNB', quote: 'USDT', at: T0 }
+    await svc.warm([r])
+    fail = false
+    expect((await svc.prices([r])).get(priceKey(r))).to.equal(600)
+    // the warm read and the priced read
+    expect(sourceCalls.filter((q) => q.symbol === 'BNBUSDT')).to.have.length(3)
+  })
+
   describe('windowsOf', () => {
     it('one window per UTC day, cut at now', () => {
       const w = windowsOf(

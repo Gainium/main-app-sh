@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.115.7] - 2026-10-25
+
+### Fixed
+
+- The trading-costs summary of an account with thousands of bots read each bot's orders one bot at a time, and waited on the candle days that value its exchange-token fees one bot after another, so it could run past the dashboard's request timeout. It now reads the orders for up to 500 bots per query and reads those bots' candle days ahead, several at a time; the figures are unchanged.
+
 ## [1.115.5] - 2026-10-25
 
 ### Fixed

@@ -18,7 +18,12 @@
  *     calls at a time across the process. Days beyond the cap stay unknown for
  *     that call and are not remembered as missing, so a later call reads them;
  *   - every minute read is cached (history does not change): a price for a
- *     day, a confirmed miss for minutes.
+ *     day, a confirmed miss for minutes;
+ *   - `warm` reads, ahead of a run of `prices` calls, the days they will need,
+ *     `MAX_IN_FLIGHT` at a time, into a short-lived memo of each day's
+ *     answer (`WARM_MAX_WINDOWS` days, minutes). `prices` then answers a day
+ *     from that memo instead of the source, so it values exactly what it
+ *     would have valued, without waiting on each day in turn.
  */
 import { pairDb } from '../../db/dbInit'
 import logger from '../../utils/logger'
@@ -61,6 +66,8 @@ const PAIRS_TTL_MS = 6 * 60 * 60_000
 const MID_TTL_MS = 24 * 60 * 60_000
 const MISS_TTL_MS = 10 * 60_000
 const MID_CACHE_MAX = 200_000
+export const WARM_MAX_WINDOWS = 400
+const WARM_TTL_MS = 10 * 60_000
 
 export const priceKey = (r: FeePriceRequest) =>
   `${r.venue}|${r.asset.toUpperCase()}|${r.quote.toUpperCase()}|${minuteOf(r.at)}`
@@ -84,6 +91,11 @@ export class FeeAssetPrices {
     { req: FeePriceRequest; resolve: ((v: number | null) => void)[] }
   >()
   private scheduled = false
+  /** A day's answer by `windowKey`: its minutes and their mids (NaN: no usable price). */
+  private days = new Map<
+    string,
+    { at: number; value: Promise<WindowMids | null> }
+  >()
 
   setCandleSource(source: FeeCandleSource | null) {
     this.source = source
@@ -123,14 +135,24 @@ export class FeeAssetPrices {
     }
   }
 
-  /** Prices by `priceKey`; null where unknown. */
-  async prices(reqs: FeePriceRequest[]): Promise<Map<string, number | null>> {
-    const out = new Map<string, number | null>()
-    if (!this.source || !reqs.length) {
-      for (const r of reqs) out.set(priceKey(r), null)
-      return out
-    }
-    // Routes per (venue, asset, quote).
+  /**
+   * Reads ahead the candle days `reqs` will need from the source, for the
+   * `prices` calls that follow (the module doc's `warm`). Values nothing and
+   * caches no price: a day it could not read is read again by `prices`.
+   */
+  async warm(reqs: FeePriceRequest[]): Promise<number> {
+    if (!this.source || !reqs.length) return 0
+    const need = this.minutesNeeded(reqs, await this.routesOf(reqs))
+    const windows = this.windowsFor(need).filter(
+      (w) => !this.dayCached(windowKey(w)),
+    )
+    const run = windows.slice(0, WARM_MAX_WINDOWS)
+    await Promise.all(run.map((w) => this.windowMids(w)))
+    return run.length
+  }
+
+  /** Routes per (venue, asset, quote). */
+  private async routesOf(reqs: FeePriceRequest[]) {
     const routes = new Map<string, FeeRoute | null>()
     for (const r of reqs) {
       const k = `${r.venue}|${r.asset.toUpperCase()}|${r.quote.toUpperCase()}`
@@ -138,7 +160,38 @@ export class FeeAssetPrices {
       const pairs = await this.pairsFor(r.venue, [r.asset, r.quote])
       routes.set(k, feeRoute(r.asset, r.quote, pairs))
     }
-    // Every (venue, pair, minute) any route needs.
+    return routes
+  }
+
+  /** Prices by `priceKey`; null where unknown. */
+  async prices(reqs: FeePriceRequest[]): Promise<Map<string, number | null>> {
+    const out = new Map<string, number | null>()
+    if (!this.source || !reqs.length) {
+      for (const r of reqs) out.set(priceKey(r), null)
+      return out
+    }
+    const routes = await this.routesOf(reqs)
+    await this.readCandles(this.minutesNeeded(reqs, routes))
+    for (const r of reqs) {
+      const route = routes.get(
+        `${r.venue}|${r.asset.toUpperCase()}|${r.quote.toUpperCase()}`,
+      )
+      const m = minuteOf(r.at)
+      out.set(
+        priceKey(r),
+        route
+          ? routePrice(route, (pair) => this.midCached(r.venue, pair, m))
+          : null,
+      )
+    }
+    return out
+  }
+
+  /** Every (venue, pair, minute) any route needs and no price is cached for. */
+  private minutesNeeded(
+    reqs: FeePriceRequest[],
+    routes: Map<string, FeeRoute | null>,
+  ) {
     const need = new Map<string, Set<number>>()
     const want = (venue: string, pair: string, minute: number) => {
       if (this.midCached(venue, pair, minute) !== undefined) return
@@ -156,20 +209,7 @@ export class FeeAssetPrices {
       want(r.venue, route.num, m)
       if (route.den) want(r.venue, route.den, m)
     }
-    await this.readCandles(need)
-    for (const r of reqs) {
-      const route = routes.get(
-        `${r.venue}|${r.asset.toUpperCase()}|${r.quote.toUpperCase()}`,
-      )
-      const m = minuteOf(r.at)
-      out.set(
-        priceKey(r),
-        route
-          ? routePrice(route, (pair) => this.midCached(r.venue, pair, m))
-          : null,
-      )
-    }
-    return out
+    return need
   }
 
   private midCached(venue: string, pair: string, minute: number) {
@@ -193,8 +233,8 @@ export class FeeAssetPrices {
     this.mids.set(`${venue}|${pair}|${minute}`, { at: +new Date(), value: v })
   }
 
-  private async readCandles(need: Map<string, Set<number>>) {
-    const windows: ({ venue: string; pair: string } & FeeWindow)[] = []
+  private windowsFor(need: Map<string, Set<number>>) {
+    const windows: VenueWindow[] = []
     for (const [k, set] of need) {
       const [venue, pair] = [
         k.slice(0, k.indexOf('|')),
@@ -203,6 +243,11 @@ export class FeeAssetPrices {
       for (const w of windowsOf([...set], +new Date()))
         windows.push({ venue, pair, ...w })
     }
+    return windows
+  }
+
+  private async readCandles(need: Map<string, Set<number>>) {
+    const windows = this.windowsFor(need)
     const run = windows.slice(0, MAX_WINDOWS_PER_CALL)
     if (windows.length > run.length) {
       logger.info(
@@ -212,9 +257,58 @@ export class FeeAssetPrices {
     await Promise.all(run.map((w) => this.readWindow(w)))
   }
 
-  private async readWindow(w: { venue: string; pair: string } & FeeWindow) {
+  private async readWindow(w: VenueWindow) {
+    const day = await this.windowMids(w)
+    if (!day) {
+      // Source failure: not remembered, the next call asks again.
+      return
+    }
+    // Every minute the window returned is now known, asked for or not.
+    const returned = new Set<number>()
+    day.minutes.forEach((m, i) => {
+      returned.add(m)
+      this.setMid(
+        w.venue,
+        w.pair,
+        m,
+        Number.isNaN(day.mids[i]) ? null : day.mids[i],
+      )
+    })
+    for (const m of w.minutes) {
+      if (!returned.has(m)) this.setMid(w.venue, w.pair, m, null)
+    }
+  }
+
+  private dayCached(key: string) {
+    const hit = this.days.get(key)
+    if (hit && +new Date() - hit.at > WARM_TTL_MS) {
+      this.days.delete(key)
+      return undefined
+    }
+    return hit
+  }
+
+  /** The window's minutes and mids: from the `warm` memo, else one source read. */
+  private windowMids(w: VenueWindow): Promise<WindowMids | null> {
+    const key = windowKey(w)
+    const hit = this.dayCached(key)
+    if (hit) return hit.value
+    const value = this.readDay(w)
+    const entry = { at: +new Date(), value }
+    while (this.days.size >= WARM_MAX_WINDOWS) {
+      this.days.delete(this.days.keys().next().value as string)
+    }
+    this.days.set(key, entry)
+    // A failed read is not remembered.
+    void value.then((v) => {
+      if (!v && this.days.get(key) === entry) this.days.delete(key)
+    })
+    return value
+  }
+
+  private async readDay(w: VenueWindow): Promise<WindowMids | null> {
     const source = this.source
-    if (!source) return
+    if (!source) return null
     await this.acquire()
     let rows: FeeCandle[] | null = null
     try {
@@ -232,21 +326,22 @@ export class FeeAssetPrices {
     } finally {
       this.release()
     }
-    if (!rows) {
-      // Source failure: not remembered, the next call asks again.
-      return
-    }
+    if (!rows) return null
     const byMinute = new Map<number, number | null>()
     for (const c of rows) {
       if (c && Number.isFinite(Number(c.t))) {
         byMinute.set(minuteOf(Number(c.t)), candleMid(c))
       }
     }
-    // Every minute the window returned is now known, asked for or not.
-    for (const [m, v] of byMinute) this.setMid(w.venue, w.pair, m, v)
-    for (const m of w.minutes) {
-      if (!byMinute.has(m)) this.setMid(w.venue, w.pair, m, null)
+    const minutes = new Float64Array(byMinute.size)
+    const mids = new Float64Array(byMinute.size)
+    let i = 0
+    for (const [m, v] of byMinute) {
+      minutes[i] = m
+      mids[i] = v === null ? NaN : v
+      i += 1
     }
+    return { minutes, mids }
   }
 
   private acquire(): Promise<void> {
@@ -317,6 +412,13 @@ export class FeeAssetPrices {
 
 /** One source read: a whole UTC day (cut at `now`), and the minutes wanted from it. */
 export type FeeWindow = { from: number; to: number; minutes: number[] }
+
+type VenueWindow = { venue: string; pair: string } & FeeWindow
+
+/** What one window read answered, minute by minute (NaN: no usable price). */
+type WindowMids = { minutes: Float64Array; mids: Float64Array }
+
+const windowKey = (w: VenueWindow) => `${w.venue}|${w.pair}|${w.from}|${w.to}`
 
 /** The needed minutes grouped into one window per UTC day, oldest first. */
 export function windowsOf(minutes: number[], now: number): FeeWindow[] {
