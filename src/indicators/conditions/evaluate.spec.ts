@@ -197,4 +197,38 @@ describe('indicators/conditions — shared condition module', () => {
       prevValue: 110,
     })
   })
+
+  it('ATH Drawdown between: both bounds are drawdowns', () => {
+    // the drawdown is negative and both bounds are entered as positive
+    // percentages, so "between 3 and 8" holds for a drawdown of -3% to -8%
+    const decide = (drawdown: number, value2: string) =>
+      evaluateIndicatorCondition(
+        {
+          type: IndicatorEnum.ath,
+          uuid: 'a',
+          indicatorAction: IndicatorAction.startDeal,
+          indicatorInterval: ExchangeIntervals.oneH,
+          indicatorCondition: IndicatorStartConditionEnum.bw,
+          indicatorValue: '3',
+          indicatorValue2: value2,
+        } as SettingsIndicators,
+        [
+          { time: 0, type: IndicatorEnum.ath, value: drawdown },
+          { time: H, type: IndicatorEnum.ath, value: drawdown },
+        ] as IndicatorHistory[],
+        {
+          interval: ExchangeIntervals.oneH,
+          symbol: 'X',
+          exchange: 'e',
+          showLog: false,
+          debug: () => undefined,
+          reference: () => undefined,
+          setReference: () => undefined,
+        },
+      ).action
+    expect(decide(-5, '8')).to.equal(true)
+    expect(decide(-5, '-8')).to.equal(true)
+    expect(decide(-1, '8')).to.equal(false)
+    expect(decide(-10, '8')).to.equal(false)
+  })
 })

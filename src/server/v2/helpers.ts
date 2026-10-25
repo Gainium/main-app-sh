@@ -14,7 +14,7 @@ import ExchangeChooser from '../../exchange/exchangeChooser'
 import { RetryBackoff, type BackoffCheck } from '../../bot/retryBackoff'
 import logger from '../../utils/logger'
 import { isFutures, isCoinm, isPaper } from '../../utils'
-import { indicatorConfigDefaults } from './botDefaults'
+import { indicatorConfigDefaults, stochZoneBandDefaults } from './botDefaults'
 import { Types } from 'mongoose'
 import { CreateDCABotInputRaw, CreateGridBotInputRaw } from './api'
 /**
@@ -394,6 +394,7 @@ export const addIndicatorsDefaults = <T extends Partial<CreateDCABotInput>>(
     settings.indicators = settings?.indicators?.map((indicator) => ({
       ...(indicatorConfigDefaults[indicator.type] ?? {}),
       ...indicator,
+      ...stochZoneBandDefaults(indicator),
     }))
   }
   return settings

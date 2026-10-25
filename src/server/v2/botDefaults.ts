@@ -336,6 +336,33 @@ export const defDivergenceOscillators = [
   IndicatorEnum.stoch,
 ].sort((a, b) => a.localeCompare(b)) as DivergenceOscillators[]
 
+/**
+ * The Stochastic band a single-band zone reads, defaulted for that zone. The
+ * engine reads Lower's band from `stochUpper` and Upper's from `stochLower`
+ * (with both, `stochUpper` is the upper band and `stochLower` the lower one),
+ * so the static per-key defaults below would give Lower a band of 80 and
+ * Upper one of 20, and the condition would hold almost all the time.
+ */
+export const stochZoneBandDefaults = (
+  indicator: Pick<SettingsIndicators, 'type' | 'stochRange'> &
+    Partial<SettingsIndicators>,
+): Partial<SettingsIndicators> => {
+  if (
+    indicator.type !== IndicatorEnum.stoch &&
+    indicator.type !== IndicatorEnum.stochRSI
+  ) {
+    return {}
+  }
+  const range = indicator.stochRange ?? StochRangeEnum.lower
+  if (range === StochRangeEnum.lower && indicator.stochUpper == null) {
+    return { stochUpper: '20' }
+  }
+  if (range === StochRangeEnum.upper && indicator.stochLower == null) {
+    return { stochLower: '80' }
+  }
+  return {}
+}
+
 export const indicatorConfigDefaults: {
   [x in IndicatorEnum]: Omit<
     SettingsIndicators,
@@ -380,7 +407,8 @@ export const indicatorConfigDefaults: {
   },
   [IndicatorEnum.mom]: {
     indicatorLength: 10,
-    indicatorValue: '70',
+    // a price difference, in price units: only the zero line fits every pair
+    indicatorValue: '0',
     momSource: 'close',
     ...base,
   },

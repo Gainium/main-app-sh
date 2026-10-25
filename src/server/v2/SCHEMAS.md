@@ -1832,8 +1832,8 @@ SettingsIndicators configuration
 | `bbCrossingValue` | enum: `middle|upper|lower` | No | Bollinger Band line to cross |
 | `stochSmoothK` | number | No | Stochastic K smoothing |
 | `stochSmoothD` | number | No | Stochastic D smoothing |
-| `stochUpper` | string | No | Stochastic overbought level |
-| `stochLower` | string | No | Stochastic oversold level |
+| `stochUpper` | string | No | Stochastic band. With stochRange both, the upper band (the condition is met above it). With stochRange lower, the lower band (met below it). Not read with upper or none. |
+| `stochLower` | string | No | Stochastic band. With stochRange both, the lower band (the condition is met below it). With stochRange upper, the upper band (met above it). Not read with lower or none. |
 | `stochRSI` | number | No | Stochastic RSI period |
 | `rsiValue` | enum: `k|d` | No | RSI value (K or D line) |
 | `rsiValue2` | enum: `k|d|custom` | No | Second RSI value |
@@ -1851,7 +1851,7 @@ SettingsIndicators configuration
 | `psarStart` | number | No | Parabolic SAR start value |
 | `psarInc` | number | No | Parabolic SAR increment |
 | `psarMax` | number | No | Parabolic SAR maximum |
-| `stochRange` | enum: `upper|lower|both|none` | No | Stochastic range to check |
+| `stochRange` | enum: `upper|lower|both|none` | No | Zone the condition must be met in: lower (below the band in stochUpper), upper (above the band in stochLower), both (above stochUpper or below stochLower), none (anywhere). |
 | `minPercFromLast` | string | No | Minimum % from last signal |
 | `orderSize` | string | No | Size of each order |
 | `keepConditionBars` | string | No | Bars to keep condition |

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.115.4] - 2026-10-25
+
+### Fixed
+
+- ATH Drawdown "between" compared the drawdown with minus the Value but with the upper value as entered, so "between 3 and 8" held for any drawdown under 3%. Both bounds are now read as drawdowns, as the backtester does from 1.21.1.
+- Public API Stochastic and Stochastic RSI conditions sent without bands got defaults for the wrong zone: with Zone `lower` (the default) the band is read from `stochUpper`, which defaulted to 80, so the condition held below 80. An omitted band now defaults to the zone it is read in: 20 for `lower` (in `stochUpper`), 80 for `upper` (in `stochLower`).
+- Public API Momentum conditions defaulted to a level of 70. Momentum is a price difference in the pair's price units, so the default is now the zero line.
+
+### Changed
+
+- The OpenAPI document and `SCHEMAS.md` describe which Stochastic band key each `stochRange` reads.
+
 ## [1.115.3] - 2026-10-24
 
 ### Changed

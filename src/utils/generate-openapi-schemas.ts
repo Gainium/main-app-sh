@@ -722,10 +722,10 @@ const fieldMetadata: Record<
   // Stochastic
   stochSmoothK: { description: 'Stochastic K smoothing', example: 3 },
   stochSmoothD: { description: 'Stochastic D smoothing', example: 3 },
-  stochUpper: { description: 'Stochastic overbought level', example: '80' },
-  stochLower: { description: 'Stochastic oversold level', example: '20' },
+  stochUpper: { description: 'Stochastic band. With stochRange both, the upper band (the condition is met above it). With stochRange lower, the lower band (met below it). Not read with upper or none.', example: '80' },
+  stochLower: { description: 'Stochastic band. With stochRange both, the lower band (the condition is met below it). With stochRange upper, the upper band (met above it). Not read with lower or none.', example: '20' },
   stochRSI: { description: 'Stochastic RSI period', example: 14 },
-  stochRange: { description: 'Stochastic range to check', example: 'upper' },
+  stochRange: { description: 'Zone the condition must be met in: lower (below the band in stochUpper), upper (above the band in stochLower), both (above stochUpper or below stochLower), none (anywhere).', example: 'upper' },
   rsiValue: { description: 'RSI value (K or D line)', example: 'k' },
   rsiValue2: { description: 'Second RSI value', example: 'd' },
 

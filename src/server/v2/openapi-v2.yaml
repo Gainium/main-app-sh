@@ -3892,11 +3892,11 @@ components:
           example: 3
         stochUpper:
           type: string
-          description: Stochastic overbought level
+          description: "Stochastic band. With stochRange both, the upper band (the condition is met above it). With stochRange lower, the lower band (met below it). Not read with upper or none."
           example: "80"
         stochLower:
           type: string
-          description: Stochastic oversold level
+          description: "Stochastic band. With stochRange both, the lower band (the condition is met below it). With stochRange upper, the upper band (met above it). Not read with lower or none."
           example: "20"
         stochRSI:
           type: number
@@ -3990,7 +3990,7 @@ components:
           example: 0.2
         stochRange:
           type: string
-          description: Stochastic range to check
+          description: "Zone the condition must be met in: lower (below the band in stochUpper), upper (above the band in stochLower), both (above stochUpper or below stochLower), none (anywhere)."
           enum:
             - upper
             - lower
