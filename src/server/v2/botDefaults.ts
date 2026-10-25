@@ -619,7 +619,7 @@ export const indicatorConfigDefaults: {
     kcMa: MAEnum.ema,
     bbwMult: 2,
     kcRange: RangeType.atr,
-    kcRangeLength: 10,
+    kcRangeLength: 20,
   },
   [IndicatorEnum.unpnl]: {
     indicatorLength: 1,

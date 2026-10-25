@@ -231,4 +231,15 @@ describe('indicators/conditions — shared condition module', () => {
     expect(decide(-1, '8')).to.equal(false)
     expect(decide(-10, '8')).to.equal(false)
   })
+
+  it('Support & Resistance without bars runs with 15 and 15', () => {
+    expect(
+      buildIndicatorConfig({
+        type: IndicatorEnum.sr,
+        uuid: 's',
+        indicatorAction: IndicatorAction.startDeal,
+        indicatorInterval: ExchangeIntervals.oneH,
+      } as SettingsIndicators),
+    ).to.deep.equal({ type: IndicatorEnum.sr, leftBars: 15, rightBars: 15 })
+  })
 })

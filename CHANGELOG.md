@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.115.5] - 2026-10-25
+
+### Fixed
+
+- Support & Resistance conditions saved without left/right bars ran with 5 and 5 while the form, the API defaults and the backtester use 15 and 15. They now run with 15 and 15.
+- ATH Drawdown with no Value falls back to 10, the form's default, instead of 70.
+- Public API Keltner Channel range length defaults to 20, the value the engine and the backtester use when it is unset.
+
 ## [1.115.4] - 2026-10-25
 
 ### Fixed

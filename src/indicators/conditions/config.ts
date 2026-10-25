@@ -129,8 +129,10 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
   const stochSmoothD = +(_stochSmoothD ?? 3)
   const stochSmoothK = +(_stochSmoothK ?? 3)
   const stochRSI = +(_stochRSI ?? 14)
-  const leftBars = +(_leftBars ?? 5)
-  const rightBars = +(_rightBars ?? 5)
+  // Support & Resistance's pivot bars; 15 as in the form, the API defaults
+  // and the backtester (5 here made a row without them a different study)
+  const leftBars = +(_leftBars ?? 15)
+  const rightBars = +(_rightBars ?? 15)
   const mar1length = +(_mar1length ?? 20)
   const basePeriods = +(_basePeriods ?? 36)
   const pumpPeriods = +(_pumpPeriods ?? 8)
@@ -271,8 +273,8 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
                                     : type === IndicatorEnum.sr
                                       ? {
                                           type,
-                                          leftBars: leftBars ?? 15,
-                                          rightBars: rightBars ?? 15,
+                                          leftBars,
+                                          rightBars,
                                         }
                                       : type === IndicatorEnum.mar
                                         ? {

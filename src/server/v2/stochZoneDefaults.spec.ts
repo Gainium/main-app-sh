@@ -62,4 +62,8 @@ describe('v2 indicator defaults', () => {
       '0',
     )
   })
+
+  it('Keltner Channel range length defaults to 20, as the engine reads it', () => {
+    expect(withDefaults({ type: IndicatorEnum.kc }).kcRangeLength).to.equal(20)
+  })
 })

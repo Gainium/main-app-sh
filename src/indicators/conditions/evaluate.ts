@@ -628,7 +628,7 @@ export function evaluateIndicatorCondition(
     ) {
       last = lastData.value
       prev = prevData.value
-      value = Math.abs(+(indicatorValue ?? '70')) * -1
+      value = Math.abs(+(indicatorValue ?? '10')) * -1
       prevValue = value
     }
     if (
