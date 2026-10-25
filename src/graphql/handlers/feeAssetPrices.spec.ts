@@ -251,6 +251,27 @@ describe('FeeAssetPrices', () => {
     expect(sourceCalls.filter((q) => q.symbol === 'BNBUSDT')).to.have.length(3)
   })
 
+  it('a call whose days push the minute cache over its cap gets back every price read', async () => {
+    const svc = fresh()
+    svc.setCandleSource(async (q: any) => {
+      const rows = []
+      for (let t = q.from; t <= q.to; t += MIN) rows.push(candle(t, 7))
+      return rows
+    })
+    const days = (from: number, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        venue: 'binance',
+        asset: 'BNB',
+        quote: 'USDT',
+        at: T0 - (from + i) * DAY,
+      }))
+    // 100 days fill the cache to 144k minutes; the next 60 cross the cap.
+    await svc.prices(days(0, 100))
+    const reqs = days(100, 60)
+    const out = await svc.prices(reqs)
+    for (const r of reqs) expect(out.get(priceKey(r))).to.equal(7)
+  })
+
   describe('windowsOf', () => {
     it('one window per UTC day, cut at now', () => {
       const w = windowsOf(

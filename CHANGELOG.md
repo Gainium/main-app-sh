@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.115.8] - 2026-10-25
+
+### Fixed
+
+- Exchange-token fees on accounts with long trading histories could show as unknown in trading costs, and the unknown share could change between page loads: the minute-price cache emptied itself completely when full, sometimes while a valuation was still reading back prices it had just fetched. A valuation now keeps the prices it fetched until it is done, and a full cache drops its oldest prices first. Fees that already showed a value are unchanged.
+
 ## [1.115.7] - 2026-10-25
 
 ### Fixed

@@ -66,6 +66,8 @@ const PAIRS_TTL_MS = 6 * 60 * 60_000
 const MID_TTL_MS = 24 * 60 * 60_000
 const MISS_TTL_MS = 10 * 60_000
 const MID_CACHE_MAX = 200_000
+/** Eviction stops here, so one eviction frees room for many days. */
+const MID_CACHE_LOW = 150_000
 export const WARM_MAX_WINDOWS = 400
 const WARM_TTL_MS = 10 * 60_000
 
@@ -171,7 +173,10 @@ export class FeeAssetPrices {
       return out
     }
     const routes = await this.routesOf(reqs)
-    await this.readCandles(this.minutesNeeded(reqs, routes))
+    // Every mid this call needs, as it found or read it: the shared cache may
+    // evict them before they are read back below.
+    const have = new Map<string, number | null>()
+    await this.readCandles(this.minutesNeeded(reqs, routes, have), have)
     for (const r of reqs) {
       const route = routes.get(
         `${r.venue}|${r.asset.toUpperCase()}|${r.quote.toUpperCase()}`,
@@ -180,21 +185,34 @@ export class FeeAssetPrices {
       out.set(
         priceKey(r),
         route
-          ? routePrice(route, (pair) => this.midCached(r.venue, pair, m))
+          ? routePrice(route, (pair) => {
+              const k = midKey(r.venue, pair, m)
+              return have.has(k)
+                ? have.get(k)
+                : this.midCached(r.venue, pair, m)
+            })
           : null,
       )
     }
     return out
   }
 
-  /** Every (venue, pair, minute) any route needs and no price is cached for. */
+  /**
+   * Every (venue, pair, minute) any route needs and no price is cached for;
+   * the cached ones go into `have`.
+   */
   private minutesNeeded(
     reqs: FeePriceRequest[],
     routes: Map<string, FeeRoute | null>,
+    have?: Map<string, number | null>,
   ) {
     const need = new Map<string, Set<number>>()
     const want = (venue: string, pair: string, minute: number) => {
-      if (this.midCached(venue, pair, minute) !== undefined) return
+      const cached = this.midCached(venue, pair, minute)
+      if (cached !== undefined) {
+        have?.set(midKey(venue, pair, minute), cached)
+        return
+      }
       const k = `${venue}|${pair}`
       const set = need.get(k) ?? new Set<number>()
       set.add(minute)
@@ -213,24 +231,34 @@ export class FeeAssetPrices {
   }
 
   private midCached(venue: string, pair: string, minute: number) {
-    const hit = this.mids.get(`${venue}|${pair}|${minute}`)
+    const hit = this.mids.get(midKey(venue, pair, minute))
     if (!hit) return undefined
     const ttl = hit.value === null ? MISS_TTL_MS : MID_TTL_MS
     if (+new Date() - hit.at > ttl) {
-      this.mids.delete(`${venue}|${pair}|${minute}`)
+      this.mids.delete(midKey(venue, pair, minute))
       return undefined
     }
     return hit.value
   }
 
+  /** Caches a mid; at the cap the oldest-stored minutes go first. */
   private setMid(
     venue: string,
     pair: string,
     minute: number,
     v: number | null,
+    have?: Map<string, number | null>,
   ) {
-    if (this.mids.size >= MID_CACHE_MAX) this.mids.clear()
-    this.mids.set(`${venue}|${pair}|${minute}`, { at: +new Date(), value: v })
+    const key = midKey(venue, pair, minute)
+    have?.set(key, v)
+    this.mids.delete(key)
+    if (this.mids.size >= MID_CACHE_MAX) {
+      for (const k of this.mids.keys()) {
+        if (this.mids.size <= MID_CACHE_LOW) break
+        this.mids.delete(k)
+      }
+    }
+    this.mids.set(key, { at: +new Date(), value: v })
   }
 
   private windowsFor(need: Map<string, Set<number>>) {
@@ -246,7 +274,10 @@ export class FeeAssetPrices {
     return windows
   }
 
-  private async readCandles(need: Map<string, Set<number>>) {
+  private async readCandles(
+    need: Map<string, Set<number>>,
+    have?: Map<string, number | null>,
+  ) {
     const windows = this.windowsFor(need)
     const run = windows.slice(0, MAX_WINDOWS_PER_CALL)
     if (windows.length > run.length) {
@@ -254,10 +285,10 @@ export class FeeAssetPrices {
         `${logPrefix} ${windows.length - run.length} candle day(s) over the per-call cap left unknown`,
       )
     }
-    await Promise.all(run.map((w) => this.readWindow(w)))
+    await Promise.all(run.map((w) => this.readWindow(w, have)))
   }
 
-  private async readWindow(w: VenueWindow) {
+  private async readWindow(w: VenueWindow, have?: Map<string, number | null>) {
     const day = await this.windowMids(w)
     if (!day) {
       // Source failure: not remembered, the next call asks again.
@@ -272,10 +303,11 @@ export class FeeAssetPrices {
         w.pair,
         m,
         Number.isNaN(day.mids[i]) ? null : day.mids[i],
+        have,
       )
     })
     for (const m of w.minutes) {
-      if (!returned.has(m)) this.setMid(w.venue, w.pair, m, null)
+      if (!returned.has(m)) this.setMid(w.venue, w.pair, m, null, have)
     }
   }
 
@@ -417,6 +449,9 @@ type VenueWindow = { venue: string; pair: string } & FeeWindow
 
 /** What one window read answered, minute by minute (NaN: no usable price). */
 type WindowMids = { minutes: Float64Array; mids: Float64Array }
+
+const midKey = (venue: string, pair: string, minute: number) =>
+  `${venue}|${pair}|${minute}`
 
 const windowKey = (w: VenueWindow) => `${w.venue}|${w.pair}|${w.from}|${w.to}`
 
