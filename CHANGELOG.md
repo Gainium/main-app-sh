@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.115.6] - 2026-10-25
+
+### Fixed
+
+- The trading-costs summary of an account with thousands of bots read each bot's orders one bot at a time and could run past the dashboard's request timeout. It now reads them for up to 500 bots per query; the figures are unchanged.
+
 ## [1.115.5] - 2026-10-25
 
 ### Fixed

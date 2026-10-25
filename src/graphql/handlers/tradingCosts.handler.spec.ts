@@ -28,6 +28,7 @@ const DAOS = [
   'pairDb',
 ]
 const saved: Record<string, any> = {}
+const savedAggregate: Record<string, any> = {}
 let calls: Record<string, any[]> = {}
 let answers: Record<string, (search: any, fields: any, opts: any) => any[]> = {}
 
@@ -49,10 +50,22 @@ describe('TradingCostsService', () => {
           data: { result: (answers[name] ?? (() => []))(search, fields, opts) },
         }
       }
+      savedAggregate[name] = dbInit[name].aggregate
+      dbInit[name].aggregate = async (pipeline: any[]) => {
+        const key = `${name}.aggregate`
+        calls[key] = [...(calls[key] ?? []), pipeline]
+        return {
+          status: StatusEnum.ok,
+          data: { result: (answers[key] ?? (() => []))(pipeline, null, null) },
+        }
+      }
     }
   })
   after(() => {
-    for (const name of DAOS) dbInit[name].readData = saved[name]
+    for (const name of DAOS) {
+      dbInit[name].readData = saved[name]
+      dbInit[name].aggregate = savedAggregate[name]
+    }
   })
   beforeEach(() => {
     calls = {}
@@ -241,7 +254,9 @@ describe('TradingCostsService', () => {
               price: '10.05',
             },
           ]
-        : [{ _id: 'x' }]
+        : []
+    // the fee probe: this bot has an executed trade with no reported fee
+    answers['orderDb.aggregate'] = () => [{ _id: BOT }]
     const row = await fresh().botTradingCosts({ _id: BOT })
     expect(row).to.deep.include({
       quoteAsset: 'USDT',
@@ -260,7 +275,69 @@ describe('TradingCostsService', () => {
     expect(calls.dcaDealsDb[0].status).to.equal('closed')
     expect(calls.comboDealsDb[0].status).to.equal('closed')
     expect(calls.comboDealsDb[0].botId.$in).to.deep.equal([BOT])
-    expect(calls.orderDb).to.have.length(2)
+    expect(calls.orderDb).to.have.length(1)
+    expect(calls.orderDb[0].botId.$in).to.deep.equal([BOT])
+    expect(calls['orderDb.aggregate']).to.have.length(1)
+  })
+
+  it('an account of many bots reads orders per chunk of bots, not per bot (198 §3)', async () => {
+    // 1,200 bots = 3 chunks of 500; each bot: one historical deal on a
+    // fee-token venue, one safety order 10 or 20 bps above its reference.
+    const bots = Array.from({ length: 1200 }, (_, i) =>
+      (0xb00000 + i).toString(16).padStart(24, '0'),
+    )
+    answers.dcaDealsDb = (search) =>
+      bots
+        .filter((botId) => !search.botId || search.botId.$in.includes(botId))
+        .map((botId) => ({
+          _id: `d${bots.indexOf(botId)}`,
+          botId,
+          status: 'closed',
+          exchange: 'binance',
+          profit: { total: 1 },
+          commission: 0.1,
+          settings: { profitCurrency: 'quote' },
+          symbol: { quoteAsset: 'USDT' },
+        }))
+    const slip = (i: number) => (i % 2 ? 0.01 : 0.02)
+    answers.orderDb = (search) =>
+      search.type === 'MARKET'
+        ? search.botId.$in.map((botId: string) => {
+            const i = bots.indexOf(botId)
+            return {
+              dealId: `d${i}`,
+              botId,
+              type: 'MARKET',
+              status: 'FILLED',
+              side: 'BUY',
+              typeOrder: 'dealRegular',
+              origPrice: '10',
+              executedQty: '1',
+              price: `${10 + slip(i)}`,
+            }
+          })
+        : []
+    // only the first bot has a trade with no venue-reported fee
+    answers['orderDb.aggregate'] = (pipeline) =>
+      pipeline[0].$match.botId.$in.includes(bots[0]) ? [{ _id: bots[0] }] : []
+    const svc = fresh()
+    const [row] = await svc.accountTradingCosts('u1', false, {
+      botType: 'dca',
+    })
+    expect(row.deals).to.equal(1200)
+    // each bot's slippage attributed to its own deal: 600 × 0.02 + 600 × 0.01
+    expect(row.slippageQuote).to.be.closeTo(18, 1e-6)
+    expect(row.feesEstimated).to.equal(true)
+    // 3 chunks: a MARKET read + a fee-bearing read each; one probe each
+    expect(calls.orderDb).to.have.length(6)
+    expect(calls['orderDb.aggregate']).to.have.length(3)
+    // settings of 500 bots per read
+    expect(calls.dcaBotDb.length).to.be.at.most(3)
+    const one = await svc.botTradingCosts({ _id: bots[1] })
+    expect(one.feesEstimated).to.equal(false)
+    expect(one.slippageQuote).to.be.closeTo(0.01, 1e-9)
+    // served from the caches the account read filled
+    expect(calls.orderDb).to.have.length(6)
   })
 
   it('a cancelled deal the store returns anyway is not counted', async () => {
@@ -548,8 +625,11 @@ describe('TradingCostsService', () => {
         },
       ]
       answers.orderDb = (search) =>
-        search.botId === BOT && search.$or
-          ? [bnbOrder({ dealId: 'd1' }), bnbOrder({ dealId: 'd2' })]
+        search.botId?.$in?.includes(BOT) && search.$or
+          ? [
+              bnbOrder({ dealId: 'd1', botId: BOT }),
+              bnbOrder({ dealId: 'd2', botId: BOT }),
+            ]
           : []
       const row = await fresh().botTradingCosts({ _id: BOT })
       expect(row).to.deep.include({
@@ -561,7 +641,10 @@ describe('TradingCostsService', () => {
       expect(row.grossQuote).to.be.closeTo(4, 1e-12)
       expect(row.unbookedFeesQuote).to.be.closeTo(0.012, 1e-12)
       expect(calls.orderDb).to.have.length(1)
-      expect(calls.orderDb[0]).to.deep.include({ botId: BOT, status: 'FILLED' })
+      expect(calls.orderDb[0]).to.deep.include({
+        botId: { $in: [BOT] },
+        status: 'FILLED',
+      })
     })
     it('fee-ledger vs plain deal: same breakdown, only the ledger deal reports the USD deduction', async () => {
       withPrices(600)
