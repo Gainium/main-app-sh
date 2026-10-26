@@ -201,6 +201,7 @@ import { LargeAccountService } from '../bot/largeAccount/largeAccountService'
 import { getInPositions } from './handlers/inPositions.handler'
 import { TradingCostsService } from './handlers/tradingCosts.handler'
 import { DEAL_TOTALS_ARGS } from '../bot/dealListFilter'
+import { redactBotListResult } from '../bot/redactBotCredentials'
 
 /**
  * The single reply every failed password login gets, whatever went wrong.
@@ -1354,6 +1355,30 @@ const resolvers = <
         botId,
         exchange,
       )
+    },
+    closedTradeList: async (
+      _parent: any,
+      { input }: { input?: { dataGridInput?: DataGridFilterInput } },
+      { token, paperContext }: InputRequest,
+    ) => {
+      const user = await findUser(token)
+      if (user.status === StatusEnum.notok) {
+        return user
+      }
+      const result = await Bot.getClosedTradeListGraphQl(
+        user.data,
+        paperContext,
+        input?.dataGridInput,
+      )
+      if (token !== 'demo' || result.status !== StatusEnum.ok) return result
+      // The demo session lists the demo account's bots as that account.
+      return {
+        ...result,
+        data: {
+          ...result.data,
+          grid: redactBotListResult({ data: result.data.grid }).data,
+        },
+      }
     },
     searchByBotName: async (
       _parent: any,

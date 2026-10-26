@@ -160,6 +160,18 @@ import {
   buildDealListFilter,
   dealListTotalsPipeline,
 } from './dealListFilter'
+import {
+  CLOSED_DEAL_STATUSES,
+  CLOSED_GRID_STATUSES,
+  GRID_AS_DEAL_STAGE,
+  closedTradeSort,
+  keysFacet,
+  mergeClosedTradeKeys,
+  withStatuses,
+  withWorkingTimeTotal,
+  type ClosedTradeKey,
+  type ClosedTradeKind,
+} from './closedTradeList'
 import RabbitClient from '../db/rabbit'
 import {
   botDb,
@@ -1956,6 +1968,172 @@ class Bot<T extends UserSchema = UserSchema> {
       },
       total: request.data.count,
       [DEAL_TOTALS_ARGS]: { combo: true, search },
+    }
+  }
+
+  /**
+   * The Trades page's closed trades — closed DCA, terminal and combo deals and
+   * stopped grid bots — as one list paged on the server (spec 200).
+   */
+  public async getClosedTradeListGraphQl(
+    user: ExcludeDoc<UserSchema>,
+    paperContext?: boolean,
+    dataGridFilter?: DataGridFilterInput,
+  ) {
+    const userId = user._id.toString()
+    const context = paperContext ? { $eq: true } : { $ne: true }
+    const dealInput = withStatuses(dataGridFilter, CLOSED_DEAL_STATUSES)
+    const dealScope = (terminal: boolean) => ({
+      paperContext: context,
+      type: terminal
+        ? { $eq: DCATypeEnum.terminal }
+        : { $nin: [DCATypeEnum.terminal] },
+      parentBotId: { $exists: false },
+    })
+    const [dca, terminal, combo] = await Promise.all([
+      this.dealListSearch(user, false, dealScope(false), dealInput),
+      this.dealListSearch(user, false, dealScope(true), dealInput),
+      this.dealListSearch(user, true, dealScope(false), dealInput),
+    ])
+    const grid = await buildDealListFilter(
+      withStatuses(dataGridFilter, CLOSED_GRID_STATUSES),
+      {
+        timezone: user.timezone,
+        botIdsByName: async (nameCond) => {
+          const bots = await this.botDb.readData(
+            { userId, ...nameCond } as never,
+            { _id: 1 },
+            {},
+            true,
+          )
+          return bots.status === StatusEnum.ok
+            ? bots.data.result.map((b) => `${b._id}`)
+            : []
+        },
+      },
+    )
+    const { skip, limit: requested } = dca.built
+    const limit = Math.min(500, requested ?? 500)
+    const { field, dir } = closedTradeSort(dca.built.sort)
+    type KeysFacet = {
+      rows: { _id: unknown; k?: number | null }[]
+      total: { n: number }[]
+    }
+    const keysOf =
+      (db: typeof this.dcaDealsDb) => (pipeline: PipelineStage[]) =>
+        db.aggregate<KeysFacet>(pipeline)
+    const sources: {
+      kind: ClosedTradeKind
+      run: ReturnType<typeof keysOf>
+      match: PipelineStage[]
+    }[] = [
+      {
+        kind: 'dca',
+        run: keysOf(this.dcaDealsDb),
+        match: [{ $match: dca.search }],
+      },
+      {
+        kind: 'terminal',
+        run: keysOf(this.dcaDealsDb),
+        match: [{ $match: terminal.search }],
+      },
+      {
+        kind: 'combo',
+        run: keysOf(this.comboDealsDb as unknown as typeof this.dcaDealsDb),
+        match: [{ $match: combo.search }],
+      },
+      {
+        kind: 'grid',
+        run: keysOf(this.botDb as unknown as typeof this.dcaDealsDb),
+        match: [
+          {
+            $match: { userId, paperContext: context, isDeleted: { $ne: true } },
+          },
+          GRID_AS_DEAL_STAGE,
+          { $match: grid.filter },
+        ],
+      },
+    ]
+    const facets = await Promise.all(
+      sources.map((s) => s.run(keysFacet(s.match, field, dir, skip + limit))),
+    )
+    const keys: ClosedTradeKey[] = []
+    let total = 0
+    for (const [i, res] of facets.entries()) {
+      if (res.status === StatusEnum.notok) return res
+      const facet = res.data.result[0]
+      total += facet?.total[0]?.n ?? 0
+      for (const r of facet?.rows ?? []) {
+        keys.push({ kind: sources[i].kind, id: `${r._id}`, k: r.k ?? null })
+      }
+    }
+    const page = mergeClosedTradeKeys(keys, dir, skip, limit)
+    const idsOf = (kind: ClosedTradeKind) =>
+      page.filter((r) => r.kind === kind).map((r) => r.id)
+
+    const withBotNames = async (
+      dealDb: typeof this.dcaDealsDb,
+      namesDb: typeof this.dcaBotDb,
+      ids: string[],
+    ) => {
+      if (!ids.length) return []
+      const deals = await dealDb.readData(
+        { _id: { $in: ids } } as never,
+        {},
+        {},
+        true,
+      )
+      if (deals.status === StatusEnum.notok) return []
+      const names = await namesDb.readData(
+        { _id: { $in: deals.data.result.map((d) => d.botId) } } as never,
+        { 'settings.name': 1, _id: 1 },
+        undefined,
+        true,
+      )
+      const nameOf = new Map(
+        (names.data?.result ?? []).map((b) => [`${b._id}`, b.settings.name]),
+      )
+      return deals.data.result.map((d) => {
+        delete d.__v
+        return {
+          ...d,
+          paperContext: !!paperContext,
+          botName: nameOf.get(d.botId) || '',
+        }
+      })
+    }
+    const gridIds = idsOf('grid')
+    const [dcaRows, terminalRows, comboRows, gridRows] = await Promise.all([
+      withBotNames(this.dcaDealsDb, this.dcaBotDb, idsOf('dca')),
+      withBotNames(this.dcaDealsDb, this.dcaBotDb, idsOf('terminal')),
+      withBotNames(
+        this.comboDealsDb as unknown as typeof this.dcaDealsDb,
+        this.comboBotDb as unknown as typeof this.dcaBotDb,
+        idsOf('combo'),
+      ),
+      gridIds.length
+        ? this.botDb.readData(
+            { _id: { $in: gridIds } } as never,
+            undefined,
+            {},
+            true,
+          )
+        : null,
+    ])
+    return {
+      status: StatusEnum.ok,
+      reason: null,
+      total,
+      data: {
+        order: page.map(({ kind, id }) => ({ kind, id })),
+        dca: dcaRows,
+        terminal: terminalRows,
+        combo: comboRows,
+        grid:
+          gridRows?.status === StatusEnum.ok
+            ? gridRows.data.result.map(withWorkingTimeTotal)
+            : [],
+      },
     }
   }
 
@@ -13731,20 +13909,7 @@ class Bot<T extends UserSchema = UserSchema> {
     return {
       status: StatusEnum.ok,
       reason: null,
-      data: result.map((r) => ({
-        ...r,
-        workingTimeTotal:
-          r.workingShift && r.workingShift.length > 0
-            ? r.workingShift.reduce((acc, v) => {
-                if (v.end) {
-                  acc += v.end - v.start
-                } else if (!v.end) {
-                  acc += new Date().getTime() - v.start
-                }
-                return acc
-              }, 0)
-            : 0,
-      })),
+      data: result.map(withWorkingTimeTotal),
       total,
     }
   }

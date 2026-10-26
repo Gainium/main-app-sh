@@ -914,6 +914,9 @@ export const BotSchema = /* GraphQL */ `
     comboDealList(input: getDcaDealListInput): getComboDealsResponse
     hedgeComboDealList(input: getDcaDealListInput): getComboDealsResponse
     hedgeDcaDealList(input: getDcaDealListInput): getDCADealsResponse
+    # Closed deals of every kind and stopped grid bots as one server-paged
+    # list (spec 200).
+    closedTradeList(input: closedTradeListInput): closedTradeListResponse
     getBot(input: getBotInput!): getBotResponse
     getDCABot(input: getBotInput!): getDCABotResponse
     getComboBot(input: getBotInput!): getComboBotResponse
@@ -4915,6 +4918,27 @@ export const BotSchema = /* GraphQL */ `
     totalPages: Int
     totalResults: Int
     result: [comboDeal]
+  }
+  input closedTradeListInput {
+    dataGridInput: DataGridFilterInput
+  }
+  type closedTradeRef {
+    kind: String
+    id: String
+  }
+  type closedTradeListResult {
+    # The page in display order; rows are in the per-kind lists below.
+    order: [closedTradeRef]
+    dca: [dcaDeal]
+    terminal: [dcaDeal]
+    combo: [comboDeal]
+    grid: [fullBot]
+  }
+  type closedTradeListResponse implements BasicResponse {
+    status: Status
+    reason: String
+    data: closedTradeListResult
+    total: Float
   }
   type getDCADealsResponse implements BasicResponse {
     status: Status

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.116.0] - 2026-10-26
+
+### Added
+
+- `closedTradeList` query: closed DCA, terminal and combo deals and stopped grid bots as one list, paged, sorted (close or open time) and filtered on the server, so the Trades page can show closed trades of every kind without loading them all.
+
 ## [1.115.8] - 2026-10-25
 
 ### Fixed
