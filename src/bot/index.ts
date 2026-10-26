@@ -4,6 +4,8 @@ import { v4 } from 'uuid'
 import { Worker, isMainThread, threadId } from 'worker_threads'
 import logger from '../utils/logger'
 import {
+  malformedWebhookFields,
+  malformedWebhookFieldsReason,
   missingWebhookFields,
   missingWebhookFieldsReason,
   webhookBotNotRunningReason,
@@ -1535,6 +1537,7 @@ class Bot<T extends UserSchema = UserSchema> {
 
   /** Stored status of the non-deleted bot holding a webhook uuid, if any. */
   private async webhookBotStatus(uuid: string): Promise<string | undefined> {
+    if (typeof uuid !== 'string') return undefined
     const filter = { uuid, isDeleted: { $ne: true } }
     for (const db of [
       this.dcaBotDb,
@@ -8106,7 +8109,7 @@ class Bot<T extends UserSchema = UserSchema> {
 
   /** Bot type holding a webhook uuid, looked up in the order the API always used. */
   protected async webhookBotType(uuid?: string): Promise<BotType | undefined> {
-    if (!uuid) return undefined
+    if (!uuid || typeof uuid !== 'string') return undefined
     if ((await this.dcaBotDb.readData({ uuid }))?.data?.result) return BotType.dca
     if ((await this.comboBotDb.readData({ uuid }))?.data?.result)
       return BotType.combo
@@ -9941,6 +9944,16 @@ class Bot<T extends UserSchema = UserSchema> {
     ignoreSettings = false,
   ) {
     if (!this.useBots) {
+      // Every bot lookup below matches on `uuid`: refuse the payload before
+      // any of them if a field is not plain text.
+      const malformed = [
+        ...new Set([data].flat().flatMap((d) => malformedWebhookFields(d))),
+      ]
+      if (malformed.length) {
+        const reason = malformedWebhookFieldsReason(malformed)
+        this.handleWarn(reason)
+        return { status: StatusEnum.notok as const, reason, data: null }
+      }
       // The API is where a signal is received: stamp it here, over anything
       // the sender put in the field (logging only), and never let a sender
       // mark its own signal as a replay.
@@ -10191,6 +10204,14 @@ class Bot<T extends UserSchema = UserSchema> {
         reason,
         data: null,
       }
+    }
+    // Refused before the bot lookups below, every one of which matches on
+    // `uuid`.
+    const malformed = malformedWebhookFields(data)
+    if (malformed.length) {
+      const reason = malformedWebhookFieldsReason(malformed)
+      this.handleWarn(reason)
+      return { status: StatusEnum.notok as const, reason, data: null }
     }
     if (action && uuid) {
       // A signal runs within WEBHOOK_SIGNAL_MAX_AGE_MS of reaching the API or

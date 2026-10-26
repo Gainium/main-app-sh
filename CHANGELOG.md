@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.117.3] - 2026-10-26
+
+### Fixed
+
+- Webhook signals now require `action` and `uuid` (and the internal signal id) to be plain text of at most 64 characters. A signal carrying an object, an array or a number in one of those fields is answered 400 with the reason before any bot is looked up. The trade-signal log line escapes the sender's values.
+
 ## [1.117.2] - 2026-10-26
 
 ### Fixed

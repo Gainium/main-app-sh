@@ -51,13 +51,32 @@ export function invalidJsonBodyReason(message: string): string {
  */
 export function tradeSignalSummary(body: unknown): string {
   const signals = [body].flat() as Array<
-    { action?: string; uuid?: string } | undefined
+    { action?: unknown; uuid?: unknown } | undefined
   >
   return (
     signals
-      .map((d) => `${d?.action ?? 'no-action'}:${d?.uuid ?? 'no-uuid'}`)
+      .map(
+        (d) =>
+          `${summaryField(d?.action, 'no-action')}:${summaryField(d?.uuid, 'no-uuid')}`,
+      )
       .join(', ') || 'empty payload'
   )
+}
+
+/**
+ * A sender-supplied value as it goes into the log line: JSON-escaped, so a
+ * newline or control character cannot start a line of its own. A plain text
+ * value reads exactly as before (no quotes); anything else is shown as JSON.
+ */
+function summaryField(value: unknown, absent: string): string {
+  if (value === undefined || value === null) return absent
+  const text =
+    typeof value === 'string'
+      ? JSON.stringify(value).slice(1, -1)
+      : (JSON.stringify(value) ?? String(value))
+  return text.length > RAW_BODY_SNIPPET_CHARS
+    ? `${text.slice(0, RAW_BODY_SNIPPET_CHARS)}…`
+    : text
 }
 
 /**
@@ -141,6 +160,37 @@ export function webhookBotNotRunningReason(
     return `Bot is archived, so "${action}" was not executed.`
   }
   return `Bot is restarting on our side, so "${action}" was not executed.`
+}
+
+/** Longest `action` / `uuid` / `signalId` a signal may carry; a bot uuid is 36. */
+export const WEBHOOK_TEXT_FIELD_MAX_CHARS = 64
+
+const webhookTextFields = ['action', 'uuid', 'signalId'] as const
+
+/**
+ * Which of the text fields a payload carries as something other than short
+ * plain text — an object, an array, a number, or an over-long string. The bot
+ * lookups take `uuid` as a value to match, so such a signal is refused before
+ * any of them. Absent and empty fields are `missingWebhookFields`' to report.
+ */
+export function malformedWebhookFields(data: unknown): string[] {
+  if (!data || typeof data !== 'object') return []
+  const d = data as Record<string, unknown>
+  return webhookTextFields.filter((field) => {
+    const value = d[field]
+    if (value === undefined || value === null || value === '') return false
+    return (
+      typeof value !== 'string' || value.length > WEBHOOK_TEXT_FIELD_MAX_CHARS
+    )
+  })
+}
+
+export function malformedWebhookFieldsReason(fields: string[]): string {
+  return (
+    `Webhook field(s) ${fields.join(', ')} must be plain text of at most ` +
+    `${WEBHOOK_TEXT_FIELD_MAX_CHARS} characters. Expected a JSON object such as ` +
+    `{"action":"startDeal","uuid":"<bot uuid>"}.`
+  )
 }
 
 export function missingWebhookFieldsReason(missing: string[]): string {
