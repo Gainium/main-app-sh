@@ -50,6 +50,8 @@ import { botDb, transactionDb } from '../db/dbInit'
 import { DealStats } from './worker/statsService'
 import { botMonitor, CalculateGridLiveStatsParams } from './botMonitor'
 import { priceMovedSince } from './priceStreamGap'
+import { wasRestingWhenCanceled } from './combo/gridCancelRested'
+import { RunWithDelay } from '../utils/delay'
 
 /**
  * Price in initial grids
@@ -93,6 +95,13 @@ const FLUSH_STATS_TIMEOUT_MS = 5000
 
 const { sleep } = utils
 
+/**
+ * Quiet time after the last venue cancel of a grid level before the levels
+ * are placed again, so a cancel-all burst is placed back in one pass.
+ * Spec 201 §4.2.
+ */
+const VENUE_CANCEL_REPLACE_DELAY_MS = 2000
+
 function createBotHelper<
   Schema extends BotSchema = BotSchema,
   TBaseClass extends new (...args: any[]) => MainBot<Schema> = new (
@@ -122,6 +131,11 @@ function createBotHelper<
    */
   class BotHelper extends ActualBaseClass {
     private ordersInProgress: Set<string> = new Set()
+    /**
+     * Grid levels the venue cancelled after they rested, waiting for
+     * {@link BotHelper#placeCanceledLevels}, by client order id. Spec 201.
+     */
+    private venueCanceledLevels: Map<string, Order> = new Map()
     /** DB instance to work with transactions collection */
     protected transactionDb: DB<TransactionSchema>
     /** Object to store swap asset order */
@@ -215,6 +229,7 @@ function createBotHelper<
       this.processFilledOrder = this.processFilledOrder.bind(this)
       this.processFilledSwap = this.processFilledSwap.bind(this)
       this.processLiquidationOrder = this.processLiquidationOrder.bind(this)
+      this.processCanceledOrder = this.processCanceledOrder.bind(this)
       this.handleUnknownOrder = this.handleUnknownOrder.bind(this)
       this.sortQueue = this.sortQueue.bind(this)
       this.processSellAtStop = this.processSellAtStop.bind(this)
@@ -228,6 +243,7 @@ function createBotHelper<
         sort: this.sortQueue,
         onFilled: this.processFilledOrder,
         onLiquidation: this.processLiquidationOrder,
+        onCanceled: this.processCanceledOrder,
       }
       this.callbackAfterUserStream = this.checkOrdersAfterReconnect.bind(this)
       this.priceTimerFn = this.priceTimerFn.bind(this)
@@ -1733,6 +1749,106 @@ function createBotHelper<
       }
     }
 
+    /**
+     * A grid level cancelled on the venue without the bot asking (the venue's
+     * cancel-all, or the user on the exchange) is still a level the ladder
+     * wants. With no reaction here the bot kept its ladder and its active
+     * level counts while nothing rested, until a restart. Queue it to be
+     * placed again, as `checkOrders` does on a restart ("Send order again").
+     *
+     * Unchanged: the bot's own cancels (spec 095 ledger), and an order the
+     * venue refused as it was placed (spec 179's rested-vs-refused rule) are
+     * not retried. A cancel that executed part of the order is left alone.
+     * Spec 201 §4.1.
+     */
+    async processCanceledOrder(
+      order: Order,
+      _updateTime: number,
+      _expired: boolean,
+    ): Promise<void> {
+      if (order.typeOrder !== TypeOrderEnum.regular) {
+        return
+      }
+      if (this.isOwnCancel(order.clientOrderId)) {
+        return
+      }
+      if (+order.executedQty > 0) {
+        return
+      }
+      if (!wasRestingWhenCanceled(order)) {
+        return
+      }
+      ;(this.venueCanceledLevels ??= new Map()).set(order.clientOrderId, order)
+      this.handleLog(
+        `Grid order ${order.clientOrderId} was cancelled on the exchange after resting, placing ${order.side} ${order.origPrice} again`,
+      )
+      this.scheduleCanceledLevels(this.botId)
+    }
+    /** One pass per burst of venue cancels. Spec 201 §4.2. */
+    @RunWithDelay(
+      (botId: string) => `placeCanceledGridLevels-${botId}`,
+      VENUE_CANCEL_REPLACE_DELAY_MS,
+    )
+    scheduleCanceledLevels(_botId: string) {
+      this.placeCanceledLevels(this.botId).catch((e) =>
+        this.handleWarn(
+          `Cannot place cancelled grid levels again: ${(e as Error)?.message ?? e}`,
+        ),
+      )
+    }
+    /**
+     * Place the queued venue-cancelled levels again, under the mutex
+     * `limitOrders` holds so it never interleaves with a ladder rebuild. A
+     * level the current ladder no longer has (a fill rebuilt it meanwhile) is
+     * dropped; one that already rests is skipped by `placeRegularOrder`.
+     * Spec 201 §4.2.
+     */
+    @IdMute(mutex, (botId: string) => `${botId}`)
+    async placeCanceledLevels(_botId: string): Promise<void> {
+      const queued = [...(this.venueCanceledLevels?.values() ?? [])]
+      this.venueCanceledLevels?.clear()
+      if (!queued.length || !this.data || this.blockLimit) {
+        return
+      }
+      if (
+        this.data.status !== BotStatusEnum.open &&
+        this.data.status !== BotStatusEnum.range
+      ) {
+        return
+      }
+      if (!this.shouldProceed()) {
+        return
+      }
+      const ed = await this.getExchangeInfo(this.data.settings.pair)
+      if (!ed) {
+        return
+      }
+      let placed = 0
+      for (const o of queued) {
+        const level = this.mapOrderToGrid({
+          ...o,
+          price: o.origPrice || o.price,
+        })
+        // By side and price, as `checkOrders` matches the ladder on a restart
+        // (`findDiff(..., ignoreQty)`); the quantity placed is the order's own.
+        const onLadder = (this.grids ?? []).some(
+          (g) => g.side === level.side && g.price === level.price,
+        )
+        if (!onLadder) {
+          continue
+        }
+        const result = await this.placeRegularOrder(level, ed)
+        if (result) {
+          placed++
+          if (result.status === 'FILLED') {
+            this.processFilledOrder(result, result.updateTime)
+          }
+        }
+      }
+      this.handleLog(
+        `Placed ${placed}/${queued.length} grid level(s) again after exchange cancels`,
+      )
+    }
     @IdMute(mutex, (botId: string) => `${botId}processFeeOrder`)
     private async processFeeOrder(_botId: string, order: Order) {
       const { clientOrderId, typeOrder, symbol, executedQty, price } = order

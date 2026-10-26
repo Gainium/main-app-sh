@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.116.1] - 2026-10-26
+
+### Fixed
+
+- A grid bot whose resting orders were cancelled on the exchange without the bot asking (an account-wide cancel, or orders cancelled by hand on the exchange) kept showing its levels as active while nothing rested, until the bot was restarted. It now places those levels again a couple of seconds after the cancels stop, in one pass. Orders the bot cancels itself, and orders the exchange refuses as they are placed, are not retried.
+
 ## [1.116.0] - 2026-10-26
 
 ### Added
