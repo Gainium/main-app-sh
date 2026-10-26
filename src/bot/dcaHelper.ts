@@ -9697,6 +9697,27 @@ function createDCABotHelper<
             return await this.settlePartialBaseEntry(find, find.dealId)
           }
           if (
+            !find &&
+            dealId &&
+            this.dealTimersMap.has(dealId) &&
+            this.getDeal(dealId)?.deal.status === DCADealStatusEnum.start &&
+            !this.isOwnCancel(id) &&
+            this.liveBaseEntries(dealId) === 0
+          ) {
+            // The reposition tick of an entry that left the order map: the
+            // venue ended it unfilled (the queue drops such rows), and this
+            // tick is the last check coming — it used to return here without
+            // a word. Hand the deal to the cancelled-entry check, as the
+            // cancel report would have. Not on the restore path, which holds
+            // no timers and re-places a missing entry itself. Spec 203 §4.4.
+            this.handleLog(
+              `Base order ${id} of deal ${dealId} is no longer on the exchange and was not canceled by the bot. Checking the deal in ${canceledBaseEntryDelayMs / 1000}s`,
+            )
+            this.dropBaseEntryTimers(dealId)
+            this.armCanceledBaseEntryDealCancel(dealId, id)
+            return
+          }
+          if (
             find &&
             find.status !== 'FILLED' &&
             find.status !== 'PARTIALLY_FILLED'
@@ -23750,8 +23771,15 @@ function createDCABotHelper<
           orderStatus: order.status,
           executedQty: order.executedQty,
           dealStatus: this.getDeal(order.dealId)?.deal.status,
-          hasPendingCheck: this.dealTimersMap.has(order.dealId),
+          // Every cancel the engine sends goes through `cancelOrderOnExchange`,
+          // which records it first, so `ownCancel` already tells a reposition
+          // from a venue cancel. Deferring to the deal's timers as well left a
+          // LIMIT entry the venue cancelled to a reposition tick that finds no
+          // order and returns, so the deal sat in `start` with nothing on the
+          // book until the old-start-deals cron. Spec 203 §4.1.
+          hasPendingCheck: false,
           ownCancel: this.isOwnCancel(order.clientOrderId),
+          liveEntries: this.liveBaseEntries(order.dealId),
         })
       ) {
         return
@@ -23759,7 +23787,27 @@ function createDCABotHelper<
       this.handleLog(
         `Base order ${order.clientOrderId} of deal ${order.dealId} was canceled on the exchange with nothing filled, not by the bot. Checking the deal in ${canceledBaseEntryDelayMs / 1000}s`,
       )
+      this.dropBaseEntryTimers(order.dealId)
       this.armCanceledBaseEntryDealCancel(order.dealId, order.clientOrderId)
+    }
+
+    /** `dealStart` rows of the deal still resting on the venue. */
+    liveBaseEntries(dealId: string) {
+      return this.getOrdersByStatusAndDealId({
+        dealId,
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      }).filter((o) => o.typeOrder === TypeOrderEnum.dealStart).length
+    }
+
+    /**
+     * Stop the reposition and enter-market timers of a deal whose entry is
+     * gone, so the cancelled-entry check owns the deal. The entry is deleted,
+     * not left nulled as `clearDealTimer` leaves it: timer state the check
+     * finds again later means a new entry was placed since.
+     */
+    dropBaseEntryTimers(dealId: string) {
+      void this.clearDealTimer(dealId)
+      this.dealTimersMap.delete(dealId)
     }
 
     /** One pending check per deal; a newer cancel replaces it. */
@@ -23797,10 +23845,7 @@ function createDCABotHelper<
           dealStatus: deal?.deal.status,
           hasPendingCheck: this.dealTimersMap.has(dealId),
           ownCancel: this.isOwnCancel(clientOrderId),
-          liveEntries: this.getOrdersByStatusAndDealId({
-            dealId,
-            status: ['NEW', 'PARTIALLY_FILLED'],
-          }).filter((o) => o.typeOrder === TypeOrderEnum.dealStart).length,
+          liveEntries: this.liveBaseEntries(dealId),
         })
       ) {
         return

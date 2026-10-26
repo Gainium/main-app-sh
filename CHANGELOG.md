@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.117.4] - 2026-10-26
+
+### Fixed
+
+- A DCA or Combo deal whose limit base order the exchange cancelled before any of it traded now gets cancelled about 15 seconds later, so the bot can open a new one. Until now that only happened on bots that do not reposition their limit entry. With repositioning or an enter-market timeout on, the cancel was left to the reposition timer, which found no order and stopped there. The deal then stayed in "start" with nothing on the exchange until the daily clean-up of old start deals. The bot's own reposition cancels and part-filled entries are handled as before.
+
 ## [1.117.3] - 2026-10-26
 
 ### Fixed

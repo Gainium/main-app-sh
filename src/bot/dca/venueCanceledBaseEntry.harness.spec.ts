@@ -21,7 +21,7 @@ process.env.NODE_ENV = 'testing'
  *
  * Run: `npm test` (mocha).
  */
-import { describe, it, before } from 'mocha'
+import { describe, it, before, afterEach } from 'mocha'
 import { expect } from 'chai'
 import { createRequire } from 'module'
 import {
@@ -183,8 +183,11 @@ const buildBot = (opts: {
     getDeal(id?: string) {
       return id === DEAL_ID ? deal : undefined
     }
-    getOrdersByStatusAndDealId() {
-      return liveRows ?? (order ? [order] : [])
+    getOrdersByStatusAndDealId(q: { status?: string[] } = {}) {
+      // Honours the status filter, as the real map read does.
+      return (liveRows ?? (order ? [order] : [])).filter(
+        (o: any) => !q.status || q.status.includes(o.status),
+      )
     }
     isOwnCancel(id: string) {
       return ownCancels.includes(id)
@@ -627,6 +630,102 @@ describe('a venue-cancelled base entry is never booked (spec 048)', () => {
         })
         await bot.cancelDealOfCanceledBaseEntry(DEAL_ID, CLIENT_ORDER_ID)
         expect((bot.raised as Raised).replaced).to.have.length(0)
+      })
+
+      describe('spec 203 — while the deal holds reposition timers', () => {
+        const NEWER = {
+          clientOrderId: 'D-BO-newer',
+          typeOrder: TypeOrderEnum.dealStart,
+          status: 'NEW',
+        }
+        const held: any[] = []
+        const timers = () => {
+          const t = {
+            limitTimer: setTimeout(() => undefined, 3_600_000),
+            enterMarketTimer: setTimeout(() => undefined, 3_600_000),
+          }
+          held.push(t.limitTimer, t.enterMarketTimer)
+          return t
+        }
+        afterEach(() => {
+          for (const t of held.splice(0)) clearTimeout(t)
+        })
+
+        it('§4.1 an external cancel arms the deal check and drops the timers', async () => {
+          const bot: any = buildBot({
+            order: unfilled(),
+            timers: timers(),
+            liveRows: [],
+          })
+          await bot.processCanceledOrder(unfilled(), 1789416749994, false)
+          expect(bot.dealTimersMap.has(DEAL_ID), 'timers dropped').to.equal(
+            false,
+          )
+          expect(armed(bot), 'deal check armed').to.equal(true)
+          // …and the check then cancels the deal, as without timers.
+          await bot.cancelDealOfCanceledBaseEntry(DEAL_ID, CLIENT_ORDER_ID)
+          expect((bot.raised as Raised).replaced).to.deep.equal([
+            `cancelled:${DEAL_ID}`,
+          ])
+        })
+
+        it('§4.2 the bot’s own reposition cancel keeps its timers', async () => {
+          const t = timers()
+          const bot: any = buildBot({
+            order: unfilled(),
+            timers: t,
+            liveRows: [],
+            ownCancels: [CLIENT_ORDER_ID],
+          })
+          await bot.processCanceledOrder(unfilled(), 1789416749994, false)
+          expect(bot.dealTimersMap.get(DEAL_ID)).to.equal(t)
+          expect(armed(bot)).to.equal(false)
+        })
+
+        it('§4.3 a newer resting entry keeps its timers', async () => {
+          const t = timers()
+          const bot: any = buildBot({
+            order: unfilled(),
+            timers: t,
+            liveRows: [NEWER],
+          })
+          await bot.processCanceledOrder(unfilled(), 1789416749994, false)
+          expect(bot.dealTimersMap.get(DEAL_ID)).to.equal(t)
+          expect(armed(bot)).to.equal(false)
+        })
+
+        it('§4.4 the reposition tick arms the check for an entry that is gone', async () => {
+          const bot: any = buildBot({
+            order: null,
+            timers: timers(),
+            liveRows: [],
+          })
+          await bot.checkBaseOrder(BOT_ID, SYMBOL, CLIENT_ORDER_ID, DEAL_ID)
+          expect(bot.dealTimersMap.has(DEAL_ID), 'timers dropped').to.equal(
+            false,
+          )
+          expect(armed(bot), 'deal check armed').to.equal(true)
+          expect((bot.raised as Raised).replaced).to.have.length(0)
+        })
+
+        it('§4.4 …but not while a newer entry rests, nor for the bot’s own cancel', async () => {
+          for (const over of [
+            { liveRows: [NEWER] },
+            { liveRows: [], ownCancels: [CLIENT_ORDER_ID] },
+          ]) {
+            const t = timers()
+            const bot: any = buildBot({ order: null, timers: t, ...over })
+            await bot.checkBaseOrder(BOT_ID, SYMBOL, CLIENT_ORDER_ID, DEAL_ID)
+            expect(bot.dealTimersMap.get(DEAL_ID)).to.equal(t)
+            expect(armed(bot)).to.equal(false)
+          }
+        })
+
+        it('§4.5 the restore path, which holds no timers, is unchanged', async () => {
+          const bot: any = buildBot({ order: null, timers: null, liveRows: [] })
+          await bot.checkBaseOrder(BOT_ID, SYMBOL, CLIENT_ORDER_ID, DEAL_ID)
+          expect(armed(bot)).to.equal(false)
+        })
       })
     })
   })
