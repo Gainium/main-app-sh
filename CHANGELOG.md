@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.117.1] - 2026-10-26
+
+### Changed
+
+- Dependency security updates: body-parser 2.4.0, follow-redirects 1.16.2, zod 4.6.7 (under `@scalar/types`), `@graphql-tools/utils` 12.0.4. No behaviour change.
+
 ## [1.117.0] - 2026-10-26
 
 ### Changed

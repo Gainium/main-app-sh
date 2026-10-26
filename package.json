@@ -82,7 +82,7 @@
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
     "big.js": "^7.0.1",
-    "body-parser": "^2.2.1",
+    "body-parser": "^2.4.0",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -106,7 +106,12 @@
     "uuid": "^13.0.0"
   },
   "overrides": {
-    "@types/express-serve-static-core": "5.0.6"
+    "@types/express-serve-static-core": "5.0.6",
+    "follow-redirects": "^1.16.1",
+    "@scalar/types": {
+      "zod": "^4.6.6"
+    },
+    "@graphql-tools/utils@12": "~12.0.2"
   },
-  "version": "1.117.0"
+  "version": "1.117.1"
 }
