@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.118.0] - 2026-10-26
+
+### Added
+
+- Combo bots, single- and multi-pair, can close each deal a set time after its base order filled (Close by timer), as DCA bots can. The close uses the deal's own close type (limit or market), cancels its DCA and grid orders and closes the whole position. The timer is re-armed when the bot restarts, and only runs while take profit is on. Off by default. The public API accepts the three timer settings on Combo bot and deal updates.
+
 ## [1.117.4] - 2026-10-26
 
 ### Fixed

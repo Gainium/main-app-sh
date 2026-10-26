@@ -25,6 +25,7 @@ import {
   convertHedgeComboBotToArray,
   convertComboBotToArray,
   checkDCABotSettings,
+  closeByTimerSettingsKeys,
 } from '../../bot/utils'
 import { aggregateHedgeLegs } from '../../bot/hedgeAggregate'
 
@@ -203,6 +204,17 @@ export const cloneHedgeBot = async (args: {
     const { pair: _pair, ...rest } = override ?? {}
 
     if (Object.keys(rest).length > 0) {
+      // Spec 204 §1.7: close by timer is a Combo feature, not a Hedge Combo one.
+      if (
+        isCombo &&
+        Object.keys(rest).some((k) => closeByTimerSettingsKeys.includes(k))
+      ) {
+        return {
+          ok: false,
+          code: 400,
+          reason: `${label} leg: Some settings not supported in combo deals`,
+        }
+      }
       const check = checkDCABotSettings(leg.settings, rest as any, isCombo)
       if (check.status === StatusEnum.notok) {
         return {

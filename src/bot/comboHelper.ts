@@ -5876,6 +5876,8 @@ function createComboBotHelper<
           const d = this.getDeal(dealId)
           if (d) {
             await this.checkDealSlMethods(d)
+            // Spec 204 §1.5, as DCA's `startDeal`.
+            await this.setCloseByTimer(d.deal)
           }
         })
         await this.placeFeeOrder(this.botId, dealId, orderBo.clientOrderId)
@@ -8141,6 +8143,12 @@ function createComboBotHelper<
       await this.checkDealsForStopLossMethods()
       this.checkDealsPriceExtremum()
     }
+    /** Spec 204 §1.4: a timer close uses the deal close type, as the TP does. */
+    protected override timerCloseOrder(settings: { comboTpLimit?: boolean }) {
+      return settings.comboTpLimit
+        ? { closeType: CloseDCATypeEnum.closeByLimit, forceMarket: false }
+        : { closeType: CloseDCATypeEnum.closeByMarket, forceMarket: true }
+    }
     async triggerStopLossCombo(
       dealId: string,
       sl: boolean,
@@ -8974,6 +8982,8 @@ function createComboBotHelper<
           if (dealMinigrids.length === 0) {
             this.handleDebug(`Deal doesn't have active minigrid`)
           }
+          // Spec 204 §1.5: timers do not survive a stop; re-arm, as DCA does.
+          await this.setCloseByTimer(d.deal)
           if (!serviceRestart) {
             this.updateDealBalances(d)
             d.deal = {

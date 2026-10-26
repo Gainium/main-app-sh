@@ -982,9 +982,6 @@ const onlyDcaSettingsKeys = [
   'moveSLValue',
   'moveSLForAll',
   'dealCloseCondition',
-  'closeByTimer',
-  'closeByTimerValue',
-  'closeByTimerUnits',
   'useMultiTp',
   'multiTp',
   'trailingTp',
@@ -992,6 +989,12 @@ const onlyDcaSettingsKeys = [
   'dcaCondition',
   'dcaCustom',
   'pair',
+]
+/** Spec 204: close by timer is on DCA and Combo, not on a Hedge Combo leg. */
+export const closeByTimerSettingsKeys = [
+  'closeByTimer',
+  'closeByTimerValue',
+  'closeByTimerUnits',
 ]
 const onlyComboSettingsKeys = ['comboTpBase']
 export const checkDCADealSettings = (

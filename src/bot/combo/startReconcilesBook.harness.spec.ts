@@ -122,6 +122,7 @@ const buildBot = (opts: {
     venueCancels: [] as string[],
     reconcile: [] as unknown[][],
     checkOrders: [] as unknown[][],
+    timers: [] as string[],
   }
   const deal: any = {
     deal: {
@@ -289,6 +290,10 @@ const buildBot = (opts: {
   bot.startIndicatorInit = async () => undefined
   bot.calculateBotBalances = () => undefined
   bot.calculateUsage = async () => undefined
+  // Spec 204: the close-by-timer re-arm, recorded.
+  bot.setCloseByTimer = async (d: any) => {
+    raised.timers.push(`${d._id}`)
+  }
   // --- reloadBot's surroundings --------------------------------------------
   bot.openNewDealTimer = new Map()
   bot.allowToPlaceOrders = new Map()
@@ -411,6 +416,14 @@ describe('a combo user start reconciles the resting book instead of re-placing i
     expect(bot.raised.checkOrders).to.deep.equal([[BOT_ID]])
     expect(bot.raised.venueCancels).to.deep.equal(['CMB-GR-9'])
     expect(bot.raised.placed).to.have.length(0)
+  })
+
+  it('spec 204 §1.5: re-arms the close-by-timer of every open deal, user start and service restart', async () => {
+    for (const serviceRestart of [false, true]) {
+      const { bot } = buildBot({ orders: fullBook(), serviceRestart })
+      await bot.restoreWork()
+      expect(bot.raised.timers).to.deep.equal([DEAL_ID])
+    }
   })
 
   it('the explicit Restart still sweeps the book and re-places all of it', async () => {

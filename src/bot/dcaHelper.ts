@@ -7159,6 +7159,17 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * How a close-by-timer closes the deal. DCA: its own close type, always at
+     * market. Combo overrides it with its deal close type (spec 204 §1.4).
+     */
+    protected timerCloseOrder(settings: {
+      closeDealType?: CloseDCATypeEnum
+      comboTpLimit?: boolean
+    }): { closeType?: CloseDCATypeEnum; forceMarket: boolean } {
+      return { closeType: settings.closeDealType, forceMarket: true }
+    }
+
     async closeByTimer(d: ExcludeDoc<Deal>) {
       const oldTimer = this.closeDealTimer.get(d._id)
       if (oldTimer) {
@@ -7172,12 +7183,13 @@ function createDCABotHelper<
         settings.useTp
       ) {
         this.handleDebug(`Timer | Close by timer deal ${d._id}`)
+        const { closeType, forceMarket } = this.timerCloseOrder(settings)
         this.closeDealById(
           this.botId,
           d._id,
-          settings.closeDealType,
+          closeType,
           undefined,
-          true,
+          forceMarket,
           false,
           false,
           undefined,
