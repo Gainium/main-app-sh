@@ -3774,6 +3774,7 @@ function createComboBotHelper<
       sl = false,
       closeTrigger?: DCACloseTriggerEnum,
       count = 0,
+      holdingCloseLock = false,
     ) {
       const args = [
         botId,
@@ -3788,6 +3789,7 @@ function createComboBotHelper<
         sl,
         closeTrigger,
         count,
+        holdingCloseLock,
       ] as const
       const tracked =
         (closeType === CloseDCATypeEnum.closeByMarket ||

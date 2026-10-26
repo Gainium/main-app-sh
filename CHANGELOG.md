@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.117.2] - 2026-10-26
+
+### Fixed
+
+- A DCA bot whose "stop after X deals" limit was already met could hang on its next deal close when it still held deals that had not started: the automatic stop waited on the close that triggered it, so that close, every later close and every stop request queued behind it until the worker restarted, and the bot kept running. The automatic stop now cancels those deals inside the close it was triggered from. While a bot is stopping it no longer opens new deals from any start condition, so no deal can open that the stop never sees. A webhook start-deal signal that arrives then is ignored, and the bot says so.
+
 ## [1.117.1] - 2026-10-26
 
 ### Changed

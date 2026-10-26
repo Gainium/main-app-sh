@@ -838,6 +838,8 @@ function createDCABotHelper<
     closeSweepsInFlight: Set<string> = new Set()
     /** Close after TP filled */
     closeAfterTpFilled: boolean
+    /** Spec `202`. `stop()` calls still running on this bot. */
+    stopsInFlight = 0
     /** Timer for time base trigger */
     timer: NodeJS.Timeout | null
     /** Timeout first time */
@@ -4304,6 +4306,31 @@ function createDCABotHelper<
       }
       this.endMethod(_id)
     }
+
+    /**
+     * The bot-controller auto-stop of `checkClosedDeals`. That method's only
+     * caller is `processDealClose`, so this always runs holding the bot's
+     * close lock, and says so to `stop` — see `processDealCloseHoldingLock`.
+     * Spec `202`.
+     *
+     * While a stop is already cancelling this bot's start deals, a second one
+     * started here would re-enter the same cancels one level deeper per deal;
+     * the stop that is running finishes the job, so none is started. With no
+     * start deal left this is the plain inline `stop(leave)` it always was.
+     */
+    private async stopFromDealClose() {
+      if (
+        this.stopsInFlight > 0 &&
+        this.getOpenDeals().some(
+          (d) => d.deal.status === DCADealStatusEnum.start,
+        )
+      ) {
+        this.handleLog('Bot is already stopping')
+        return
+      }
+      await this.stop(CloseDCATypeEnum.leave, false, false, true)
+    }
+
     /** Check closed deals */
 
     async checkClosedDeals() {
@@ -4364,7 +4391,7 @@ function createDCABotHelper<
           this.handleLog(
             `Close deal after X profit accumulated, profit: ${val}, trigger: ${closeAfterXprofitValue}`,
           )
-          await this.stop(CloseDCATypeEnum.leave)
+          await this.stopFromDealClose()
         }
       }
       if (useCloseAfterX && closeAfterX && checkNumber(closeAfterX)) {
@@ -4389,7 +4416,7 @@ function createDCABotHelper<
           this.handleLog(
             `Close deal after X trigger, closed: ${deals.data.result}, trigger: ${closeAfterX}`,
           )
-          await this.stop(CloseDCATypeEnum.leave)
+          await this.stopFromDealClose()
         }
       }
       if (
@@ -4419,7 +4446,7 @@ function createDCABotHelper<
           this.handleLog(
             `Close deal after X loss trigger, closed in loss: ${deals.data.result}, trigger: ${closeAfterXloss}`,
           )
-          await this.stop(CloseDCATypeEnum.leave)
+          await this.stopFromDealClose()
         }
       }
       if (useCloseAfterXwin && closeAfterXwin && checkNumber(closeAfterXwin)) {
@@ -4445,7 +4472,7 @@ function createDCABotHelper<
           this.handleLog(
             `Close deal after X win trigger, closed in profit: ${deals.data.result}, trigger: ${closeAfterXwin}`,
           )
-          await this.stop(CloseDCATypeEnum.leave)
+          await this.stopFromDealClose()
         }
       }
       const consecutiveWinTarget =
@@ -4474,14 +4501,14 @@ function createDCABotHelper<
           this.handleLog(
             `Close deal after X consecutive wins trigger, trigger: ${consecutiveWinTarget}`,
           )
-          await this.stop(CloseDCATypeEnum.leave)
+          await this.stopFromDealClose()
         } else if (
           hasConsecutiveStreak(outcomes, false, consecutiveLossTarget)
         ) {
           this.handleLog(
             `Close deal after X consecutive losses trigger, trigger: ${consecutiveLossTarget}`,
           )
-          await this.stop(CloseDCATypeEnum.leave)
+          await this.stopFromDealClose()
         }
       }
     }
@@ -4958,6 +4985,42 @@ function createDCABotHelper<
      */
     @IdMute(mutex, (botId: string) => `${botId}processDealClose`)
     async processDealClose(
+      _botId: string,
+      dealId: string,
+      profit: { total: number; totalUsd: number },
+      reopen = true,
+      cancel = true,
+      order?: Order,
+    ): Promise<boolean> {
+      return this.processDealCloseHoldingLock(
+        _botId,
+        dealId,
+        profit,
+        reopen,
+        cancel,
+        order,
+      )
+    }
+
+    /**
+     * `processDealClose`, for a caller that ALREADY holds
+     * `` `${botId}processDealClose` `` — the same key on the same module-level
+     * `IdMutex`, which is not reentrant and has no lock timeout.
+     *
+     * The one such caller is the bot-controller auto-stop: `checkClosedDeals`
+     * runs inside this method, and when a close-after-X limit is met it stops
+     * the bot, which cancels every deal still in `start` through
+     * `closeDealById` → here. Through `processDealClose` that cancel waited on
+     * the lock its own call chain was holding, forever: the close never
+     * returned, every later close and stop of the bot queued behind it, and
+     * the bot stayed `open` until the worker restarted. Spec `202`.
+     *
+     * The bot's close path stays serialised: the caller holds exactly the lock
+     * this would have taken. Do NOT call it from anywhere that does not already
+     * hold that key — those callers must keep using `processDealClose`.
+     * Subclasses extend THIS method, not the wrapper, so both entries run them.
+     */
+    protected async processDealCloseHoldingLock(
       _botId: string,
       dealId: string,
       profit: { total: number; totalUsd: number },
@@ -7226,6 +7289,9 @@ function createDCABotHelper<
      *
      * @param {string} dealId Id of the deal
      * @param {CloseDCATypeEnum} [closeType] Close type. Default = leave
+     * @param {boolean} [holdingCloseLock] the caller already holds this bot's
+     * `processDealClose` lock — only a `stop` started inside a deal close.
+     * Spec `202`.
      */
     @IdMute(
       mutex,
@@ -7244,8 +7310,10 @@ function createDCABotHelper<
       sl = false,
       closeTrigger?: DCACloseTriggerEnum,
       count = 0,
+      holdingCloseLock = false,
     ) {
       if (!this.loadingComplete) {
+        // Not `holdingCloseLock`: the replay runs later, outside any lock.
         this.runAfterLoadingQueue.push(() =>
           this.closeDealById.bind(this)(
             this.botId,
@@ -7357,7 +7425,14 @@ function createDCABotHelper<
           commission: findDeal.deal.commission,
           closeTrigger: findDeal.deal.closeTrigger,
         })
-        stop = await this.processDealClose(
+        // Spec `202`: a stop started inside a deal close already holds the
+        // close lock; waiting on it here would never return.
+        stop = await (
+          holdingCloseLock
+            ? this.processDealCloseHoldingLock
+            : this.processDealClose
+        ).call(
+          this,
           this.botId,
           dealId,
           { total: 0, totalUsd: 0 },
@@ -17330,6 +17405,16 @@ function createDCABotHelper<
       trigger?: NewDealTrigger,
       signalOverrides?: SignalDealOverrides | null,
     ) {
+      // Spec `202` §4.5. The bot reads `open` until its stop has closed every
+      // deal, so the start paths that check the status still fire mid-stop —
+      // and a deal opened then is one the stop never saw.
+      if (this.stopsInFlight > 0) {
+        this.handleLog(`Bot is stopping. Not opening a new deal on ${symbol}`)
+        if (cbIfNotOpened) {
+          cbIfNotOpened()
+        }
+        return
+      }
       if (!this.loadingComplete || !this.singlePositionActive) {
         return this.openNewDealBody(
           _botId,
@@ -18204,6 +18289,15 @@ function createDCABotHelper<
       signalOverrides?: SignalDealOverrides | null,
     ) {
       this.handleLog('Open new deal by signal')
+      // Spec `202`. The bot reads `open` until its stop has closed every deal,
+      // and the worker runs this call outside the bot's method queue, so a
+      // signal landing mid-stop used to open a deal the stop never saw.
+      if (this.stopsInFlight > 0) {
+        return this.reportIgnoredWebhookSignal(
+          'A start deal webhook signal was ignored: the bot is stopping',
+          _symbol,
+        )
+      }
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
           this.openDealBySignal.bind(this)(
@@ -26111,13 +26205,17 @@ function createDCABotHelper<
      * Unsubscribe from {@link DCABotHelper#ioUser} & {@link DCABotHelper#ioPrice}
      *
      * @param {CloseDCATypeEnum} [closeType] Close type
+     * @param {boolean} [holdingCloseLock] the caller already holds this bot's
+     * `processDealClose` lock — only `stopFromDealClose`. Spec `202`.
      */
 
     async stop(
       closeType?: CloseDCATypeEnum,
       forceClose = false,
       ignoreErrors = false,
+      holdingCloseLock = false,
     ): Promise<void> {
+      this.stopsInFlight += 1
       try {
         this.ignoreErrors = ignoreErrors
         if (closeType) {
@@ -26171,6 +26269,8 @@ function createDCABotHelper<
             undefined,
             undefined,
             DCACloseTriggerEnum.bot,
+            undefined,
+            holdingCloseLock,
           )
         }
         if (closeType && openDeals.length > 0) {
@@ -26289,6 +26389,8 @@ function createDCABotHelper<
         await this.reportUserRefusal(
           stopFailedMessage((e as Error)?.message ?? `${e}`),
         )
+      } finally {
+        this.stopsInFlight -= 1
       }
     }
 

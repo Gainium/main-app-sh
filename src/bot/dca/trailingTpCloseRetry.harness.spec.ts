@@ -720,8 +720,9 @@ describe('trailing take profit close retry (spec 050)', () => {
       // Wiring pin: `processDealClose` needs the whole close path to reach.
       // Scoped to it rather than to `removeDealFromStopLossMethods`, which
       // the settings-change path also calls for an open, mid-retry deal.
+      // Its body is `processDealCloseHoldingLock` since spec 202.
       const src = readFileSync(join(__dirname, '..', 'dcaHelper.ts'), 'utf8')
-      const marker = src.indexOf('async processDealClose(')
+      const marker = src.indexOf('async processDealCloseHoldingLock(')
       expect(marker).to.be.greaterThan(-1)
       expect(src.slice(marker, marker + 1200)).to.contain(
         'clearTrailingRetryTimer',
