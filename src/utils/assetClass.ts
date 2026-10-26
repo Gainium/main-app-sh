@@ -12,6 +12,12 @@
  *
  * When a new venue starts listing RWAs, wire its native signal in the
  * connector (its producer), not a heuristic here.
+ *
+ * One refinement on top of that signal: exchanges tag tokenized ETFs as plain
+ * stocks, so a row the exchange already calls `stock` becomes `etf` when its
+ * underlying ticker is in the US ETF registry (`etfRegistry`). That is a lookup
+ * in an authoritative listing, not a guess from the symbol, and it can only
+ * move stock → etf — never touch a crypto row.
  */
 
 import type { AssetClass } from '../../types'
@@ -24,6 +30,11 @@ export interface ClassifyAssetClassInput {
   /** Authoritative class from the connector's ExchangeInfo, if the exchange
    *  exposes one. */
   connectorAssetClass?: AssetClass
+  /** The pair's `underlying` (see `resolveUnderlying`), for the ETF lookup. */
+  underlying?: string
+  /** US ETF tickers (`etfTickerNames`). Absent or empty = unknown: no
+   *  stock → etf refinement. */
+  etfTickers?: ReadonlyMap<string, string>
 }
 
 export interface NormalizeStockTickerOpts {
@@ -173,7 +184,16 @@ export function balanceAssetToPairBase(
 /**
  * Normalize a pair into its asset class. Trusts the connector's authoritative
  * signal; defaults to crypto. No name-based heuristics — see the file header.
+ * A stock whose underlying is a US-listed ETF is an `etf`.
  */
 export function classifyAssetClass(input: ClassifyAssetClassInput): AssetClass {
-  return input.connectorAssetClass ?? 'crypto'
+  const assetClass = input.connectorAssetClass ?? 'crypto'
+  if (assetClass === 'stock' && input.etfTickers?.size) {
+    const ticker = normalizeStockTicker(input.baseAsset, {
+      exchange: input.exchange,
+      underlying: input.underlying,
+    })
+    if (input.etfTickers.has(ticker)) return 'etf'
+  }
+  return assetClass
 }

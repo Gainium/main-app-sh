@@ -16,6 +16,7 @@ import {
   OKXSource,
 } from '../../../types'
 import { classifyAssetClass, resolveUnderlying } from '../assetClass'
+import { etfTickerNames } from '../etfRegistry'
 import { normalizePairLeverage } from '../pairLeverage'
 import { normalizeDeliveryTime } from '../../bot/deliveryCutoff'
 import { Kraken } from 'node-kraken-api'
@@ -69,6 +70,9 @@ const providers = [
 export const updateExchangeInfo = async (ec = ExchangeChooser) => {
   const updateBotMap: Map<ExchangeEnum, ClearPairsSchema[]> = new Map()
   const deleteBotMap: Map<ExchangeEnum, string[]> = new Map()
+  // Exchanges tag tokenized ETFs as stocks; the US ETF registry reclassifies
+  // them (see `classifyAssetClass`). Empty if Nasdaq is unreachable.
+  const etfTickers = await etfTickerNames()
   for (const provider of providers) {
     const choose = ec.chooseExchangeFactory(provider)
     if (choose) {
@@ -148,24 +152,6 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
             const getPair = allDbPairs.data.result.find(
               (p) => p.pair === info.pair,
             )
-            // Asset class comes from the exchange's authoritative signal
-            // (connector); paper twins inherit it from their real exchange.
-            const assetCategory = classifyAssetClass({
-              exchange: provider,
-              pair: info.pair,
-              baseAsset: info.baseAsset.name,
-              quoteAsset: info.quoteAsset.name,
-              connectorAssetClass: paperRealMap
-                ? paperRealMap.get(info.pair)?.assetCategory
-                : info.assetClass,
-            })
-            // Canonical/curated-listing flag (HL spot only). Paper twins have
-            // no signal of their own, so mirror the real twin; otherwise take
-            // the connector's value (undefined for every non-HL exchange =>
-            // treated as canonical by the picker).
-            const isCanonical = paperRealMap
-              ? paperRealMap.get(info.pair)?.isCanonical
-              : info.isCanonical
             // Clean ticker behind a tokenized stock, from the exchange's own
             // flag (connector) or the curated map; paper mirrors its twin.
             const underlying = paperRealMap
@@ -175,6 +161,35 @@ export const updateExchangeInfo = async (ec = ExchangeChooser) => {
                   baseAsset: info.baseAsset.name,
                   connectorUnderlying: info.underlying,
                 })
+            // Asset class comes from the exchange's authoritative signal
+            // (connector), refined stock → etf by the US ETF registry; paper
+            // twins inherit it from their real exchange. If the registry could
+            // not be fetched, keep an `etf` row as it is rather than flip it
+            // back to `stock` until the next run.
+            const classified = classifyAssetClass({
+              exchange: provider,
+              pair: info.pair,
+              baseAsset: info.baseAsset.name,
+              quoteAsset: info.quoteAsset.name,
+              connectorAssetClass: paperRealMap
+                ? paperRealMap.get(info.pair)?.assetCategory
+                : info.assetClass,
+              underlying,
+              etfTickers,
+            })
+            const assetCategory =
+              classified === 'stock' &&
+              etfTickers.size === 0 &&
+              getPair?.assetCategory === 'etf'
+                ? 'etf'
+                : classified
+            // Canonical/curated-listing flag (HL spot only). Paper twins have
+            // no signal of their own, so mirror the real twin; otherwise take
+            // the connector's value (undefined for every non-HL exchange =>
+            // treated as canonical by the picker).
+            const isCanonical = paperRealMap
+              ? paperRealMap.get(info.pair)?.isCanonical
+              : info.isCanonical
             // Leverage limits from the instrument info (absent = unknown);
             // paper twins carry none of their own and mirror the real pair.
             const { minLeverage, maxLeverage } = normalizePairLeverage(
@@ -397,6 +412,7 @@ async function reconcileEuPairs(
     return
   }
   const dbByPair = new Map(existing.data.result.map((p) => [p.pair, p]))
+  const etfTickers = await etfTickerNames()
   const seen = new Set<string>()
   let created = 0
   let updated = 0
@@ -408,6 +424,7 @@ async function reconcileEuPairs(
       baseAsset: item.baseAsset.name,
       quoteAsset: item.quoteAsset.name,
       connectorAssetClass: item.assetClass,
+      etfTickers,
     })
     const leverage = normalizePairLeverage(item)
     const doc = {

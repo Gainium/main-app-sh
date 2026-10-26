@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.117.0] - 2026-10-26
+
+### Changed
+
+- Tokenized ETFs are listed under ETFs instead of Stocks. Exchanges tag them as stocks; a stock pair whose underlying ticker is a US-listed ETF in the Nasdaq Trader symbol directory (refreshed daily) is now classified as an ETF.
+
 ## [1.116.1] - 2026-10-26
 
 ### Fixed
