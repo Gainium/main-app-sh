@@ -277,3 +277,48 @@ describe('a Combo base order that cannot be built strands the deal in start (spe
     expect(raised.closed, 'nothing retired').to.have.length(0)
   })
 })
+
+/**
+ * Spec 205: the Combo entry is a MARKET order with no base-order timer, so a
+ * venue that answers the send itself with CANCELED and nothing executed — and
+ * whose user stream then loses that report — left the deal in `start` until the
+ * old-start-deals cron. The placement answer now arms the same cancelled-entry
+ * check the order queue's cancel report arms.
+ */
+describe('a Combo entry the venue answers CANCELED arms the deal check (spec 205)', () => {
+  before(function () {
+    this.timeout(240000)
+    Combo ??= createRequire(__filename)('./comboHelper').default()
+  })
+  const holdingBase = {
+    balances: [
+      { asset: 'USDT', free: 20000, locked: 0 },
+      { asset: 'SYN', free: 8, locked: 0 },
+    ],
+  }
+  const armedAfter = async (reply: Record<string, unknown>) => {
+    const bot = buildBot(holdingBase)
+    bot.sendOrderToExchange = async (order: any) => ({
+      ...order,
+      executedQty: '0',
+      ...reply,
+    })
+    await bot.placeBaseOrder(BOT_ID, SYMBOL, DEAL_ID)
+    const timers = bot.canceledBaseEntryTimers as Map<string, any> | undefined
+    const has = timers?.has(DEAL_ID) ?? false
+    for (const t of timers?.values() ?? []) clearTimeout(t)
+    return has
+  }
+
+  it('§4.1 CANCELED with nothing filled arms the check', async () => {
+    expect(await armedAfter({ status: 'CANCELED' })).to.equal(true)
+  })
+
+  it('§4.3 a resting or part-filled answer arms nothing', async () => {
+    expect(await armedAfter({ status: 'NEW' }), 'resting').to.equal(false)
+    expect(
+      await armedAfter({ status: 'CANCELED', executedQty: '0.1' }),
+      'part filled',
+    ).to.equal(false)
+  })
+})

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.118.1] - 2026-10-27
+
+### Fixed
+
+- A DCA or Combo deal whose market base order the exchange answered as cancelled, with nothing filled, now gets cancelled about 15 seconds later even if the live order stream never reports that cancel. Until now only the stream's report freed the deal, so when it was lost the deal stayed in "start" with nothing on the exchange until the daily clean-up of old start deals.
+
 ## [1.118.0] - 2026-10-26
 
 ### Added

@@ -11925,6 +11925,16 @@ function createDCABotHelper<
               if (baseOrder.clientOrderId !== result.clientOrderId) {
                 baseOrder.clientOrderId = result.clientOrderId
               }
+              if (sentType === OrderTypeEnum.market) {
+                // A market entry arms no timer below, so a venue that answers
+                // the send itself with CANCELED left the order queue's report
+                // as the only thing that could free the deal — and when the
+                // user stream lost that report the deal sat in `start` until
+                // the old-start-deals cron. The answer is a report of the
+                // same cancel; the check is one per deal, so the queue's later
+                // report just replaces it. Spec 205.
+                this.checkUnfilledBaseEntryCancel(result)
+              }
               if (
                 (startOrderType === OrderTypeEnum.limit ||
                   sentType === OrderTypeEnum.limit) &&

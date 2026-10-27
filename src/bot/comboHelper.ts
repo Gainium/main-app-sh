@@ -7743,6 +7743,10 @@ function createComboBotHelper<
               if (baseOrder.clientOrderId !== result.clientOrderId) {
                 baseOrder.clientOrderId = result.clientOrderId
               }
+              // A Combo entry arms no base-order timer, so a CANCELED answer
+              // to the send is a report of the venue's cancel the deal must
+              // not wait on the order queue for. Spec 205.
+              this.checkUnfilledBaseEntryCancel(result)
             }
           }
         }
