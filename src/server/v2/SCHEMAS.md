@@ -1896,6 +1896,8 @@ SettingsIndicators configuration
 | `pcDown` | string | No | Price change down threshold |
 | `pcCondition` | enum: `UP|DOWN` | No | Price change direction |
 | `pcValue` | string | No | Price change value |
+| `pcCompare` | enum: `gt|lt|bw` | No | Price Change — how the candle's move is compared: gt (default, also when missing) = greater than |pcValue|, lt = lower than |pcValue|, bw = strictly between |pcValue| and |pcValue2|. |
+| `pcValue2` | string | No | Price Change — the second bound for pcCompare bw: same sign as pcValue, a different absolute value (order does not matter). |
 | `ppHighLeft` | number | No | Pivot high left bars |
 | `ppHighRight` | number | No | Pivot high right bars |
 | `ppLowLeft` | number | No | Pivot low left bars |
@@ -2038,6 +2040,8 @@ SettingsIndicators configuration
   "pcDown": "example-string",
   "pcCondition": "UP",
   "pcValue": "example-string",
+  "pcCompare": "gt",
+  "pcValue2": "example-string",
   "ppHighLeft": 0,
   "ppHighRight": 0,
   "ppLowLeft": 0,

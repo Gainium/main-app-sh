@@ -662,6 +662,13 @@ export type SettingsIndicators = {
   pcDown?: string
   pcCondition?: PCConditionEnum
   pcValue?: string
+  /**
+   * Price Change: the move greater than (missing = as before) / lower than
+   * |pcValue|, or between |pcValue| and |pcValue2| (bw).
+   */
+  pcCompare?: PCCompareEnum
+  /** Price Change: the second bound for bw, same sign as pcValue. */
+  pcValue2?: string
   ppHighLeft?: number
   ppHighRight?: number
   ppLowLeft?: number
@@ -886,6 +893,13 @@ export enum SqzMomentumEnum {
   crossUp = 'crossUp',
   crossDown = 'crossDown',
   any = 'any',
+}
+
+/** Price Change: how the candle's move is compared with pcValue / pcValue2 (same values as `@gainium/indicators`). */
+export enum PCCompareEnum {
+  gt = 'gt',
+  lt = 'lt',
+  bw = 'bw',
 }
 
 /** Session Price levels: on which candles the condition is evaluated (same values as `@gainium/indicators`). */

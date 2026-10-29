@@ -3509,6 +3509,8 @@ export const BotSchema = /* GraphQL */ `
     pcDown: String
     pcCondition: String
     pcValue: String
+    pcCompare: String
+    pcValue2: String
     ppHighLeft: Float
     ppHighRight: Float
     ppLowLeft: Float
@@ -5369,6 +5371,8 @@ export const BotSchema = /* GraphQL */ `
     pcDown: String
     pcCondition: String
     pcValue: String
+    pcCompare: String
+    pcValue2: String
     ppHighLeft: Float
     ppHighRight: Float
     ppLowLeft: Float

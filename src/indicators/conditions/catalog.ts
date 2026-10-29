@@ -17,6 +17,7 @@ import {
 import type { SettingsIndicators } from '../../../types'
 import {
   divergenceRangeInvalid,
+  priceChangeRangeProblem,
   indicatorLengthOf,
   isAdxDmi,
   isSessionLevels,
@@ -204,6 +205,13 @@ export function conditionSettingsGaps(
       indicatorCondition !== IndicatorStartConditionEnum.lt
     )
       gaps.push({ field: 'indicatorCondition', message: 'Choose a condition.' })
+    return gaps
+  }
+  if (type === IndicatorEnum.pc) {
+    // priceChangeCondition: bw needs pcValue2 with pcValue's sign and a
+    // different size, else it never fires
+    const problem = priceChangeRangeProblem(i)
+    if (problem) gaps.push({ field: 'pcValue2', message: problem })
     return gaps
   }
   if (divergenceRangeInvalid(i)) {

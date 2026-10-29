@@ -75,6 +75,7 @@ import {
   SqzSignalEnum as IndicatorsSqzSignalEnum,
   SqzMomentumEnum as IndicatorsSqzMomentumEnum,
   SessionLevelsActiveEnum as IndicatorsSessionLevelsActiveEnum,
+  PCCompareEnum as IndicatorsPCCompareEnum,
 } from '@gainium/indicators'
 import {
   COMBO_FORM_DEFAULTS,
@@ -752,6 +753,20 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     enum: Object.values(PCConditionEnum),
   },
   pcValue: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeString,
+      ValidatorsEnum.shouldBeValidNumber,
+    ],
+  },
+  // Price Change: gt (missing) / lt / bw against |pcValue| (and |pcValue2|)
+  pcCompare: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(IndicatorsPCCompareEnum),
+  },
+  // Price Change: the second bound for bw (same sign as pcValue)
+  pcValue2: {
     required: false,
     validators: [
       ValidatorsEnum.shouldBeString,

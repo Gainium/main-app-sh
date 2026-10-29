@@ -1636,8 +1636,15 @@ const INDICATOR_META: Record<
   PC: {
     name: 'Price Change',
     description:
-      'Measures the price change within a candle, indicating buying or selling pressure.',
-    typeSpecificFields: ['pcUp', 'pcDown', 'pcCondition', 'pcValue'],
+      'Measures the price change within a candle, indicating buying or selling pressure. The move of the latest candle from its open, in percent: pcValue > 0 reads the move up to the high, pcValue < 0 the move down to the low (default 5). pcCompare gt (default, also when missing) = the move is greater than |pcValue|, lt = lower than |pcValue|, bw = strictly between |pcValue| and |pcValue2| (pcValue2 required, same sign as pcValue, a different size). Example: pcValue "2", pcValue2 "5", pcCompare bw = a candle that rose 2-5 % above its open.',
+    typeSpecificFields: [
+      'pcUp',
+      'pcDown',
+      'pcCondition',
+      'pcValue',
+      'pcCompare',
+      'pcValue2',
+    ],
     supportedActions: [
       'startDeal',
       'closeDeal',

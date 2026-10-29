@@ -4276,6 +4276,18 @@ components:
           type: string
           description: Price change value
           example: "10"
+        pcCompare:
+          type: string
+          description: "Price Change — how the candle's move is compared: gt (default, also when missing) = greater than |pcValue|, lt = lower than |pcValue|, bw = strictly between |pcValue| and |pcValue2|."
+          enum:
+            - gt
+            - lt
+            - bw
+          example: bw
+        pcValue2:
+          type: string
+          description: "Price Change — the second bound for pcCompare bw: same sign as pcValue, a different absolute value (order does not matter)."
+          example: "5"
         ppHighLeft:
           type: number
           description: Pivot high left bars

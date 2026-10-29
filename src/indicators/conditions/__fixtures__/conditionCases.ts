@@ -48,6 +48,7 @@ import {
   SqzSignalEnum,
   SqzMomentumEnum,
   SessionLevelsActiveEnum,
+  PCCompareEnum,
   SessionLevelEnum,
   SessionRuleEnum,
   STConditionEnum,
@@ -1614,6 +1615,71 @@ export function conditionCases(): ConditionCase[] {
         series(type, prev, last),
       )
 
+  // ── Price Change range (appended; a new setting on an existing type):
+  // pcCompare gt / lt / bw and pcValue2, on the open→high / open→low move ──
+  const pcBar = (upPct: number, downPct: number, t = 2) => ({
+    up: upPct > t,
+    down: downPct > t,
+    upPct,
+    downPct,
+  })
+  for (const pcCompare of [
+    undefined,
+    null,
+    PCCompareEnum.gt,
+    PCCompareEnum.lt,
+    PCCompareEnum.bw,
+    'GT' as PCCompareEnum,
+  ])
+    for (const [pcValue, pcValue2] of [
+      ['2', '5'],
+      ['5', '2'],
+      ['-2', '-5'],
+      ['2', '-5'],
+      ['2', undefined],
+      [undefined, '2'],
+      ['0', '3'],
+    ] as (string | undefined)[][])
+      for (const [up, down] of [
+        [1, 6],
+        [2, 0],
+        [3.5, 0],
+        [5, 1],
+        [7, 3.5],
+        [0, 2],
+        [0, 5],
+        [NaN, NaN],
+      ])
+        push(
+          `PC|compare=${fmt(pcCompare)}|${fmt(pcValue)}..${fmt(pcValue2)}|${up},${down}`,
+          base(IndicatorEnum.pc, {
+            pcValue,
+            pcValue2,
+            pcCompare: pcCompare as PCCompareEnum,
+          }),
+          series(IndicatorEnum.pc, pcBar(0, 0), pcBar(up, down)),
+        )
+  // results without the pct fields (stored before the setting existed)
+  for (const pcCompare of [
+    undefined,
+    PCCompareEnum.gt,
+    PCCompareEnum.lt,
+    PCCompareEnum.bw,
+  ])
+    for (const [up, down] of [
+      [true, false],
+      [false, true],
+    ])
+      push(
+        `PC|compare=${fmt(pcCompare)}|noPct|${up},${down}`,
+        base(IndicatorEnum.pc, {
+          pcValue: '2',
+          pcValue2: '5',
+          pcCompare,
+        }),
+        series(IndicatorEnum.pc, { up: false, down: false }, { up, down }),
+      )
+
   return out
 }
 
@@ -2037,6 +2103,18 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
     out.push({
       id: `SESSION|levels|active=${sessionLevelsActive}`,
       settings: { ...sessionMin, sessionLevelsActive },
+    })
+  // Price Change compare / second value (appended): decision settings, never
+  // in the room
+  for (const [label, extra] of [
+    ['gt', { pcValue: '2', pcCompare: PCCompareEnum.gt }],
+    ['lt', { pcValue: '-2', pcCompare: PCCompareEnum.lt }],
+    ['bw', { pcValue: '2', pcValue2: '5', pcCompare: PCCompareEnum.bw }],
+    ['bwDown', { pcValue: '-5', pcValue2: '-2', pcCompare: PCCompareEnum.bw }],
+  ] as [string, Partial<SettingsIndicators>][])
+    out.push({
+      id: `PC|compare=${label}`,
+      settings: { ...kdjMin, type: IndicatorEnum.pc, ...extra },
     })
   return out
 }

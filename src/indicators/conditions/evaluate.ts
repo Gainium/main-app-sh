@@ -25,6 +25,7 @@ import {
   dmiCondition,
   kdjCondition,
   orderBlockCondition,
+  priceChangeCondition,
   squeezeCondition,
   oteCondition,
   sessionLevelsCondition,
@@ -63,7 +64,6 @@ import {
   MAEnum,
   OBFVGRefEnum,
   OBFVGValueEnum,
-  PCConditionEnum,
   SRCrossingEnum,
   STConditionEnum,
   StochRangeEnum,
@@ -172,6 +172,8 @@ export function evaluateIndicatorCondition(
     trendFilterType,
     stCondition,
     pcValue,
+    pcValue2,
+    pcCompare,
     ppValue,
     ppType,
     dcValue,
@@ -312,21 +314,24 @@ export function evaluateIndicatorCondition(
                   : bullLt
               : false
   } else if (type === IndicatorEnum.pc) {
-    const pcCondition =
-      +(pcValue ?? '5') > 0 ? PCConditionEnum.up : PCConditionEnum.down
     const [last] = [...data].sort((a, b) => b.time - a.time)
-    action =
-      (pcCondition === PCConditionEnum.down && (last.value as PCResult).down) ||
-      (pcCondition === PCConditionEnum.up && (last.value as PCResult).up)
+    const pc = last?.value as PCResult
+    action = priceChangeCondition(pc, {
+      value: pcValue,
+      value2: pcValue2,
+      compare: pcCompare,
+    })
     if (action && showLog) {
       ctx.debug(
         `${uuid}@${type}@${indicatorInterval}@${
           ctx.exchange
-        }@${symbol} trigger action: up: ${(last.value as PCResult).up}, down: ${
-          (last.value as PCResult).down
-        }, condition: ${pcCondition}, last time ${new Date(
-          lastTime,
-        )?.toISOString()}`,
+        }@${symbol} trigger action: up: ${pc.up}, down: ${
+          pc.down
+        }, upPct: ${pc.upPct}, downPct: ${pc.downPct}, value: ${
+          pcValue ?? '5'
+        }, value2: ${pcValue2}, compare: ${
+          pcCompare ?? 'gt'
+        }, last time ${new Date(lastTime)?.toISOString()}`,
       )
     }
   } else if (type === IndicatorEnum.lw) {

@@ -130,6 +130,7 @@ import {
   SqzSignalEnum,
   SqzMomentumEnum,
   SessionLevelsActiveEnum,
+  PCCompareEnum,
   StreamWatchdogConfigTypeEnum,
   StreamWatchdogConfigStatusEnum,
 } from '../../types'
@@ -1472,6 +1473,8 @@ const indicatorsSettings = new Schema({
   divRangeLower: Schema.Types.Mixed,
   divRangeUpper: Schema.Types.Mixed,
   sessionLevelsActive: { type: String, enum: SessionLevelsActiveEnum },
+  pcCompare: { type: String, enum: PCCompareEnum },
+  pcValue2: String,
 })
 
 const multiTP = new Schema({

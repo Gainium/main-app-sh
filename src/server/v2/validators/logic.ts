@@ -29,6 +29,7 @@ import { billableIndicators } from '../../../bot/billableIndicators'
 import { smoothingSettingsGaps } from '../../../indicators/conditions/smoothing'
 import {
   divergenceRangeInvalid,
+  priceChangeRangeProblem,
   isAdxDmi,
 } from '../../../indicators/conditions/config'
 
@@ -228,6 +229,18 @@ const divergenceRangeErrors = (
     ])
 
 /**
+ * Price Change `bw` (between): pcValue2 required, the same sign as pcValue
+ * (missing = 5) and a different absolute value.
+ */
+const priceChangeRangeErrors = (
+  indicators: DCABotSettings['indicators'],
+): [string, string][] =>
+  indicators.flatMap((i): [string, string][] => {
+    const problem = priceChangeRangeProblem(i)
+    return problem ? [['indicators', `Price Change: ${problem}`]] : []
+  })
+
+/**
  * Oscillator smoothing: type `none` or an allowed average (case-insensitive),
  * a whole length 1..1000, compare `value` / `line`, no `bw` with `line`, and
  * no smoothing on an indicator that cannot be smoothed.
@@ -267,6 +280,7 @@ export const indicatorConsistencyErrors = (
   errors.push(...betweenConditionErrors(indicators))
   errors.push(...smoothingErrors(indicators))
   errors.push(...divergenceRangeErrors(indicators))
+  errors.push(...priceChangeRangeErrors(indicators))
 
   if (
     indicatorsCheck.every((check) => !check.condition(input)) &&

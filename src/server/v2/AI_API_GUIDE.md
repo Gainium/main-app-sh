@@ -198,6 +198,7 @@ Some indicators have modes that change what the condition reads — check the ty
 - `MA` (like `MAR`) with `trendFilter: true` also requires the average to trend (`trendFilterLookback`, `trendFilterType`, `trendFilterValue`).
 - `KDJ` compares `kdjLine` with `kdjCompareTo` (another line, or `custom` = `indicatorValue`); `VWAP` compares the close with `vwapLine` of the period set by `vwapAnchor`.
 - `CANDLE` is N candles of one colour in a row (`candleSource`, `candleColor`, `candleCount`, `candleTrigger`); `SQZ` is a squeeze state AND a momentum (`sqzSignal`, `sqzMomentum`; both `any` never fires). Neither reads `indicatorCondition` or `indicatorValue`.
+- `PC` (Price Change) reads the latest candle's move from its open, in percent: `pcValue` > 0 = the move up to the high, < 0 = the move down to the low. `pcCompare` `gt` (default) = greater than |pcValue|, `lt` = lower than, `bw` = between |pcValue| and |pcValue2| (same sign, e.g. `"2"` and `"5"`, or `"-2"` and `"-5"`).
 - `OB` compares the close (`indicatorCondition` cu/cd/gt/lt) with `obLevel` of the latest `obSide` order block; no active block = no signal.
 - `DIV` takes optional pivot settings (`divPivotLeft`, `divPivotRight`, `divRangeLower` < `divRangeUpper`); leave them out for the defaults. `SESSION` Price levels runs only during the session unless `sessionLevelsActive` is `outside` or `always`.
 ```python

@@ -20,6 +20,7 @@ import {
   ExchangeIntervals,
   IndicatorEnum,
   MAEnum,
+  PCCompareEnum,
   RangeType,
   SessionRuleEnum,
   TradingviewAnalysisConditionEnum,
@@ -111,6 +112,28 @@ export function divergenceRangeInvalid(
   if (i.type !== IndicatorEnum.div) return false
   const { rangeLower = 1, rangeUpper = 60 } = divergencePivotConfig(i)
   return !(rangeLower < rangeUpper)
+}
+
+/**
+ * Price Change `bw` (between): why it can never fire, or null. Needs a
+ * second value (pcValue2) with the same sign as pcValue (missing = '5') and
+ * a different absolute value — `priceChangeCondition` returns false
+ * otherwise. Other compares have no cross-field rule.
+ */
+export function priceChangeRangeProblem(
+  i: Pick<SettingsIndicators, 'type' | 'pcCompare' | 'pcValue' | 'pcValue2'>,
+): string | null {
+  if (i.type !== IndicatorEnum.pc || i.pcCompare !== PCCompareEnum.bw)
+    return null
+  const v1 = +(i.pcValue ?? '5')
+  const v2 = setNumber(i.pcValue2) ?? NaN
+  if (!Number.isFinite(v1) || !Number.isFinite(v2))
+    return 'Between needs a second value (pcValue2).'
+  if (!((v1 > 0 && v2 > 0) || (v1 < 0 && v2 < 0)))
+    return 'pcValue and pcValue2 must both be positive (up move) or both negative (down move).'
+  if (Math.abs(v1) === Math.abs(v2))
+    return 'pcValue and pcValue2 must be different.'
+  return null
 }
 
 /** A stored optional number: missing / null / '' is unset (undefined). */

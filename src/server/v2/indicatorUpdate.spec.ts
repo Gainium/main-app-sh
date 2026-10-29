@@ -414,6 +414,49 @@ describe('spec 126 — REST bot update replaces indicators', () => {
           active,
         ),
       ).to.equal(1)
+      // Price Change range
+      const pc = /pcCompare|pcValue2/
+      for (const pcCompare of ['gt', 'lt'])
+        expect(
+          count(IndicatorEnum.pc, { pcValue: '-2', pcCompare }, pc),
+        ).to.equal(0)
+      expect(
+        count(
+          IndicatorEnum.pc,
+          { pcValue: '2', pcValue2: '5', pcCompare: 'bw' },
+          pc,
+        ),
+      ).to.equal(0)
+      expect(count(IndicatorEnum.pc, { pcCompare: 'between' }, pc)).to.equal(1)
+      expect(
+        count(IndicatorEnum.pc, { pcCompare: 'bw', pcValue2: 'x' }, pc),
+      ).to.be.greaterThan(0)
+      const pcRange = (fields: Record<string, unknown>) =>
+        errorsOf(update(IndicatorEnum.pc, fields)).filter(([, m]) =>
+          m.startsWith('Price Change:'),
+        )
+      expect(pcRange({})).to.deep.equal([])
+      expect(pcRange({ pcValue: '2', pcCompare: 'lt' })).to.deep.equal([])
+      // a stray pcValue2 outside bw is ignored
+      expect(pcRange({ pcValue: '2', pcValue2: '-5' })).to.deep.equal([])
+      expect(
+        pcRange({ pcValue: '2', pcValue2: '5', pcCompare: 'bw' }),
+      ).to.deep.equal([])
+      expect(
+        pcRange({ pcValue: '-5', pcValue2: '-2', pcCompare: 'bw' }),
+      ).to.deep.equal([])
+      // pcValue missing = 5
+      expect(pcRange({ pcValue2: '2', pcCompare: 'bw' })).to.deep.equal([])
+      expect(pcRange({ pcValue: '2', pcCompare: 'bw' }).length).to.equal(1)
+      expect(
+        pcRange({ pcValue: '2', pcValue2: '-5', pcCompare: 'bw' }).length,
+      ).to.equal(1)
+      expect(
+        pcRange({ pcValue: '0', pcValue2: '5', pcCompare: 'bw' }).length,
+      ).to.equal(1)
+      expect(
+        pcRange({ pcValue: '-3', pcValue2: '-3', pcCompare: 'bw' }).length,
+      ).to.equal(1)
     })
     it('KDJ and VWAP enums are the indicators package’s', () => {
       expect(Object.values(KDJLineEnum)).to.deep.equal(

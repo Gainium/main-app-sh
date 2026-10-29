@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.122.0] - 2026-10-29
+
+### Added
+
+- Price Change range: `pcCompare` (`gt` greater than, `lt` lower than, `bw` between) and `pcValue2` on the Price Change indicator. The latest candle's move from its open (up to the high for a positive `pcValue`, down to the low for a negative one, in percent) is compared with |`pcValue`|, or must lie strictly between |`pcValue`| and |`pcValue2`|. Missing `pcCompare` = greater than = exactly the behaviour before. The decision is `priceChangeCondition` from `@gainium/indicators` 1.13.0, the function the backtester uses; the indicator room is unchanged. GraphQL, the database schema and the public API (validator: `bw` needs `pcValue2` with the same sign and a different size; OpenAPI, indicator definitions, schema docs) accept the new fields.
+
 ## [1.121.2] - 2026-10-29
 
 ### Fixed
