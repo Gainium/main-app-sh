@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.120.1] - 2026-10-29
+
+### Fixed
+
+- Grid "stop and sell" on take profit or stop loss could sell again after its closing order filled: stopping the bot reset the single-close latch, so price ticks queued behind the stop triggered a new close. The latch now holds until the next start, and a stopped bot no longer checks take profit / stop loss.
+
 ## [1.120.0] - 2026-10-29
 
 ### Added

@@ -166,8 +166,8 @@ function createBotHelper<
     private closeOrderTimer: NodeJS.Timeout | null = null
     /** Limit repostion timeout */
     private limitRepositionTimeout = 10000
-    /** Stop filled */
-    private stopFilled = false
+    /** Stop filled. Latched until the next `start()` (spec 189 §6). */
+    protected stopFilled = false
     /** Block limit */
     protected blockLimit = false
     /** Swap assets started */
@@ -2696,8 +2696,6 @@ function createBotHelper<
         this.closeOrderTimer = null
       }
       this.swapAssetsStarted = false
-      this.stopFilled = false
-      this.blockLimit = false
       this.swapAssetData = null
       this.grids = null
       this.initialGrid = null
@@ -2726,6 +2724,11 @@ function createBotHelper<
       }
       this.lastStatsCheck = 0
       if (start) {
+        // Spec 189 §6: the close latch is reset by a fresh start only. `stop()`
+        // ends here too, and un-latching on it let ticks queued behind the stop
+        // sell the whole amount again.
+        this.stopFilled = false
+        this.blockLimit = false
         if (this.closeTimer) {
           this.handleLog(`Clear close timer`)
           clearTimeout(this.closeTimer)
@@ -5081,8 +5084,13 @@ function createBotHelper<
       // close was in flight re-ran `tpSl()` against balances the close never
       // updated in memory, and sold the whole grid amount again. A fresh
       // trigger after the close started (`blockLimit`), or any re-entry after
-      // the stop order filled, has nothing left to do.
-      if (this.stopFilled || (!oldTpSl && this.blockLimit)) {
+      // the stop order filled, has nothing left to do — nor does any call on a
+      // bot that has already stopped (§6).
+      if (
+        this.stopFilled ||
+        (!oldTpSl && this.blockLimit) ||
+        this.data.status === BotStatusEnum.closed
+      ) {
         return
       }
       if (oldTpSl) {
@@ -5422,6 +5430,11 @@ function createBotHelper<
       msg: PriceMessage,
     ): Promise<void> {
       if (!this.finishLoad) {
+        return
+      }
+      // Spec 189 §6: ticks queued behind a close, or delivered before the
+      // price subscription is torn down, have nothing to check.
+      if (this.stopFilled || this.data?.status === BotStatusEnum.closed) {
         return
       }
       if (msg.symbol !== this.data?.settings.pair) {

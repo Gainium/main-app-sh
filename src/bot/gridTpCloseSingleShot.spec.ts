@@ -214,4 +214,85 @@ describe('grid take-profit close is single-shot (spec 189)', () => {
     expect(bot.sent).to.have.length(2)
     expect(bot.sent[1].additional).to.include({ type: 'LIMIT' })
   })
+
+  // Spec §6 — the latch must survive the stop it triggers.
+  const stubClear = (bot: any) => {
+    bot.stopPriceTimer = () => undefined
+    bot.clearRedis = () => undefined
+    bot.setStatsTimer = () => undefined
+    bot.removeFromRedis = () => undefined
+  }
+
+  it('§4.5 stop()\'s clearClassProperties keeps the close latched', () => {
+    const bot = makeBot(filled(0.02797))
+    stubClear(bot)
+    bot.stopFilled = true
+    bot.blockLimit = true
+    bot.clearClassProperties(true)
+    expect(bot.stopFilled).to.equal(true)
+    expect(bot.blockLimit).to.equal(true)
+  })
+
+  it('§4.5 a fresh start resets the latch', () => {
+    const bot = makeBot(filled(0.02797))
+    stubClear(bot)
+    bot.stopFilled = true
+    bot.blockLimit = true
+    bot.clearClassProperties(undefined, true)
+    clearTimeout(bot.statsTimer)
+    expect(bot.stopFilled).to.equal(false)
+    expect(bot.blockLimit).to.equal(false)
+  })
+
+  for (const side of ['tp', 'sl']) {
+    it(`§4.5 ${side}: a tick queued behind a completed stop sells nothing`, async () => {
+      const bot = makeBot(filled(0.02797))
+      stubClear(bot)
+      bot.tpSl = () => {
+        bot.triggers += 1
+        return { value: side, text: `${side} trigger` }
+      }
+      await bot.closeBotByTp(BOT_ID, tick)
+      // stop() completed: status closed, then clearClassProperties(true).
+      bot.data.status = 'closed'
+      bot.clearClassProperties(true)
+      await bot.closeBotByTp(BOT_ID, tick)
+      expect(bot.sent).to.have.length(1)
+      expect(bot.triggers).to.equal(1)
+    })
+
+    it(`§4.6 ${side}: a closed bot places no close even unlatched`, async () => {
+      const bot = makeBot(filled(0.02797))
+      bot.tpSl = () => ({ value: side, text: `${side} trigger` })
+      bot.data.status = 'closed'
+      await bot.closeBotByTp(BOT_ID, tick)
+      await bot.closeBotByTp(BOT_ID, tick, { value: side, text: 'x' })
+      expect(bot.sent).to.have.length(0)
+    })
+  }
+
+  it('§4.6 priceUpdateCallback does not reach closeBotByTp on a closed bot', async () => {
+    const bot = makeBot(filled(0.02797))
+    let reached = 0
+    bot.closeBotByTp = async () => {
+      reached += 1
+    }
+    bot.finishLoad = true
+    bot.exchange = {}
+    bot.lockTpSlCheck = false
+    bot.lastPriceCheck = new Map()
+    bot.lastCheckPerSymbol = new Map([['BTC-USDC', Date.now()]])
+    bot.getLastStreamData = () => undefined
+    bot.setLastStreamData = () => undefined
+    bot.data.haveStarted = true
+    bot.data.settings.lowPrice = 1
+    bot.data.settings.topPrice = 1e9
+    bot.data.status = 'closed'
+    await bot.priceUpdateCallback(BOT_ID, { ...tick, time: 1 })
+    expect(reached).to.equal(0)
+    // Control: the same tick on an open bot does reach it.
+    bot.data.status = 'open'
+    await bot.priceUpdateCallback(BOT_ID, { ...tick, price: 83759, time: 2 })
+    expect(reached).to.equal(1)
+  })
 })
