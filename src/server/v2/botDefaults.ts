@@ -740,7 +740,7 @@ export const indicatorConfigDefaults: {
     indicatorLength: 20,
     indicatorValue: '0',
     sqzLength: 20,
-    sqzBBMult: 2,
+    sqzBBMult: 1.5,
     sqzKCLength: 20,
     sqzKCMult: 1.5,
     sqzSignal: SqzSignalEnum.fired,

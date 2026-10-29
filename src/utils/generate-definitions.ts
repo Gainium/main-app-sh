@@ -1872,7 +1872,7 @@ const INDICATOR_META: Record<
   SESSION: {
     name: 'Session Selector',
     description:
-      'Filters signals by day of the week and, optionally, time of day. sessionDays are the active weekdays (0=Sunday). sessionStart/sessionEnd (local HH:MM, end exclusive) limit the session to those hours, read in sessionTimezone (IANA name, default UTC, follows daylight saving). An end before the start is an overnight session belonging to the day it opens. Without start/end the whole day counts. sessionRule in / out picks trading in or out of the session. sessionRule levels (Price levels) compares sessionLevelA with sessionLevelB using indicatorCondition (cd/cu/gt/lt) on indicatorInterval candles (default 15m). sessionLevelsActive sets where Price levels is evaluated: session (default) = only during the session, outside = only outside it, always = both; outside a session the previous-session levels are those of the last completed session and curOpen/curMid have no value. Monday range: sessionDays [1] without hours, sessionLevelsActive outside, price crossing up prevHigh. Levels: prevOpen, prevHigh, prevMid, prevLow, prevClose of the last completed session, curOpen (open of the session in progress), curMid (midpoint of the session in progress so far: (highest high + lowest low) / 2), price (latest close). A level with no value yet, or A equal to B, never fires; crossings never count across a new session or between in and out of it. Example: price crossing up prevHigh = breakout of the previous session high.',
+      'Filters signals by day of the week and, optionally, time of day. sessionDays are the active weekdays (0=Sunday). sessionStart/sessionEnd (local HH:MM, end exclusive) limit the session to those hours, read in sessionTimezone (IANA name, default UTC, follows daylight saving). An end before the start is an overnight session belonging to the day it opens. Without start/end the whole day counts. sessionRule in / out picks trading in or out of the session. sessionRule levels (Price levels) compares sessionLevelA with sessionLevelB using indicatorCondition (cd/cu/gt/lt) on indicatorInterval candles (default 15m). sessionLevelsActive sets where Price levels is evaluated: session (default) = only during the session, outside = only outside it, always = both; outside a session the previous-session levels are those of the last completed session and curOpen/curMid have no value. Monday range: sessionDays [1] without hours, sessionLevelsActive outside, price crossing up prevHigh. Levels: prevOpen, prevHigh, prevMid, prevLow, prevClose of the last completed session, curOpen (open of the session in progress), curMid (midpoint of the session in progress so far: (highest high + lowest low) / 2), price (latest close). A level with no value yet, or A equal to B, never fires; crossings never count across a new session or between in and out of it, except (outside / always) price crossing a prev* level on the first candle after the session, compared with the level that candle sees. Example: price crossing up prevHigh = breakout of the previous session high.',
     typeSpecificFields: [
       'sessionDays',
       'sessionRule',
@@ -2068,7 +2068,7 @@ const INDICATOR_META: Record<
   SQZ: {
     name: 'Squeeze Momentum',
     description:
-      'LazyBear Squeeze Momentum: a squeeze is on when the Bollinger Bands (sqzLength, sqzBBMult standard deviations) are inside the Keltner Channels (sqzKCLength, sqzKCMult x the average true range), off when they are outside. Momentum is the linear-regression value of the close against the midpoint of the sqzKCLength range and its average. The condition is sqzSignal AND sqzMomentum: sqzSignal fired (the squeeze released on this candle), on, off or any; sqzMomentum positive, negative, rising, falling, crossUp (through zero), crossDown or any. Both any never fires. indicatorCondition and indicatorValue are not read. Multipliers may have decimals; TradingView displays the script with sqzBBMult 1.5.',
+      "LazyBear Squeeze Momentum: a squeeze is on when the Bollinger Bands (sqzLength, sqzBBMult standard deviations) are inside the Keltner Channels (sqzKCLength, sqzKCMult x the average true range), off when they are outside. Momentum is the linear-regression value of the close against the midpoint of the sqzKCLength range and its average. The condition is sqzSignal AND sqzMomentum: sqzSignal fired (the squeeze released on this candle), on, off or any; sqzMomentum positive, negative, rising, falling, crossUp (through zero), crossDown or any. Both any never fires. indicatorCondition and indicatorValue are not read. Multipliers may have decimals; sqzBBMult defaults to 1.5, as the script TradingView displays (2 = LazyBear's corrected v2).",
     typeSpecificFields: [
       'sqzLength',
       'sqzBBMult',
@@ -2090,7 +2090,7 @@ const INDICATOR_META: Record<
       indicatorValue: '0',
       indicatorInterval: '1h',
       sqzLength: 20,
-      sqzBBMult: 2,
+      sqzBBMult: 1.5,
       sqzKCLength: 20,
       sqzKCMult: 1.5,
       sqzSignal: 'fired',

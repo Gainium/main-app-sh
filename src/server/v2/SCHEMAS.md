@@ -1944,7 +1944,7 @@ SettingsIndicators configuration
 | `trendFilterLookback` | number | No | Trend filter — bars back the line is compared with. |
 | `trendFilterType` | enum: `lower|higher|between` | No | Trend filter — lower = fell at least trendFilterValue percent, higher = rose at least that much, between = moved less than that either way. |
 | `trendFilterValue` | number | No | Trend filter — threshold in percent. |
-| `sessionLevelsActive` | enum: `session|outside|always` | No | Session Price levels rule — where the condition is evaluated: session (default, also when missing) = only during the session, outside = only outside it (e.g. the Monday range on the other days), always = both. Outside a session the prev* levels are the last completed session's and curOpen/curMid have no value; crossings never count between in and out of a session. |
+| `sessionLevelsActive` | enum: `session|outside|always` | No | Session Price levels rule — where the condition is evaluated: session (default, also when missing) = only during the session, outside = only outside it (e.g. the Monday range on the other days), always = both. Outside a session the prev* levels are the last completed session's and curOpen/curMid have no value; crossings never count between in and out of a session, except price crossing a prev* level on the first candle after the session (compared with the level that candle sees, e.g. a Monday range broken on Tuesday 00:00). |
 | `candleSource` | enum: `regular|heikinAshi` | No | Candle colour — the candle the colour is read from. Default heikinAshi. |
 | `candleColor` | enum: `green|red` | No | Candle colour — green = close above open, red = close below open (a doji is neither and breaks every run). Default green. |
 | `candleCount` | integer 1–50 | No | Candle colour — N candles of that colour in a row. Default 1. |
@@ -1953,7 +1953,7 @@ SettingsIndicators configuration
 | `obSide` | enum: `bullish|bearish` | No | Order Blocks — the latest bullish or bearish block the close is compared with (indicatorCondition cu/cd/gt/lt). No active block = false; a crossing needs the same block on both candles. Default bullish. |
 | `obLevel` | enum: `top|middle|bottom` | No | Order Blocks — the level of that block (middle = (top + bottom) / 2). Default top. |
 | `sqzLength` | integer 2–500 | No | Squeeze Momentum — Bollinger Bands length. Default 20. |
-| `sqzBBMult` | number 0.1–10 | No | Squeeze Momentum — Bollinger Bands multiplier (decimals allowed). Default 2; TradingView displays the script with 1.5. |
+| `sqzBBMult` | number 0.1–10 | No | Squeeze Momentum — Bollinger Bands multiplier (decimals allowed). Default 1.5, as the script TradingView displays; set 2 for LazyBear's corrected v2. |
 | `sqzKCLength` | integer 2–500 | No | Squeeze Momentum — Keltner Channels length, also the momentum length. Default 20. |
 | `sqzKCMult` | number 0.1–10 | No | Squeeze Momentum — Keltner Channels multiplier of the average true range (decimals allowed). Default 1.5. |
 | `sqzSignal` | enum: `fired|on|off|any` | No | Squeeze Momentum — fired (default) = the squeeze released on this candle, on = in a squeeze, off = out of one, any = no requirement. ANDed with sqzMomentum; both any never fires. |
@@ -2099,7 +2099,7 @@ SettingsIndicators configuration
   "obSide": "bullish",
   "obLevel": "top",
   "sqzLength": 20,
-  "sqzBBMult": 2,
+  "sqzBBMult": 1.5,
   "sqzKCLength": 20,
   "sqzKCMult": 1.5,
   "sqzSignal": "fired",

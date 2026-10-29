@@ -1680,6 +1680,88 @@ export function conditionCases(): ConditionCase[] {
         series(IndicatorEnum.pc, { up: false, down: false }, { up, down }),
       )
 
+  // ── Session Price levels: the first candle after the session (appended;
+  // indicators 1.14.0). `prev` is the session's last candle (inside session
+  // 20231115, levels of 20231114), `last` the first candle after it: that
+  // session is now the previous one, so every prev* level jumped. With
+  // outside / always, price vs a prev* level crosses against the level
+  // `last` sees; every other pairing, and session / missing, stay false.
+  const afterBars = (
+    p0: number,
+    p1: number,
+    completed = true,
+  ): [unknown, unknown] => [
+    {
+      prevOpen: 70,
+      prevHigh: 80,
+      prevMid: 75,
+      prevLow: 70,
+      prevClose: 78,
+      curOpen: 105,
+      price: p0,
+      inSession: 1,
+      sessionKey: 20231115,
+      prevSessionKey: 20231114,
+    },
+    completed
+      ? {
+          prevOpen: 105,
+          prevHigh: 120,
+          prevMid: 110,
+          prevLow: 100,
+          prevClose: p0,
+          curOpen: null,
+          price: p1,
+          inSession: 0,
+          sessionKey: null,
+          prevSessionKey: 20231115,
+        }
+      : {
+          // the session was not seen whole: the previous one is unchanged
+          prevOpen: 70,
+          prevHigh: 80,
+          prevMid: 75,
+          prevLow: 70,
+          prevClose: 78,
+          curOpen: null,
+          price: p1,
+          inSession: 0,
+          sessionKey: null,
+          prevSessionKey: 20231114,
+        },
+  ]
+  for (const sessionLevelsActive of [
+    SessionLevelsActiveEnum.session,
+    SessionLevelsActiveEnum.outside,
+    SessionLevelsActiveEnum.always,
+    undefined,
+  ])
+    for (const [a, b] of [
+      [SessionLevelEnum.price, SessionLevelEnum.prevHigh],
+      [SessionLevelEnum.prevHigh, SessionLevelEnum.price],
+      [SessionLevelEnum.price, SessionLevelEnum.prevLow],
+      [SessionLevelEnum.price, SessionLevelEnum.prevMid],
+      [SessionLevelEnum.price, SessionLevelEnum.prevClose],
+      [SessionLevelEnum.prevHigh, SessionLevelEnum.prevLow],
+      [SessionLevelEnum.price, SessionLevelEnum.curOpen],
+    ] as SessionLevelEnum[][])
+      for (const cond of [C.cu, C.cd, C.gt, C.lt])
+        for (const [label, p0, p1, completed] of [
+          ['breakUp', 119, 122, true],
+          ['breakDown', 101, 98, true],
+          ['crossMid', 108, 112, true],
+          ['inside', 109, 111, true],
+          ['partialSession', 119, 122, false],
+        ] as [string, number, number, boolean][])
+          push(
+            `SESSION|levels|afterSession|active=${fmt(sessionLevelsActive)}|${a}|${b}|${cond}|${label}`,
+            {
+              ...levels(a, b, cond),
+              sessionLevelsActive,
+            },
+            series(IndicatorEnum.session, ...afterBars(p0, p1, completed)),
+          )
+
   return out
 }
 
@@ -2115,6 +2197,26 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
     out.push({
       id: `PC|compare=${label}`,
       settings: { ...kdjMin, type: IndicatorEnum.pc, ...extra },
+    })
+  // Squeeze BB multiplier (appended; indicators 1.14.0 defaults a missing
+  // one to 1.5): a stored value keeps its room
+  for (const [label, sqzBBMult] of [
+    ['2', 2],
+    ['2string', '2'],
+    ['1.5', 1.5],
+    ['empty', ''],
+    ['null', null],
+  ] as [string, unknown][])
+    out.push({
+      id: `SQZ|bbMult=${label}`,
+      settings: {
+        ...kdjMin,
+        type: IndicatorEnum.sqz,
+        indicatorLength: 20,
+        sqzBBMult: sqzBBMult as number,
+        sqzSignal: SqzSignalEnum.fired,
+        sqzMomentum: SqzMomentumEnum.positive,
+      },
     })
   return out
 }

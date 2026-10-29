@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.123.0] - 2026-10-29
+
+### Changed
+
+- Session Price levels with `sessionLevelsActive` `outside` / `always`: a crossing of the price with a previous-session level now also fires on the first candle after the session ends, compared with the level that candle sees (a Monday range broken on Tuesday 00:00 now fires). `session` / missing is unchanged. Decided by `sessionLevelsCondition` from `@gainium/indicators` 1.14.0.
+- Squeeze Momentum: the default Bollinger Bands multiplier (`sqzBBMult`) is 1.5 (was 2), matching the chart TradingView displays — in the indicators package, the public API defaults, the OpenAPI spec, the indicator definitions and the schema docs. A stored `sqzBBMult` is unchanged.
+
 ## [1.122.1] - 2026-10-29
 
 ### Fixed

@@ -4590,7 +4590,7 @@ components:
           example: 2
         sessionLevelsActive:
           type: string
-          description: "Session Price levels rule — where the condition is evaluated: session (default, also when missing) = only during the session, outside = only outside it (e.g. the Monday range on the other days), always = both. Outside a session the prev* levels are the last completed session's and curOpen/curMid have no value; crossings never count between in and out of a session."
+          description: "Session Price levels rule — where the condition is evaluated: session (default, also when missing) = only during the session, outside = only outside it (e.g. the Monday range on the other days), always = both. Outside a session the prev* levels are the last completed session's and curOpen/curMid have no value; crossings never count between in and out of a session, except price crossing a prev* level on the first candle after the session (compared with the level that candle sees, e.g. a Monday range broken on Tuesday 00:00)."
           enum:
             - session
             - outside
@@ -4652,10 +4652,10 @@ components:
           example: 20
         sqzBBMult:
           type: number
-          description: Squeeze Momentum — Bollinger Bands multiplier in standard deviations (0.1-10, decimals allowed). Default 2; TradingView displays the script with 1.5.
+          description: Squeeze Momentum — Bollinger Bands multiplier in standard deviations (0.1-10, decimals allowed). Default 1.5, as the script TradingView displays; set 2 for LazyBear's corrected v2.
           minimum: 0.1
           maximum: 10
-          example: 2
+          example: 1.5
         sqzKCLength:
           type: integer
           description: Squeeze Momentum — Keltner Channels length (2-500), also the momentum length. Default 20.
