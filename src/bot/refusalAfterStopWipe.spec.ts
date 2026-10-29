@@ -212,8 +212,7 @@ describe('spec 206 — a refusal answered after stop() still retires the row', (
 
   it('§4.1 retires a definitive venue refusal as CANCELED', async () => {
     ComplianceGuard.check = notRestricted as any
-    let bot: any
-    bot = makeBot(async () => {
+    const bot: any = makeBot(async () => {
       stopWipes(bot)
       return {
         status: StatusEnum.notok,
@@ -231,7 +230,9 @@ describe('spec 206 — a refusal answered after stop() still retires the row', (
   })
 
   it('§4.2 deletes the row of a local-guard refusal', async () => {
-    let bot: any
+    const bot: any = makeBot(async () => {
+      throw new Error('the venue must not be called on a short-circuit')
+    })
     ComplianceGuard.check = (async () => {
       stopWipes(bot)
       return {
@@ -240,9 +241,6 @@ describe('spec 206 — a refusal answered after stop() still retires the row', (
         until: Date.now() + 60_000,
       }
     }) as any
-    bot = makeBot(async () => {
-      throw new Error('the venue must not be called on a short-circuit')
-    })
 
     await bot.sendOrderToExchange(makeOrder())
 
@@ -252,8 +250,7 @@ describe('spec 206 — a refusal answered after stop() still retires the row', (
 
   it('§4.3 leaves an ambiguous failure for the reconcile, as before', async () => {
     ComplianceGuard.check = notRestricted as any
-    let bot: any
-    bot = makeBot(async () => {
+    const bot: any = makeBot(async () => {
       stopWipes(bot)
       return { status: StatusEnum.notok, reason: 'socket hang up', data: null }
     })
