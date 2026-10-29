@@ -392,6 +392,7 @@ import { botMonitor, CalculateDCALiveStatsParams } from './botMonitor'
 import { getSubTypeBehavior } from './errorRulesCache'
 import { capLadderPlacements } from './ladderPlacementCap'
 import { priceMovedSince } from './priceStreamGap'
+import { wantsUserStreamOpen } from './userStreamReopen'
 import {
   ConditionLatch,
   limitOnlyEntryFallback,
@@ -14189,8 +14190,9 @@ function createDCABotHelper<
     }
 
     override async processServiceLog(msg: string) {
-      const service = JSON.parse(msg)?.restart
-      if (service === 'userStream') {
+      const parsed = JSON.parse(msg)
+      const service = parsed?.restart
+      if (wantsUserStreamOpen(parsed, this.data?.exchangeUUID)) {
         this.connectRabbitUserStream()
       }
       if (service === 'indicators') {

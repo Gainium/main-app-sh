@@ -176,6 +176,7 @@ import GridReduceOnlyGuard, {
 import { isPositionAlreadyClosedReason } from './positionAlreadyClosed'
 import AuthFailureGuard, { isHardAuthFailure, isVenueLockout } from './authGuard'
 import RetryBackoff from './retryBackoff'
+import { wantsUserStreamOpen } from './userStreamReopen'
 import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
 import { PriceStreamGapTracker } from './priceStreamGap'
 import { awaitPositionFlat } from './opposingPositionSettle'
@@ -2279,11 +2280,11 @@ class MainBot<T extends IMainBot> {
 
   async processServiceLog(msg: string) {
     try {
-      const service = JSON.parse(msg)?.restart
-      if (service === 'userStream') {
+      const parsed = JSON.parse(msg)
+      if (wantsUserStreamOpen(parsed, this.data?.exchangeUUID)) {
         this.connectRabbitUserStream()
       }
-      return service
+      return parsed?.restart
     } catch (e) {
       this.handleErrors(
         `${(e as Error)?.message ?? e}`,

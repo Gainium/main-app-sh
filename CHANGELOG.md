@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.1] - 2026-10-29
+
+### Changed
+
+- Bots re-send their user-stream open when the user-stream balancer names their connection in a `serviceLog` `{reopen: 'userStream', uuids}` message (Hyperliquid accounts moved off a stopped worker). `{restart: 'userStream'}` is unchanged.
+
 ## [1.123.0] - 2026-10-29
 
 ### Changed
