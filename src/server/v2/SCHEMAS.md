@@ -1824,8 +1824,8 @@ SettingsIndicators configuration
 | `signal` | enum: `strongBuy|strongSell|buy|sell|bothBuy|bothSell` | No | Trading signal type |
 | `condition` | enum: `every|entry` | No | Check condition timing |
 | `checkLevel` | number | No | Level to check indicator |
-| `maType` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | Moving average being compared (left side of an MA rule: <maType> <indicatorCondition> <maCrossingValue>). |
-| `maCrossingValue` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | What the moving average is compared to (right side of an MA rule): price = current price, or another MA. Example, price above EMA 100: maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price. |
+| `maType` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | Moving average being compared (left side of an MA rule: <maType> <indicatorCondition> <maCrossingValue>). |
+| `maCrossingValue` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | What the moving average is compared to (right side of an MA rule): price = current price, or another MA. Example, price above EMA 100: maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price. |
 | `maCrossingLength` | number | No | Crossing MA length |
 | `maCrossingInterval` | enum: `1m|3m|5m|15m|30m|1h|2h|4h|8h|1d|1w` | No | Crossing MA timeframe |
 | `maUUID` | string | No | MA indicator UUID reference |
@@ -1869,9 +1869,9 @@ SettingsIndicators configuration
 | `xOscillator2voShort` | number | No | Second oscillator short period |
 | `xoUUID` | string | No | Cross oscillator UUID |
 | `mar1length` | number | No | First MA length for ratio |
-| `mar1type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | First MA type |
+| `mar1type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | First MA type |
 | `mar2length` | number | No | Second MA length for ratio |
-| `mar2type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | Second MA type |
+| `mar2type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | Second MA type |
 | `bbwMult` | number | No | Bollinger Band width multiplier |
 | `bbwMa` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | BB moving average type |
 | `bbwMaLength` | number | No | BB MA length |

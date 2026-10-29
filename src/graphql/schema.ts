@@ -3553,6 +3553,7 @@ export const BotSchema = /* GraphQL */ `
     vwma
     hma
     rma
+    mcginley
   }
   enum OrderSizeTypeEnum {
     base

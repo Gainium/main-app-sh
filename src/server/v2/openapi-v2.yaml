@@ -3835,6 +3835,7 @@ components:
             - vwma
             - hma
             - rma
+            - mcginley
           example: ema
         maCrossingValue:
           type: string
@@ -3849,6 +3850,7 @@ components:
             - vwma
             - hma
             - rma
+            - mcginley
           example: price
         maCrossingLength:
           type: number
@@ -4094,6 +4096,7 @@ components:
             - vwma
             - hma
             - rma
+            - mcginley
           example: ema
         mar2length:
           type: number
@@ -4112,6 +4115,7 @@ components:
             - vwma
             - hma
             - rma
+            - mcginley
           example: sma
         bbwMult:
           type: number

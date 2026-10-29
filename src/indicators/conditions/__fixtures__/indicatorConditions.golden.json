@@ -309,6 +309,9 @@
   "OTE|interval1d": "cond@1d={\"type\":\"OTE\",\"oteLeftBars\":10,\"oteMinLegSize\":1}",
   "SESSION|levels|min": "cond@15m={\"type\":\"SESSION\",\"sessionRule\":\"levels\",\"sessionDays\":[1,2,3,4,5],\"sessionStart\":\"\",\"sessionEnd\":\"\",\"sessionTimezone\":\"UTC\"}",
   "SESSION|levels|full": "cond@15m={\"type\":\"SESSION\",\"sessionRule\":\"levels\",\"sessionDays\":[1,3,5],\"sessionStart\":\"09:30\",\"sessionEnd\":\"16:00\",\"sessionTimezone\":\"America/New_York\"}",
-  "SESSION|levels|empty": "cond@15m={\"type\":\"SESSION\",\"sessionRule\":\"levels\",\"sessionDays\":[],\"sessionStart\":\"\",\"sessionEnd\":\"\",\"sessionTimezone\":\"UTC\"}"
+  "SESSION|levels|empty": "cond@15m={\"type\":\"SESSION\",\"sessionRule\":\"levels\",\"sessionDays\":[],\"sessionStart\":\"\",\"sessionEnd\":\"\",\"sessionTimezone\":\"UTC\"}",
+  "MA|mcginley|price": "cond@1h={\"type\":\"MA\",\"interval\":14,\"maType\":\"mcginley\"}",
+  "MA|mcginley|crossesEma": "cond@1h={\"type\":\"MA\",\"interval\":14,\"maType\":\"mcginley\"} | maref@1h={\"type\":\"MA\",\"interval\":50,\"maType\":\"ema\"}",
+  "MAR|mcginley": "cond@1h={\"type\":\"MAR\",\"mar1type\":\"mcginley\",\"mar1length\":20,\"mar2type\":\"price\",\"mar2length\":20,\"percentile\":undefined,\"percentileLookback\":150,\"percentilePercentage\":80,\"trendFilter\":undefined,\"trendFilterLookback\":undefined,\"trendFilterType\":undefined,\"trendFilterValue\":undefined}"
  }
 }

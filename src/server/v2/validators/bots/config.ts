@@ -68,6 +68,15 @@ import {
   GRID_FORM_DEFAULTS,
 } from '../../botDefaults'
 
+/**
+ * MA types for the Bollinger, MACD and Keltner averages. McGinley Dynamic is
+ * a Moving Average / MA Ratio type only: those indicators' classes would
+ * compute it as an EMA.
+ */
+const BASIS_MA_TYPES = Object.values(MAEnum).filter(
+  (t) => t !== MAEnum.mcginley,
+)
+
 /** Conditions that compare against one value — `bw` needs two. */
 const SINGLE_VALUE_CONDITIONS = Object.values(
   IndicatorStartConditionEnum,
@@ -612,7 +621,7 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
   bbwMa: {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(MAEnum),
+    enum: BASIS_MA_TYPES,
   },
   bbwMaLength: {
     required: false,
@@ -641,12 +650,12 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
   macdMaSource: {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(MAEnum),
+    enum: BASIS_MA_TYPES,
   },
   macdMaSignal: {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(MAEnum),
+    enum: BASIS_MA_TYPES,
   },
   divOscillators: {
     required: false,
@@ -809,7 +818,7 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
   kcMa: {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
-    enum: Object.values(MAEnum),
+    enum: BASIS_MA_TYPES,
   },
   kcRange: {
     required: false,

@@ -152,6 +152,29 @@ describe('spec 126 — REST bot update replaces indicators', () => {
       expect(oteErrors(update('bullish'))).to.deep.equal([])
       expect(oteErrors(update('sideways')).length).to.equal(1)
     })
+    it('accepts McGinley as an MA type and rejects it as a Bollinger average', () => {
+      const update = (fields: Record<string, string>) =>
+        applyIndicatorSettingsUpdate(
+          { ...tiBot(), startCondition: StartConditionEnum.ti },
+          {
+            indicators: [
+              {
+                ...rsi('mg'),
+                type: IndicatorEnum.ma,
+                ...fields,
+              } as unknown as SettingsIndicators,
+            ],
+          },
+        )
+      const maErrors = (r: ReturnType<typeof update>) =>
+        errorsOf(r).filter(([f]) => /ma|Ma/.test(f))
+      expect(
+        maErrors(update({ maType: 'mcginley', maCrossingValue: 'price' })),
+      ).to.deep.equal([])
+      expect(maErrors(update({ mar1type: 'mcginley' }))).to.deep.equal([])
+      expect(maErrors(update({ bbwMa: 'mcginley' })).length).to.equal(1)
+      expect(maErrors(update({ kcMa: 'mcginley' })).length).to.equal(1)
+    })
     it('accepts the Session Price levels rule and rejects an unknown level', () => {
       const update = (sessionLevelA: string, sessionRule = 'levels') =>
         applyIndicatorSettingsUpdate(

@@ -29,6 +29,7 @@ import type {
   DEMA,
   TEMA,
   RMA,
+  McGinley,
   SupportResistance,
   QFL,
   PSAR,
@@ -299,6 +300,7 @@ class InternalIndicator {
     | DEMA
     | TEMA
     | RMA
+    | McGinley
     | SupportResistance
     | QFL
     | PSAR

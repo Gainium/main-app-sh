@@ -1310,6 +1310,39 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
       sessionTimezone: '',
     },
   })
+  // McGinley Dynamic as an MA type (appended): maType reaches the room key
+  const maMin = {
+    type: IndicatorEnum.ma,
+    uuid: 'cond',
+    groupId: 'g1',
+    indicatorAction: IndicatorAction.startDeal,
+    indicatorInterval: ExchangeIntervals.oneH,
+    indicatorCondition: C.cu,
+    indicatorLength: 14,
+    maType: MAEnum.mcginley,
+    maCrossingValue: MAEnum.price,
+  } as unknown as SettingsIndicators
+  out.push({ id: 'MA|mcginley|price', settings: maMin })
+  out.push({
+    id: 'MA|mcginley|crossesEma',
+    settings: {
+      ...maMin,
+      maCrossingValue: MAEnum.ema,
+      maCrossingLength: 50,
+      maCrossingInterval: ExchangeIntervals.oneH,
+      maUUID: 'maref',
+    },
+  })
+  out.push({
+    id: 'MAR|mcginley',
+    settings: {
+      ...maMin,
+      type: IndicatorEnum.mar,
+      mar1type: MAEnum.mcginley,
+      mar1length: 20,
+      mar2type: MAEnum.price,
+    },
+  })
   return out
 }
 

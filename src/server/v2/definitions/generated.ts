@@ -1345,7 +1345,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     type: 'MA',
     name: 'Moving Averages',
     description:
-      'Indicates the average price of a security over a set period, smoothing out price data to identify trends. The rule reads <maType> <indicatorCondition> <maCrossingValue>: the moving average is compared to the reference, so price above EMA 100 is maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price (cu/cd work the same way: EMA crossing down price = price crossing up EMA).',
+      'Indicates the average price of a security over a set period, smoothing out price data to identify trends. The rule reads <maType> <indicatorCondition> <maCrossingValue>: the moving average is compared to the reference, so price above EMA 100 is maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price (cu/cd work the same way: EMA crossing down price = price crossing up EMA). maType mcginley is McGinley Dynamic, an average that speeds up when price runs away from it.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -1363,6 +1363,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
           'vwma',
           'hma',
           'rma',
+          'mcginley',
         ],
       },
       {
@@ -1380,6 +1381,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
           'vwma',
           'hma',
           'rma',
+          'mcginley',
         ],
       },
       {
@@ -2203,6 +2205,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
           'vwma',
           'hma',
           'rma',
+          'mcginley',
         ],
       },
       {
@@ -2226,6 +2229,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
           'vwma',
           'hma',
           'rma',
+          'mcginley',
         ],
       },
       {

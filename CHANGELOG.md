@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.119.0] - 2026-10-29
+
+### Added
+
+- McGinley Dynamic is a Moving Average type (`maType: mcginley`): a moving average that catches up faster when price runs away from it. It works wherever a Moving Average condition does, against the price or against a second MA, and as either leg of MA Ratio. GraphQL, the database schema and the public API accept it on those fields; Bollinger, MACD and Keltner averages do not, and the API rejects it there.
+
 ## [1.118.1] - 2026-10-27
 
 ### Fixed
