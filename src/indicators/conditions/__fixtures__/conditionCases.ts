@@ -35,6 +35,11 @@ import {
   LWValueEnum,
   LWConditionEnum,
   OTELegEnum,
+  ADXModeEnum,
+  KDJLineEnum,
+  KDJCompareToEnum,
+  VWAPAnchorEnum,
+  VWAPLineEnum,
   SessionLevelEnum,
   SessionRuleEnum,
   STConditionEnum,
@@ -1138,6 +1143,218 @@ export function conditionCases(): ConditionCase[] {
         ),
       )
 
+  // ── VWAP (appended): the close against the VWAP or a band ───────────────
+  // vwap 100, stdev 5: upper/lower 105/95 at multiplier 1, 110/90 at 2
+  const P0 = T - (T % (24 * H))
+  const vwapBar = (
+    price: number | null,
+    vwap: number | null = 100,
+    periodStart: number | null = P0,
+  ) =>
+    ({
+      vwap,
+      stdev: 5,
+      upper: vwap === null ? null : vwap + 5,
+      lower: vwap === null ? null : vwap - 5,
+      price,
+      periodStart,
+    }) as unknown
+  for (const vwapLine of [
+    VWAPLineEnum.vwap,
+    VWAPLineEnum.upper,
+    VWAPLineEnum.lower,
+    undefined,
+  ])
+    for (const vwapBandMultiplier of [2, undefined])
+      for (const indicatorCondition of [
+        C.cd,
+        C.cu,
+        C.gt,
+        C.lt,
+        C.bw,
+        undefined,
+      ])
+        for (const [pp, lp] of [
+          [98, 102],
+          [102, 98],
+          [100, 102],
+          [108, 112],
+          [112, 108],
+          [92, 88],
+          [88, 92],
+          [null, 102],
+        ] as [number | null, number | null][])
+          for (const layout of ['two', 'one'] as Layout[])
+            push(
+              `VWAP|${fmt(vwapLine)}|m=${fmt(vwapBandMultiplier)}|${fmt(indicatorCondition)}|${fmt(pp)}>${fmt(lp)}|${layout}`,
+              base(IndicatorEnum.vwap, {
+                vwapLine,
+                vwapBandMultiplier,
+                indicatorCondition: indicatorCondition as C,
+              }),
+              series(IndicatorEnum.vwap, vwapBar(pp), vwapBar(lp), layout),
+            )
+  // a crossing never counts across the anchor restart; no volume yet = NaN
+  for (const indicatorCondition of [C.cu, C.gt])
+    for (const [label, prevBar, lastBar] of [
+      ['newPeriod', vwapBar(98), vwapBar(102, 100, P0 + 24 * H)],
+      ['noVolume', vwapBar(98), vwapBar(102, null)],
+      ['noPeriod', vwapBar(98, 100, null), vwapBar(102, 100, null)],
+    ] as [string, unknown, unknown][])
+      push(
+        `VWAP|boundary|${label}|${indicatorCondition}`,
+        base(IndicatorEnum.vwap, { indicatorCondition }),
+        series(IndicatorEnum.vwap, prevBar, lastBar),
+      )
+
+  // ── KDJ (appended): a line vs a line or the level, Stochastic's zone ────
+  const kdjBar = (k: number | null, d: number | null, j: number | null) =>
+    ({ k, d, j }) as unknown
+  for (const kdjLine of [
+    KDJLineEnum.k,
+    KDJLineEnum.d,
+    KDJLineEnum.j,
+    undefined,
+  ])
+    for (const kdjCompareTo of [
+      KDJCompareToEnum.k,
+      KDJCompareToEnum.d,
+      KDJCompareToEnum.j,
+      KDJCompareToEnum.custom,
+      undefined,
+    ])
+      for (const indicatorCondition of [C.cd, C.cu, C.gt, C.lt, undefined])
+        for (const [prev, last] of [
+          [kdjBar(10, 15, 0), kdjBar(18, 15, 24)],
+          [kdjBar(90, 85, 100), kdjBar(82, 85, 76)],
+          [kdjBar(50, 50, 50), kdjBar(55, 50, 65)],
+          [kdjBar(10, 15, null), kdjBar(18, null, 24)],
+        ] as [unknown, unknown][])
+          push(
+            `KDJ|${fmt(kdjLine)}|${fmt(kdjCompareTo)}|${fmt(indicatorCondition)}|${JSON.stringify(prev)}>${JSON.stringify(last)}`,
+            base(IndicatorEnum.kdj, {
+              kdjLine,
+              kdjCompareTo,
+              indicatorCondition: indicatorCondition as C,
+              indicatorValue: '20',
+            }),
+            series(IndicatorEnum.kdj, prev, last),
+          )
+  // zones, as stored by the Stochastic form (missing range = no zone)
+  for (const stochRange of [
+    StochRangeEnum.none,
+    StochRangeEnum.lower,
+    StochRangeEnum.upper,
+    StochRangeEnum.both,
+    undefined,
+  ])
+    for (const [stochUpper, stochLower] of [
+      ['80', '20'],
+      ['', '20'],
+    ])
+      for (const [prev, last] of [
+        [kdjBar(10, 15, 0), kdjBar(18, 15, 24)],
+        [kdjBar(5, 12, -9), kdjBar(14, 12, 18)],
+        [kdjBar(82, 88, 70), kdjBar(90, 88, 94)],
+      ] as [unknown, unknown][])
+        for (const layout of ['two', 'one'] as Layout[])
+          push(
+            `KDJ|zone|${fmt(stochRange)}|${stochUpper}/${stochLower}|${JSON.stringify(prev)}>${JSON.stringify(last)}|${layout}`,
+            base(IndicatorEnum.kdj, {
+              indicatorCondition: C.cu,
+              stochRange,
+              stochUpper,
+              stochLower,
+            }),
+            series(IndicatorEnum.kdj, prev, last, layout),
+          )
+
+  // ── ADX DMI mode (appended): +DI against −DI, indicatorValue unread ─────
+  const dmiBar = (value: number, pdi: number | null, mdi: number | null) =>
+    ({ value, pdi, mdi }) as unknown
+  for (const adxMode of [ADXModeEnum.dmi, ADXModeEnum.adx])
+    for (const indicatorCondition of [C.cd, C.cu, C.gt, C.lt, C.bw, undefined])
+      for (const [prev, last] of [
+        [dmiBar(10, 18, 22), dmiBar(30, 24, 20)],
+        [dmiBar(30, 24, 20), dmiBar(10, 18, 22)],
+        [dmiBar(30, 20, 20), dmiBar(10, 24, 20)],
+        [dmiBar(30, 24, 20), dmiBar(60, 25, 20)],
+        [dmiBar(30, null, 20), dmiBar(60, 25, 20)],
+      ] as [unknown, unknown][])
+        for (const layout of ['two', 'one'] as Layout[])
+          push(
+            `ADX|mode=${adxMode}|${fmt(indicatorCondition)}|${JSON.stringify(prev)}>${JSON.stringify(last)}|${layout}`,
+            base(IndicatorEnum.adx, {
+              adxMode,
+              indicatorCondition: indicatorCondition as C,
+              indicatorValue2: '90',
+            }),
+            series(IndicatorEnum.adx, prev, last, layout),
+          )
+
+  // ── Moving Average trend filter (appended): comparison AND trend gate ────
+  for (const trendFilterType of [
+    TrendFilterOperatorEnum.lower,
+    TrendFilterOperatorEnum.higher,
+    TrendFilterOperatorEnum.between,
+    undefined,
+  ])
+    for (const trend of [0, 1, 2, 3, undefined])
+      for (const indicatorCondition of [C.gt, C.lt, C.cu, C.cd])
+        push(
+          `MA|trend|${fmt(trendFilterType)}|t=${fmt(trend)}|${indicatorCondition}`,
+          base(IndicatorEnum.ma, {
+            indicatorCondition,
+            maType: MAEnum.ema,
+            maCrossingValue: MAEnum.price,
+            trendFilter: true,
+            trendFilterLookback: 10,
+            trendFilterType,
+            trendFilterValue: 1,
+          }),
+          series(
+            IndicatorEnum.ma,
+            { ...maBar(90, 100), trend },
+            { ...maBar(110, 100), trend },
+          ),
+        )
+  // the filter off: the stored trend settings are not read
+  for (const trendFilter of [false, undefined])
+    push(
+      `MA|trend|off=${fmt(trendFilter)}`,
+      base(IndicatorEnum.ma, {
+        indicatorCondition: C.cu,
+        maType: MAEnum.ema,
+        maCrossingValue: MAEnum.price,
+        trendFilter,
+        trendFilterType: TrendFilterOperatorEnum.higher,
+      }),
+      series(IndicatorEnum.ma, maBar(90, 100), maBar(110, 100)),
+    )
+  // a leftover trend filter on VWAP, KDJ or DMI keeps the condition false
+  for (const [label, type, extra, prev, last] of [
+    ['VWAP', IndicatorEnum.vwap, {}, vwapBar(98), vwapBar(102)],
+    ['KDJ', IndicatorEnum.kdj, {}, kdjBar(10, 15, 0), kdjBar(18, 15, 24)],
+    [
+      'DMI',
+      IndicatorEnum.adx,
+      { adxMode: ADXModeEnum.dmi },
+      dmiBar(10, 18, 22),
+      dmiBar(30, 24, 20),
+    ],
+  ] as [string, IndicatorEnum, Partial<SettingsIndicators>, unknown, unknown][])
+    for (const trendFilter of [true, false])
+      push(
+        `${label}|leftoverTrendFilter=${trendFilter}`,
+        base(type, {
+          ...extra,
+          indicatorCondition: C.cu,
+          trendFilter,
+          trendFilterType: TrendFilterOperatorEnum.higher,
+        }),
+        series(type, prev, last),
+      )
+
   return out
 }
 
@@ -1236,7 +1453,13 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
           : v,
     ]),
   ) as Partial<SettingsIndicators>
-  for (const type of Object.values(IndicatorEnum)) {
+  // Types added after the golden's per-type configs were recorded are
+  // appended at the end (below), so the recorded entries keep their order.
+  const APPENDED_TYPES: IndicatorEnum[] = [
+    IndicatorEnum.kdj,
+    IndicatorEnum.vwap,
+  ]
+  const pushTypeConfigs = (type: IndicatorEnum) => {
     const min = {
       type,
       uuid: 'cond',
@@ -1277,6 +1500,8 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
       },
     })
   }
+  for (const type of Object.values(IndicatorEnum))
+    if (!APPENDED_TYPES.includes(type)) pushTypeConfigs(type)
   // Session Price levels (appended): only the session window is in the room
   const sessionMin = {
     type: IndicatorEnum.session,
@@ -1341,6 +1566,111 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
       mar1type: MAEnum.mcginley,
       mar1length: 20,
       mar2type: MAEnum.price,
+    },
+  })
+  // KDJ and VWAP (appended): the per-type configs every type gets
+  for (const type of APPENDED_TYPES) pushTypeConfigs(type)
+  // KDJ: only the three lengths reach the room
+  const kdjMin = {
+    type: IndicatorEnum.kdj,
+    uuid: 'cond',
+    groupId: 'g1',
+    indicatorAction: IndicatorAction.startDeal,
+    indicatorInterval: ExchangeIntervals.oneH,
+    indicatorLength: 9,
+    indicatorCondition: C.cu,
+  } as unknown as SettingsIndicators
+  out.push({
+    id: 'KDJ|lengths',
+    settings: {
+      ...kdjMin,
+      kdjLength: 14,
+      kdjKSmooth: 5,
+      kdjDSmooth: 4,
+      kdjLine: KDJLineEnum.j,
+      kdjCompareTo: KDJCompareToEnum.custom,
+      indicatorValue: '0',
+      stochRange: StochRangeEnum.both,
+    },
+  })
+  out.push({
+    id: 'KDJ|lengthsStrings',
+    settings: {
+      ...kdjMin,
+      kdjLength: '14' as unknown as number,
+      kdjKSmooth: '5' as unknown as number,
+      kdjDSmooth: '' as unknown as number,
+    },
+  })
+  // VWAP: only the (normalised) anchor reaches the room
+  for (const vwapAnchor of [
+    VWAPAnchorEnum.day,
+    VWAPAnchorEnum.week,
+    VWAPAnchorEnum.month,
+    'Week' as VWAPAnchorEnum,
+    '' as VWAPAnchorEnum,
+  ])
+    out.push({
+      id: `VWAP|anchor=${vwapAnchor}`,
+      settings: {
+        ...kdjMin,
+        type: IndicatorEnum.vwap,
+        indicatorLength: 20,
+        vwapAnchor,
+        vwapLine: VWAPLineEnum.upper,
+        vwapBandMultiplier: 2,
+      },
+    })
+  // ADX DMI mode (appended; a new setting on an existing type): dmi joins
+  // the room only in DMI mode
+  const adxMin = {
+    ...kdjMin,
+    type: IndicatorEnum.adx,
+    indicatorLength: 14,
+    indicatorValue: '20',
+  } as SettingsIndicators
+  for (const adxMode of [ADXModeEnum.dmi, ADXModeEnum.adx])
+    out.push({ id: `ADX|mode=${adxMode}`, settings: { ...adxMin, adxMode } })
+  out.push({
+    id: 'ADX|mode=dmi|full',
+    settings: { ...adxMin, ...full, adxMode: ADXModeEnum.dmi },
+  })
+  // Moving Average trend filter (appended; existing settings on an existing
+  // type): the filter settings join the room only when trendFilter is on
+  for (const maType of [MAEnum.ema, MAEnum.sma, MAEnum.vwma, MAEnum.mcginley])
+    out.push({
+      id: `MA|trendFilter|${maType}`,
+      settings: {
+        ...maMin,
+        maType,
+        trendFilter: true,
+        trendFilterLookback: 10,
+        trendFilterType: TrendFilterOperatorEnum.higher,
+        trendFilterValue: 1,
+      },
+    })
+  out.push({
+    id: 'MA|trendFilter|crossesEma',
+    settings: {
+      ...maMin,
+      maCrossingValue: MAEnum.ema,
+      maCrossingLength: 50,
+      maCrossingInterval: ExchangeIntervals.oneH,
+      maUUID: 'maref',
+      trendFilter: true,
+      trendFilterLookback: '10' as unknown as number,
+      trendFilterType: TrendFilterOperatorEnum.lower,
+      trendFilterValue: '0.5' as unknown as number,
+    },
+  })
+  out.push({
+    id: 'MA|trendFilter|off',
+    settings: {
+      ...maMin,
+      trendFilter: false,
+      trendFilterLookback: 10,
+      trendFilterType: TrendFilterOperatorEnum.higher,
+      trendFilterValue: 1,
     },
   })
   return out

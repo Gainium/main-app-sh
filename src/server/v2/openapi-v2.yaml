@@ -3753,6 +3753,8 @@ components:
             - SESSION
             - LW
             - OTE
+            - KDJ
+            - VWAP
           example: RSI
         indicatorLength:
           type: number
@@ -4471,6 +4473,82 @@ components:
             - bullish
             - bearish
             - any
+        adxMode:
+          type: string
+          description: "ADX only. adx (default, also when missing) = the ADX line against indicatorValue, as before. dmi = DMI mode: indicatorCondition cu/cd = +DI crosses above/below -DI, gt/lt = +DI above/below -DI; indicatorValue is not read and bw is not accepted."
+          enum:
+            - adx
+            - dmi
+          example: dmi
+        kdjLength:
+          type: number
+          description: KDJ — RSV window in bars. Default 9.
+          example: 9
+        kdjKSmooth:
+          type: number
+          description: KDJ — K smoothing length. Default 3.
+          example: 3
+        kdjDSmooth:
+          type: number
+          description: KDJ — D smoothing length. Default 3.
+          example: 3
+        kdjLine:
+          type: string
+          description: KDJ — the line the condition reads (J = 3K - 2D, may leave 0-100). Default k.
+          enum:
+            - k
+            - d
+            - j
+          example: k
+        kdjCompareTo:
+          type: string
+          description: "KDJ — what kdjLine is compared with by indicatorCondition (cu/cd/gt/lt): another line, or custom = the fixed level indicatorValue. Default d. The zone filter is stochRange with stochUpper/stochLower, read as for Stochastic (not applied to custom); unlike Stochastic, a missing stochRange means no zone."
+          enum:
+            - k
+            - d
+            - j
+            - custom
+          example: d
+        vwapAnchor:
+          type: string
+          description: "VWAP — where the anchored VWAP restarts, in UTC: day (00:00), week (Monday 00:00) or month (the 1st). Default day. The first, partial period after the bot subscribes has no value."
+          enum:
+            - day
+            - week
+            - month
+          example: day
+        vwapLine:
+          type: string
+          description: "VWAP — the line the close is compared with by indicatorCondition: vwap, upper or lower band (vwap ± vwapBandMultiplier standard deviations). cu/cd count only within one anchor period. Default vwap."
+          enum:
+            - vwap
+            - upper
+            - lower
+          example: vwap
+        vwapBandMultiplier:
+          type: number
+          description: VWAP — band width in standard deviations for vwapLine upper/lower. Default 1.
+          example: 1
+        trendFilter:
+          type: boolean
+          description: "MA Ratio and Moving Average: AND the condition with a trend filter — the line now against itself trendFilterLookback bars ago, by trendFilterValue percent. Off (false or missing) = no filter."
+          example: false
+        trendFilterLookback:
+          type: number
+          description: Trend filter — bars back the line is compared with.
+          example: 10
+        trendFilterType:
+          type: string
+          description: "Trend filter — lower = the line fell at least trendFilterValue percent, higher = rose at least that much, between = moved less than that either way."
+          enum:
+            - lower
+            - higher
+            - between
+          example: higher
+        trendFilterValue:
+          type: number
+          description: Trend filter — threshold in percent.
+          example: 2
       description: SettingsIndicators configuration
     UpdateComboBotInput:
       type: object

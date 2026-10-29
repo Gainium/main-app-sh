@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.120.0] - 2026-10-29
+
+### Added
+
+- VWAP indicator (`type: VWAP`): the volume-weighted average price, anchored to the UTC day, week (Monday) or month (`vwapAnchor`), with standard-deviation bands. A condition compares the close with the VWAP or a band (`vwapLine`, `vwapBandMultiplier`) by crossing up / down or above / below; a crossing counts only within one anchor period, and the first, partial period after the bot subscribes has no value. The live indicator service feeds it each candle's open time and volume.
+- KDJ indicator (`type: KDJ`): K, D and J lines (`kdjLength`, `kdjKSmooth`, `kdjDSmooth`, default 9 / 3 / 3). A condition compares one line with another or with a fixed level (`kdjLine`, `kdjCompareTo`, `indicatorValue`), with Stochastic's zone filter (`stochRange`, `stochUpper`, `stochLower`; missing = no zone).
+- DMI mode on ADX (`adxMode: dmi`): the condition compares +DI with −DI and does not read `indicatorValue`; between is rejected. Without `adxMode`, or with `adx`, ADX conditions are unchanged.
+- Trend filter on the Moving Average, with MA Ratio's settings (`trendFilter`, `trendFilterLookback`, `trendFilterType`, `trendFilterValue`), for every MA type: the condition fires only when the average also moved as the filter asks. With the filter off nothing changes.
+- The decisions come from `@gainium/indicators` 1.11.0 (`vwapCondition`, `kdjCondition`, `dmiCondition`, `trendFilterCondition`), the functions the backtester uses, so live bots and backtests fire on the same bars. GraphQL, the database schema and the public API (validators, defaults, OpenAPI, indicator definitions, schema docs) accept the new types and fields.
+
+### Changed
+
+- A Moving Average condition stored with `trendFilter` on (the bot form offered the trend filter only on MA Ratio) never fired before, because no trend was computed for a Moving Average. It now applies the trend filter its settings describe. A leftover `trendFilter` on VWAP, KDJ or a DMI-mode ADX keeps the condition false, as on other indicators.
+
 ## [1.119.0] - 2026-10-29
 
 ### Added

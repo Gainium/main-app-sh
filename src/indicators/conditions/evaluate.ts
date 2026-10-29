@@ -20,12 +20,22 @@
  *    consumed.
  */
 import { gt, lt, lte, gte, eq } from '@gainium/indicators'
-import { oteCondition, sessionLevelsCondition } from '@gainium/indicators'
+import {
+  dmiCondition,
+  kdjCondition,
+  oteCondition,
+  sessionLevelsCondition,
+  trendFilterCondition,
+  vwapCondition,
+} from '@gainium/indicators'
 import type {
+  ADXResult,
+  KDJResult,
   OBFVGResult,
   LongWickResult,
   OTEResult,
   SessionLevelsResult,
+  VWAPResult,
 } from '@gainium/indicators'
 import type {
   DIVResult,
@@ -60,6 +70,7 @@ import {
   timeIntervalMap,
 } from '../../../types'
 import { getSmoothingMode, smoothingLineOperands } from './smoothing'
+import { isAdxDmi } from './config'
 import type {
   IndicatorHistory,
   MAResult,
@@ -166,6 +177,10 @@ export function evaluateIndicatorCondition(
     oteLeg,
     sessionLevelA,
     sessionLevelB,
+    kdjLine,
+    kdjCompareTo,
+    vwapLine,
+    vwapBandMultiplier,
   } = find
   const uuid = find.uuid
   const { symbol, showLog } = ctx
@@ -332,6 +347,35 @@ export function evaluateIndicatorCondition(
     action = oteCondition(ld?.value as OTEResult, pd?.value as OTEResult, {
       level: +(oteLevel || 0.705),
       leg: oteLeg,
+      condition: indicatorCondition,
+    })
+  } else if (type === IndicatorEnum.vwap) {
+    // the close against the VWAP or a band; the decision lives in
+    // @gainium/indicators so the backtester fires on the same bars
+    const [ld, pd] = sortedByTime
+    action = vwapCondition(ld?.value as VWAPResult, pd?.value as VWAPResult, {
+      line: vwapLine,
+      bandMultiplier: vwapBandMultiplier ?? 1,
+      condition: indicatorCondition,
+    })
+  } else if (type === IndicatorEnum.kdj) {
+    // a KDJ line against another line or the level indicatorValue, with
+    // Stochastic's zone filter; shared with the backtester
+    const [ld, pd] = sortedByTime
+    action = kdjCondition(ld?.value as KDJResult, pd?.value as KDJResult, {
+      line: kdjLine,
+      compareTo: kdjCompareTo,
+      level: indicatorValue,
+      condition: indicatorCondition,
+      zone: stochRange,
+      stochUpper,
+      stochLower,
+    })
+  } else if (isAdxDmi(find)) {
+    // ADX in DMI mode: +DI against −DI, indicatorValue is not read; shared
+    // with the backtester
+    const [ld, pd] = sortedByTime
+    action = dmiCondition(ld?.value as ADXResult, pd?.value as ADXResult, {
       condition: indicatorCondition,
     })
   } else if (type === IndicatorEnum.session) {
@@ -644,6 +688,14 @@ export function evaluateIndicatorCondition(
     ) {
       last = lastData.value.ma
       prev = prevData.value.ma
+      if (trendFilter) {
+        // the Moving Average's trend filter (its room is MATrendFilter):
+        // the shared gate, ANDed with the comparison below
+        trendFilterAction = trendFilterCondition(lastData.value, {
+          trendFilterType,
+        })
+        trendValue = lastData.value.trend
+      }
       if (maCrossingValue === MAEnum.price) {
         value = lastData.value.price
         prevValue = prevData.value.price
@@ -992,6 +1044,18 @@ export function evaluateIndicatorCondition(
         )?.toISOString()}`,
       )
     }
+  }
+
+  if (
+    trendFilter &&
+    (type === IndicatorEnum.vwap ||
+      type === IndicatorEnum.kdj ||
+      isAdxDmi(find))
+  ) {
+    // A leftover trendFilter on VWAP, KDJ or DMI keeps the condition false,
+    // as the backtester's catch-all trend gate does (these results carry no
+    // trend code) and as an ADX with trendFilter already behaves here.
+    action = false
   }
 
   return { action, compared: reported }

@@ -15,6 +15,7 @@ import {
 import type { SettingsIndicators } from '../../../types'
 import {
   indicatorLengthOf,
+  isAdxDmi,
   isSessionLevels,
   referenceSubscription,
 } from './config'
@@ -81,6 +82,8 @@ export const INDICATOR_CONDITION_KINDS: Record<
   [IndicatorEnum.session]: { source: 'clock' },
   [IndicatorEnum.lw]: { source: 'room' },
   [IndicatorEnum.ote]: { source: 'room' },
+  [IndicatorEnum.kdj]: { source: 'room' },
+  [IndicatorEnum.vwap]: { source: 'room' },
 }
 
 /**
@@ -131,6 +134,8 @@ const OWN_RULE_TYPES = [
   IndicatorEnum.pc,
   IndicatorEnum.lw,
   IndicatorEnum.ote,
+  IndicatorEnum.kdj,
+  IndicatorEnum.vwap,
   IndicatorEnum.st,
   IndicatorEnum.div,
   IndicatorEnum.qfl,
@@ -157,7 +162,28 @@ export function conditionSettingsGaps(
   if (!i.indicatorInterval)
     gaps.push({ field: 'indicatorInterval', message: 'Choose a timeframe.' })
   gaps.push(...smoothingSettingsGaps(i))
+  if (type === IndicatorEnum.kdj) {
+    // kdjCondition: missing line = k, compare-to = d; the same line on both
+    // sides never fires
+    if ((i.kdjLine ?? 'k') === (i.kdjCompareTo ?? 'd'))
+      gaps.push({
+        field: 'kdjCompareTo',
+        message: 'Choose a different line or a level to compare with.',
+      })
+    return gaps
+  }
   if (OWN_RULE_TYPES.includes(type)) return gaps
+  if (isAdxDmi(i)) {
+    // DMI mode reads +DI against −DI only; indicatorValue is not read
+    if (
+      indicatorCondition !== IndicatorStartConditionEnum.cd &&
+      indicatorCondition !== IndicatorStartConditionEnum.cu &&
+      indicatorCondition !== IndicatorStartConditionEnum.gt &&
+      indicatorCondition !== IndicatorStartConditionEnum.lt
+    )
+      gaps.push({ field: 'indicatorCondition', message: 'Choose a condition.' })
+    return gaps
+  }
   if (isSessionLevels(i)) {
     // sessionLevelsCondition: missing A = price, B = prevHigh, condition = cu
     const levels = Object.values(SessionLevelEnum) as string[]

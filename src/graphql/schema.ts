@@ -3542,6 +3542,15 @@ export const BotSchema = /* GraphQL */ `
     oteMinLegSize: StringOrNumber
     oteLevel: StringOrNumber
     oteLeg: String
+    adxMode: String
+    kdjLength: StringOrNumber
+    kdjKSmooth: StringOrNumber
+    kdjDSmooth: StringOrNumber
+    kdjLine: String
+    kdjCompareTo: String
+    vwapAnchor: String
+    vwapLine: String
+    vwapBandMultiplier: StringOrNumber
   }
   enum MAEnum {
     sma
@@ -5232,6 +5241,8 @@ export const BotSchema = /* GraphQL */ `
     LW
     SESSION
     OTE
+    KDJ
+    VWAP
   }
   enum BBCrossingEnum {
     middle
@@ -5370,6 +5381,15 @@ export const BotSchema = /* GraphQL */ `
     oteMinLegSize: StringOrNumber
     oteLevel: StringOrNumber
     oteLeg: String
+    adxMode: String
+    kdjLength: StringOrNumber
+    kdjKSmooth: StringOrNumber
+    kdjDSmooth: StringOrNumber
+    kdjLine: String
+    kdjCompareTo: String
+    vwapAnchor: String
+    vwapLine: String
+    vwapBandMultiplier: StringOrNumber
   }
   enum IndicatorSection {
     sl

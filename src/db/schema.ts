@@ -117,6 +117,11 @@ import {
   RRSlTypeEnum,
   LWConditionEnum,
   OTELegEnum,
+  ADXModeEnum,
+  KDJLineEnum,
+  KDJCompareToEnum,
+  VWAPAnchorEnum,
+  VWAPLineEnum,
   StreamWatchdogConfigTypeEnum,
   StreamWatchdogConfigStatusEnum,
 } from '../../types'
@@ -1432,6 +1437,15 @@ const indicatorsSettings = new Schema({
   oteMinLegSize: Schema.Types.Mixed,
   oteLevel: Schema.Types.Mixed,
   oteLeg: { type: String, enum: OTELegEnum },
+  adxMode: { type: String, enum: ADXModeEnum },
+  kdjLength: Schema.Types.Mixed,
+  kdjKSmooth: Schema.Types.Mixed,
+  kdjDSmooth: Schema.Types.Mixed,
+  kdjLine: { type: String, enum: KDJLineEnum },
+  kdjCompareTo: { type: String, enum: KDJCompareToEnum },
+  vwapAnchor: { type: String, enum: VWAPAnchorEnum },
+  vwapLine: { type: String, enum: VWAPLineEnum },
+  vwapBandMultiplier: Schema.Types.Mixed,
 })
 
 const multiTP = new Schema({

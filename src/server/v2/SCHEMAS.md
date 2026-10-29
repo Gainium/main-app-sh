@@ -1813,7 +1813,7 @@ SettingsIndicators configuration
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|UO|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE` | No | Bot or indicator type |
+| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|UO|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE|KDJ|VWAP` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
 | `indicatorValue2` | string | No | Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile. |
@@ -1925,6 +1925,19 @@ SettingsIndicators configuration
 | `oteMinLegSize` | string | No | OTE Levels — minimum leg size, in percent of the leg's low. Default 1. |
 | `oteLevel` | string | No | OTE Levels — retracement level of the latest leg the close is compared with (indicatorCondition cd/cu/gt/lt). 0 = the leg's end, 1 = its origin, 0.5 = equilibrium, 0.618–0.79 = OTE zone. Default 0.705. |
 | `oteLeg` | enum: `bullish|bearish|any` | No | OTE Levels — which leg direction is read. Bullish = swing low up to swing high. |
+| `adxMode` | enum: `adx|dmi` | No | ADX only. adx (default, also when missing) = the ADX line against indicatorValue, as before. dmi = DMI mode: cu/cd = +DI crosses above/below −DI, gt/lt = +DI above/below −DI; indicatorValue is not read, bw is not accepted. |
+| `kdjLength` | number | No | KDJ — RSV window in bars. Default 9. |
+| `kdjKSmooth` | number | No | KDJ — K smoothing length. Default 3. |
+| `kdjDSmooth` | number | No | KDJ — D smoothing length. Default 3. |
+| `kdjLine` | enum: `k|d|j` | No | KDJ — the line the condition reads (J = 3K − 2D, may leave 0–100). Default k. |
+| `kdjCompareTo` | enum: `k|d|j|custom` | No | KDJ — what kdjLine is compared with (cu/cd/gt/lt): another line, or custom = the fixed level indicatorValue. Default d. Zone filter: stochRange with stochUpper/stochLower as for Stochastic (not applied to custom; missing stochRange = no zone). |
+| `vwapAnchor` | enum: `day|week|month` | No | VWAP — where the anchored VWAP restarts, UTC: day (00:00), week (Monday 00:00), month (the 1st). Default day. The first, partial period after the bot subscribes has no value. |
+| `vwapLine` | enum: `vwap|upper|lower` | No | VWAP — the line the close is compared with (cu/cd/gt/lt): the VWAP or a band (vwap ± vwapBandMultiplier standard deviations). cu/cd count only within one anchor period. Default vwap. |
+| `vwapBandMultiplier` | number | No | VWAP — band width in standard deviations. Default 1. |
+| `trendFilter` | boolean | No | MA Ratio and Moving Average — AND the condition with a trend filter: the line now against itself trendFilterLookback bars ago, by trendFilterValue percent. Off (false or missing) = no filter. |
+| `trendFilterLookback` | number | No | Trend filter — bars back the line is compared with. |
+| `trendFilterType` | enum: `lower|higher|between` | No | Trend filter — lower = fell at least trendFilterValue percent, higher = rose at least that much, between = moved less than that either way. |
+| `trendFilterValue` | number | No | Trend filter — threshold in percent. |
 
 ### Example
 
@@ -2041,7 +2054,20 @@ SettingsIndicators configuration
   "oteLeftBars": "10",
   "oteMinLegSize": "1",
   "oteLevel": "0.705",
-  "oteLeg": "bullish"
+  "oteLeg": "bullish",
+  "adxMode": "dmi",
+  "kdjLength": 9,
+  "kdjKSmooth": 3,
+  "kdjDSmooth": 3,
+  "kdjLine": "k",
+  "kdjCompareTo": "d",
+  "vwapAnchor": "day",
+  "vwapLine": "vwap",
+  "vwapBandMultiplier": 1,
+  "trendFilter": false,
+  "trendFilterLookback": 10,
+  "trendFilterType": "higher",
+  "trendFilterValue": 2
 }
 ```
 

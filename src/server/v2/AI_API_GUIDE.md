@@ -192,6 +192,11 @@ response = requests.post(
 
 ### Replace a Bot's Indicators
 `indicators` and `indicatorGroups` are **full replacements** on update and clone: send the complete list the bot should have. Keep an existing indicator by sending it back with its `uuid` (a read-modify-write of the bot's current list works as-is); `[]` removes all. The result must stay consistent with the bot's settings — e.g. `startCondition: "TechnicalIndicators"` needs a `startDeal` indicator, `dcaCondition: "indicators"` needs a `startDca` indicator in section `dca` — otherwise the call returns 400 with an `errors` list.
+
+Some indicators have modes that change what the condition reads — check the type's definition (`GET /api/v2/discovery/indicators/{type}`) before building one:
+- `ADX` with `adxMode: "dmi"` compares +DI with −DI (`indicatorCondition` cu/cd/gt/lt); `indicatorValue` is not read.
+- `MA` (like `MAR`) with `trendFilter: true` also requires the average to trend (`trendFilterLookback`, `trendFilterType`, `trendFilterValue`).
+- `KDJ` compares `kdjLine` with `kdjCompareTo` (another line, or `custom` = `indicatorValue`); `VWAP` compares the close with `vwapLine` of the period set by `vwapAnchor`.
 ```python
 response = requests.put(
     "https://api.gainium.io/api/v2/bots/dca/550e8400-e29b-41d4-a716-446655440000",

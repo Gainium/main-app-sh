@@ -14,10 +14,19 @@ import {
   IndicatorEnum,
   IndicatorSection,
   IndicatorsLogicEnum,
+  KDJCompareToEnum,
+  KDJLineEnum,
   SettingsIndicators,
   StartConditionEnum,
   StatusEnum,
+  VWAPAnchorEnum,
+  VWAPLineEnum,
 } from '../../../types'
+import {
+  KDJLineEnum as IndicatorsKDJLineEnum,
+  VWAPAnchorEnum as IndicatorsVWAPAnchorEnum,
+  VWAPLineEnum as IndicatorsVWAPLineEnum,
+} from '@gainium/indicators'
 
 const rsi = (uuid: string, groupId = 'g1') =>
   ({
@@ -151,6 +160,124 @@ describe('spec 126 — REST bot update replaces indicators', () => {
         errorsOf(r).filter(([f]) => f.includes('ote'))
       expect(oteErrors(update('bullish'))).to.deep.equal([])
       expect(oteErrors(update('sideways')).length).to.equal(1)
+    })
+    it('accepts the KDJ, VWAP, ADX DMI and MA trend filter fields and rejects unknown values', () => {
+      const update = (type: IndicatorEnum, fields: Record<string, unknown>) =>
+        applyIndicatorSettingsUpdate(
+          { ...tiBot(), startCondition: StartConditionEnum.ti },
+          {
+            indicators: [
+              {
+                ...rsi('new'),
+                type,
+                indicatorCondition: 'cu',
+                ...fields,
+              } as unknown as SettingsIndicators,
+            ],
+          },
+        )
+      const fieldErrors = (
+        r: ReturnType<typeof update>,
+        re: RegExp,
+      ): [string, string][] => errorsOf(r).filter(([f]) => re.test(f))
+      const kdj = /kdj/
+      expect(
+        fieldErrors(
+          update(IndicatorEnum.kdj, {
+            kdjLength: 9,
+            kdjKSmooth: '3',
+            kdjDSmooth: 3,
+            kdjLine: 'j',
+            kdjCompareTo: 'custom',
+          }),
+          kdj,
+        ),
+      ).to.deep.equal([])
+      expect(
+        fieldErrors(update(IndicatorEnum.kdj, { kdjLine: 'x' }), kdj).length,
+      ).to.equal(1)
+      expect(
+        fieldErrors(update(IndicatorEnum.kdj, { kdjCompareTo: 'level' }), kdj)
+          .length,
+      ).to.equal(1)
+      expect(
+        fieldErrors(update(IndicatorEnum.kdj, { kdjLength: 0 }), kdj).length,
+      ).to.be.greaterThan(0)
+      const vwap = /vwap/
+      expect(
+        fieldErrors(
+          update(IndicatorEnum.vwap, {
+            vwapAnchor: 'week',
+            vwapLine: 'lower',
+            vwapBandMultiplier: 2,
+          }),
+          vwap,
+        ),
+      ).to.deep.equal([])
+      expect(
+        fieldErrors(update(IndicatorEnum.vwap, { vwapAnchor: 'year' }), vwap)
+          .length,
+      ).to.equal(1)
+      expect(
+        fieldErrors(update(IndicatorEnum.vwap, { vwapLine: 'middle' }), vwap)
+          .length,
+      ).to.equal(1)
+      expect(
+        fieldErrors(update(IndicatorEnum.adx, { adxMode: 'dmi' }), /adxMode/),
+      ).to.deep.equal([])
+      expect(
+        fieldErrors(update(IndicatorEnum.adx, { adxMode: 'di' }), /adxMode/)
+          .length,
+      ).to.equal(1)
+      // DMI compares two lines: no between
+      const bw = (adxMode: string) =>
+        errorsOf(
+          update(IndicatorEnum.adx, {
+            adxMode,
+            indicatorCondition: 'bw',
+            indicatorValue: '20',
+            indicatorValue2: '40',
+          }),
+        ).filter(([, m]) => m.includes('between'))
+      expect(bw('adx')).to.deep.equal([])
+      expect(bw('dmi').length).to.equal(1)
+      expect(
+        fieldErrors(
+          update(IndicatorEnum.ma, {
+            maType: 'mcginley',
+            maCrossingValue: 'price',
+            trendFilter: true,
+            trendFilterLookback: 10,
+            trendFilterType: 'higher',
+            trendFilterValue: 1,
+          }),
+          /trendFilter/,
+        ),
+      ).to.deep.equal([])
+      expect(
+        fieldErrors(
+          update(IndicatorEnum.ma, {
+            trendFilter: true,
+            trendFilterType: 'up',
+          }),
+          /trendFilter/,
+        ).length,
+      ).to.equal(1)
+    })
+    it('KDJ and VWAP enums are the indicators package’s', () => {
+      expect(Object.values(KDJLineEnum)).to.deep.equal(
+        Object.values(IndicatorsKDJLineEnum),
+      )
+      expect(Object.values(VWAPAnchorEnum)).to.deep.equal(
+        Object.values(IndicatorsVWAPAnchorEnum),
+      )
+      expect(Object.values(VWAPLineEnum)).to.deep.equal(
+        Object.values(IndicatorsVWAPLineEnum),
+      )
+      expect(Object.values(KDJCompareToEnum)).to.deep.equal([
+        ...Object.values(IndicatorsKDJLineEnum),
+        'custom',
+      ])
     })
     it('accepts McGinley as an MA type and rejects it as a Bollinger average', () => {
       const update = (fields: Record<string, string>) =>

@@ -69,6 +69,10 @@ import {
   LWValueEnum,
   LWConditionEnum,
   OTELegEnum,
+  KDJLineEnum,
+  KDJCompareToEnum,
+  VWAPAnchorEnum,
+  VWAPLineEnum,
 } from '../../../types'
 
 export const DCA_FORM_DEFAULTS: DCABotSettings = {
@@ -670,6 +674,33 @@ export const indicatorConfigDefaults: {
     oteLevel: '0.705',
     oteLeg: OTELegEnum.bullish,
     ...base,
+  },
+  [IndicatorEnum.kdj]: {
+    ...base,
+    // indicatorLength is not read by KDJ, but the engine subscribes a
+    // condition only when it is set
+    indicatorLength: 9,
+    indicatorValue: '20',
+    indicatorCondition: IndicatorStartConditionEnum.cu,
+    kdjLength: 9,
+    kdjKSmooth: 3,
+    kdjDSmooth: 3,
+    kdjLine: KDJLineEnum.k,
+    kdjCompareTo: KDJCompareToEnum.d,
+    stochRange: StochRangeEnum.none,
+    stochUpper: '80',
+    stochLower: '20',
+  },
+  [IndicatorEnum.vwap]: {
+    ...base,
+    // indicatorLength is not read by VWAP, but the engine subscribes a
+    // condition only when it is set
+    indicatorLength: 20,
+    indicatorValue: '0',
+    indicatorCondition: IndicatorStartConditionEnum.cu,
+    vwapAnchor: VWAPAnchorEnum.day,
+    vwapLine: VWAPLineEnum.vwap,
+    vwapBandMultiplier: 1,
   },
   [IndicatorEnum.session]: {
     indicatorLength: 20,

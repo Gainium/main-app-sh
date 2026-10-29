@@ -5,6 +5,7 @@ import {
   BotStatusEnum,
   LWConditionEnum,
   OTELegEnum,
+  ADXModeEnum,
   CloseConditionEnum,
   CloseDCATypeEnum,
   BaseFundingEnum,
@@ -62,6 +63,11 @@ import {
   SessionLevelEnum,
 } from '../../../../../types'
 import { CONDITION_INDICATOR_TYPES } from '../../../../indicators/conditions/catalog'
+import {
+  KDJLineEnum as IndicatorsKDJLineEnum,
+  VWAPAnchorEnum as IndicatorsVWAPAnchorEnum,
+  VWAPLineEnum as IndicatorsVWAPLineEnum,
+} from '@gainium/indicators'
 import {
   COMBO_FORM_DEFAULTS,
   DCA_FORM_DEFAULTS,
@@ -948,6 +954,65 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(OTELegEnum),
+  },
+  // ADX: 'dmi' = +DI against −DI (indicatorValue is not read)
+  adxMode: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(ADXModeEnum),
+  },
+  // KDJ: allowed lines are the indicators package's own
+  kdjLength: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+  },
+  kdjKSmooth: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+  },
+  kdjDSmooth: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+  },
+  kdjLine: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(IndicatorsKDJLineEnum),
+  },
+  kdjCompareTo: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: [...Object.values(IndicatorsKDJLineEnum), 'custom'],
+  },
+  // VWAP: allowed anchors and lines are the indicators package's own
+  vwapAnchor: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(IndicatorsVWAPAnchorEnum),
+  },
+  vwapLine: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: Object.values(IndicatorsVWAPLineEnum),
+  },
+  vwapBandMultiplier: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+    ],
   },
   percentile: {
     required: false,

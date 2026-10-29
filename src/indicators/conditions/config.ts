@@ -8,13 +8,16 @@
  * Moved verbatim out of `bot/dcaHelper.ts` `connectSettingsIndicator`; the
  * characterization suite pins the engine's configs per type.
  */
+import { resolveVWAPAnchor } from '@gainium/indicators'
 import {
+  ADXModeEnum,
   ExchangeIntervals,
   IndicatorEnum,
   MAEnum,
   RangeType,
   SessionRuleEnum,
   TradingviewAnalysisConditionEnum,
+  VWAPAnchorEnum,
 } from '../../../types'
 import type { IndicatorConfig, SettingsIndicators } from '../../../types'
 import { smoothingConfig } from './smoothing'
@@ -43,11 +46,49 @@ export const indicatorSubscribeInterval = (
 ): ExchangeIntervals =>
   type === IndicatorEnum.adr ? ExchangeIntervals.oneD : indicatorInterval
 
+/** An ADX condition in DMI mode (+DI against −DI). */
+export const isAdxDmi = (
+  i: Pick<SettingsIndicators, 'type' | 'adxMode'>,
+): boolean => i.type === IndicatorEnum.adx && i.adxMode === ADXModeEnum.dmi
+
+/** A Moving Average condition with the trend filter on. */
+export const isMaTrendFilter = (
+  i: Pick<SettingsIndicators, 'type' | 'trendFilter'>,
+): boolean => i.type === IndicatorEnum.ma && !!i.trendFilter
+
 export function buildIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
   // A smoothable oscillator's smoothing is appended only when it is on, so
   // the room id of an unsmoothed indicator (built from the config's values
   // in key order) is unchanged and a smoothed one gets its own room.
-  return { ...unsmoothedIndicatorConfig(i), ...smoothingConfig(i) }
+  return {
+    ...withIndicatorModes(i, unsmoothedIndicatorConfig(i)),
+    ...smoothingConfig(i),
+  }
+}
+
+/**
+ * Modes added on existing types, appended to that type's config only when
+ * they are on — so with them off the config (and the room id) is exactly the
+ * one before, and with them on the instance gets its own room:
+ *  - Moving Average trend filter: `@gainium/indicators` builds MATrendFilter
+ *    (result `{ value, trend }`) instead of the plain MA;
+ *  - ADX DMI mode: the ADX result also carries +DI / −DI.
+ */
+function withIndicatorModes(
+  i: SettingsIndicators,
+  config: IndicatorConfig,
+): IndicatorConfig {
+  if (config.type === IndicatorEnum.ma && isMaTrendFilter(i))
+    return {
+      ...config,
+      trendFilter: i.trendFilter,
+      trendFilterLookback: i.trendFilterLookback,
+      trendFilterType: i.trendFilterType,
+      trendFilterValue: i.trendFilterValue,
+    }
+  if (config.type === IndicatorEnum.adx && isAdxDmi(i))
+    return { ...config, dmi: true } as IndicatorConfig
+  return config
 }
 
 function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
@@ -110,6 +151,10 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
     lwThreshold,
     oteLeftBars,
     oteMinLegSize,
+    kdjLength,
+    kdjKSmooth,
+    kdjDSmooth,
+    vwapAnchor,
     sessionDays,
     sessionStart,
     sessionEnd,
@@ -161,6 +206,22 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
       sessionStart: sessionStart || '',
       sessionEnd: sessionEnd || '',
       sessionTimezone: sessionTimezone || 'UTC',
+    }
+  // KDJ: the three lengths shape the lines; line, compare-to, level and
+  // zone are read by the decision. VWAP: only the anchor shapes it (the band
+  // multiplier is the decision's), so conditions differing only in line or
+  // multiplier share one room.
+  if (type === IndicatorEnum.kdj)
+    return {
+      type: IndicatorEnum.kdj,
+      kdjLength: +(kdjLength || 9),
+      kdjKSmooth: +(kdjKSmooth || 3),
+      kdjDSmooth: +(kdjDSmooth || 3),
+    }
+  if (type === IndicatorEnum.vwap)
+    return {
+      type: IndicatorEnum.vwap,
+      vwapAnchor: resolveVWAPAnchor(vwapAnchor) as string as VWAPAnchorEnum,
     }
   return type === IndicatorEnum.lw
     ? {

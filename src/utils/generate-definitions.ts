@@ -927,8 +927,9 @@ const INDICATOR_META: Record<
   ADX: {
     name: 'Average Directional Index (ADX)',
     description:
-      'Measures the strength of a trend without regard to direction, with higher values indicating a stronger trend.',
+      'Measures the strength of a trend without regard to direction, with higher values indicating a stronger trend. adxMode dmi switches the condition to the Directional Movement Index: indicatorCondition cu/cd = +DI crosses above/below -DI, gt/lt = +DI above/below -DI, and indicatorValue is not read (bw is not accepted). Missing adxMode or adx = the ADX line against indicatorValue.',
     typeSpecificFields: [
+      'adxMode',
       'indicatorValue2',
       'percentile',
       'percentileLookback',
@@ -1241,13 +1242,17 @@ const INDICATOR_META: Record<
   MA: {
     name: 'Moving Averages',
     description:
-      'Indicates the average price of a security over a set period, smoothing out price data to identify trends. The rule reads <maType> <indicatorCondition> <maCrossingValue>: the moving average is compared to the reference, so price above EMA 100 is maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price (cu/cd work the same way: EMA crossing down price = price crossing up EMA). maType mcginley is McGinley Dynamic, an average that speeds up when price runs away from it.',
+      'Indicates the average price of a security over a set period, smoothing out price data to identify trends. The rule reads <maType> <indicatorCondition> <maCrossingValue>: the moving average is compared to the reference, so price above EMA 100 is maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price (cu/cd work the same way: EMA crossing down price = price crossing up EMA). maType mcginley is McGinley Dynamic, an average that speeds up when price runs away from it. trendFilter (as on MA Ratio) also requires the average itself to trend: compared with its value trendFilterLookback bars ago it fell (trendFilterType lower), rose (higher) by at least trendFilterValue percent, or moved less than that (between).',
     typeSpecificFields: [
       'maType',
       'maCrossingValue',
       'maCrossingLength',
       'maCrossingInterval',
       'maUUID',
+      'trendFilter',
+      'trendFilterLookback',
+      'trendFilterType',
+      'trendFilterValue',
     ],
     supportedActions: [
       'startDeal',
@@ -1928,6 +1933,65 @@ const INDICATOR_META: Record<
       oteMinLegSize: 1,
       oteLevel: 0.705,
       oteLeg: 'bullish',
+      indicatorAction: 'startDeal',
+    },
+  },
+  KDJ: {
+    name: 'KDJ',
+    description:
+      'Stochastic-style oscillator with three lines: K and D (0-100, RSV over kdjLength bars smoothed by kdjKSmooth and kdjDSmooth) and J = 3K - 2D, which can leave 0-100. kdjLine (k/d/j) is compared by indicatorCondition (cu/cd/gt/lt) with kdjCompareTo: another line, or custom = the fixed level indicatorValue. Optional zone filter as on Stochastic: stochRange lower/upper/both with stochUpper/stochLower (none or missing = no zone; not applied to custom). A bullish K/D cross below 20 is kdjLine k, kdjCompareTo d, indicatorCondition cu, stochRange lower, stochUpper 20.',
+    typeSpecificFields: [
+      'kdjLength',
+      'kdjKSmooth',
+      'kdjDSmooth',
+      'kdjLine',
+      'kdjCompareTo',
+      'stochRange',
+      'stochUpper',
+      'stochLower',
+    ],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'KDJ',
+      indicatorLength: 9,
+      indicatorValue: '20',
+      indicatorCondition: 'cu',
+      indicatorInterval: '1h',
+      kdjLength: 9,
+      kdjKSmooth: 3,
+      kdjDSmooth: 3,
+      kdjLine: 'k',
+      kdjCompareTo: 'd',
+      indicatorAction: 'startDeal',
+    },
+  },
+  VWAP: {
+    name: 'VWAP (anchored)',
+    description:
+      'Volume-weighted average price that restarts at vwapAnchor (UTC): day (00:00), week (Monday) or month (the 1st), with standard-deviation bands. The close is compared by indicatorCondition (cu/cd/gt/lt) with vwapLine: vwap, upper or lower (vwap ± vwapBandMultiplier standard deviations). cu/cd count only within one anchor period; the first, partial period after the bot subscribes has no value. A long entry on a reclaim of the daily VWAP is vwapAnchor day, vwapLine vwap, indicatorCondition cu.',
+    typeSpecificFields: ['vwapAnchor', 'vwapLine', 'vwapBandMultiplier'],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'VWAP',
+      indicatorLength: 20,
+      indicatorValue: '0',
+      indicatorCondition: 'cu',
+      indicatorInterval: '15m',
+      vwapAnchor: 'day',
+      vwapLine: 'vwap',
+      vwapBandMultiplier: 1,
       indicatorAction: 'startDeal',
     },
   },

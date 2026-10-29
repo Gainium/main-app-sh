@@ -27,6 +27,7 @@ import { findPairBySymbol } from '../../../bot/utils'
 import { singlePositionSettingsError } from '../../../bot/dca/singlePosition'
 import { billableIndicators } from '../../../bot/billableIndicators'
 import { smoothingSettingsGaps } from '../../../indicators/conditions/smoothing'
+import { isAdxDmi } from '../../../indicators/conditions/config'
 
 const indicatorsCheck: {
   condition: (input: DCABotSettings) => boolean
@@ -181,7 +182,8 @@ const betweenConditionErrors = (
   indicators
     .filter((i) => i.indicatorCondition === IndicatorStartConditionEnum.bw)
     .flatMap((i): [string, string][] => {
-      if (!BETWEEN_CAPABLE_INDICATORS.includes(i.type)) {
+      // ADX in DMI mode compares two lines, not a value with bounds
+      if (!BETWEEN_CAPABLE_INDICATORS.includes(i.type) || isAdxDmi(i)) {
         return [
           [
             'indicators',

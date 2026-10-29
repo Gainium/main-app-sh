@@ -16,6 +16,9 @@ import {
   LongWickResult,
   OTEResult,
   SessionLevelsResult,
+  ADXResult,
+  KDJResult,
+  VWAPResult,
 } from '@gainium/indicators'
 import {
   DCABacktestingInput,
@@ -696,6 +699,31 @@ export type SettingsIndicators = {
   /** OTE Levels: retracement level price is compared with (0 = leg end, 1 = origin). */
   oteLevel?: string
   oteLeg?: OTELegEnum
+  /**
+   * ADX: missing / 'adx' = the ADX line, exactly as before; 'dmi' = DMI mode,
+   * indicatorCondition reads +DI against −DI and indicatorValue is ignored.
+   */
+  adxMode?: ADXModeEnum
+  /** KDJ: RSV window (default 9). */
+  kdjLength?: number
+  /** KDJ: K smoothing (default 3). */
+  kdjKSmooth?: number
+  /** KDJ: D smoothing (default 3). */
+  kdjDSmooth?: number
+  /** KDJ: line the condition reads (default k). */
+  kdjLine?: KDJLineEnum
+  /**
+   * KDJ: what that line is compared with (default d); 'custom' = the fixed
+   * level indicatorValue. The zone filter is stochRange / stochUpper /
+   * stochLower, read as the Stochastic condition reads them.
+   */
+  kdjCompareTo?: KDJCompareToEnum
+  /** VWAP: where the anchored VWAP restarts, UTC (default day). */
+  vwapAnchor?: VWAPAnchorEnum
+  /** VWAP: line the close is compared with (default vwap). */
+  vwapLine?: VWAPLineEnum
+  /** VWAP: band width in standard deviations (default 1; condition only). */
+  vwapBandMultiplier?: number
 } & Percentile &
   TrendFilter
 
@@ -727,6 +755,41 @@ export enum LWValueEnum {
   top = 'top',
   bottom = 'bottom',
   any = 'any',
+}
+
+/** ADX: what the condition reads — the ADX line (default) or +DI vs −DI. */
+export enum ADXModeEnum {
+  adx = 'adx',
+  dmi = 'dmi',
+}
+
+/** KDJ: a line a condition reads (same values as `@gainium/indicators` KDJLineEnum). */
+export enum KDJLineEnum {
+  k = 'k',
+  d = 'd',
+  j = 'j',
+}
+
+/** KDJ: what the chosen line is compared with — another line, or the fixed level. */
+export enum KDJCompareToEnum {
+  k = 'k',
+  d = 'd',
+  j = 'j',
+  custom = 'custom',
+}
+
+/** VWAP: where the anchored VWAP restarts, UTC (same values as `@gainium/indicators` VWAPAnchorEnum). */
+export enum VWAPAnchorEnum {
+  day = 'day',
+  week = 'week',
+  month = 'month',
+}
+
+/** VWAP: the line the close is compared with (same values as `@gainium/indicators` VWAPLineEnum). */
+export enum VWAPLineEnum {
+  vwap = 'vwap',
+  upper = 'upper',
+  lower = 'lower',
 }
 
 /** Which leg direction an OTE Levels condition reads. */
@@ -4455,6 +4518,8 @@ export enum IndicatorEnum {
   session = 'SESSION',
   lw = 'LW',
   ote = 'OTE',
+  kdj = 'KDJ',
+  vwap = 'VWAP',
 }
 
 /**
@@ -4500,6 +4565,11 @@ export type MAResult = {
   ma: number
   maType: string
   price: number
+  /**
+   * Trend filter on only: MAR's trend code of the MA against itself
+   * `trendFilterLookback` bars ago (see `MATrendResult`); absent otherwise.
+   */
+  trend?: number
 }
 
 export type IndicatorHistory = { time: number } & (
@@ -4564,6 +4634,10 @@ export type IndicatorHistory = { time: number } & (
   | { type: IndicatorEnum.psar; value: { psar: number; price: number } }
   | { type: IndicatorEnum.lw; value: LongWickResult }
   | { type: IndicatorEnum.ote; value: OTEResult }
+  /** ADX in DMI mode (`adxMode: 'dmi'`): the ADX result plus +DI / −DI */
+  | { type: IndicatorEnum.adx; value: ADXResult }
+  | { type: IndicatorEnum.kdj; value: KDJResult }
+  | { type: IndicatorEnum.vwap; value: VWAPResult }
   | { type: IndicatorEnum.session; value: boolean }
   | { type: IndicatorEnum.session; value: SessionLevelsResult }
 )
@@ -4612,6 +4686,24 @@ type Smoothing = {
 export type IndicatorConfig =
   | { type: IndicatorEnum.lw; lwThreshold: number; lwMaxDuration: number }
   | { type: IndicatorEnum.ote; oteLeftBars: number; oteMinLegSize: number }
+  | {
+      type: IndicatorEnum.kdj
+      kdjLength: number
+      kdjKSmooth: number
+      kdjDSmooth: number
+    }
+  | {
+      // the band multiplier is a condition setting, not part of the room
+      type: IndicatorEnum.vwap
+      vwapAnchor: VWAPAnchorEnum
+    }
+  | ({
+      // ADX in DMI mode: the result also carries +DI / −DI
+      type: IndicatorEnum.adx
+      interval: number
+      dmi: true
+    } & Percentile &
+      Smoothing)
   | {
       type: IndicatorEnum.session
       sessionRule: SessionRuleEnum.levels
@@ -4743,11 +4835,12 @@ export type IndicatorConfig =
       laggingSpan2Periods: number
       laggingSpan: number
     }
-  | {
+  | ({
+      // with trendFilter on, the indicator is MATrendFilter ({ value, trend })
       type: IndicatorEnum.ma
       maType: MAEnum
       interval: number
-    }
+    } & TrendFilter)
   | {
       type: IndicatorEnum.sr
       leftBars: number
