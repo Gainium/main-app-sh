@@ -73,6 +73,13 @@ import {
   KDJCompareToEnum,
   VWAPAnchorEnum,
   VWAPLineEnum,
+  CandleSourceEnum,
+  CandleColorEnum,
+  CandleTriggerEnum,
+  OBSideEnum,
+  OBLevelEnum,
+  SqzSignalEnum,
+  SqzMomentumEnum,
 } from '../../../types'
 
 export const DCA_FORM_DEFAULTS: DCABotSettings = {
@@ -701,6 +708,43 @@ export const indicatorConfigDefaults: {
     vwapAnchor: VWAPAnchorEnum.day,
     vwapLine: VWAPLineEnum.vwap,
     vwapBandMultiplier: 1,
+  },
+  [IndicatorEnum.candle]: {
+    ...base,
+    // indicatorLength / indicatorValue / indicatorCondition are not read by
+    // Candle colour, but the engine subscribes a condition only when the
+    // length is set
+    indicatorLength: 1,
+    indicatorValue: '0',
+    candleSource: CandleSourceEnum.heikinAshi,
+    candleColor: CandleColorEnum.green,
+    candleCount: 1,
+    candleTrigger: CandleTriggerEnum.streak,
+  },
+  [IndicatorEnum.ob]: {
+    ...base,
+    // indicatorLength is not read by Order Blocks, but the engine subscribes
+    // a condition only when it is set; the close dropping into the bullish
+    // block's top = the retest long
+    indicatorLength: 5,
+    indicatorValue: '0',
+    indicatorCondition: IndicatorStartConditionEnum.cd,
+    obSwingLength: 5,
+    obSide: OBSideEnum.bullish,
+    obLevel: OBLevelEnum.top,
+  },
+  [IndicatorEnum.sqz]: {
+    ...base,
+    // indicatorLength / indicatorValue are not read by Squeeze Momentum, but
+    // the engine subscribes a condition only when the length is set
+    indicatorLength: 20,
+    indicatorValue: '0',
+    sqzLength: 20,
+    sqzBBMult: 2,
+    sqzKCLength: 20,
+    sqzKCMult: 1.5,
+    sqzSignal: SqzSignalEnum.fired,
+    sqzMomentum: SqzMomentumEnum.positive,
   },
   [IndicatorEnum.session]: {
     indicatorLength: 20,

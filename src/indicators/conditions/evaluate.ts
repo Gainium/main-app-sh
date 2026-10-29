@@ -21,8 +21,11 @@
  */
 import { gt, lt, lte, gte, eq } from '@gainium/indicators'
 import {
+  candleCondition,
   dmiCondition,
   kdjCondition,
+  orderBlockCondition,
+  squeezeCondition,
   oteCondition,
   sessionLevelsCondition,
   trendFilterCondition,
@@ -30,7 +33,10 @@ import {
 } from '@gainium/indicators'
 import type {
   ADXResult,
+  CandleResult,
   KDJResult,
+  OrderBlockResult,
+  SqueezeResult,
   OBFVGResult,
   LongWickResult,
   OTEResult,
@@ -181,6 +187,14 @@ export function evaluateIndicatorCondition(
     kdjCompareTo,
     vwapLine,
     vwapBandMultiplier,
+    candleColor,
+    candleCount,
+    candleTrigger,
+    obSide,
+    obLevel,
+    sqzSignal,
+    sqzMomentum,
+    sessionLevelsActive,
   } = find
   const uuid = find.uuid
   const { symbol, showLog } = ctx
@@ -371,6 +385,33 @@ export function evaluateIndicatorCondition(
       stochUpper,
       stochLower,
     })
+  } else if (type === IndicatorEnum.candle) {
+    // N candles of a colour in a row (regular or Heikin Ashi); the decision
+    // lives in @gainium/indicators so the backtester fires on the same bars
+    const [ld, pd] = sortedByTime
+    action = candleCondition(
+      ld?.value as CandleResult,
+      pd?.value as CandleResult,
+      { color: candleColor, count: candleCount, trigger: candleTrigger },
+    )
+  } else if (type === IndicatorEnum.ob) {
+    // the close against a level of the latest bullish / bearish order
+    // block; a crossing needs the same block on both bars. Shared with the
+    // backtester
+    const [ld, pd] = sortedByTime
+    action = orderBlockCondition(
+      ld?.value as OrderBlockResult,
+      pd?.value as OrderBlockResult,
+      { side: obSide, level: obLevel, condition: indicatorCondition },
+    )
+  } else if (type === IndicatorEnum.sqz) {
+    // squeeze state AND momentum; shared with the backtester
+    const [ld, pd] = sortedByTime
+    action = squeezeCondition(
+      ld?.value as SqueezeResult,
+      pd?.value as SqueezeResult,
+      { signal: sqzSignal, momentum: sqzMomentum },
+    )
   } else if (isAdxDmi(find)) {
     // ADX in DMI mode: +DI against −DI, indicatorValue is not read; shared
     // with the backtester
@@ -386,7 +427,13 @@ export function evaluateIndicatorCondition(
     action = sessionLevelsCondition(
       ld?.value as SessionLevelsResult,
       pd?.value as SessionLevelsResult,
-      { a: sessionLevelA, b: sessionLevelB, condition: indicatorCondition },
+      {
+        a: sessionLevelA,
+        b: sessionLevelB,
+        condition: indicatorCondition,
+        // missing = only inside the session, as before
+        active: sessionLevelsActive,
+      },
     )
   } else if (type === IndicatorEnum.st) {
     const [ld, pd] = sortedByTime
@@ -1050,9 +1097,13 @@ export function evaluateIndicatorCondition(
     trendFilter &&
     (type === IndicatorEnum.vwap ||
       type === IndicatorEnum.kdj ||
+      type === IndicatorEnum.candle ||
+      type === IndicatorEnum.ob ||
+      type === IndicatorEnum.sqz ||
       isAdxDmi(find))
   ) {
-    // A leftover trendFilter on VWAP, KDJ or DMI keeps the condition false,
+    // A leftover trendFilter on VWAP, KDJ, DMI, Candle colour, Order Blocks
+    // or Squeeze Momentum keeps the condition false,
     // as the backtester's catch-all trend gate does (these results carry no
     // trend code) and as an ADX with trendFilter already behaves here.
     action = false

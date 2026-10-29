@@ -27,7 +27,10 @@ import { findPairBySymbol } from '../../../bot/utils'
 import { singlePositionSettingsError } from '../../../bot/dca/singlePosition'
 import { billableIndicators } from '../../../bot/billableIndicators'
 import { smoothingSettingsGaps } from '../../../indicators/conditions/smoothing'
-import { isAdxDmi } from '../../../indicators/conditions/config'
+import {
+  divergenceRangeInvalid,
+  isAdxDmi,
+} from '../../../indicators/conditions/config'
 
 const indicatorsCheck: {
   condition: (input: DCABotSettings) => boolean
@@ -213,6 +216,17 @@ const betweenConditionErrors = (
       return []
     })
 
+/** Divergence: divRangeLower must be below divRangeUpper (defaults 1 / 60). */
+const divergenceRangeErrors = (
+  indicators: DCABotSettings['indicators'],
+): [string, string][] =>
+  indicators
+    .filter((i) => divergenceRangeInvalid(i))
+    .map((): [string, string] => [
+      'indicators',
+      'divRangeLower must be below divRangeUpper (defaults 1 and 60)',
+    ])
+
 /**
  * Oscillator smoothing: type `none` or an allowed average (case-insensitive),
  * a whole length 1..1000, compare `value` / `line`, no `bw` with `line`, and
@@ -252,6 +266,7 @@ export const indicatorConsistencyErrors = (
   errors.push(...requiredIndicatorErrors(input))
   errors.push(...betweenConditionErrors(indicators))
   errors.push(...smoothingErrors(indicators))
+  errors.push(...divergenceRangeErrors(indicators))
 
   if (
     indicatorsCheck.every((check) => !check.condition(input)) &&

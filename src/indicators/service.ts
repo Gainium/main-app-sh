@@ -56,6 +56,9 @@ import type {
   KDJ,
   VWAP,
   MATrendFilter,
+  Candle,
+  OrderBlocks,
+  Squeeze,
 } from '@gainium/indicators'
 import { v4 } from 'uuid'
 import { indicatorHistoryValue } from './historyValue'
@@ -331,6 +334,9 @@ class InternalIndicator {
     | KDJ
     | VWAP
     | MATrendFilter
+    | Candle
+    | OrderBlocks
+    | Squeeze
   private data: IndicatorHistory[]
   private lastPrice = 0
   private subscribers: IndicatorSubscribers[]

@@ -1813,7 +1813,7 @@ SettingsIndicators configuration
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|UO|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE|KDJ|VWAP` | No | Bot or indicator type |
+| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|UO|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE|KDJ|VWAP|CANDLE|OB|SQZ` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
 | `indicatorValue2` | string | No | Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile. |
@@ -1872,7 +1872,7 @@ SettingsIndicators configuration
 | `mar1type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | First MA type |
 | `mar2length` | number | No | Second MA length for ratio |
 | `mar2type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | Second MA type |
-| `bbwMult` | number | No | Bollinger Band width multiplier |
+| `bbwMult` | number | No | Bollinger Band width multiplier, in standard deviations (BB, BBW, BB %B; decimals allowed, e.g. 2.5) |
 | `bbwMa` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | BB moving average type |
 | `bbwMaLength` | number | No | BB MA length |
 | `macdFast` | number | No | MACD fast period |
@@ -1882,7 +1882,11 @@ SettingsIndicators configuration
 | `divOscillators` | Array<object> | No | Oscillators for divergence |
 | `divType` | enum: `Bullish|Bearish|Hidden Bullish|Hidden Bearish|Any Bullish|Any Bearish` | No | Divergence type |
 | `divMinCount` | number | No | Minimum divergence count |
-| `factor` | number | No | Supertrend multiplier factor |
+| `divPivotLeft` | integer 1–50 | No | Divergence — bars to the left of a pivot. Default 3 when missing. |
+| `divPivotRight` | integer 1–50 | No | Divergence — bars to the right of a pivot; a pivot is confirmed this many bars later. Default 1 when missing. |
+| `divRangeLower` | integer 1–500 | No | Divergence — fewest bars between the two pivots compared; must be below divRangeUpper. Default 1 when missing. |
+| `divRangeUpper` | integer 2–500 | No | Divergence — most bars between the two pivots compared. Default 60 when missing. |
+| `factor` | number | No | Supertrend multiplier factor (decimals allowed, e.g. 2.5) |
 | `atrLength` | number | No | ATR period length |
 | `stCondition` | enum: `up|down|upToDown|downToUp` | No | Supertrend condition |
 | `smoothing` | enum: `none|sma|ema|wma|dema|tema|hma|rma` | No | Oscillators RSI, CCI, MFI, WR, UO, MOM, AO, ADX, BBPB, KCPB, BBW, VO and MAR only. Moving average laid over the indicator's line (case-insensitive). Unset or 'none' keeps the unsmoothed line; any other value on another indicator is rejected. |
@@ -1911,7 +1915,7 @@ SettingsIndicators configuration
 | `obfvgValue` | enum: `bullish|bearish|any` | No | Order block/FVG type |
 | `obfvgRef` | enum: `high|low|middle` | No | Order block/FVG reference |
 | `sessionDays` | Array<number> | No |  |
-| `sessionRule` | enum: `in|out|levels` | No | in = trade inside the session, out = outside it (both a time filter); levels = Price levels, compare sessionLevelA with sessionLevelB by indicatorCondition on indicatorInterval candles, only during the session. |
+| `sessionRule` | enum: `in|out|levels` | No | in = trade inside the session, out = outside it (both a time filter); levels = Price levels, compare sessionLevelA with sessionLevelB by indicatorCondition on indicatorInterval candles, only during the session unless sessionLevelsActive says otherwise. |
 | `sessionStart` | string | No | Session open, local HH:MM in sessionTimezone. With sessionEnd, limits the session to those hours; omit both for the whole day. |
 | `sessionEnd` | string | No | Session close (exclusive), local HH:MM. Before sessionStart means an overnight session that belongs to the day it opens. |
 | `sessionTimezone` | string | No | IANA time zone the session days and hours are read in. Defaults to UTC; follows daylight saving. |
@@ -1938,6 +1942,20 @@ SettingsIndicators configuration
 | `trendFilterLookback` | number | No | Trend filter — bars back the line is compared with. |
 | `trendFilterType` | enum: `lower|higher|between` | No | Trend filter — lower = fell at least trendFilterValue percent, higher = rose at least that much, between = moved less than that either way. |
 | `trendFilterValue` | number | No | Trend filter — threshold in percent. |
+| `sessionLevelsActive` | enum: `session|outside|always` | No | Session Price levels rule — where the condition is evaluated: session (default, also when missing) = only during the session, outside = only outside it (e.g. the Monday range on the other days), always = both. Outside a session the prev* levels are the last completed session's and curOpen/curMid have no value; crossings never count between in and out of a session. |
+| `candleSource` | enum: `regular|heikinAshi` | No | Candle colour — the candle the colour is read from. Default heikinAshi. |
+| `candleColor` | enum: `green|red` | No | Candle colour — green = close above open, red = close below open (a doji is neither and breaks every run). Default green. |
+| `candleCount` | integer 1–50 | No | Candle colour — N candles of that colour in a row. Default 1. |
+| `candleTrigger` | enum: `streak|start` | No | Candle colour — streak (default) = true while the last candleCount closed candles are that colour; start = only on the candleCount-th candle of a run (once per run). |
+| `obSwingLength` | integer 2–50 | No | Order Blocks — pivot bars on each side of a swing. Default 5. |
+| `obSide` | enum: `bullish|bearish` | No | Order Blocks — the latest bullish or bearish block the close is compared with (indicatorCondition cu/cd/gt/lt). No active block = false; a crossing needs the same block on both candles. Default bullish. |
+| `obLevel` | enum: `top|middle|bottom` | No | Order Blocks — the level of that block (middle = (top + bottom) / 2). Default top. |
+| `sqzLength` | integer 2–500 | No | Squeeze Momentum — Bollinger Bands length. Default 20. |
+| `sqzBBMult` | number 0.1–10 | No | Squeeze Momentum — Bollinger Bands multiplier (decimals allowed). Default 2; TradingView displays the script with 1.5. |
+| `sqzKCLength` | integer 2–500 | No | Squeeze Momentum — Keltner Channels length, also the momentum length. Default 20. |
+| `sqzKCMult` | number 0.1–10 | No | Squeeze Momentum — Keltner Channels multiplier of the average true range (decimals allowed). Default 1.5. |
+| `sqzSignal` | enum: `fired|on|off|any` | No | Squeeze Momentum — fired (default) = the squeeze released on this candle, on = in a squeeze, off = out of one, any = no requirement. ANDed with sqzMomentum; both any never fires. |
+| `sqzMomentum` | enum: `positive|negative|rising|falling|crossUp|crossDown|any` | No | Squeeze Momentum — the momentum required; crossUp / crossDown = through zero. Default positive. |
 
 ### Example
 
@@ -2067,7 +2085,21 @@ SettingsIndicators configuration
   "trendFilter": false,
   "trendFilterLookback": 10,
   "trendFilterType": "higher",
-  "trendFilterValue": 2
+  "trendFilterValue": 2,
+  "sessionLevelsActive": "session",
+  "candleSource": "heikinAshi",
+  "candleColor": "green",
+  "candleCount": 1,
+  "candleTrigger": "streak",
+  "obSwingLength": 5,
+  "obSide": "bullish",
+  "obLevel": "top",
+  "sqzLength": 20,
+  "sqzBBMult": 2,
+  "sqzKCLength": 20,
+  "sqzKCMult": 1.5,
+  "sqzSignal": "fired",
+  "sqzMomentum": "positive"
 }
 ```
 

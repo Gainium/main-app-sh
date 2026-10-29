@@ -264,6 +264,157 @@ describe('spec 126 — REST bot update replaces indicators', () => {
         ).length,
       ).to.equal(1)
     })
+    it('accepts the Candle colour, Order Blocks, Squeeze, DIV pivot and Session active fields and rejects out-of-range ones', () => {
+      const update = (type: IndicatorEnum, fields: Record<string, unknown>) =>
+        applyIndicatorSettingsUpdate(
+          { ...tiBot(), startCondition: StartConditionEnum.ti },
+          {
+            indicators: [
+              {
+                ...rsi('new'),
+                type,
+                indicatorCondition: 'cd',
+                ...fields,
+              } as unknown as SettingsIndicators,
+            ],
+          },
+        )
+      const fieldErrors = (
+        r: ReturnType<typeof update>,
+        re: RegExp,
+      ): [string, string][] => errorsOf(r).filter(([f]) => re.test(f))
+      const count = (
+        type: IndicatorEnum,
+        fields: Record<string, unknown>,
+        re: RegExp,
+      ) => fieldErrors(update(type, fields), re).length
+      // Candle colour
+      const candle = /candle/
+      expect(
+        count(
+          IndicatorEnum.candle,
+          {
+            candleSource: 'regular',
+            candleColor: 'red',
+            candleCount: 50,
+            candleTrigger: 'start',
+          },
+          candle,
+        ),
+      ).to.equal(0)
+      expect(
+        count(IndicatorEnum.candle, { candleSource: 'renko' }, candle),
+      ).to.equal(1)
+      expect(
+        count(IndicatorEnum.candle, { candleColor: 'blue' }, candle),
+      ).to.equal(1)
+      expect(
+        count(IndicatorEnum.candle, { candleTrigger: 'end' }, candle),
+      ).to.equal(1)
+      expect(count(IndicatorEnum.candle, { candleCount: 51 }, candle)).to.equal(
+        1,
+      )
+      expect(
+        count(IndicatorEnum.candle, { candleCount: 0 }, candle),
+      ).to.be.greaterThan(0)
+      expect(
+        count(IndicatorEnum.candle, { candleCount: 1.5 }, candle),
+      ).to.equal(1)
+      // Order Blocks
+      const ob = /obSwingLength|obSide|obLevel/
+      expect(
+        count(
+          IndicatorEnum.ob,
+          { obSwingLength: 2, obSide: 'bearish', obLevel: 'middle' },
+          ob,
+        ),
+      ).to.equal(0)
+      expect(count(IndicatorEnum.ob, { obSwingLength: 1 }, ob)).to.equal(1)
+      expect(count(IndicatorEnum.ob, { obSwingLength: 51 }, ob)).to.equal(1)
+      expect(count(IndicatorEnum.ob, { obSide: 'any' }, ob)).to.equal(1)
+      expect(count(IndicatorEnum.ob, { obLevel: 'mid' }, ob)).to.equal(1)
+      // Squeeze Momentum: decimal multipliers pass
+      const sqz = /sqz/
+      expect(
+        count(
+          IndicatorEnum.sqz,
+          {
+            sqzLength: 20,
+            sqzBBMult: 1.5,
+            sqzKCLength: '14',
+            sqzKCMult: '2.25',
+            sqzSignal: 'fired',
+            sqzMomentum: 'crossUp',
+          },
+          sqz,
+        ),
+      ).to.equal(0)
+      expect(count(IndicatorEnum.sqz, { sqzLength: 1 }, sqz)).to.equal(1)
+      expect(count(IndicatorEnum.sqz, { sqzKCLength: 501 }, sqz)).to.equal(1)
+      expect(count(IndicatorEnum.sqz, { sqzLength: 20.5 }, sqz)).to.equal(1)
+      expect(count(IndicatorEnum.sqz, { sqzBBMult: 0.05 }, sqz)).to.equal(1)
+      expect(count(IndicatorEnum.sqz, { sqzKCMult: 11 }, sqz)).to.equal(1)
+      expect(count(IndicatorEnum.sqz, { sqzSignal: 'release' }, sqz)).to.equal(
+        1,
+      )
+      expect(count(IndicatorEnum.sqz, { sqzMomentum: 'up' }, sqz)).to.equal(1)
+      // Decimal standard deviations / SuperTrend factor
+      expect(count(IndicatorEnum.bb, { bbwMult: 2.5 }, /bbwMult/)).to.equal(0)
+      expect(count(IndicatorEnum.bbw, { bbwMult: '0.1' }, /bbwMult/)).to.equal(
+        0,
+      )
+      expect(count(IndicatorEnum.bbpb, { bbwMult: 1.7 }, /bbwMult/)).to.equal(0)
+      expect(count(IndicatorEnum.st, { factor: 2.5 }, /factor/)).to.equal(0)
+      // Divergence pivots / range
+      const div = /divPivot|divRange/
+      expect(
+        count(
+          IndicatorEnum.div,
+          {
+            divPivotLeft: 5,
+            divPivotRight: '2',
+            divRangeLower: 5,
+            divRangeUpper: 500,
+          },
+          div,
+        ),
+      ).to.equal(0)
+      expect(
+        count(IndicatorEnum.div, { divPivotLeft: 0 }, div),
+      ).to.be.greaterThan(0)
+      expect(count(IndicatorEnum.div, { divPivotRight: 51 }, div)).to.equal(1)
+      expect(count(IndicatorEnum.div, { divRangeUpper: 1 }, div)).to.equal(1)
+      expect(count(IndicatorEnum.div, { divRangeLower: 2.5 }, div)).to.equal(1)
+      const rangeErrors = (fields: Record<string, unknown>) =>
+        errorsOf(update(IndicatorEnum.div, fields)).filter(([, m]) =>
+          m.includes('divRangeLower must be below divRangeUpper'),
+        )
+      expect(
+        rangeErrors({ divRangeLower: 5, divRangeUpper: 30 }),
+      ).to.deep.equal([])
+      expect(rangeErrors({})).to.deep.equal([])
+      expect(
+        rangeErrors({ divRangeLower: 30, divRangeUpper: 30 }).length,
+      ).to.equal(1)
+      expect(rangeErrors({ divRangeLower: 61 }).length).to.equal(1)
+      // Session Price levels: where it is evaluated
+      const active = /sessionLevelsActive/
+      for (const v of ['session', 'outside', 'always'])
+        expect(
+          count(
+            IndicatorEnum.session,
+            { sessionRule: 'levels', sessionLevelsActive: v },
+            active,
+          ),
+        ).to.equal(0)
+      expect(
+        count(
+          IndicatorEnum.session,
+          { sessionRule: 'levels', sessionLevelsActive: 'weekend' },
+          active,
+        ),
+      ).to.equal(1)
+    })
     it('KDJ and VWAP enums are the indicators package’s', () => {
       expect(Object.values(KDJLineEnum)).to.deep.equal(
         Object.values(IndicatorsKDJLineEnum),

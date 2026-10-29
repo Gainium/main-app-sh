@@ -171,6 +171,9 @@ export const indicatorCoreFieldDefinitions: FieldDefinition[] = [
       'OTE',
       'KDJ',
       'VWAP',
+      'CANDLE',
+      'OB',
+      'SQZ',
     ],
   },
   {
@@ -424,7 +427,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     type: 'BBW',
     name: 'Bollinger Band Width (BBW)',
     description:
-      'Quantifies the gap between the Bollinger Bands. Wider bands indicate higher volatility, and narrower bands indicate lower volatility.',
+      'Quantifies the gap between the Bollinger Bands. Wider bands indicate higher volatility, and narrower bands indicate lower volatility. bbwMult is the number of standard deviations (decimals allowed, e.g. 2.5).',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -544,7 +547,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     type: 'BB',
     name: 'Bollinger Bands (BB)',
     description:
-      'Displays volatility by plotting standard deviations above and below a moving average. Band widening suggests increased volatility.',
+      'Displays volatility by plotting standard deviations above and below a moving average. Band widening suggests increased volatility. bbwMult is the number of standard deviations (decimals allowed, e.g. 2.5).',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -2377,7 +2380,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     type: 'BBPB',
     name: 'Bollinger Bands %B (BB %B)',
     description:
-      'Measures where the last price is in relation to the BB bands, indicating overbought or oversold conditions.',
+      'Measures where the last price is in relation to the BB bands, indicating overbought or oversold conditions. bbwMult is the number of standard deviations (decimals allowed, e.g. 2.5).',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -2497,7 +2500,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     type: 'DIV',
     name: 'Divergences',
     description:
-      'Occurs when the price trend and a momentum indicator like RSI or MACD move in opposite directions, potentially signaling a price direction change.',
+      'Occurs when the price trend and a momentum indicator like RSI or MACD move in opposite directions, potentially signaling a price direction change. Optional pivot settings: divPivotLeft / divPivotRight (bars left / right of a pivot, 1-50, default 3 / 1; a pivot is confirmed divPivotRight bars later) and divRangeLower / divRangeUpper (bars between the two pivots compared, default 1 / 60, lower below upper). Leave them out for the defaults.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -2526,6 +2529,38 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
         type: 'number',
         required: false,
         validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+      },
+      {
+        name: 'divPivotLeft',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 1,
+        max: 50,
+      },
+      {
+        name: 'divPivotRight',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 1,
+        max: 50,
+      },
+      {
+        name: 'divRangeLower',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 1,
+        max: 500,
+      },
+      {
+        name: 'divRangeUpper',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 2,
+        max: 500,
       },
       {
         name: 'section',
@@ -2570,7 +2605,8 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
   {
     type: 'ST',
     name: 'SuperTrend',
-    description: 'The Supertrend is a trend following indicator.',
+    description:
+      'The Supertrend is a trend following indicator. factor is the ATR multiplier (decimals allowed, e.g. 2.5).',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -3361,7 +3397,7 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
     type: 'SESSION',
     name: 'Session Selector',
     description:
-      'Filters signals by day of the week and, optionally, time of day. sessionDays are the active weekdays (0=Sunday). sessionStart/sessionEnd (local HH:MM, end exclusive) limit the session to those hours, read in sessionTimezone (IANA name, default UTC, follows daylight saving). An end before the start is an overnight session belonging to the day it opens. Without start/end the whole day counts. sessionRule in / out picks trading in or out of the session. sessionRule levels (Price levels) compares sessionLevelA with sessionLevelB using indicatorCondition (cd/cu/gt/lt) on indicatorInterval candles (default 15m), and only fires during the session. Levels: prevOpen, prevHigh, prevMid, prevLow, prevClose of the last completed session, curOpen (open of the session in progress), curMid (midpoint of the session in progress so far: (highest high + lowest low) / 2), price (latest close). A level with no value yet, or A equal to B, never fires; crossings never count across a new session. Example: price crossing up prevHigh = breakout of the previous session high.',
+      'Filters signals by day of the week and, optionally, time of day. sessionDays are the active weekdays (0=Sunday). sessionStart/sessionEnd (local HH:MM, end exclusive) limit the session to those hours, read in sessionTimezone (IANA name, default UTC, follows daylight saving). An end before the start is an overnight session belonging to the day it opens. Without start/end the whole day counts. sessionRule in / out picks trading in or out of the session. sessionRule levels (Price levels) compares sessionLevelA with sessionLevelB using indicatorCondition (cd/cu/gt/lt) on indicatorInterval candles (default 15m). sessionLevelsActive sets where Price levels is evaluated: session (default) = only during the session, outside = only outside it, always = both; outside a session the previous-session levels are those of the last completed session and curOpen/curMid have no value. Monday range: sessionDays [1] without hours, sessionLevelsActive outside, price crossing up prevHigh. Levels: prevOpen, prevHigh, prevMid, prevLow, prevClose of the last completed session, curOpen (open of the session in progress), curMid (midpoint of the session in progress so far: (highest high + lowest low) / 2), price (latest close). A level with no value yet, or A equal to B, never fires; crossings never count across a new session or between in and out of it. Example: price crossing up prevHigh = breakout of the previous session high.',
     coreFields: indicatorCoreFieldDefinitions,
     typeSpecificFields: [
       {
@@ -3427,6 +3463,13 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
           'curMid',
           'price',
         ],
+      },
+      {
+        name: 'sessionLevelsActive',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['session', 'outside', 'always'],
       },
       {
         name: 'section',
@@ -3776,6 +3819,257 @@ export const indicatorDefinitions: IndicatorDefinition[] = [
       vwapAnchor: 'day',
       vwapLine: 'vwap',
       vwapBandMultiplier: 1,
+      indicatorAction: 'startDeal',
+      groupId: '<group-uuid>',
+      uuid: '<indicator-uuid>',
+    },
+  },
+  {
+    type: 'CANDLE',
+    name: 'Candle colour (Heikin Ashi)',
+    description:
+      'The colour of closed candles: green = close above open, red = close below open, equal = neither (a doji breaks every run). candleSource heikinAshi (default) reads Heikin Ashi candles, regular the ordinary ones. candleColor (green/red) is required candleCount candles in a row (1-50): candleTrigger streak (default) is true while the last candleCount candles are all that colour, start only on the candleCount-th candle of a run (once per run). indicatorCondition and indicatorValue are not read. Two green Heikin Ashi candles in a row is candleSource heikinAshi, candleColor green, candleCount 2.',
+    coreFields: indicatorCoreFieldDefinitions,
+    typeSpecificFields: [
+      {
+        name: 'candleSource',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['regular', 'heikinAshi'],
+      },
+      {
+        name: 'candleColor',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['green', 'red'],
+      },
+      {
+        name: 'candleCount',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 1,
+        max: 50,
+      },
+      {
+        name: 'candleTrigger',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['streak', 'start'],
+      },
+      {
+        name: 'section',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['tp', 'sl', 'dca', 'controller'],
+      },
+      {
+        name: 'minPercFromLast',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber'],
+      },
+      {
+        name: 'keepConditionBars',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber', 'mustBeInteger'],
+      },
+    ],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'CANDLE',
+      indicatorLength: 1,
+      indicatorValue: '0',
+      indicatorInterval: '1h',
+      candleSource: 'heikinAshi',
+      candleColor: 'green',
+      candleCount: 2,
+      candleTrigger: 'streak',
+      indicatorAction: 'startDeal',
+      groupId: '<group-uuid>',
+      uuid: '<indicator-uuid>',
+    },
+  },
+  {
+    type: 'OB',
+    name: 'Order Blocks',
+    description:
+      'Smart-money order blocks from breaks of structure (non-repainting). Swings are pivots with obSwingLength bars on both sides (2-50, default 5). A close above the latest unbroken swing high forms a bullish block: the candle with the lowest low between that swing and the breaking candle, zone = its low to high; a close below the latest unbroken swing low forms a bearish block (the highest-high candle). A bullish block is removed when a candle closes below its bottom, a bearish one when a candle closes above its top; only the latest block per side is kept. The close is compared by indicatorCondition (cu/cd/gt/lt) with obLevel (top/middle/bottom) of the obSide (bullish/bearish) block; no active block = false, and a crossing needs the same block on both candles. The retest long is obSide bullish, obLevel top, indicatorCondition cd.',
+    coreFields: indicatorCoreFieldDefinitions,
+    typeSpecificFields: [
+      {
+        name: 'obSwingLength',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 2,
+        max: 50,
+      },
+      {
+        name: 'obSide',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['bullish', 'bearish'],
+      },
+      {
+        name: 'obLevel',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['top', 'middle', 'bottom'],
+      },
+      {
+        name: 'section',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['tp', 'sl', 'dca', 'controller'],
+      },
+      {
+        name: 'minPercFromLast',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber'],
+      },
+      {
+        name: 'keepConditionBars',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber', 'mustBeInteger'],
+      },
+    ],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'OB',
+      indicatorLength: 5,
+      indicatorValue: '0',
+      indicatorCondition: 'cd',
+      indicatorInterval: '1h',
+      obSwingLength: 5,
+      obSide: 'bullish',
+      obLevel: 'top',
+      indicatorAction: 'startDeal',
+      groupId: '<group-uuid>',
+      uuid: '<indicator-uuid>',
+    },
+  },
+  {
+    type: 'SQZ',
+    name: 'Squeeze Momentum',
+    description:
+      'LazyBear Squeeze Momentum: a squeeze is on when the Bollinger Bands (sqzLength, sqzBBMult standard deviations) are inside the Keltner Channels (sqzKCLength, sqzKCMult x the average true range), off when they are outside. Momentum is the linear-regression value of the close against the midpoint of the sqzKCLength range and its average. The condition is sqzSignal AND sqzMomentum: sqzSignal fired (the squeeze released on this candle), on, off or any; sqzMomentum positive, negative, rising, falling, crossUp (through zero), crossDown or any. Both any never fires. indicatorCondition and indicatorValue are not read. Multipliers may have decimals; TradingView displays the script with sqzBBMult 1.5.',
+    coreFields: indicatorCoreFieldDefinitions,
+    typeSpecificFields: [
+      {
+        name: 'sqzLength',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 2,
+        max: 500,
+      },
+      {
+        name: 'sqzBBMult',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive'],
+        min: 0.1,
+        max: 10,
+      },
+      {
+        name: 'sqzKCLength',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive', 'mustBeInteger'],
+        min: 2,
+        max: 500,
+      },
+      {
+        name: 'sqzKCMult',
+        type: 'number',
+        required: false,
+        validators: ['mustBeNumber', 'mustBePositive'],
+        min: 0.1,
+        max: 10,
+      },
+      {
+        name: 'sqzSignal',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['fired', 'on', 'off', 'any'],
+      },
+      {
+        name: 'sqzMomentum',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: [
+          'positive',
+          'negative',
+          'rising',
+          'falling',
+          'crossUp',
+          'crossDown',
+          'any',
+        ],
+      },
+      {
+        name: 'section',
+        type: 'enum',
+        required: false,
+        validators: ['mustBeOneOfEnum'],
+        enum: ['tp', 'sl', 'dca', 'controller'],
+      },
+      {
+        name: 'minPercFromLast',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber'],
+      },
+      {
+        name: 'keepConditionBars',
+        type: 'numberInString',
+        required: false,
+        validators: ['mustBeString', 'mustBeValidNumber', 'mustBeInteger'],
+      },
+    ],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'SQZ',
+      indicatorLength: 20,
+      indicatorValue: '0',
+      indicatorInterval: '1h',
+      sqzLength: 20,
+      sqzBBMult: 2,
+      sqzKCLength: 20,
+      sqzKCMult: 1.5,
+      sqzSignal: 'fired',
+      sqzMomentum: 'positive',
       indicatorAction: 'startDeal',
       groupId: '<group-uuid>',
       uuid: '<indicator-uuid>',

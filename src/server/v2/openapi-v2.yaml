@@ -3755,6 +3755,9 @@ components:
             - OTE
             - KDJ
             - VWAP
+            - CANDLE
+            - OB
+            - SQZ
           example: RSI
         indicatorLength:
           type: number
@@ -4121,7 +4124,7 @@ components:
           example: sma
         bbwMult:
           type: number
-          description: Bollinger Band width multiplier
+          description: Bollinger Band width multiplier, in standard deviations (BB, BBW, BB %B; decimals allowed, e.g. 2.5)
           example: 2
         bbwMa:
           type: string
@@ -4198,9 +4201,33 @@ components:
           type: number
           description: Minimum divergence count
           example: 2
+        divPivotLeft:
+          type: integer
+          description: Divergence — bars to the left of a pivot (1-50). Default 3 when missing.
+          minimum: 1
+          maximum: 50
+          example: 3
+        divPivotRight:
+          type: integer
+          description: Divergence — bars to the right of a pivot (1-50); a pivot is confirmed this many bars later. Default 1 when missing.
+          minimum: 1
+          maximum: 50
+          example: 1
+        divRangeLower:
+          type: integer
+          description: Divergence — fewest bars between the two pivots compared (1-500, below divRangeUpper). Default 1 when missing.
+          minimum: 1
+          maximum: 500
+          example: 1
+        divRangeUpper:
+          type: integer
+          description: Divergence — most bars between the two pivots compared (2-500, above divRangeLower). Default 60 when missing.
+          minimum: 2
+          maximum: 500
+          example: 60
         factor:
           type: number
-          description: Supertrend multiplier factor
+          description: Supertrend multiplier factor (decimals allowed, e.g. 2.5)
           example: 3
         atrLength:
           type: number
@@ -4549,6 +4576,107 @@ components:
           type: number
           description: Trend filter — threshold in percent.
           example: 2
+        sessionLevelsActive:
+          type: string
+          description: "Session Price levels rule — where the condition is evaluated: session (default, also when missing) = only during the session, outside = only outside it (e.g. the Monday range on the other days), always = both. Outside a session the prev* levels are the last completed session's and curOpen/curMid have no value; crossings never count between in and out of a session."
+          enum:
+            - session
+            - outside
+            - always
+          example: outside
+        candleSource:
+          type: string
+          description: Candle colour — the candle the colour is read from. Default heikinAshi.
+          enum:
+            - regular
+            - heikinAshi
+          example: heikinAshi
+        candleColor:
+          type: string
+          description: "Candle colour — the colour required: green = close above open, red = close below open (a doji is neither and breaks every run). Default green."
+          enum:
+            - green
+            - red
+          example: green
+        candleCount:
+          type: integer
+          description: Candle colour — N candles of that colour in a row (1-50). Default 1.
+          minimum: 1
+          maximum: 50
+          example: 2
+        candleTrigger:
+          type: string
+          description: "Candle colour — streak (default) = true while the last candleCount closed candles are all that colour; start = only on the candleCount-th candle of a run (once per run)."
+          enum:
+            - streak
+            - start
+          example: streak
+        obSwingLength:
+          type: integer
+          description: Order Blocks — pivot bars on each side of a swing (2-50). Default 5.
+          minimum: 2
+          maximum: 50
+          example: 5
+        obSide:
+          type: string
+          description: "Order Blocks — the block the close is compared with by indicatorCondition (cu/cd/gt/lt): the latest bullish block (formed by a close above the last swing high) or bearish block. No active block = false; a crossing needs the same block on both candles. Default bullish."
+          enum:
+            - bullish
+            - bearish
+          example: bullish
+        obLevel:
+          type: string
+          description: Order Blocks — the level of that block (middle = (top + bottom) / 2). Default top.
+          enum:
+            - top
+            - middle
+            - bottom
+          example: top
+        sqzLength:
+          type: integer
+          description: Squeeze Momentum — Bollinger Bands length (2-500). Default 20.
+          minimum: 2
+          maximum: 500
+          example: 20
+        sqzBBMult:
+          type: number
+          description: Squeeze Momentum — Bollinger Bands multiplier in standard deviations (0.1-10, decimals allowed). Default 2; TradingView displays the script with 1.5.
+          minimum: 0.1
+          maximum: 10
+          example: 2
+        sqzKCLength:
+          type: integer
+          description: Squeeze Momentum — Keltner Channels length (2-500), also the momentum length. Default 20.
+          minimum: 2
+          maximum: 500
+          example: 20
+        sqzKCMult:
+          type: number
+          description: Squeeze Momentum — Keltner Channels multiplier of the average true range (0.1-10, decimals allowed). Default 1.5.
+          minimum: 0.1
+          maximum: 10
+          example: 1.5
+        sqzSignal:
+          type: string
+          description: "Squeeze Momentum — the squeeze state required: fired (default) = the squeeze released on this candle, on = in a squeeze, off = out of one, any = no requirement. ANDed with sqzMomentum; both any never fires."
+          enum:
+            - fired
+            - "on"
+            - "off"
+            - any
+          example: fired
+        sqzMomentum:
+          type: string
+          description: "Squeeze Momentum — the momentum required: positive (default), negative, rising, falling, crossUp / crossDown (through zero) or any."
+          enum:
+            - positive
+            - negative
+            - rising
+            - falling
+            - crossUp
+            - crossDown
+            - any
+          example: positive
       description: SettingsIndicators configuration
     UpdateComboBotInput:
       type: object

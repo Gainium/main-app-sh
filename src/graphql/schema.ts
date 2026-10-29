@@ -3551,6 +3551,24 @@ export const BotSchema = /* GraphQL */ `
     vwapAnchor: String
     vwapLine: String
     vwapBandMultiplier: StringOrNumber
+    candleSource: String
+    candleColor: String
+    candleCount: StringOrNumber
+    candleTrigger: String
+    obSwingLength: StringOrNumber
+    obSide: String
+    obLevel: String
+    sqzLength: StringOrNumber
+    sqzBBMult: StringOrNumber
+    sqzKCLength: StringOrNumber
+    sqzKCMult: StringOrNumber
+    sqzSignal: String
+    sqzMomentum: String
+    divPivotLeft: StringOrNumber
+    divPivotRight: StringOrNumber
+    divRangeLower: StringOrNumber
+    divRangeUpper: StringOrNumber
+    sessionLevelsActive: String
   }
   enum MAEnum {
     sma
@@ -5243,6 +5261,9 @@ export const BotSchema = /* GraphQL */ `
     OTE
     KDJ
     VWAP
+    CANDLE
+    OB
+    SQZ
   }
   enum BBCrossingEnum {
     middle
@@ -5390,6 +5411,24 @@ export const BotSchema = /* GraphQL */ `
     vwapAnchor: String
     vwapLine: String
     vwapBandMultiplier: StringOrNumber
+    candleSource: String
+    candleColor: String
+    candleCount: StringOrNumber
+    candleTrigger: String
+    obSwingLength: StringOrNumber
+    obSide: String
+    obLevel: String
+    sqzLength: StringOrNumber
+    sqzBBMult: StringOrNumber
+    sqzKCLength: StringOrNumber
+    sqzKCMult: StringOrNumber
+    sqzSignal: String
+    sqzMomentum: String
+    divPivotLeft: StringOrNumber
+    divPivotRight: StringOrNumber
+    divRangeLower: StringOrNumber
+    divRangeUpper: StringOrNumber
+    sessionLevelsActive: String
   }
   enum IndicatorSection {
     sl

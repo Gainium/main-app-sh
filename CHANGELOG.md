@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.121.0] - 2026-10-29
+
+### Added
+
+- Candle colour indicator (`type: CANDLE`): N closed candles of one colour in a row, read from Heikin Ashi (default) or regular candles (`candleSource`, `candleColor`, `candleCount` 1–50, `candleTrigger`): `streak` is true while the last N candles are that colour, `start` only on the N-th candle of a run. A doji (close equal to open) is neither colour and breaks every run. Only the candle source is part of the indicator room.
+- Order Blocks indicator (`type: OB`): non-repainting blocks formed when a close breaks the latest swing high (bullish) or swing low (bearish), with `obSwingLength` pivot bars on each side (2–50, default 5), removed when a close passes through them. A condition compares the close with the top, middle or bottom (`obLevel`) of the latest bullish or bearish block (`obSide`) by crossing up / down or above / below; a crossing needs the same block on both candles, so a new block replacing the old one never counts as one.
+- Squeeze Momentum indicator (`type: SQZ`, LazyBear): Bollinger Bands inside / outside Keltner Channels and a linear-regression momentum (`sqzLength`, `sqzBBMult`, `sqzKCLength`, `sqzKCMult`; multipliers may have decimals). A condition is a squeeze state (`sqzSignal`: fired, on, off, any) AND a momentum (`sqzMomentum`: positive, negative, rising, falling, crossUp, crossDown, any); both `any` never fires.
+- Divergence pivot settings (`divPivotLeft`, `divPivotRight`, `divRangeLower`, `divRangeUpper`, defaults 3 / 1 / 1 / 60) reach the divergence detector. Each joins the indicator room only when it is set, so a Divergence without them keeps exactly the room and the signals it had. The API requires `divRangeLower` below `divRangeUpper`.
+- Session Price levels outside the session (`sessionLevelsActive`: `session` (default), `outside`, `always`): with `outside` / `always` the condition is also evaluated on candles outside the session, against the last completed session's levels (current-session levels have no value there); a crossing never counts between in and out of a session. Missing = only inside the session, as before. Example: the Monday range = Session days Monday without hours, Price levels, `outside`, price crossing up the previous session high.
+- The decisions come from `@gainium/indicators` 1.12.0 (`candleCondition`, `orderBlockCondition`, `squeezeCondition`, `sessionLevelsCondition` with `active`), the functions the backtester uses, so live bots and backtests fire on the same bars. GraphQL, the database schema and the public API (validators with ranges, defaults, OpenAPI, indicator definitions, schema docs) accept the new types and fields. A leftover `trendFilter` on the new types keeps the condition false, as on other indicators.
+
+### Changed
+
+- The public API documentation states that Bollinger multipliers (`bbwMult` on BB, BBW, BB %B) and the SuperTrend `factor` accept decimals; the validator already did.
+
 ## [1.120.3] - 2026-10-29
 
 ### Fixed

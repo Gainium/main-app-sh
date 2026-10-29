@@ -11,9 +11,12 @@ import {
   IndicatorStartConditionEnum,
   MAEnum,
   SessionLevelEnum,
+  SqzMomentumEnum,
+  SqzSignalEnum,
 } from '../../../types'
 import type { SettingsIndicators } from '../../../types'
 import {
+  divergenceRangeInvalid,
   indicatorLengthOf,
   isAdxDmi,
   isSessionLevels,
@@ -84,6 +87,9 @@ export const INDICATOR_CONDITION_KINDS: Record<
   [IndicatorEnum.ote]: { source: 'room' },
   [IndicatorEnum.kdj]: { source: 'room' },
   [IndicatorEnum.vwap]: { source: 'room' },
+  [IndicatorEnum.candle]: { source: 'room', newestBarOnly: true },
+  [IndicatorEnum.ob]: { source: 'room' },
+  [IndicatorEnum.sqz]: { source: 'room' },
 }
 
 /**
@@ -136,6 +142,9 @@ const OWN_RULE_TYPES = [
   IndicatorEnum.ote,
   IndicatorEnum.kdj,
   IndicatorEnum.vwap,
+  IndicatorEnum.candle,
+  IndicatorEnum.ob,
+  IndicatorEnum.sqz,
   IndicatorEnum.st,
   IndicatorEnum.div,
   IndicatorEnum.qfl,
@@ -170,6 +179,38 @@ export function conditionSettingsGaps(
         field: 'kdjCompareTo',
         message: 'Choose a different line or a level to compare with.',
       })
+    return gaps
+  }
+  if (type === IndicatorEnum.sqz) {
+    // squeezeCondition: missing signal = fired, momentum = positive; both
+    // 'any' never fires
+    if (
+      (i.sqzSignal ?? SqzSignalEnum.fired) === SqzSignalEnum.any &&
+      (i.sqzMomentum ?? SqzMomentumEnum.positive) === SqzMomentumEnum.any
+    )
+      gaps.push({
+        field: 'sqzMomentum',
+        message: 'Choose a squeeze state or a momentum.',
+      })
+    return gaps
+  }
+  if (type === IndicatorEnum.ob) {
+    // orderBlockCondition: missing condition = cd; only cd/cu/gt/lt fire
+    if (
+      indicatorCondition !== undefined &&
+      indicatorCondition !== IndicatorStartConditionEnum.cd &&
+      indicatorCondition !== IndicatorStartConditionEnum.cu &&
+      indicatorCondition !== IndicatorStartConditionEnum.gt &&
+      indicatorCondition !== IndicatorStartConditionEnum.lt
+    )
+      gaps.push({ field: 'indicatorCondition', message: 'Choose a condition.' })
+    return gaps
+  }
+  if (divergenceRangeInvalid(i)) {
+    gaps.push({
+      field: 'divRangeUpper',
+      message: 'The upper range must be above the lower range.',
+    })
     return gaps
   }
   if (OWN_RULE_TYPES.includes(type)) return gaps

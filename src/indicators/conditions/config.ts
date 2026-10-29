@@ -8,9 +8,15 @@
  * Moved verbatim out of `bot/dcaHelper.ts` `connectSettingsIndicator`; the
  * characterization suite pins the engine's configs per type.
  */
-import { resolveVWAPAnchor } from '@gainium/indicators'
+import {
+  resolveCandleSource,
+  resolveOBSwingLength,
+  resolveSqueezeSettings,
+  resolveVWAPAnchor,
+} from '@gainium/indicators'
 import {
   ADXModeEnum,
+  CandleSourceEnum,
   ExchangeIntervals,
   IndicatorEnum,
   MAEnum,
@@ -88,7 +94,57 @@ function withIndicatorModes(
     }
   if (config.type === IndicatorEnum.adx && isAdxDmi(i))
     return { ...config, dmi: true } as IndicatorConfig
+  if (config.type === IndicatorEnum.div) {
+    const pivots = divergencePivotConfig(i)
+    if (Object.keys(pivots).length) return { ...config, ...pivots }
+  }
   return config
+}
+
+/**
+ * A Divergence whose bars range between two pivots is empty (lower bound not
+ * below the upper one, after the DIV defaults 1 / 60): it never finds a pair.
+ */
+export function divergenceRangeInvalid(
+  i: Pick<SettingsIndicators, 'type' | 'divRangeLower' | 'divRangeUpper'>,
+): boolean {
+  if (i.type !== IndicatorEnum.div) return false
+  const { rangeLower = 1, rangeUpper = 60 } = divergencePivotConfig(i)
+  return !(rangeLower < rangeUpper)
+}
+
+/** A stored optional number: missing / null / '' is unset (undefined). */
+const setNumber = (
+  v: number | string | null | undefined,
+): number | undefined =>
+  v === undefined || v === null || v === '' ? undefined : +v
+
+/**
+ * Divergence pivot / range settings as the DIV config's `leftBars`,
+ * `rightBars`, `rangeLower`, `rangeUpper` — only the ones that are set, so a
+ * Divergence without them keeps exactly the room it always had (the DIV then
+ * runs on its defaults 3 / 1 / 1 / 60, as before).
+ */
+export function divergencePivotConfig(
+  i: Pick<
+    SettingsIndicators,
+    'divPivotLeft' | 'divPivotRight' | 'divRangeLower' | 'divRangeUpper'
+  >,
+): {
+  leftBars?: number
+  rightBars?: number
+  rangeLower?: number
+  rangeUpper?: number
+} {
+  const fields = {
+    leftBars: setNumber(i.divPivotLeft),
+    rightBars: setNumber(i.divPivotRight),
+    rangeLower: setNumber(i.divRangeLower),
+    rangeUpper: setNumber(i.divRangeUpper),
+  }
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, v]) => v !== undefined),
+  )
 }
 
 function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
@@ -155,6 +211,12 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
     kdjKSmooth,
     kdjDSmooth,
     vwapAnchor,
+    candleSource,
+    obSwingLength,
+    sqzLength,
+    sqzBBMult,
+    sqzKCLength,
+    sqzKCMult,
     sessionDays,
     sessionStart,
     sessionEnd,
@@ -222,6 +284,25 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
     return {
       type: IndicatorEnum.vwap,
       vwapAnchor: resolveVWAPAnchor(vwapAnchor) as string as VWAPAnchorEnum,
+    }
+  // Candle colour, Order Blocks, Squeeze Momentum: only the math's
+  // parameters, normalised as the indicators package's factory reads them
+  // (so equivalent settings share one room); colour / count / trigger,
+  // side / level and signal / momentum are read by the decision.
+  if (type === IndicatorEnum.candle)
+    return {
+      type: IndicatorEnum.candle,
+      source: resolveCandleSource(candleSource) as string as CandleSourceEnum,
+    }
+  if (type === IndicatorEnum.ob)
+    return {
+      type: IndicatorEnum.ob,
+      swingLength: resolveOBSwingLength(obSwingLength),
+    }
+  if (type === IndicatorEnum.sqz)
+    return {
+      type: IndicatorEnum.sqz,
+      ...resolveSqueezeSettings(sqzLength, sqzBBMult, sqzKCLength, sqzKCMult),
     }
   return type === IndicatorEnum.lw
     ? {

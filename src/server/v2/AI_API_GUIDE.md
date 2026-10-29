@@ -197,6 +197,9 @@ Some indicators have modes that change what the condition reads — check the ty
 - `ADX` with `adxMode: "dmi"` compares +DI with −DI (`indicatorCondition` cu/cd/gt/lt); `indicatorValue` is not read.
 - `MA` (like `MAR`) with `trendFilter: true` also requires the average to trend (`trendFilterLookback`, `trendFilterType`, `trendFilterValue`).
 - `KDJ` compares `kdjLine` with `kdjCompareTo` (another line, or `custom` = `indicatorValue`); `VWAP` compares the close with `vwapLine` of the period set by `vwapAnchor`.
+- `CANDLE` is N candles of one colour in a row (`candleSource`, `candleColor`, `candleCount`, `candleTrigger`); `SQZ` is a squeeze state AND a momentum (`sqzSignal`, `sqzMomentum`; both `any` never fires). Neither reads `indicatorCondition` or `indicatorValue`.
+- `OB` compares the close (`indicatorCondition` cu/cd/gt/lt) with `obLevel` of the latest `obSide` order block; no active block = no signal.
+- `DIV` takes optional pivot settings (`divPivotLeft`, `divPivotRight`, `divRangeLower` < `divRangeUpper`); leave them out for the defaults. `SESSION` Price levels runs only during the session unless `sessionLevelsActive` is `outside` or `always`.
 ```python
 response = requests.put(
     "https://api.gainium.io/api/v2/bots/dca/550e8400-e29b-41d4-a716-446655440000",
