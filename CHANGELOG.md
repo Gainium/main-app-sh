@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.122.1] - 2026-10-29
+
+### Fixed
+
+- Merging deals checks that every deal and the bot belong to the requesting account
+- Bot event history is scoped to the requesting account
+- Saving a backtest always stores it under the requesting account
+- Restarting a bot requires a signed-in session
+- API keys restricted to one bot or to paper/real trading are enforced against the bot or deal a request acts on, and restricted keys are now enforced on self-hosted installs too
+
+### Removed
+
+- `password` and `tokens` fields from the GraphQL user type
+
 ## [1.122.0] - 2026-10-29
 
 ### Added

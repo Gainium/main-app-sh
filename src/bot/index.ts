@@ -9746,7 +9746,25 @@ class Bot<T extends UserSchema = UserSchema> {
         options,
       )
     }
-    const findLocal = this.dcaBots.find((d) => d.id === botId && d.userId)
+    // Every deal being merged must belong to the caller. The deals may come
+    // from several of the caller's bots, so ownership is checked per user.
+    const ids = [...new Set((dealIds ?? []).map((d) => `${d}`))]
+    if (!ids.length) {
+      return this.entityNotFound('Deal')
+    }
+    const owned = await this.dcaDealsDb.countData({
+      _id: { $in: ids },
+      userId,
+    } as any)
+    if (owned.status === StatusEnum.notok) {
+      return owned
+    }
+    if (owned.data.result !== ids.length) {
+      return this.entityNotFound('Deal')
+    }
+    const findLocal = this.dcaBots.find(
+      (d) => d.id === botId && d.userId === userId,
+    )
     if (findLocal) {
       this.getWorkerById(findLocal.worker)?.postMessage({
         do: 'method',

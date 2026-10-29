@@ -16,6 +16,7 @@ import { liveupdate, StatusEnum } from '../../types'
 import methods from '../exchange/additionalAPIs'
 import _API, { middleware as _middleware, bodyMiddleware } from './api'
 import { v2API } from './v2'
+import { apiKeyRestrictionsMiddleware } from './v2/middleware'
 import swaggerUi from 'swagger-ui-express'
 import { apiReference } from '@scalar/express-api-reference'
 import cookieParser from 'cookie-parser'
@@ -348,21 +349,49 @@ async function start() {
   const middleware = _middleware()
 
   API.get.forEach((fn, r) =>
-    app.get(r, apiLimiter, bodyMiddleware, middleware, fn),
+    app.get(
+      r,
+      apiLimiter,
+      bodyMiddleware,
+      middleware,
+      apiKeyRestrictionsMiddleware,
+      fn,
+    ),
   )
 
   API.put.forEach((fn, r) =>
-    app.put(r, apiLimiter, bodyMiddleware, middleware, fn),
+    app.put(
+      r,
+      apiLimiter,
+      bodyMiddleware,
+      middleware,
+      apiKeyRestrictionsMiddleware,
+      fn,
+    ),
   )
 
   API.getPublic.forEach((fn, r) => app.get(r, apiLimiter, bodyMiddleware, fn))
 
   API.post.forEach((fn, r) =>
-    app.post(r, apiLimiter, bodyMiddleware, middleware, fn),
+    app.post(
+      r,
+      apiLimiter,
+      bodyMiddleware,
+      middleware,
+      apiKeyRestrictionsMiddleware,
+      fn,
+    ),
   )
 
   API.delete.forEach((fn, r) =>
-    app.delete(r, apiLimiter, bodyMiddleware, middleware, fn),
+    app.delete(
+      r,
+      apiLimiter,
+      bodyMiddleware,
+      middleware,
+      apiKeyRestrictionsMiddleware,
+      fn,
+    ),
   )
 
   const v2 = v2API()
@@ -373,6 +402,7 @@ async function start() {
       apiLimiter,
       bodyMiddleware,
       middleware,
+      apiKeyRestrictionsMiddleware,
       ...fn.middlewares,
       fn.handler,
     ),
@@ -384,6 +414,7 @@ async function start() {
       apiLimiter,
       bodyMiddleware,
       middleware,
+      apiKeyRestrictionsMiddleware,
       ...fn.middlewares,
       fn.handler,
     ),
@@ -395,6 +426,7 @@ async function start() {
       apiLimiter,
       bodyMiddleware,
       middleware,
+      apiKeyRestrictionsMiddleware,
       ...fn.middlewares,
       fn.handler,
     ),
@@ -406,6 +438,7 @@ async function start() {
       apiLimiter,
       bodyMiddleware,
       middleware,
+      apiKeyRestrictionsMiddleware,
       ...fn.middlewares,
       fn.handler,
     ),

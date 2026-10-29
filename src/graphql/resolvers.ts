@@ -405,6 +405,16 @@ export const typeResolvers = {
   },
 }
 
+/**
+ * A saved backtest belongs to the caller: the owner comes from the session and
+ * a client-supplied `_id` is dropped, whatever the input carries.
+ */
+const ownedBacktestInput = <T extends object>(input: T, userId: string) => {
+  const fields = { ...input } as Record<string, unknown>
+  delete fields._id
+  return { ...fields, userId } as T & { userId: string }
+}
+
 const resolvers = <
   R extends UserSchema = UserSchema,
   T extends ErrorResponse | DataResponse<ExcludeDoc<R>> =
@@ -1551,12 +1561,13 @@ const resolvers = <
         return user
       }
       const { botId: _botId, hedge, combo, category, ...grid } = input
+      const userId = user.data._id.toString()
       let botId = [_botId]
       const { filter, ...rest } = mapDataGridOptionsToMongoOptions(grid)
       if (hedge) {
         const bot = combo
-          ? await hedgeComboBotDb.readData({ _id: botId }, { bots: 1 })
-          : await hedgeDCABotDb.readData({ _id: botId }, { bots: 1 })
+          ? await hedgeComboBotDb.readData({ _id: botId, userId }, { bots: 1 })
+          : await hedgeDCABotDb.readData({ _id: botId, userId }, { bots: 1 })
         if (bot.status === StatusEnum.notok) {
           return bot
         }
@@ -1590,7 +1601,7 @@ const resolvers = <
       // Base conditions (botId + user search/filter), shared by the data
       // query and every per-category count. Combined via $and so a search
       // $or never collides with a category $nor/$or.
-      const baseConds: object[] = [{ botId: { $in: botId } }]
+      const baseConds: object[] = [{ botId: { $in: botId } }, { userId }]
       if ((filter as { $and?: object[] }).$and) {
         baseConds.push(...(filter as { $and: object[] }).$and)
       }
@@ -4317,7 +4328,7 @@ const resolvers = <
       },
       { token, req }: InputRequest,
     ) => {
-      if (token !== 'demo' && !req.user?.authorized) {
+      if (token === 'demo' || !req.user?.authorized) {
         return errorAccess()
       }
       const user = await findUser(token)
@@ -8703,7 +8714,7 @@ const resolvers = <
         return user
       }
       const result = await backtestDb.createData({
-        ...input,
+        ...ownedBacktestInput(input, user.data._id.toString()),
         savePermanent: !!input.savePermanent,
       })
       return {
@@ -8730,7 +8741,7 @@ const resolvers = <
         return user
       }
       const result = await comboBacktestDb.createData({
-        ...input,
+        ...ownedBacktestInput(input, user.data._id.toString()),
         savePermanent: !!input.savePermanent,
       })
       return {
@@ -8757,7 +8768,7 @@ const resolvers = <
         return user
       }
       const result = await hedgeComboBacktestDb.createData({
-        ...input,
+        ...ownedBacktestInput(input, user.data._id.toString()),
         savePermanent: !!input.savePermanent,
       })
       return {
@@ -8784,7 +8795,7 @@ const resolvers = <
         return user
       }
       const result = await hedgeDcaBacktestDb.createData({
-        ...input,
+        ...ownedBacktestInput(input, user.data._id.toString()),
         savePermanent: !!input.savePermanent,
       })
       return {
@@ -8811,7 +8822,7 @@ const resolvers = <
         return user
       }
       const result = await gridBacktestDb.createData({
-        ...input,
+        ...ownedBacktestInput(input, user.data._id.toString()),
         savePermanent: !!input.savePermanent,
       })
       return {

@@ -518,10 +518,8 @@ export const UserSchema = /* GraphQL */ `
     _id: String
     username: String
     bigAccount: Boolean
-    password: String
     updated: Date
     created: Date
-    tokens: [tokenType]
     timezone: String
     theme: ThemeMode
     weekStart: String
