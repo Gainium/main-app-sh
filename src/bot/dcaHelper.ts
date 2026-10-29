@@ -10314,6 +10314,34 @@ function createDCABotHelper<
     }
 
     /**
+     * The row to open the deal on when the venue answers the base-order
+     * placement with `FILLED` short of what was asked.
+     *
+     * The user stream runs every `FILLED` report through
+     * `fillPartiallyFilledOrder`, and that is where the remainder top-up is
+     * sent and merged into this row. The answer used to open the deal on the
+     * part-fill without going there, so when the stream's top-up was still in
+     * flight the merge landed on a deal already `open`, which `startDeal`
+     * ignores: the deal never counted what the top-up bought. Going through the
+     * same method takes its per-order mutex and `partiallyFilledFilledSet`: an
+     * in-flight top-up is waited for and its merged row returned, otherwise the
+     * top-up runs here and the stream's later report adds nothing. One top-up
+     * per order either way, sized as before. The growth is written as the
+     * stream consumer writes it. Spec `208`.
+     */
+    async completeFilledBaseEntry(answer: Order): Promise<Order> {
+      const before = +answer.executedQty
+      if (!(before < +answer.origQty)) {
+        return answer
+      }
+      const booked = (await this.fillPartiallyFilledOrder(answer)) ?? answer
+      if (+booked.executedQty > before) {
+        await this.updateOrderOnDb(booked, true)
+      }
+      return booked
+    }
+
+    /**
      * Record a base order the venue has already ended as `FILLED` at what it
      * executed, so the deal can be opened on it.
      *
@@ -11921,7 +11949,7 @@ function createDCABotHelper<
                 }
               }
             } else if (result.status === 'FILLED') {
-              await this.startDeal(result)
+              await this.startDeal(await this.completeFilledBaseEntry(result))
             } else {
               if (baseOrder.clientOrderId !== result.clientOrderId) {
                 baseOrder.clientOrderId = result.clientOrderId

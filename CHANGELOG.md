@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.2] - 2026-10-29
+
+### Fixed
+
+- A DCA base order filled short of its size and topped up to the remainder now opens its deal on the merged quantity: the placement answer waits for (or itself sends) the top-up through `fillPartiallyFilledOrder` instead of opening the deal on the part-fill while the user stream's top-up is still in flight. One top-up per order, sized as before.
+
 ## [1.123.1] - 2026-10-29
 
 ### Changed
