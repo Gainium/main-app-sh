@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.120.2] - 2026-10-29
+
+### Fixed
+
+- An order refused while its bot was stopping stayed listed as open with no exchange order id: stopping clears the bot's in-memory orders, and the refusal's write-off was skipped when that list was empty. A definitive refusal is now retired (CANCELED, or removed when a local guard refused it) whether or not the bot is still running. An ambiguous failure on a stopped bot is still not written off.
+
 ## [1.120.1] - 2026-10-29
 
 ### Fixed

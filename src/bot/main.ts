@@ -10164,8 +10164,30 @@ class MainBot<T extends IMainBot> {
               return settled ?? stillHeld
             }
           }
-          if (this.orders && this.orders.size > 0) {
-            this.deleteOrder(order.clientOrderId)
+          // Spec 206. `stop()` replaces `this.orders` with an empty map, and a
+          // refusal answered after that used to skip the DB write-off below as
+          // well, stranding the write-ahead row at `NEW`/`'-1'`. The row is
+          // retired whenever the refusal is definitive. An ambiguous failure
+          // on a cleared map is still left alone: the venue could not be asked
+          // above, and it may hold the order.
+          const tracked = this.orders && this.orders.size > 0
+          const servedLocally =
+            notEnoughBalanceShortCircuit ||
+            complianceShortCircuit ||
+            authShortCircuit ||
+            riskTierShortCircuit ||
+            gridReduceOnlyShortCircuit
+          if (
+            tracked ||
+            servedLocally ||
+            !(
+              isAmbiguousOrderFailure(request.reason) ||
+              isPlacementReadBackMiss(request.reason)
+            )
+          ) {
+            if (tracked) {
+              this.deleteOrder(order.clientOrderId)
+            }
             // Only persist a CANCELED record for an order that actually
             // reached the venue. When a local guard served the rejection the
             // order never existed anywhere but in this process, so there is
@@ -10193,13 +10215,7 @@ class MainBot<T extends IMainBot> {
             // stream or a reconcile has given this row a real exchange id or a
             // terminal status in the meantime, the order DID reach the venue and
             // the filter matches nothing, so the record survives.
-            if (
-              !notEnoughBalanceShortCircuit &&
-              !complianceShortCircuit &&
-              !authShortCircuit &&
-              !riskTierShortCircuit &&
-              !gridReduceOnlyShortCircuit
-            ) {
+            if (!servedLocally) {
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             } else {
               await this.deleteOrderFromDb(order.clientOrderId)
