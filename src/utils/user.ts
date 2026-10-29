@@ -440,7 +440,7 @@ const balanceFetchConcurrency = () =>
  */
 const balanceFailureLog = new BalanceFailureLog()
 
-const updateUserBalance = async (
+export const updateUserBalance = async (
   user: ClearUserSchema,
   uuid?: string,
   paperContext?: boolean,
@@ -582,6 +582,16 @@ const updateUserBalance = async (
             )
           }
         }
+        // The venue just answered for every asset on this connection, so all
+        // of its rows are confirmed now — including the ones skipped above
+        // because their amount did not change. `updated` is read as "last
+        // confirmed" (dashboard stale marker, automations balance leaf); left
+        // at the last CHANGE, a quiet holding looked stale after every
+        // successful refresh. One write for the connection, not one per asset.
+        await balanceDb.updateManyData(
+          { userId, exchangeUUID: e.uuid },
+          { $set: { updated: new Date() } },
+        )
       }
     }
   }

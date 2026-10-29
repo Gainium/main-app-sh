@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.4] - 2026-10-30
+
+### Fixed
+
+- A successful balance refresh now marks every balance of that exchange account as just fetched, including holdings whose amount did not change. Before, an unchanged holding kept the time of its last change, so the "balance may be out of date" marker stayed on it after "Refresh balance".
+
 ## [1.123.3] - 2026-10-30
 
 ### Fixed
