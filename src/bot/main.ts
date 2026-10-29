@@ -6537,7 +6537,35 @@ class MainBot<T extends IMainBot> {
           if (find.status !== request.data.status) {
             find.status = request.data.status
             find.updateTime = request.data.updateTime
-            find.executedQty = await this.convertOrderExecutedQty(find)
+            // The venue's fill size, not the row's: the row holds whatever
+            // the user stream last reported, so an order whose final fill
+            // event never arrived is still `0.1 of 17.86` here while the venue
+            // says FILLED. Closing a deal on that stale figure sends a market
+            // sweep for coins the take-profit already sold. Price stays local
+            // — Binance answers `0` for a market order's price. A venue that
+            // states no fill size keeps the old reading of the row (and its
+            // FILLED→origQty fallback, which must not run on venue units).
+            const venueRaw = +request.data.executedQty
+            if (Number.isFinite(venueRaw) && venueRaw > 0) {
+              find.executedQty = await this.convertOrderExecutedQty(
+                request.data,
+              )
+              const venueQuote = await this.convertOrderQuoteQty(
+                request.data.symbol,
+                request.data.cummulativeQuoteQty,
+              )
+              // KuCoin futures' own value is rebuilt elsewhere, not trusted.
+              if (
+                !this.kucoinFullFutures &&
+                venueQuote &&
+                Number.isFinite(+venueQuote) &&
+                +venueQuote > 0
+              ) {
+                find.cummulativeQuoteQty = venueQuote
+              }
+            } else {
+              find.executedQty = await this.convertOrderExecutedQty(find)
+            }
             this.ordersDb
               .updateData({ clientOrderId: origId }, find)
               .then((res) => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.120.3] - 2026-10-29
+
+### Fixed
+
+- When an order's status was confirmed by asking the exchange (for example after a cancel answered "unknown order"), the bot kept the filled quantity it last heard from the user stream instead of the exchange's. A take-profit that had fully filled could be recorded as a small partial fill, and the deal close then sent a market order to sell the "remaining" coins it had already sold. The exchange's filled quantity and value are now recorded; a take-profit that genuinely filled only in part still has its remainder sold.
+
 ## [1.120.2] - 2026-10-29
 
 ### Fixed
