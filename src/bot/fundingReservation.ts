@@ -25,6 +25,11 @@
  * Read from the deals collections, across bots and processes; cached briefly
  * because it is asked on every deal-open check. The funding paths read it
  * `fresh` inside the per-account funding lock.
+ *
+ * A failed read answers `null`, never 0: these funds are free on the venue,
+ * so nothing but this subtraction keeps another deal from spending them.
+ * Callers treat `null` like an unreadable balance (the deal is not opened
+ * this cycle), and a `null` is never cached.
  */
 import logger from '../utils/logger'
 import { comboDealsDb, dcaDealsDb, minigridDb, orderDb } from '../db/dbInit'
@@ -45,8 +50,8 @@ const STAMPED_TTL_MS = 10_000
 /**
  * Upper bound for one reservation read. The reads are index-backed (the
  * partial `baseFundingBeta` indexes); a slower answer is a database in
- * trouble, and a balance check must not wait on it. A timed-out read counts
- * nothing (logged), like any other failed read here.
+ * trouble, and a balance check must not wait on it. A timed-out read is a
+ * failed read: the reservation is unknown (`null`).
  */
 const MAX_TIME_MS = 3_000
 
@@ -142,7 +147,7 @@ export class FundingReservation {
     exchangeUUID: string,
     asset: string,
     fresh = false,
-  ) {
+  ): Promise<number | null> {
     if (!userId || !exchangeUUID || !asset) {
       return 0
     }
@@ -190,12 +195,13 @@ export class FundingReservation {
     let held = 0
     for (const res of reads) {
       if (res.status !== StatusEnum.ok) {
-        // An extra guard, not the only one: the venue still refuses an order
-        // the account cannot fund. Report and count nothing for this side.
+        // The venue does not lock these funds, so it would accept an order
+        // that spends them: unknown, not 0. Not cached — the next check
+        // reads again.
         logger.error(
           `${logPrefix} | cannot read reserved ${side} for ${key}: ${res.reason}`,
         )
-        continue
+        return null
       }
       for (const d of res.data.result) {
         const entry = d.botFunding?.virtualEntry
@@ -344,7 +350,8 @@ export class FundingReservation {
 
   /**
    * Σ quote this account's funded deals hold, in `quoteAsset`. `userId` is
-   * the account's owner (spec 171); without it the answer is 0.
+   * the account's owner (spec 171); without it the answer is 0. `null`: the
+   * deals could not be read.
    */
   async reservedQuote(
     userId: string | null | undefined,
@@ -355,7 +362,10 @@ export class FundingReservation {
     return this.reserved('quote', userId, exchangeUUID, quoteAsset, fresh)
   }
 
-  /** Σ base this account's funded deals hold, in `baseAsset` (phase 3). */
+  /**
+   * Σ base this account's funded deals hold, in `baseAsset` (phase 3).
+   * `null`: the deals could not be read.
+   */
   async reservedBase(
     userId: string | null | undefined,
     exchangeUUID: string,

@@ -24,6 +24,8 @@ const dealsOf: Record<string, any[]> = { dca: [], combo: [] }
 /** Whether the stamped-deal probe finds one, per collection. */
 const stampedIn: Record<string, boolean> = { dca: true, combo: false }
 let probeFails = false
+/** Collections whose full reservation read fails. */
+let readFails = new Set<string>()
 
 const answer =
   (coll: string) =>
@@ -42,6 +44,12 @@ const answer =
       }
     }
     filters.push({ coll, filter, options })
+    if (readFails.has(coll)) {
+      return {
+        status: StatusEnum.notok,
+        reason: 'operation exceeded time limit',
+      }
+    }
     return { status: StatusEnum.ok, data: { result: dealsOf[coll] } }
   }
 
@@ -70,6 +78,7 @@ describe('FundingReservation read (spec 171)', () => {
     stampedIn.dca = true
     stampedIn.combo = false
     probeFails = false
+    readFails = new Set()
     dealsOf.dca = []
     dealsOf.combo = []
   })
@@ -164,6 +173,46 @@ describe('FundingReservation read (spec 171)', () => {
       true,
     )
     expect(v).to.equal(42)
+  })
+
+  it('a failed read answers unknown (null), not 0', async () => {
+    dealsOf.dca = [
+      { _id: 'd1', botFunding: { virtualEntry: { quoteReserved: 800 } } },
+    ]
+    readFails = new Set(['dca', 'combo'])
+    const r = new FundingReservation()
+    expect(await r.reservedQuote('u1', 'acc-1', 'USDT')).to.equal(null)
+    expect(await r.reservedQuote('u1', 'acc-1', 'USDT', true)).to.equal(null)
+  })
+
+  it('one failed collection is not a partial sum', async () => {
+    dealsOf.dca = [
+      { _id: 'd1', botFunding: { virtualEntry: { quoteReserved: 800 } } },
+    ]
+    dealsOf.combo = [
+      { _id: 'c1', botFunding: { virtualEntry: { quoteReserved: 300 } } },
+    ]
+    stampedIn.combo = true
+    readFails = new Set(['combo'])
+    const v = await new FundingReservation().reservedQuote(
+      'u1',
+      'acc-1',
+      'USDT',
+      true,
+    )
+    expect(v).to.equal(null)
+  })
+
+  it('an unknown answer is not cached', async () => {
+    dealsOf.dca = [
+      { _id: 'd1', botFunding: { virtualEntry: { quoteReserved: 800 } } },
+    ]
+    readFails = new Set(['dca'])
+    const r = new FundingReservation()
+    expect(await r.reservedQuote('u1', 'acc-1', 'USDT')).to.equal(null)
+    readFails = new Set()
+    // Inside the TTL, not fresh: read again, not served from the cache.
+    expect(await r.reservedQuote('u1', 'acc-1', 'USDT')).to.equal(800)
   })
 
   it('§4.3 without an owner it does not query and answers 0', async () => {

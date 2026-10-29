@@ -16152,6 +16152,20 @@ function createDCABotHelper<
         const reserved = this.isLong
           ? await this.reservedFundingQuote(ed.quoteAsset.name)
           : await this.reservedFundingBase(ed.baseAsset.name)
+        if (reserved === null) {
+          // What they hold could not be read — not "nothing": like an
+          // unreadable balance, the deal is not opened this cycle.
+          this.handleDebug(
+            'Cannot read what bot-funded deals hold, bypass check balance',
+          )
+          return {
+            status: false,
+            required: 0,
+            available: 0,
+            price: 0,
+            unknown: true,
+          }
+        }
         if (reserved > 0) {
           available = Math.max(0, available - reserved)
         }
@@ -21021,6 +21035,20 @@ function createDCABotHelper<
       if (!balances) {
         return refuse(`Cannot fund this hedge leg: balances could not be read`)
       }
+      // Fresh: the other leg may have just saved its reservation.
+      const reservedQuote = await this.reservedFundingQuote(
+        ed.quoteAsset.name,
+        true,
+      )
+      const reservedBase = await this.reservedFundingBase(
+        ed.baseAsset.name,
+        true,
+      )
+      if (reservedQuote === null || reservedBase === null) {
+        return refuse(
+          `Cannot fund this hedge leg: what other bot-funded deals hold could not be read`,
+        )
+      }
       const fee = await this.getUserFee(symbol)
       const useDca = !!deal.deal.settings?.useDca
       const extra = useDca
@@ -21045,19 +21073,18 @@ function createDCABotHelper<
         price,
         freeBase: balances.get(ed.baseAsset.name)?.free ?? 0,
         freeQuote: balances.get(ed.quoteAsset.name)?.free ?? 0,
-        // Fresh: the other leg may have just saved its reservation. A
-        // restored deal's own hold is for exactly these orders: not counted
-        // against itself.
+        // A restored deal's own hold is for exactly these orders: not
+        // counted against itself.
         reservedQuote: Math.max(
           0,
-          (await this.reservedFundingQuote(ed.quoteAsset.name, true)) -
+          reservedQuote -
             (deal.deal.fundingHold?.asset === 'quote'
               ? deal.deal.fundingHold.remaining
               : 0),
         ),
         reservedBase: Math.max(
           0,
-          (await this.reservedFundingBase(ed.baseAsset.name, true)) -
+          reservedBase -
             (deal.deal.fundingHold?.asset === 'base'
               ? deal.deal.fundingHold.remaining
               : 0),
@@ -21586,6 +21613,18 @@ function createDCABotHelper<
       if (!ed || !balances) {
         return null
       }
+      const reservedQuote = await this.reservedFundingQuote(
+        ed.quoteAsset.name,
+        fresh,
+      )
+      const reservedBase = await this.reservedFundingBase(
+        ed.baseAsset.name,
+        fresh,
+      )
+      if (reservedQuote === null || reservedBase === null) {
+        // Unknown, like an unreadable balance: no plan this cycle.
+        return null
+      }
       const fee = await this.getUserFee(symbol)
       return planShortSpotDealFunding({
         mode,
@@ -21594,11 +21633,8 @@ function createDCABotHelper<
         price,
         freeBase: balances.get(ed.baseAsset.name)?.free ?? 0,
         freeQuote: balances.get(ed.quoteAsset.name)?.free ?? 0,
-        reservedQuote: await this.reservedFundingQuote(
-          ed.quoteAsset.name,
-          fresh,
-        ),
-        reservedBase: await this.reservedFundingBase(ed.baseAsset.name, fresh),
+        reservedQuote,
+        reservedBase,
         feeRate: fee?.taker ?? 0,
         buyHeadroom: this.fundingBuyHeadroom(),
         minNotional: ed.quoteAsset.minAmount,
@@ -28793,16 +28829,16 @@ function createDCABotHelper<
       const own = findDeal.deal.fundingHold
       const ownHold = (asset: 'base' | 'quote') =>
         own?.asset === asset ? Math.max(0, own.remaining ?? 0) : 0
-      const reservedQuote = Math.max(
-        0,
-        (await this.reservedFundingQuote(ed.quoteAsset.name, fresh)) -
-          ownHold('quote'),
+      const allQuote = await this.reservedFundingQuote(
+        ed.quoteAsset.name,
+        fresh,
       )
-      const reservedBase = Math.max(
-        0,
-        (await this.reservedFundingBase(ed.baseAsset.name, fresh)) -
-          ownHold('base'),
-      )
+      const allBase = await this.reservedFundingBase(ed.baseAsset.name, fresh)
+      if (allQuote === null || allBase === null) {
+        return null
+      }
+      const reservedQuote = Math.max(0, allQuote - ownHold('quote'))
+      const reservedBase = Math.max(0, allBase - ownHold('base'))
       const freeBase = balances.get(ed.baseAsset.name)?.free ?? 0
       const freeQuote = balances.get(ed.quoteAsset.name)?.free ?? 0
       const availableBase = Math.max(0, freeBase - reservedBase)

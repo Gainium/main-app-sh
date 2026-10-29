@@ -132,6 +132,9 @@ const loadFundingContext = async (
     input.exchangeUUID,
     baseAsset.name,
   )
+  if (reservedQuote === null || reservedBase === null) {
+    return fail('Cannot read what bot-funded deals hold')
+  }
   const basePrecision = math.getPricePrecision(`${baseAsset.step}`)
   return {
     status: StatusEnum.ok as const,

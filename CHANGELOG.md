@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.3] - 2026-10-30
+
+### Fixed
+
+- A failed or timed-out read of what an account's bot-funded deals hold no longer counts as nothing held. The new-deal balance check, the bot-funding planners and the funding preview now treat it like an unreadable balance: the deal is not opened this cycle and the next check reads again. Such a failed read is no longer cached either.
+
 ## [1.123.2] - 2026-10-29
 
 ### Fixed

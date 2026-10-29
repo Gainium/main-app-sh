@@ -373,6 +373,44 @@ describe('a failed balance read is not a zero balance (spec 054)', () => {
     })
   })
 
+  describe('a failed reservation read is not a zero reservation', () => {
+    /** A funded account whose bot-funded deals' holdings read as `reserved`. */
+    const withReserved = (Helper: any, reserved: number | null) => {
+      const bot: any = buildBot(Helper, 'funded')
+      bot.reservedFundingQuote = async () => reserved
+      return bot
+    }
+
+    it('checkBalance refuses it as unknown', async () => {
+      const res = await withReserved(DcaHelper, null).checkBalance(PAIR)
+      expect(res.unknown, 'the failed read was not flagged').to.equal(true)
+      expect(res.status).to.equal(false)
+    })
+
+    it('comboHelper behaves identically', async () => {
+      const res = await withReserved(ComboHelper, null).checkBalance(PAIR)
+      expect(res.unknown).to.equal(true)
+      expect(res.status).to.equal(false)
+    })
+
+    it('a readable reservation is still subtracted', async () => {
+      const held = await withReserved(DcaHelper, FUNDED).checkBalance(PAIR)
+      expect(held.status).to.equal(false)
+      expect(!!held.unknown).to.equal(false)
+      expect(held.available).to.equal(0)
+      const none = await withReserved(DcaHelper, 0).checkBalance(PAIR)
+      expect(none.status).to.equal(true)
+    })
+
+    it('openNewDeal does not open the deal', async function () {
+      this.timeout(20000)
+      const bot = withReserved(DcaHelper, null)
+      const notOpened = await openDeal(bot)
+      expect(bot.raised.placedBase).to.have.length(0)
+      expect(notOpened, 'the pair was not re-armed').to.equal(true)
+    })
+  })
+
   describe('§4.3 openNewDeal neither opens nor accuses', () => {
     it('never tells a user they are out of funds off a read that failed', async function () {
       // Two `checkBalance` calls with `openNewDeal`'s own 5 s retry between.

@@ -6644,6 +6644,20 @@ function createComboBotHelper<
         const reserved = this.isLong
           ? await this.reservedFundingQuote(ed.quoteAsset.name)
           : await this.reservedFundingBase(ed.baseAsset.name)
+        if (reserved === null) {
+          // What they hold could not be read — not "nothing": like an
+          // unreadable balance, the deal is not opened this cycle.
+          this.handleDebug(
+            'Cannot read what bot-funded deals hold, bypass check balance',
+          )
+          return {
+            status: false,
+            required: 0,
+            available: 0,
+            price: 0,
+            unknown: true,
+          }
+        }
         if (reserved > 0) {
           available = Math.max(0, available - reserved)
         }
