@@ -4235,7 +4235,9 @@ class Bot<T extends UserSchema = UserSchema> {
   ) {
     // Spec 044 beta gate.
     await coerceBaseFundingSetting(userId, _settings)
-    const { vars, ...rest } = _settings
+    // The bot uuid is the key a webhook signal is routed by, so the server
+    // mints it: a uuid supplied with the settings is dropped, never stored.
+    const { vars, uuid: _suppliedUuid, ...rest } = _settings
     // Same invariant as changeDCABot: a bot that scales DCA on atr/adr needs
     // the startDca indicator that prices its ladder, or it can never open a
     // deal. Seed it at creation so no client can produce one without. Bug #463.
@@ -4317,7 +4319,7 @@ class Bot<T extends UserSchema = UserSchema> {
       reason: null,
       data: {
         userId,
-        uuid: settings.uuid ?? v4(),
+        uuid: v4(),
         status: BotStatusEnum.closed,
         settings: { ...settings, type },
         exchange: settings.exchange,

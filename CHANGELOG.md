@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.121.2] - 2026-10-29
+
+### Fixed
+
+- DCA bot creation: the server always generates the new bot's uuid; a uuid supplied with the settings is ignored and not stored.
+
 ## [1.121.1] - 2026-10-29
 
 ### Fixed
