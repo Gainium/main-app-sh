@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.121.1] - 2026-10-29
+
+### Fixed
+
+- Backtest edits (name, note, keep permanently), deal notes and the server-side flag cleared on file removal are scoped to the owner; a request for a backtest or deal the caller does not own returns "not found".
+
 ## [1.121.0] - 2026-10-29
 
 ### Added

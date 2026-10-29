@@ -132,7 +132,7 @@ import {
   hedgeDcaBacktestDb,
   brokerCodesDb,
 } from '../db/dbInit'
-import { backtestNotFound, errorAccess } from './errorResponse'
+import { backtestNotFound, dealNotFound, errorAccess } from './errorResponse'
 import {
   createPaperUser,
   isPaper,
@@ -196,7 +196,7 @@ import RedisClient from '../db/redis'
 import moment from 'moment-timezone'
 import { getBotsByGlobalVar } from '../bot/utils'
 import { JWT_SECRET } from '../config'
-import { DataResponse, ErrorResponse } from '../db/crud'
+import MongoCrud, { DataResponse, ErrorResponse } from '../db/crud'
 import { LargeAccountService } from '../bot/largeAccount/largeAccountService'
 import { getInPositions } from './handlers/inPositions.handler'
 import { TradingCostsService } from './handlers/tradingCosts.handler'
@@ -314,6 +314,32 @@ const dealTotalsOf = (parent: DealTotalsParent) => {
 }
 
 const tradingCosts = () => TradingCostsService.getInstance()
+
+/**
+ * Updates one document only when it belongs to `userId`. `updateOne` reports
+ * OK on zero matches, so the update runs with `returnDoc` and an empty result
+ * is read as the miss: an id that is not the caller's, no longer exists, or is
+ * not an id at all comes back as `notFound()`, never as a success.
+ */
+const updateOwnDoc = async (
+  db: MongoCrud<any>,
+  id: string,
+  userId: string,
+  update: object,
+  notFound: typeof backtestNotFound,
+) => {
+  if (!Types.ObjectId.isValid(id)) {
+    return notFound()
+  }
+  const result = await db.updateData({ _id: id, userId }, update, true)
+  if (result.status === StatusEnum.notok) {
+    return result
+  }
+  if (!result.data) {
+    return notFound()
+  }
+  return { status: StatusEnum.ok, data: null, reason: null }
+}
 
 /** Fees + slippage on a deal type (main-app spec 050 §4). */
 const dealCostFields = {
@@ -5410,7 +5436,7 @@ const resolvers = <
         backtestIds.push(new Types.ObjectId(b))
       }
       if (backtestIds.length) {
-        const search = { _id: { $in: backtestIds } }
+        const search = { _id: { $in: backtestIds }, userId }
         const update = { $set: { serverSide: false } }
         await backtestDb.updateManyData(search, update)
         await comboBacktestDb.updateManyData(search, update)
@@ -8947,11 +8973,12 @@ const resolvers = <
         return user
       }
       const { id, savePermanent } = input
-      const result = await backtestDb.updateData(
-        {
-          _id: id,
-        },
+      const result = await updateOwnDoc(
+        backtestDb,
+        id,
+        user.data._id.toString(),
         { $set: { savePermanent: !!savePermanent } },
+        backtestNotFound,
       )
       return {
         status: result.status,
@@ -8981,11 +9008,12 @@ const resolvers = <
         return user
       }
       const { id, savePermanent } = input
-      const result = await comboBacktestDb.updateData(
-        {
-          _id: id,
-        },
+      const result = await updateOwnDoc(
+        comboBacktestDb,
+        id,
+        user.data._id.toString(),
         { $set: { savePermanent: !!savePermanent } },
+        backtestNotFound,
       )
       return {
         status: result.status,
@@ -9015,11 +9043,12 @@ const resolvers = <
         return user
       }
       const { id, savePermanent } = input
-      const result = await hedgeComboBacktestDb.updateData(
-        {
-          _id: id,
-        },
+      const result = await updateOwnDoc(
+        hedgeComboBacktestDb,
+        id,
+        user.data._id.toString(),
         { $set: { savePermanent: !!savePermanent } },
+        backtestNotFound,
       )
       return {
         status: result.status,
@@ -9049,11 +9078,12 @@ const resolvers = <
         return user
       }
       const { id, savePermanent } = input
-      const result = await hedgeDcaBacktestDb.updateData(
-        {
-          _id: id,
-        },
+      const result = await updateOwnDoc(
+        hedgeDcaBacktestDb,
+        id,
+        user.data._id.toString(),
         { $set: { savePermanent: !!savePermanent } },
+        backtestNotFound,
       )
       return {
         status: result.status,
@@ -9111,8 +9141,13 @@ const resolvers = <
       if (typeof note !== 'undefined') {
         $set.note = note
       }
-      //@ts-ignore
-      const result = await db.updateData({ _id: id }, { $set })
+      const result = await updateOwnDoc(
+        db,
+        id,
+        user.data._id.toString(),
+        { $set },
+        backtestNotFound,
+      )
       return {
         status: result.status,
         data: result.status === StatusEnum.ok ? `Backtest updated` : null,
@@ -9138,8 +9173,13 @@ const resolvers = <
       const { id, type, note } = input
       const db = type === BotType.dca ? dcaDealsDb : comboDealsDb
       const $set = { note: note ?? null }
-      //@ts-ignore
-      const result = await db.updateData({ _id: id }, { $set })
+      const result = await updateOwnDoc(
+        db,
+        id,
+        user.data._id.toString(),
+        { $set },
+        dealNotFound,
+      )
       return {
         status: result.status,
         data: result.status === StatusEnum.ok ? `Deal updated` : null,
@@ -9163,11 +9203,12 @@ const resolvers = <
         return user
       }
       const { id, savePermanent } = input
-      const result = await gridBacktestDb.updateData(
-        {
-          _id: id,
-        },
+      const result = await updateOwnDoc(
+        gridBacktestDb,
+        id,
+        user.data._id.toString(),
         { $set: { savePermanent: !!savePermanent } },
+        backtestNotFound,
       )
       return {
         status: result.status,

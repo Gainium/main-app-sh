@@ -57,6 +57,13 @@ export const backtestNotFound = () => ({
   data: null,
 })
 
+/** No deal of the caller's behind the requested id — same rule as `backtestNotFound`. */
+export const dealNotFound = () => ({
+  status: StatusEnum.notok,
+  reason: 'Deal not found',
+  data: null,
+})
+
 export const errorAccess = () => ({
   status: StatusEnum.notok,
   reason: 'Cannot access',
