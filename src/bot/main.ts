@@ -8470,6 +8470,33 @@ class MainBot<T extends IMainBot> {
     return workingShift
   }
   /**
+   * {@link restoreFromRangeOrError} for a placement pass, unless this account's
+   * credential is known dead.
+   *
+   * `error` is a soft status that a placement pass clears before it sends, so
+   * on an account whose key the venue is refusing the badge flickered: cleared
+   * by every attempt, set again by its refusal. Merging deals on a Hyperliquid
+   * account with an expired API wallet showed the error and then hid it as the
+   * merge went on, which read as "it worked". While {@link AuthFailureGuard}
+   * holds the account in its cooldown the refusal is still current, so the
+   * badge stays. Once the cooldown lapses the next pass restores as before, and
+   * a fixed key is picked up then.
+   *
+   * @returns whether the bot was restored.
+   */
+  async restoreFromErrorUnlessAuthDead(): Promise<boolean> {
+    const authUUID = `${this.data?.exchangeUUID ?? ''}`
+    if (authUUID && !this.data?.paperContext) {
+      const cooldown = await AuthFailureGuard.check(authUUID)
+      if (cooldown.failed) {
+        return false
+      }
+    }
+    this.restoreFromRangeOrError()
+    return true
+  }
+
+  /**
    * Restore from range status
    */
 

@@ -9779,7 +9779,9 @@ class Bot<T extends UserSchema = UserSchema> {
         botId: botId,
         botType: BotType.dca,
         event: 'Merge DCA deals',
-        description: `DCA deals was merged: ${dealIds.join(' ')}`,
+        // The request only: the worker records the merge when it is done, and
+        // reports why when it is refused.
+        description: `Merge requested for DCA deals: ${dealIds.join(' ')}`,
         paperContext,
       })
       return {
@@ -9819,7 +9821,9 @@ class Bot<T extends UserSchema = UserSchema> {
         botId: botId,
         botType: BotType.dca,
         event: 'Merge DCA deals',
-        description: `DCA deals was merged: ${dealIds.join(' ')}`,
+        // The request only: the worker records the merge when it is done, and
+        // reports why when it is refused.
+        description: `Merge requested for DCA deals: ${dealIds.join(' ')}`,
         paperContext,
       })
     } else {

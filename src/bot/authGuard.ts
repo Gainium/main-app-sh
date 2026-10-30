@@ -72,6 +72,12 @@ export const AUTH_FAILURE_SIGNATURES = [
   //   user touching the key, which the fee cron's key-disable would not notice.
   'apikey does not exist',
   'apikey/password is incorrect',
+  // Hyperliquid refuses every signed action with "User or API Wallet 0x…
+  // does not exist" once the agent (API) wallet has expired or was never
+  // approved, or the master account holds nothing. It is account-wide and only
+  // the user can clear it (re-approve the wallet on Hyperliquid), so without
+  // this every order and cancel went to the venue and failed, one by one.
+  'user or api wallet',
 ]
 
 /** Does this exchange rejection describe a dead credential? */

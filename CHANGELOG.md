@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.123.5] - 2026-10-30
+
+### Fixed
+
+- Merging DCA deals pulls the source deals' take profits off the exchange before the merged deal is created. If the exchange refuses a cancel, nothing is merged and the take profits already pulled are put back. Before, the merge went ahead in the database while the old take profits stayed on the exchange holding the coins, so the merged deal's own take profit was refused for balance.
+- Merging is refused up front while the exchange is refusing the account's API key, with that reason.
+- The "Merge DCA deals" event is written when the merge completes and names the merged deal. The request itself is logged as a request.
+- A deal merged into another is reported as merged into that deal, not as "position left open on the exchange, no take profit will be applied".
+- A spot DCA deal whose take profit is not on the exchange after it was sent now says so once and sends it again automatically (after 30s, 1m, 2m, 5m, then every 15m) until one rests. Before, a refused take profit was only reported as "Not enough balance" and was never placed again until the next fill.
+- Hyperliquid's "User or API Wallet … does not exist" (expired or unapproved API wallet) counts as a dead API key: the account goes on the auth cooldown instead of sending every order and cancel to the exchange.
+- A bot's error badge is no longer cleared before each order placement while the exchange is refusing the account's API key, so the error stays visible instead of flickering.
+
 ## [1.123.4] - 2026-10-30
 
 ### Fixed

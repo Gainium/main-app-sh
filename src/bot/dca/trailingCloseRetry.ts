@@ -141,7 +141,7 @@ const ACCOUNT_SCOPED_REJECTIONS = [
   'no position to close',
   'wouldnotreduceposition',
   // Credentials. Every wording in `authGuard`'s AUTH_FAILURE_SIGNATURES
-  // contains one of these five, and the spec file asserts that. Deliberately
+  // contains one of these, and the spec file asserts that. Deliberately
   // NOT a bare 'api': Kraken's neighbouring `EAPI:Invalid nonce` and
   // `EAPI:Invalid signature` are genuinely transient and must stay retryable,
   // which is the same line `authGuard` itself draws — hence its dead-key
@@ -151,6 +151,8 @@ const ACCOUNT_SCOPED_REJECTIONS = [
   'apikey',
   'api-passphrase',
   'eapi:invalid key',
+  // Hyperliquid's dead agent wallet, listed in full as `authGuard` lists it.
+  'user or api wallet',
 ]
 
 /**

@@ -68,6 +68,9 @@ const helper = (over: { combo?: boolean } = {}) => {
   bot.shouldProceed = () => true
   bot.updateData = () => undefined
   bot.emit = () => undefined
+  // No take profit resting on the sources: nothing to pull before the merge.
+  bot.getOrdersByStatusAndDealId = () => []
+  bot.botEventDb = { createData: async () => ({ status: 'OK' }) }
   return bot
 }
 

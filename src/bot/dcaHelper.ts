@@ -633,6 +633,20 @@ const positionGoneReadings = new RetryBackoff({
  * shortfall that clears is picked up by the close itself; this only bounds the
  * fallback behind it. Any restore that does rest an order clears the window.
  */
+/**
+ * Waits before each re-send of a take profit that is missing after a placement
+ * pass (`noteTpCoverageAfterPlacement`). Short at first, because the usual cause
+ * (balance a cancel has not freed yet) clears in seconds to minutes, then every
+ * 15 minutes for as long as the deal stays uncovered.
+ */
+const MISSING_TP_REARM_DELAYS_MS = [
+  30 * 1000,
+  60 * 1000,
+  2 * 60 * 1000,
+  5 * 60 * 1000,
+  15 * 60 * 1000,
+]
+
 const uncoveredCloseBackoff = new RetryBackoff({
   namespace: 'ucr',
   minMs: 5 * 60 * 1000,
@@ -837,6 +851,15 @@ function createDCABotHelper<
     closeSweeps: Map<string, number> = new Map()
     /** Spec `182`. The sweeps running in THIS process. */
     closeSweepsInFlight: Set<string> = new Set()
+    /**
+     * Open deals whose take profit is not on the exchange after a placement
+     * pass sent one, with how many re-sends they have had. See
+     * `noteTpCoverageAfterPlacement`.
+     */
+    missingTpRearm: Map<
+      string,
+      { attempt: number; timer?: ReturnType<typeof setTimeout> }
+    > = new Map()
     /** Close after TP filled */
     closeAfterTpFilled: boolean
     /** Spec `202`. `stop()` calls still running on this bot. */
@@ -1668,6 +1691,169 @@ function createDCABotHelper<
       }
       await uncoveredCloseBackoff.record([this.botId, dealId], reason)
       await this.reportUncoveredAfterRefusal(dealId, symbol, reason)
+    }
+
+    /** The deal's own resting take profit(s), reduce-funds orders excluded. */
+    protected restingTakeProfits(dealId: string) {
+      return this.getOrdersByStatusAndDealId({
+        dealId,
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      }).filter(
+        (o) => o.typeOrder === TypeOrderEnum.dealTP && !isComboFundsOrderRow(o),
+      )
+    }
+
+    /**
+     * After a placement pass that sent a take profit: if the deal still has
+     * none resting, say so and re-send it later.
+     *
+     * A take profit is placed as a side effect of something else — a fill, an
+     * add funds, a merge — and when the venue refused it nothing ever asked
+     * again: the refusal was reported as "Not enough balance" and the deal sat
+     * open with no take profit until the next fill. The common cause is
+     * transient. Spot balance freed by a cancel that has not settled yet, or
+     * held by orders being torn down, as when a merge's source deals still had
+     * their take profits resting: Hyperliquid held 6.5 SOL behind them for 15
+     * minutes while the merged deal's take profit was refused three times and
+     * never re-sent once the coins were free.
+     *
+     * Spot only: a futures take profit is reduce-only and has its own refusal
+     * windows (spec `143`). The re-send goes through `getTPOrder` +
+     * `placeOrders`, like `restoreCloseAfterRefusal`, so it is sized from the
+     * deal's own position, never from the wallet. Each re-send that is refused
+     * again comes back through here and waits longer; the user is told once per
+     * uncovered episode, with the reason left to the refusal already reported.
+     */
+    protected async noteTpCoverageAfterPlacement(dealId: string) {
+      const live = this.getDeal(dealId)
+      if (!live || live.deal.status !== DCADealStatusEnum.open) {
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      if (this.restingTakeProfits(dealId).length) {
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      const pending = this.missingTpRearm.get(dealId)
+      if (pending?.timer) {
+        return
+      }
+      const deal = live.deal
+      const tpOrders = await this.getTPOrder(
+        deal.symbol.symbol,
+        deal.lastPrice,
+        live.initialOrders,
+        deal.avgPrice,
+        deal.initialPrice,
+        dealId,
+        deal,
+      )
+      if (!tpOrders?.length) {
+        // Nothing to rest (no take profit configured, or it closes another way).
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      const attempt = pending ? pending.attempt + 1 : 0
+      const delay =
+        MISSING_TP_REARM_DELAYS_MS[
+          Math.min(attempt, MISSING_TP_REARM_DELAYS_MS.length - 1)
+        ]
+      const timer = setTimeout(() => {
+        const entry = this.missingTpRearm.get(dealId)
+        if (entry) {
+          entry.timer = undefined
+        }
+        this.rearmMissingTp(dealId).catch((e: unknown) =>
+          this.handleWarn(
+            `Missing TP | deal ${dealId} re-send failed: ${
+              (e as Error)?.message ?? e
+            }`,
+          ),
+        )
+      }, delay)
+      timer.unref?.()
+      this.missingTpRearm.set(dealId, { attempt, timer })
+      this.handleLog(
+        `Missing TP | deal ${dealId} (${deal.symbol.symbol}) has no take profit on the exchange, re-send ${
+          attempt + 1
+        } in ${delay / 1000}s`,
+      )
+      if (attempt === 0) {
+        const message =
+          `Deal ${dealId} (${deal.symbol.symbol}) is open with no take profit ` +
+          `on the exchange: placing it was refused. The bot will place it again ` +
+          `automatically, first in ${delay / 1000}s.`
+        try {
+          await this.processError(
+            this.botId,
+            positionLeftOpen,
+            false,
+            false,
+            true,
+            message,
+            +new Date(),
+            message,
+            true,
+            deal.symbol.symbol,
+          )
+        } catch (e) {
+          // Never let reporting break the order path.
+          this.handleWarn(
+            `noteTpCoverageAfterPlacement report failed for deal ${dealId}: ${
+              (e as Error)?.message ?? e
+            }`,
+          )
+        }
+      }
+    }
+
+    protected clearMissingTpRearm(dealId: string) {
+      const entry = this.missingTpRearm.get(dealId)
+      if (entry?.timer) {
+        clearTimeout(entry.timer)
+      }
+      this.missingTpRearm.delete(dealId)
+    }
+
+    /** Re-send a missing take profit; see `noteTpCoverageAfterPlacement`. */
+    protected async rearmMissingTp(dealId: string) {
+      // Live state only: the take profit may have landed, or the deal closed,
+      // since the refusal.
+      const live = this.getDeal(dealId)
+      if (
+        !this.shouldProceed() ||
+        !live ||
+        live.deal.status !== DCADealStatusEnum.open ||
+        this.restingTakeProfits(dealId).length
+      ) {
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      const deal = live.deal
+      const tpOrders = await this.getTPOrder(
+        deal.symbol.symbol,
+        deal.lastPrice,
+        live.initialOrders,
+        deal.avgPrice,
+        deal.initialPrice,
+        dealId,
+        deal,
+      )
+      if (!tpOrders?.length) {
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      this.handleLog(
+        `Missing TP | deal ${dealId} (${deal.symbol.symbol}) re-sending take profit ${tpOrders
+          .map((o) => o.qty)
+          .join(', ')}`,
+      )
+      // The guarded `placeOrders`: a timer holds no deal lock. Its coverage
+      // check schedules the next re-send if this one is refused too.
+      await this.placeOrders(this.botId, deal.symbol.symbol, dealId, {
+        new: tpOrders,
+        cancel: [],
+      })
     }
 
     getDealsByStatusAndSymbol({
@@ -4726,7 +4912,27 @@ function createDCABotHelper<
      * `leave`. Reporting that as "Deal closed" is what let an abandoned short
      * sit unwatched until the venue liquidated it, so name the outcome instead.
      */
-    dealCloseEventDescription(deal: ExcludeDoc<Deal>): string {
+    async dealCloseEventDescription(deal: ExcludeDoc<Deal>): Promise<string> {
+      // A merge flags its sources in the database before it cancels them, but
+      // a source owned by another bot's process never saw the flag in memory
+      // (see `isMergedAway`), so a canceled deal without it is checked there.
+      if (
+        deal.status === DCADealStatusEnum.canceled &&
+        !(deal.child && deal.parentId)
+      ) {
+        const read = await this.dealsDb.readData({ _id: deal._id } as any, {
+          child: 1,
+          parentId: 1,
+        })
+        const stored = read.data?.result
+        if (stored?.child && stored.parentId) {
+          return dealCloseEventDescription({
+            ...deal,
+            child: true,
+            parentId: `${stored.parentId}`,
+          })
+        }
+      }
       return dealCloseEventDescription(deal)
     }
 
@@ -5208,7 +5414,7 @@ function createDCABotHelper<
               botId: this.botId,
               event: 'Deal',
               botType: this.botType,
-              description: this.dealCloseEventDescription(deal.deal),
+              description: await this.dealCloseEventDescription(deal.deal),
               paperContext: !!this.data?.paperContext,
               deal: deal.deal._id,
               symbol: deal.deal.symbol.symbol,
@@ -18802,7 +19008,7 @@ function createDCABotHelper<
         return
       }
       if (this.data?.status === BotStatusEnum.error) {
-        this.restoreFromRangeOrError()
+        await this.restoreFromErrorUnlessAuthDead()
       }
       if (this.exchange && this.data) {
         /**
@@ -19405,6 +19611,19 @@ function createDCABotHelper<
           }
         }
 
+        if (
+          !this.futures &&
+          orders.new.some((o) => o.type === TypeOrderEnum.dealTP)
+        ) {
+          // Never let the coverage check break the order path.
+          await this.noteTpCoverageAfterPlacement(dealId).catch((e: unknown) =>
+            this.handleWarn(
+              `Missing TP | coverage check failed for deal ${dealId}: ${
+                (e as Error)?.message ?? e
+              }`,
+            ),
+          )
+        }
         const dealAfter = this.getDeal(dealId)
         const tpAfter = this.getOrdersByStatusAndDealId({
           dealId,
@@ -29908,6 +30127,24 @@ function createDCABotHelper<
           false,
         )
       }
+      // A merge writes the merged deal and retires its sources whatever the
+      // venue answers, so on an account whose key is refused it "succeeded"
+      // in the database while every cancel and take profit behind it failed.
+      // Refuse it up front while the account is known to be refused.
+      if (!this.data?.paperContext && this.data?.exchangeUUID) {
+        const auth = await AuthFailureGuard.check(`${this.data.exchangeUUID}`)
+        if (auth.failed) {
+          return this.handleErrors(
+            `Deals were not merged: the exchange is refusing this account's API key (${auth.reason}). Fix the key, then merge again.`,
+            'mergeDeals()',
+            'auth',
+            false,
+            true,
+            true,
+            true,
+          )
+        }
+      }
       const _id = this.startMethod('mergeDeals')
       const prefix = `Merge Deals | `
       if (this.data) {
@@ -30340,6 +30577,20 @@ function createDCABotHelper<
             // the pair's position.
             ...(this.singlePositionActive ? { positionEntries: 1 } : {}),
           }
+          const refused = await this.cancelMergeSourceTakeProfits(deals)
+          if (refused) {
+            this.endMethod(_id)
+            return this.handleErrors(
+              `Deals were not merged: ${refused}`,
+              'mergeDeals()',
+              'cancel source take profits',
+              false,
+              true,
+              true,
+              true,
+              pair,
+            )
+          }
           const newDeal = await this.dealsDb.createData(mergedDeals as any)
           if (newDeal.status === StatusEnum.notok) {
             this.endMethod(_id)
@@ -30440,6 +30691,16 @@ function createDCABotHelper<
           this.setDeal(full)
           this.emit('bot deal update', dealData)
           await this.setCloseByTimer(full.deal)
+          this.botEventDb.createData({
+            userId: this.userId,
+            botId: this.botId,
+            botType: this.botType,
+            event: 'Merge DCA deals',
+            description: `DCA deals merged into deal ${dealData._id}: ${_deals.join(
+              ' ',
+            )}`,
+            paperContext: !!this.data.paperContext,
+          })
           this.reloadBot(this.botId)
         } else {
           this.handleErrors(
@@ -30453,6 +30714,57 @@ function createDCABotHelper<
         }
       }
       this.endMethod(_id)
+    }
+
+    /**
+     * Pull the merge's source take profits off the exchange before the merged
+     * deal exists.
+     *
+     * The merged deal places one take profit for the whole position, and on
+     * spot the sources' resting take profits HOLD that position: until they
+     * are gone the new one cannot be funded. The sources used to be cancelled
+     * after the merged deal was written, by a close whose refused cancels are
+     * retried in the background, so a refusal left the old take profits live
+     * on the venue while the merged deal's own was refused for balance.
+     *
+     * Stops at the first cancel the venue refuses and puts back the take
+     * profits already pulled, so a refused merge leaves every source deal as
+     * it was. Only the sources this process holds; one owned by another bot's
+     * process is still cancelled by its own close, as before.
+     *
+     * @returns why the merge must not go ahead, or undefined.
+     */
+    protected async cancelMergeSourceTakeProfits(
+      deals: { _id: unknown }[],
+    ): Promise<string | undefined> {
+      const pulled: string[] = []
+      for (const d of deals) {
+        const dealId = `${d._id}`
+        if (!this.getDeal(dealId)) {
+          continue
+        }
+        for (const tp of this.restingTakeProfits(dealId)) {
+          // A re-size, not a close: a partly filled take profit's fills are
+          // already in the orders the merge has read.
+          const result = await this.cancelOrderOnExchange(tp, false, true, false)
+          if (result?.status === 'FILLED') {
+            this.handleUnknownOrder(result)
+          }
+          const stillResting = this.restingTakeProfits(dealId).some(
+            (o) => o.clientOrderId === tp.clientOrderId,
+          )
+          if (stillResting || result?.status === 'FILLED') {
+            for (const id of new Set(pulled)) {
+              await this.rearmMissingTp(id)
+            }
+            return result?.status === 'FILLED'
+              ? `the take profit of deal ${dealId} filled while the merge was cancelling it`
+              : `the exchange refused to cancel the take profit of deal ${dealId}, so the deals would hold the same coins twice. Nothing was changed.`
+          }
+          pulled.push(dealId)
+        }
+      }
+      return undefined
     }
 
     /**

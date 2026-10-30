@@ -28,6 +28,10 @@ export type DealOutcome = {
   size?: number
   profit: { totalUsd: number }
   symbol: { symbol: string; baseAsset: string }
+  /** Set on a deal merged into another (spec 138 §2.1.4). */
+  child?: boolean
+  /** The deal it was merged into. */
+  parentId?: string | null
 }
 
 /**
@@ -51,6 +55,13 @@ const unmanaged =
 export const dealCloseEventDescription = (deal: DealOutcome): string => {
   if (deal.status !== DCADealStatusEnum.canceled) {
     return `Deal closed, id: ${deal._id}, profit: ${deal.profit.totalUsd}$`
+  }
+  // A merge cancels its source deals, but their position is not abandoned: it
+  // moved to the merged deal, which places the take profit for all of it.
+  // Saying "no take profit will be applied" here told the user to close a
+  // position the bot was about to manage.
+  if (deal.child && deal.parentId) {
+    return `Deal merged, id: ${deal._id}, into deal ${deal.parentId}. Its position is managed by that deal.`
   }
   const left = dealLeftOpenSize(deal.size)
   if (!left) {
