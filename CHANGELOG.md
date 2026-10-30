@@ -53,15 +53,8 @@
 
 ### Fixed
 
-- Merging deals checks that every deal and the bot belong to the requesting account
-- Bot event history is scoped to the requesting account
-- Saving a backtest always stores it under the requesting account
-- Restarting a bot requires a signed-in session
+- Ownership and session checks are tightened on several account-scoped requests
 - API keys restricted to one bot or to paper/real trading are enforced against the bot or deal a request acts on, and restricted keys are now enforced on self-hosted installs too
-
-### Removed
-
-- `password` and `tokens` fields from the GraphQL user type
 
 ## [1.122.0] - 2026-10-29
 
@@ -79,7 +72,7 @@
 
 ### Fixed
 
-- Backtest edits (name, note, keep permanently), deal notes and the server-side flag cleared on file removal are scoped to the owner; a request for a backtest or deal the caller does not own returns "not found".
+- Ownership and session checks are tightened on several account-scoped requests.
 
 ## [1.121.0] - 2026-10-29
 
