@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.7] - 2026-10-30
+
+### Fixed
+
+- A DCA deal whose limit base order was being moved to a new price when the bot service restarted now gets its new base order. Before, the restart could treat the base order it had just cancelled as still open, refuse to place the new one, and leave the deal waiting with no order on the exchange.
+
 ## [1.123.6] - 2026-10-30
 
 ### Fixed

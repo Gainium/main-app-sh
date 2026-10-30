@@ -117,7 +117,11 @@ import {
 } from './errorRulesCache'
 import QuantRulesGuard, { LEVEL2_VIOLATIONS } from './quantRulesGuard'
 import { poisonedSnapshotProfitField } from './redisSnapshotGuard'
-import { mergeOpenOrdersIntoSnapshot } from './orderSnapshotMerge'
+import {
+  dropOrdersEndedUnfilled,
+  mergeOpenOrdersIntoSnapshot,
+  unconfirmedOpenSnapshotIds,
+} from './orderSnapshotMerge'
 import { isSpentStatus, siblingClientOrderIds } from './clientOrderIdReissue'
 import QtyStepGuard, {
   decimalsToStep,
@@ -5354,8 +5358,45 @@ class MainBot<T extends IMainBot> {
             `Added ${merged.added} open orders from DB missing in redis`,
           )
         }
+        // The open read above can only ADD to the snapshot. A NEW row the bot
+        // cancelled after the last delayed write is still NEW in the snapshot,
+        // so a deal re-pricing its entry at the restart came back holding the
+        // cancelled entry as live, and `placeBaseOrder` refused the new one as
+        // "already have and active base order" — nothing on the venue. Ask
+        // Mongo about only the NEW rows its open read did not confirm, by
+        // `clientOrderId` (unique index); usually there are none. Spec 210.
+        const unconfirmed = unconfirmedOpenSnapshotIds(
+          merged.orders,
+          open.data.result,
+        )
+        if (!unconfirmed.length) {
+          this.endMethod(id)
+          return merged.orders
+        }
+        const ended = await this.ordersDb.readData(
+          {
+            clientOrderId: { $in: unconfirmed },
+            status: { $in: ['CANCELED', 'EXPIRED'] },
+          },
+          { clientOrderId: 1, status: 1, executedQty: 1 },
+          {},
+          true,
+        )
+        if (ended.status === StatusEnum.notok) {
+          this.handleWarn(
+            `Cannot read ended orders to correct the redis snapshot: ${ended.reason}`,
+          )
+          this.endMethod(id)
+          return merged.orders
+        }
+        const kept = dropOrdersEndedUnfilled(merged.orders, ended.data.result)
+        if (kept.dropped.length) {
+          this.handleLog(
+            `Dropped ${kept.dropped.length} orders open in redis but ended unfilled in DB: ${kept.dropped.join(', ')}`,
+          )
+        }
         this.endMethod(id)
-        return merged.orders
+        return kept.orders
       }
     }
     this.handleLog('Load orders start')

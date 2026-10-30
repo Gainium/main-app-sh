@@ -91,6 +91,8 @@ const matches = (row: any, q: any): boolean => {
   if (q.$and) return q.$and.every((s: any) => matches(row, s))
   if (q.$or) return q.$or.some((s: any) => matches(row, s))
   if (q.botId && row.botId !== q.botId) return false
+  if (q.clientOrderId?.$in && !q.clientOrderId.$in.includes(row.clientOrderId))
+    return false
   if (q.dealId?.$in && !q.dealId.$in.includes(row.dealId)) return false
   if (q.status?.$in && !q.status.$in.includes(row.status)) return false
   if (q.status?.$nin && q.status.$nin.includes(row.status)) return false
@@ -411,6 +413,151 @@ describe('cold restart order snapshot (spec 108)', () => {
         await bot.checkOrders(BOT_ID)
         expect(bot.placed).to.deep.equal([])
       })
+    })
+  })
+
+  /**
+   * Spec 210. The bot re-priced a resting LIMIT entry — cancelled ENTRY_OLD,
+   * placed ENTRY_NEW — in the seconds before the process stopped. Mongo holds
+   * both moves; the snapshot's last delayed write predates them.
+   */
+  describe('an entry re-priced just before the restart (spec 210)', () => {
+    const ENTRY_OLD = order(
+      'D-BO-000000000010',
+      TypeOrderEnum.dealStart,
+      'SELL',
+      '0.07578',
+      '279.5',
+    )
+    const ENTRY_NEW = order(
+      'D-BO-000000000011',
+      TypeOrderEnum.dealStart,
+      'SELL',
+      '0.07577',
+      '279.5',
+    )
+    const OLD_CANCELED = { ...ENTRY_OLD, status: 'CANCELED' }
+    const SNAP = [ENTRY_OLD]
+    const DB = [OLD_CANCELED, ENTRY_NEW]
+
+    it('§1.1 the entry Mongo holds cancelled unfilled is not restored as live', async () => {
+      const bot = makeMainBot({ snapshot: SNAP, dbRows: DB })
+      const loaded = await bot._loadOrders(undefined, false, [DEAL_ID])
+      expect(ids(loaded)).to.deep.equal([ENTRY_NEW.clientOrderId])
+    })
+
+    it('§1.2 the check reads only the unconfirmed NEW rows, by clientOrderId', async () => {
+      const bot = makeMainBot({ snapshot: SNAP, dbRows: DB })
+      await bot._loadOrders(undefined, false, [DEAL_ID])
+      expect(bot.dbQueries).to.have.length(2)
+      expect(bot.dbQueries[1].clientOrderId).to.deep.equal({
+        $in: [ENTRY_OLD.clientOrderId],
+      })
+    })
+
+    it('§1.3 an entry that holds a fill on either side is kept as today', async () => {
+      const pfSnap = {
+        ...ENTRY_OLD,
+        status: 'PARTIALLY_FILLED',
+        executedQty: '5',
+      }
+      const canceledWithFill = { ...OLD_CANCELED, executedQty: '5' }
+      for (const [snap, db] of [
+        [[pfSnap], [canceledWithFill, ENTRY_NEW]],
+        [[ENTRY_OLD], [canceledWithFill, ENTRY_NEW]],
+      ]) {
+        const bot = makeMainBot({ snapshot: snap, dbRows: db })
+        const loaded = await bot._loadOrders(undefined, false, [DEAL_ID])
+        expect(ids(loaded)).to.deep.equal(
+          ids([ENTRY_OLD, ENTRY_NEW]),
+          JSON.stringify(snap.map((o: any) => o.status)),
+        )
+      }
+    })
+
+    it('§1.4 the snapshot is kept as today when the ended-order read fails', async () => {
+      const bot = makeMainBot({ snapshot: SNAP, dbRows: DB })
+      const read = bot.ordersDb.readData
+      bot.ordersDb.readData = async (q: any) =>
+        q.clientOrderId
+          ? { status: StatusEnum.notok, reason: 'db down', data: null }
+          : read(q)
+      const loaded = await bot._loadOrders(undefined, false, [DEAL_ID])
+      expect(ids(loaded)).to.deep.equal(ids([ENTRY_OLD, ENTRY_NEW]))
+      expect(bot.logs.join('\n')).to.contain('db down')
+    })
+
+    it('§1.5 the restart re-places exactly one entry', async function () {
+      this.timeout(240000)
+      const Helper = createRequire(__filename)('./dcaHelper').default()
+      const deal = {
+        deal: {
+          _id: DEAL_ID,
+          botId: BOT_ID,
+          status: 'start',
+          symbol: { symbol: SYMBOL, baseAsset: 'ELA', quoteAsset: 'USDC' },
+          settings: {},
+        },
+      }
+      const sent: string[] = []
+      const pending: Promise<unknown>[] = []
+      class TestBot extends (Helper as any) {
+        botId = BOT_ID
+        serviceRestart = true
+        secondRestart = false
+        data: any = { settings: { pair: [SYMBOL] }, status: 'open' }
+        exchange: any = {}
+        sharedStream: any = { addOrder() {} }
+        shouldProceed() {
+          return true
+        }
+        getDeal(id?: string) {
+          return id === DEAL_ID ? deal : undefined
+        }
+        async getAggregatedSettings() {
+          return {}
+        }
+        async keepRestingBaseEntry() {
+          return false
+        }
+        async cancelOrderOnExchange(o: any) {
+          const canceled = { ...o, status: 'CANCELED' }
+          this.setOrder(canceled, false)
+          return canceled
+        }
+        async bookCanceledBaseEntry() {
+          return { booked: false, settled: null }
+        }
+        async getBaseOrder(_s: string, dealId: string) {
+          sent.push(dealId)
+          return null
+        }
+        async closeDealById() {}
+        placeBaseOrder(...args: any[]) {
+          const p = super.placeBaseOrder(...args)
+          pending.push(p)
+          return p
+        }
+        handleDebug() {}
+        handleErrors() {}
+        startMethod() {
+          return '1'
+        }
+        endMethod() {}
+      }
+      const bot: any = new (TestBot as any)()
+      stubSources(bot, SNAP, DB)
+      bot.handleLog = (m: string) => bot.logs.push(m)
+      bot.handleWarn = (m: string) => bot.logs.push(m)
+      const loaded = await bot._loadOrders(undefined, false, [DEAL_ID])
+      for (const o of loaded) bot.setOrder(o, false)
+      // The restore path: `pickRestoreBaseEntry` takes the open DB row.
+      await bot.checkBaseOrder(BOT_ID, SYMBOL, ENTRY_NEW.clientOrderId, DEAL_ID)
+      await Promise.all(pending)
+      expect(
+        bot.logs.filter((m: string) => m.includes('already have and active')),
+      ).to.deep.equal([])
+      expect(sent).to.deep.equal([DEAL_ID])
     })
   })
 })
