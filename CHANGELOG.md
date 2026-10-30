@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.10] - 2026-10-30
+
+### Fixed
+
+- Grid bots that take profit in the quote currency with order size fixed in quote now fit their start-up spend inside the budget. Each sell level holds the coin bought one level below it, but the budget split reserved it at the level's own sell price, so the start committed about one grid step too much on every sell level (around 0.7% of the budget with 20 levels, more with wider levels). On an account funded with exactly the budget, the farthest buy order was then refused for balance. Applies to bots created from November 2, 2026; running bots keep their current order sizes.
+
 ## [1.123.9] - 2026-10-30
 
 ### Fixed

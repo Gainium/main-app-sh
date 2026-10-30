@@ -144,6 +144,13 @@ import {
 export const QUANT_RULES_RETRY_BUDGET_ASAP = 5
 /** Budget for everything that is not a deal opening (a deferred re-send). */
 const QUANT_RULES_RETRY_BUDGET_DEFAULT = 5
+/**
+ * Grid bots created after this instant reserve a quote-profit sell level at
+ * the buy price one level below it (see `generateGridsOnPrice`). Must not
+ * precede the deploy: a bot created between it and the deploy would have its
+ * running ladder re-sized, and every order replaced, on the next fill.
+ */
+const gridSellReserveFixTime = Date.UTC(2026, 10, 2)
 /** First backoff step; doubles per attempt, capped below. */
 const QUANT_RULES_RETRY_BACKOFF_MS = 60_000
 const QUANT_RULES_RETRY_BACKOFF_CAP_MS = 30 * 60_000
@@ -11982,13 +11989,36 @@ class MainBot<T extends IMainBot> {
           }
         }
         const baseQuote = profitCurrency === 'base' && orderFixedIn === 'quote'
+        /**
+         * Profit in quote: a sell level carries the coin the level below it
+         * bought (`sellQty` below is `quoteAmount / buy[i-1]`), and that coin
+         * is bought at the start price with a fee. Reserving it at the level's
+         * own sell price undercounted every sell by one grid step, so the
+         * start-up committed more than the budget (+0.7% at 20 levels, +2.3%
+         * at 5) and on an exactly funded balance the farthest buy was refused.
+         * Bots created before the fix keep their sizing: `findDiff` matches on
+         * quantity, so re-sizing a running grid would replace every order.
+         */
+        const sellsFromLowerBuy =
+          profitCurrency === 'quote' &&
+          orderFixedIn === 'quote' &&
+          new Date(this.data.created ?? 0).getTime() > gridSellReserveFixTime
+        const sellUnits = (v: InitialGrid['price']) => {
+          if (!sellsFromLowerBuy) {
+            return 1 / v.sell
+          }
+          const k = initialGrids.findIndex((g) => g.price === v)
+          return (
+            (k > 0 ? 1 / initialGrids[k - 1].price.buy : (1 + gs) / v.sell) * f
+          )
+        }
         if (
           (profitCurrency === 'quote' && orderFixedIn === 'quote') ||
           baseQuote
         ) {
           quoteAmount =
             budget /
-            (sells.reduce((acc, v) => (acc += 1 / v.sell), 0) *
+            (sells.reduce((acc, v) => (acc += sellUnits(v)), 0) *
               (sellCount && newSell && baseQuote
                 ? sells.reduce((acc, a) => acc + a.sell, 0) / sellCount
                 : initialPriceStart) +
@@ -11996,7 +12026,7 @@ class MainBot<T extends IMainBot> {
           if (isNaN(quoteAmount) || !isFinite(quoteAmount) || !quoteAmount) {
             quoteAmount =
               budget /
-              (sells.reduce((acc, v) => (acc += 1 / v.sell), 0) *
+              (sells.reduce((acc, v) => (acc += sellUnits(v)), 0) *
                 initialPriceStart +
                 buyCount * f)
           }
