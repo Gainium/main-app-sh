@@ -205,7 +205,11 @@ describe('grid start-up spend fits the budget (profit in quote)', () => {
     it(`commits no more than the budget at ${levels} levels`, async () => {
       LEVELS = levels
       STEP = 0.00000001
-      const bot = makeBot({ budget: 1000, futures: false, orderFixedIn: 'quote' })
+      const bot = makeBot({
+        budget: 1000,
+        futures: false,
+        orderFixedIn: 'quote',
+      })
       const { buys, sells, total } = await startSpend(bot)
       expect(buys.length).to.be.greaterThan(0)
       expect(sells.length).to.be.greaterThan(0)
@@ -221,7 +225,7 @@ describe('grid start-up spend fits the budget (profit in quote)', () => {
     const { buys, sells } = await startSpend(bot)
     // Same quote per level: what a buy spends (fee aside) is what the sell
     // one level up carries, valued at that buy's price.
-    const perLevel = buys[0].qty * buys[0].price / 1.001
+    const perLevel = (buys[0].qty * buys[0].price) / 1.001
     const levels = bot.initialGrid.map((g: any) => g.price.buy)
     for (const s of sells) {
       const below = levels[levels.indexOf(s.price) - 1]
