@@ -3770,13 +3770,35 @@ function createDCABotHelper<
               false,
               'send',
             )
+            const refusal =
+              sweep && typeof sweep.result === 'string'
+                ? sweep.result
+                : undefined
+            // Spec `211`. A take-profit of this deal still resting holds the
+            // coins the sweep needs, so the venue refuses it for balance. That
+            // refusal is our own order in the way, not a remainder that is not
+            // there (§1.5 of spec `157` keeps closing on the latter): keep the
+            // deal open, and the re-close below cancels that take-profit first.
+            const ownTpHoldsBalance =
+              !!refusal &&
+              this.isErrorNotEnoughBalance(refusal) &&
+              this.getOrdersByStatusAndDealId({
+                dealId,
+                status: ['NEW', 'PARTIALLY_FILLED'],
+              }).some(
+                (o) =>
+                  o.typeOrder === TypeOrderEnum.dealTP &&
+                  o.clientOrderId !== tpOrder.clientOrderId,
+              )
             if (
               sweep &&
-              typeof sweep.result === 'string' &&
-              isLimitOnlyReason(sweep.result)
+              refusal &&
+              (isLimitOnlyReason(refusal) || ownTpHoldsBalance)
             ) {
               this.handleLog(
-                `${tpOrder.symbol} book is in limit only mode, cannot sell the remaining ${sweep.qty} of deal ${dealId} at market. Deal stays open, closing the rest by limit`,
+                ownTpHoldsBalance
+                  ? `Cannot sell the remaining ${sweep.qty} of deal ${dealId} at market, a resting take-profit of the deal holds the balance. Deal stays open, closing the rest by limit`
+                  : `${tpOrder.symbol} book is in limit only mode, cannot sell the remaining ${sweep.qty} of deal ${dealId} at market. Deal stays open, closing the rest by limit`,
               )
               // This fill is a partial take profit like any other; the next
               // close counts it from here, once.
@@ -13373,6 +13395,21 @@ function createDCABotHelper<
           if (getOrder.status === StatusEnum.notok) {
             this.handleWarn(`Cannot get order ${getOrder.reason}`)
             noteVenueAnswer(o, false)
+            continue
+          }
+          // Spec `211`. `toCheck` is read once, and a paced pass can take a
+          // minute or more to reach its end. An order this bot ended itself
+          // meanwhile — a take-profit cancelled as a re-size, a base remainder
+          // cancelled to be re-placed — is no longer one we hold as open, and
+          // `getOrder` answers any CANCELED order that filled at all as
+          // FILLED. Acting on that answer counted the fill a second time and,
+          // for a take-profit, closed the deal on it. Ask the map, not the
+          // snapshot.
+          const held = this.getOrderFromMap(o.clientOrderId)
+          if (!held || !this.orderStatuses.includes(held.status)) {
+            this.handleDebug(
+              `${o.typeOrder} order ${o.clientOrderId} is ${held?.status ?? 'no longer held'} locally since this check started, venue answer ${getOrder.data.status} not applied`,
+            )
             continue
           }
           const mergedOrder = await this.mergeCommonOrderWithOrder(

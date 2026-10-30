@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.123.8] - 2026-10-30
+
+### Fixed
+
+- A DCA deal is no longer closed by the order check that runs after a reconnect when it finds a take profit the bot had already cancelled and replaced after a partial fill. That check could take over a minute to work through its list, and treated the cancelled take profit's partial fill as the deal's close. The deal's remaining coins were then left in the account with no deal tracking them.
+- When the market sell of a deal's leftover is refused because one of the deal's own take profits is still holding the coins, the deal stays open. That take profit is cancelled and the rest is closed with a limit order, the same way a limit-only order book is handled.
+
 ## [1.123.7] - 2026-10-30
 
 ### Fixed

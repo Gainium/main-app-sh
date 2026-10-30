@@ -22,6 +22,7 @@ import { describe, it, before } from 'mocha'
 import { expect } from 'chai'
 import { ExchangeEnum, StatusEnum } from '../../types'
 import { MathHelper } from '../utils/math'
+import { matchesNotEnoughBalance } from './main'
 import { createRequire } from 'module'
 
 const DEAL_ID = 'aaaaaaaaaaaaaaaaaaaa0157'
@@ -179,6 +180,9 @@ const makeBot = (answer: any, opts: { realReclose?: boolean } = {}) => {
     }
     async handleOrderErrors(reason: string) {
       reported.push(reason)
+    }
+    isErrorNotEnoughBalance(reason: string) {
+      return matchesNotEnoughBalance(reason)
     }
     closeDealById(...args: any[]) {
       closeByIdCalls.push(args)
@@ -413,6 +417,52 @@ describe('limit-only book refuses the close remainder sweep (spec 157)', () => {
     expect(reclose).to.have.length(0)
     // the sweep was booked: the ledger no longer holds the remainder
     expect(deal.currentBalances.base).to.equal(0)
+  })
+
+  describe('spec 211 §1.3 the sweep is refused for balance a resting take-profit of the deal holds', () => {
+    /** The deal's full-size take-profit, placed after its last entry filled. */
+    const RESTING_TP = {
+      clientOrderId: 'D-TP-resting-full-size',
+      dealId: DEAL_ID,
+      typeOrder: 'dealTP',
+      status: 'NEW',
+      price: '0.0000156',
+      origQty: '146045512',
+      executedQty: '0',
+    }
+    const drive = async (resting: any[]) => {
+      const t = makeBot('Insufficient balance')
+      t.bot.resting = resting
+      await t.bot.closeDeal(BOT_ID, DEAL_ID, { ...PROMOTED_TP })
+      return t
+    }
+
+    it('leaves the deal open and writes no close', async () => {
+      const { deal, closes, profitWrites } = await drive([RESTING_TP])
+      expect(deal.status).to.equal('open')
+      expect(closes).to.have.length(0)
+      expect(profitWrites).to.have.length(0)
+    })
+
+    it('keeps the take-profit fill as one partial take profit', async () => {
+      const { deal } = await drive([RESTING_TP])
+      expect(deal.tpHistory.filter((h: any) => h.id === TP_ID)).to.have.length(
+        1,
+      )
+    })
+
+    it('hands the remainder to the re-close, which cancels the resting take-profit first', async () => {
+      const { reclose } = await drive([RESTING_TP])
+      expect(reclose).to.deep.equal([[BOT_ID, DEAL_ID, 72699924]])
+    })
+
+    it('the closing take-profit itself resting does not count', async () => {
+      const { deal, reclose } = await drive([
+        { ...RESTING_TP, clientOrderId: TP_ID, status: 'PARTIALLY_FILLED' },
+      ])
+      expect(deal.status).to.equal('closed')
+      expect(reclose).to.have.length(0)
+    })
   })
 
   it('§1.5 a sweep refused for another reason closes the deal as before, reported, not retried', async () => {
