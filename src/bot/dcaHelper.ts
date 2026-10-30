@@ -635,9 +635,11 @@ const positionGoneReadings = new RetryBackoff({
  */
 /**
  * Waits before each re-send of a take profit that is missing after a placement
- * pass (`noteTpCoverageAfterPlacement`). Short at first, because the usual cause
- * (balance a cancel has not freed yet) clears in seconds to minutes, then every
- * 15 minutes for as long as the deal stays uncovered.
+ * pass (`noteTpCoverageAfterPlacement`). The cause this answers (balance a
+ * cancel has not freed yet) clears in seconds to minutes, so the re-sends stop
+ * after the last one: a take profit still refused ~23 minutes on is refused for
+ * a lasting reason (a dead key, coins moved off the account), and re-sending it
+ * forever only writes a refused order row every 15 minutes.
  */
 const MISSING_TP_REARM_DELAYS_MS = [
   30 * 1000,
@@ -1705,7 +1707,7 @@ function createDCABotHelper<
 
     /**
      * After a placement pass that sent a take profit: if the deal still has
-     * none resting, say so and re-send it later.
+     * none resting, re-send it a few times.
      *
      * A take profit is placed as a side effect of something else — a fill, an
      * add funds, a merge — and when the venue refused it nothing ever asked
@@ -1721,12 +1723,24 @@ function createDCABotHelper<
      * windows (spec `143`). The re-send goes through `getTPOrder` +
      * `placeOrders`, like `restoreCloseAfterRefusal`, so it is sized from the
      * deal's own position, never from the wallet. Each re-send that is refused
-     * again comes back through here and waits longer; the user is told once per
-     * uncovered episode, with the reason left to the refusal already reported.
+     * again comes back through here and waits longer, up to the last delay.
+     *
+     * Deliberately no bot message: the refusal itself is already reported, and
+     * the deals table says when an open deal has no take profit on the
+     * exchange. A message here reached every long-uncovered deal on the first
+     * pass after a worker restart, most of them refused for good (dead keys,
+     * coins moved off the account, bots already in error).
      */
     protected async noteTpCoverageAfterPlacement(dealId: string) {
       const live = this.getDeal(dealId)
-      if (!live || live.deal.status !== DCADealStatusEnum.open) {
+      if (
+        !live ||
+        live.deal.status !== DCADealStatusEnum.open ||
+        this.data?.status !== BotStatusEnum.open ||
+        // A MARKET close never rests a take profit: `placeOrders` skips it and
+        // the TP level check closes at market instead.
+        (await this.isDealForTPLevelCheck(live))
+      ) {
         this.clearMissingTpRearm(dealId)
         return
       }
@@ -1754,10 +1768,17 @@ function createDCABotHelper<
         return
       }
       const attempt = pending ? pending.attempt + 1 : 0
-      const delay =
-        MISSING_TP_REARM_DELAYS_MS[
-          Math.min(attempt, MISSING_TP_REARM_DELAYS_MS.length - 1)
-        ]
+      if (attempt >= MISSING_TP_REARM_DELAYS_MS.length) {
+        // Given up; the entry stays so later passes do not start over.
+        if (attempt === MISSING_TP_REARM_DELAYS_MS.length) {
+          this.missingTpRearm.set(dealId, { attempt })
+          this.handleLog(
+            `Missing TP | deal ${dealId} (${live.deal.symbol.symbol}) still has no take profit after ${attempt} re-sends, not re-sending again`,
+          )
+        }
+        return
+      }
+      const delay = MISSING_TP_REARM_DELAYS_MS[attempt]
       const timer = setTimeout(() => {
         const entry = this.missingTpRearm.get(dealId)
         if (entry) {
@@ -1778,33 +1799,6 @@ function createDCABotHelper<
           attempt + 1
         } in ${delay / 1000}s`,
       )
-      if (attempt === 0) {
-        const message =
-          `Deal ${dealId} (${deal.symbol.symbol}) is open with no take profit ` +
-          `on the exchange: placing it was refused. The bot will place it again ` +
-          `automatically, first in ${delay / 1000}s.`
-        try {
-          await this.processError(
-            this.botId,
-            positionLeftOpen,
-            false,
-            false,
-            true,
-            message,
-            +new Date(),
-            message,
-            true,
-            deal.symbol.symbol,
-          )
-        } catch (e) {
-          // Never let reporting break the order path.
-          this.handleWarn(
-            `noteTpCoverageAfterPlacement report failed for deal ${dealId}: ${
-              (e as Error)?.message ?? e
-            }`,
-          )
-        }
-      }
     }
 
     protected clearMissingTpRearm(dealId: string) {

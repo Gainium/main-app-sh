@@ -86,8 +86,9 @@ describe('merge on a refused account, and the missing take profit', () => {
       exchange: ExchangeEnum.hyperliquid,
       exchangeUUID: 'uuid-1',
       paperContext: false,
-      status: 'error',
+      status: 'open',
     }
+    b.isDealForTPLevelCheck = async () => false
     b.missingTpRearm = new Map()
     b.deals = new Map(
       openDeals.map((id) => [
@@ -237,26 +238,53 @@ describe('merge on a refused account, and the missing take profit', () => {
   })
 
   describe('a take profit missing after a placement pass', () => {
-    it('is reported once and re-sent later', async () => {
+    it('is re-sent later, without a bot message', async () => {
       const { b, rec } = dcaBot([], [MERGED])
       await b.noteTpCoverageAfterPlacement(MERGED)
       const entry = b.missingTpRearm.get(MERGED)
       expect(entry.attempt).to.equal(0)
       expect(entry.timer).to.not.equal(undefined)
-      expect(rec.reported).to.have.length(1)
-      expect(rec.reported[0]).to.contain('no take profit on the exchange')
+      expect(rec.reported).to.deep.equal([])
 
       // A second pass while the re-send is pending changes nothing.
       await b.noteTpCoverageAfterPlacement(MERGED)
       expect(b.missingTpRearm.get(MERGED).attempt).to.equal(0)
 
-      // The re-send fired and was refused again: wait longer, say nothing new.
+      // The re-send fired and was refused again: wait longer.
       clearTimeout(entry.timer)
       entry.timer = undefined
       await b.noteTpCoverageAfterPlacement(MERGED)
       expect(b.missingTpRearm.get(MERGED).attempt).to.equal(1)
-      expect(rec.reported).to.have.length(1)
       b.clearMissingTpRearm(MERGED)
+    })
+
+    it('stops re-sending after the last delay', async () => {
+      const { b } = dcaBot([], [MERGED])
+      for (let i = 0; i < 8; i++) {
+        await b.noteTpCoverageAfterPlacement(MERGED)
+        const entry = b.missingTpRearm.get(MERGED)
+        if (entry.timer) {
+          clearTimeout(entry.timer)
+          entry.timer = undefined
+        }
+      }
+      const entry = b.missingTpRearm.get(MERGED)
+      expect(entry.attempt).to.equal(5)
+      expect(entry.timer).to.equal(undefined)
+    })
+
+    it('a MARKET close is never chased: it rests no take profit', async () => {
+      const { b } = dcaBot([], [MERGED])
+      b.isDealForTPLevelCheck = async () => true
+      await b.noteTpCoverageAfterPlacement(MERGED)
+      expect(b.missingTpRearm.has(MERGED)).to.equal(false)
+    })
+
+    it('nor a deal on a bot that is not open', async () => {
+      const { b } = dcaBot([], [MERGED])
+      b.data.status = 'error'
+      await b.noteTpCoverageAfterPlacement(MERGED)
+      expect(b.missingTpRearm.has(MERGED)).to.equal(false)
     })
 
     it('is dropped once a take profit rests', async () => {

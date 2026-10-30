@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.6] - 2026-10-30
+
+### Fixed
+
+- The automatic re-send of a missing take profit (1.123.5) no longer applies to deals that close at market, which never rest a take profit, or to deals on bots that are not running. It stops after five re-sends, and it no longer posts a bot message. The refusal itself is still reported.
+
 ## [1.123.5] - 2026-10-30
 
 ### Fixed
