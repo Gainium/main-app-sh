@@ -28689,6 +28689,9 @@ function createDCABotHelper<
         // +26.417 base on one deal against the -0.145 its fills support, and
         // `closeDeal` marked the difference at `lastPrice` and booked it as
         // realised profit.
+        const partialTp = new Set(
+          (findDeal.deal.tpHistory ?? []).map((h) => h.id),
+        )
         const filled = this.getOrdersByStatusAndDealId({
           dealId: findDeal.deal._id,
           status: ['FILLED', 'CANCELED'],
@@ -28716,6 +28719,22 @@ function createDCABotHelper<
             (o) =>
               !skipUnbooked ||
               !this.ordersInBetweenUpdates.has(o.clientOrderId),
+          )
+          // Spec `212`. A take-profit fill carried in `tpHistory` is a partial
+          // take profit, and on an open DCA deal `tpHistory` is its only
+          // owner: the fill path never moves `currentBalances` for it, and
+          // `closeDeal` subtracts all of `tpHistory` from this ledger when the
+          // deal closes. Counting its row here as well subtracted those sales
+          // twice — the remainder sweep was sized short and the close booked
+          // the difference as base the deal no longer held. Combo sizes its
+          // take-profit straight off this rebuilt ledger, and a closed deal
+          // has already had `tpHistory` booked, so both keep every row.
+          .filter(
+            (o) =>
+              this.combo ||
+              findDeal.deal.status === DCADealStatusEnum.closed ||
+              o.typeOrder !== TypeOrderEnum.dealTP ||
+              !partialTp.has(o.clientOrderId),
           )
         const filledBase =
           filled.reduce(

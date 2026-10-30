@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.9] - 2026-10-30
+
+### Fixed
+
+- When a DCA deal closes after some of its take profits had sold part of the position, those partial sales are no longer subtracted twice if the deal's balance had been recalculated in the meantime (after an added-funds fill, a restart or a settings change). The market sell of what is left now sells everything the deal still holds instead of a smaller amount that left coins in the account, and the deal's closing balances are recorded correctly.
+
 ## [1.123.8] - 2026-10-30
 
 ### Fixed
