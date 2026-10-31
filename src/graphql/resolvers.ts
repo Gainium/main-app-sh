@@ -177,6 +177,7 @@ import {
   cancelOrderOnExchange,
   getAllOpenOrders,
   getAllOpenPositions,
+  OPEN_LIST_DEADLINE_MS,
   placeOrderOnExchange,
 } from './handlers/orders.handler'
 import { isCoinm, isServiceUnreachable, isValidTimezone } from '../utils'
@@ -3882,7 +3883,7 @@ const resolvers = <
           data: null,
         }
       }
-      return getAllOpenOrders(exchange)
+      return getAllOpenOrders(exchange, undefined, OPEN_LIST_DEADLINE_MS)
     },
     getAllOpenPositions: async (
       _parent: any,
@@ -3905,7 +3906,12 @@ const resolvers = <
           data: null,
         }
       }
-      return getAllOpenPositions(exchange, user.data._id.toString())
+      return getAllOpenPositions(
+        exchange,
+        user.data._id.toString(),
+        undefined,
+        OPEN_LIST_DEADLINE_MS,
+      )
     },
     getUsdRate: async (_parent: any, {}, {}: InputRequest) => {
       const rate = await rateDb.readData(

@@ -27,12 +27,51 @@ import {
 import { getFuturePositionId } from '../../exchange/helpers'
 import { isFutures, isPaper } from '../../utils'
 import { MathHelper } from '../../utils/math'
+import logger from '../../utils/logger'
 
 const math = new MathHelper()
+
+/**
+ * Per-exchange deadline for the open positions / open orders LISTS (spec 214).
+ * One venue that stalls (its client sleeping on a rate limit, retrying
+ * timeouts) used to hold the whole list past the dashboard's own request
+ * timeout. Pass it only where a missing venue is an acceptable answer — the
+ * import/close mutations read leverage and margin type from the position and
+ * keep waiting.
+ */
+export const OPEN_LIST_DEADLINE_MS = 15_000
+
+/**
+ * Settle with `p`, or with `onLate()` if `p` has not settled within `ms`.
+ * No deadline when `ms` is not a positive number.
+ */
+const settleWithin = <T>(
+  p: Promise<T>,
+  ms: number | undefined,
+  onLate: () => T,
+): Promise<T> => {
+  if (!ms || ms <= 0) {
+    return p
+  }
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(onLate()), ms)
+  })
+  return Promise.race([p, late]).finally(() => clearTimeout(timer))
+}
+
+const lateVenue =
+  (what: string, exchange: ExchangeInUser, ms: number) => () => {
+    logger.warn(
+      `${what} | ${exchange.provider} ${exchange.uuid} did not answer within ${ms}ms, listed without it`,
+    )
+    return []
+  }
 
 export const getAllOpenOrders = async (
   exchanges: ExchangeInUser[],
   ec = ExchangeChooser,
+  deadlineMs?: number,
 ): Promise<BaseReturn<GeneralOpenOrder[]>> => {
   const queries: Promise<any>[] = []
   for (const exchange of exchanges) {
@@ -47,31 +86,35 @@ export const getAllOpenOrders = async (
       exchange.bybitHost,
     )
     queries.push(
-      exchangeInstance
-        .getAllOpenOrders(undefined, true)
-        .then((orders) => {
-          if (orders.status === StatusEnum.ok) {
-            return orders.data.map((order) => ({
-              exchange: exchange.provider,
-              exchangeUUID: exchange.uuid,
-              exchangeName: exchange.name,
-              created: new Date(order.updateTime),
-              symbol: order.symbol,
-              side: order.side,
-              type: order.type,
-              orderId: `${order.orderId}`,
-              status: order.status,
-              price: order.price,
-              quantity: order.origQty,
-              clientOrderId: order.clientOrderId,
-              executedQty: order.executedQty,
-            }))
-          }
-          return []
-        })
-        .catch(() => {
-          return []
-        }),
+      settleWithin(
+        exchangeInstance
+          .getAllOpenOrders(undefined, true)
+          .then((orders) => {
+            if (orders.status === StatusEnum.ok) {
+              return orders.data.map((order) => ({
+                exchange: exchange.provider,
+                exchangeUUID: exchange.uuid,
+                exchangeName: exchange.name,
+                created: new Date(order.updateTime),
+                symbol: order.symbol,
+                side: order.side,
+                type: order.type,
+                orderId: `${order.orderId}`,
+                status: order.status,
+                price: order.price,
+                quantity: order.origQty,
+                clientOrderId: order.clientOrderId,
+                executedQty: order.executedQty,
+              }))
+            }
+            return []
+          })
+          .catch(() => {
+            return []
+          }),
+        deadlineMs,
+        lateVenue('getAllOpenOrders', exchange, deadlineMs ?? 0),
+      ),
     )
   }
   const ordersFromExchanges = (await Promise.all(queries)).flat()
@@ -182,6 +225,7 @@ export const getAllOpenPositions = async (
   exchanges: ExchangeInUser[],
   userId: string,
   ec = ExchangeChooser,
+  deadlineMs?: number,
 ): Promise<BaseReturn<GeneralFuture[]>> => {
   const queries: Promise<any>[] = []
   for (const exchange of exchanges.filter((e) => isFutures(e.provider))) {
@@ -196,66 +240,70 @@ export const getAllOpenPositions = async (
       exchange.bybitHost,
     )
     queries.push(
-      exchangeInstance
-        .futures_getPositions()
-        .then(async (positions) => {
-          if (positions.status === StatusEnum.ok) {
-            let pairs: ClearPairsSchema[] = []
-            if (exchange.provider === ExchangeEnum.okxLinear) {
-              pairs =
-                (
-                  await pairDb.readData(
-                    {
-                      exchange: ExchangeEnum.okxLinear,
-                      pair: { $in: positions.data.map((p) => p.symbol) },
-                    },
-                    {},
-                    {},
-                    true,
-                  )
-                ).data?.result ?? []
-            }
-            return positions.data
-              .filter((p) => +p.positionAmt !== 0)
-              .map((position) => ({
-                exchange: exchange.provider,
-                exchangeUUID: exchange.uuid,
-                exchangeName: exchange.name,
-                created: new Date(position.updateTime),
-                symbol: position.symbol,
-                side: position.positionSide,
-                positionId: getFuturePositionId({
-                  ...position,
-                  exchange: exchange.uuid,
+      settleWithin(
+        exchangeInstance
+          .futures_getPositions()
+          .then(async (positions) => {
+            if (positions.status === StatusEnum.ok) {
+              let pairs: ClearPairsSchema[] = []
+              if (exchange.provider === ExchangeEnum.okxLinear) {
+                pairs =
+                  (
+                    await pairDb.readData(
+                      {
+                        exchange: ExchangeEnum.okxLinear,
+                        pair: { $in: positions.data.map((p) => p.symbol) },
+                      },
+                      {},
+                      {},
+                      true,
+                    )
+                  ).data?.result ?? []
+              }
+              return positions.data
+                .filter((p) => +p.positionAmt !== 0)
+                .map((position) => ({
+                  exchange: exchange.provider,
+                  exchangeUUID: exchange.uuid,
+                  exchangeName: exchange.name,
+                  created: new Date(position.updateTime),
+                  symbol: position.symbol,
+                  side: position.positionSide,
+                  positionId: getFuturePositionId({
+                    ...position,
+                    exchange: exchange.uuid,
+                    marginType: getPositionMarginType(position.isolated),
+                    positionSide:
+                      position.positionSide === 'BOTH'
+                        ? +position.positionAmt > 0
+                          ? 'LONG'
+                          : 'SHORT'
+                        : position.positionSide,
+                    paper: isPaper(exchange.provider),
+                  }),
+                  leverage: position.leverage,
+                  price: position.entryPrice,
+                  quantity: `${Math.abs(+position.positionAmt)}`,
                   marginType: getPositionMarginType(position.isolated),
-                  positionSide:
-                    position.positionSide === 'BOTH'
-                      ? +position.positionAmt > 0
-                        ? 'LONG'
-                        : 'SHORT'
-                      : position.positionSide,
-                  paper: isPaper(exchange.provider),
-                }),
-                leverage: position.leverage,
-                price: position.entryPrice,
-                quantity: `${Math.abs(+position.positionAmt)}`,
-                marginType: getPositionMarginType(position.isolated),
-              }))
-              .map((position) => {
-                if (exchange.provider === ExchangeEnum.okxLinear) {
-                  const multiplier =
-                    pairs.find((p) => p.pair === position.symbol)?.baseAsset
-                      ?.multiplier ?? 1
-                  position.quantity = `${+position.quantity * multiplier}`
-                }
-                return position
-              })
-          }
-          return []
-        })
-        .catch(() => {
-          return []
-        }),
+                }))
+                .map((position) => {
+                  if (exchange.provider === ExchangeEnum.okxLinear) {
+                    const multiplier =
+                      pairs.find((p) => p.pair === position.symbol)?.baseAsset
+                        ?.multiplier ?? 1
+                    position.quantity = `${+position.quantity * multiplier}`
+                  }
+                  return position
+                })
+            }
+            return []
+          })
+          .catch(() => {
+            return []
+          }),
+        deadlineMs,
+        lateVenue('getAllOpenPositions', exchange, deadlineMs ?? 0),
+      ),
     )
   }
   const positionsFromExchanges = (await Promise.all(queries)).flat()

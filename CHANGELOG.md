@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.12] - 2026-10-31
+
+### Fixed
+
+- The open positions and open orders lists no longer wait for an exchange that is slow or not answering. Each exchange now has 15 seconds; one that misses it is left out of that load, the same as an exchange that returns an error, instead of the whole list failing.
+
 ## [1.123.11] - 2026-10-31
 
 ### Fixed
