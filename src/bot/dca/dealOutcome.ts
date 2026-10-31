@@ -156,3 +156,44 @@ export const strandedStartCancelMessage = (
   symbol: string,
 ): string =>
   `Deal ${dealId} on ${symbol} never opened - its entry order was never accepted by the exchange, so the deal has been cancelled. No position was taken and there is nothing to close on the exchange.`
+
+/** The fields of an order row {@link unbookedEntryQty} reads. */
+export type EntryOrderRow = {
+  typeOrder?: string
+  orderId?: string | number
+  executedQty?: string | number
+}
+
+/**
+ * Base quantity a deal's entry orders executed that its books never took in.
+ *
+ * A deal leaves `start` (and gets a size) only once its base order is booked
+ * as filled. Until then `deal.size` is 0 even when the venue already executed
+ * the base order, in part or in full — exactly what happens when the fill was
+ * missed (user stream down, a read-back that saw only the placement slice, a
+ * replaced base order that had in fact filled). Cancelling such a deal walks
+ * away from a real position, and keying the "left open" warning off `size`
+ * alone reported it as a bare `Deal cancelled`.
+ *
+ * Counts only rows the venue acknowledged (a real order id): a `'-1'` row
+ * never reached the exchange, so whatever quantity it carries is not a
+ * position. Only for a deal with no booked level; once a level is booked
+ * `size` is authoritative. Pure.
+ */
+export const unbookedEntryQty = (
+  levelsComplete: number | undefined,
+  orders: EntryOrderRow[],
+): number => {
+  if ((levelsComplete ?? 0) > 0) {
+    return 0
+  }
+  const total = orders
+    .filter(
+      (o) =>
+        o.typeOrder === 'dealStart' &&
+        `${o.orderId ?? ''}` !== '' &&
+        `${o.orderId}` !== '-1',
+    )
+    .reduce((sum, o) => sum + dealLeftOpenSize(+(o.executedQty ?? 0)), 0)
+  return +total.toFixed(10)
+}

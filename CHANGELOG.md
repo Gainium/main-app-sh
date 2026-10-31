@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.123.11] - 2026-10-31
+
+### Fixed
+
+- A DCA deal cancelled before its base order was booked (for example by stopping the bot and leaving positions open) no longer hides a base order that had already executed on the exchange. The deal's base orders are checked, and the event names the position left open with its size, with the usual warning that no take profit or stop loss will be applied. Before, it said only "Deal cancelled".
+- When the bot gives up looking up an order the exchange no longer describes, an order the exchange accepted and whose full size is recorded as executed is now marked filled instead of cancelled, and an order already marked filled is never changed to cancelled.
+
 ## [1.123.10] - 2026-10-30
 
 ### Fixed

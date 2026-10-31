@@ -303,6 +303,7 @@ import {
   dealCloseEventDescription,
   dealLeftOpenSize,
   leftOpenPositionMessage,
+  unbookedEntryQty,
   strandedStartCancelMessage,
   unactionedCloseMessage,
   verdictForMissingDealOnClose,
@@ -4920,6 +4921,29 @@ function createDCABotHelper<
     }
 
     /**
+     * {@link DCABotHelper#dealLeftOpenSize}, plus what the entry orders of a
+     * deal that never booked its base already executed on the venue — see
+     * {@link unbookedEntryQty}. Only reads the order rows when the books say
+     * nothing is held, so an ordinary close costs no extra query.
+     */
+    async dealLeftOpenSizeWithEntry(deal: ExcludeDoc<Deal>): Promise<number> {
+      const booked = this.dealLeftOpenSize(deal)
+      if (booked || (deal.levels?.complete ?? 0) > 0) {
+        return booked
+      }
+      const orders = await this.ordersDb.readData(
+        { dealId: `${deal._id}`, typeOrder: TypeOrderEnum.dealStart } as any,
+        { orderId: 1, executedQty: 1, typeOrder: 1 },
+        {},
+        true,
+      )
+      if (orders.status === StatusEnum.notok) {
+        return booked
+      }
+      return unbookedEntryQty(deal.levels?.complete, orders.data.result ?? [])
+    }
+
+    /**
      * Describe how a deal actually ended.
      *
      * A `canceled` deal that still holds volume was NOT closed: the position
@@ -4949,6 +4973,12 @@ function createDCABotHelper<
           })
         }
       }
+      if (deal.status === DCADealStatusEnum.canceled) {
+        return dealCloseEventDescription({
+          ...deal,
+          size: await this.dealLeftOpenSizeWithEntry(deal),
+        })
+      }
       return dealCloseEventDescription(deal)
     }
 
@@ -4966,11 +4996,11 @@ function createDCABotHelper<
      * A deal holding nothing stays silent; leaving an empty deal costs nothing.
      */
     async announceLeftOpenPosition(deal: ExcludeDoc<Deal>) {
-      const left = this.dealLeftOpenSize(deal)
+      const left = await this.dealLeftOpenSizeWithEntry(deal)
       if (!left || !this.shouldProceed()) {
         return
       }
-      const message = leftOpenPositionMessage(deal)
+      const message = leftOpenPositionMessage({ ...deal, size: left })
       this.botEventDb.createData({
         userId: this.userId,
         botId: this.botId,

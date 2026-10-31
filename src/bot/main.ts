@@ -884,6 +884,33 @@ const quantRulesRejection =
 const noExchangeOrderId = '-1'
 
 /**
+ * The status to write off an order the venue would no longer describe.
+ *
+ * Giving up on a lookup used to stamp the row CANCELED whatever it already
+ * said. A row that recorded its full size as executed, on an order the venue
+ * acknowledged, did trade: stamping it CANCELED told every later reader that
+ * nothing happened, and the position it opened was walked away from. A FILLED
+ * row is never downgraded. Anything else — part-filled, unfilled, or never
+ * acknowledged (`'-1'`, whose quantities are not evidence) — is written off as
+ * before, keeping whatever `executedQty` it carries. Pure.
+ */
+export const writeOffStatus = (order: {
+  status?: string
+  orderId?: string | number
+  executedQty?: string | number
+  origQty?: string | number
+}): 'FILLED' | 'CANCELED' => {
+  if (order.status === 'FILLED') {
+    return 'FILLED'
+  }
+  const acknowledged =
+    `${order.orderId ?? ''}` !== '' && `${order.orderId}` !== noExchangeOrderId
+  const executed = +(order.executedQty ?? 0)
+  const size = +(order.origQty ?? 0)
+  return acknowledged && size > 0 && executed >= size ? 'FILLED' : 'CANCELED'
+}
+
+/**
  * Exchanges that have answered "no batch order lookup" once. Process-wide
  * because the answer is a property of the venue's API, not of a bot: asking
  * again per bot per pass would spend a round trip to learn the same thing.
@@ -6461,10 +6488,10 @@ class MainBot<T extends IMainBot> {
         const get = this.getOrderFromMap(id)
         let find = get && get.status === 'NEW' ? get : undefined
         if (find && this.orders) {
+          find.status = writeOffStatus(find)
           this.handleLog(
-            `Order not found after ${lookups} lookup(s), order ${id} status set to CANCELED`,
+            `Order not found after ${lookups} lookup(s), order ${id} status set to ${find.status}`,
           )
-          find.status = 'CANCELED'
           this.deleteOrder(find.clientOrderId)
           this.updateOrderOnDb(find)
           return find
@@ -6474,10 +6501,10 @@ class MainBot<T extends IMainBot> {
           find = (await this.ordersDb.readData({ clientOrderId: id })).data
             ?.result
           if (find) {
+            find.status = writeOffStatus(find)
             this.handleLog(
-              `Order found in DB in handle unknow order ${id} set to CANCELED`,
+              `Order found in DB in handle unknow order ${id} set to ${find.status}`,
             )
-            find.status = 'CANCELED'
             this.deleteOrder(find.clientOrderId)
             this.updateOrderOnDb(find)
             return find
