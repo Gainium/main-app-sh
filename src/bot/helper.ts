@@ -2026,6 +2026,12 @@ function createBotHelper<
         // that shares its pre-send section with others must carry its own
         // number rather than read whatever the counter has reached by then.
         const placeOne = async (order: Grid) => {
+          // Spec 215 §4.1: a close that started while this ladder is being
+          // placed (stop-loss, take-profit or a user stop) ends it here. The
+          // stop path cancels only what exists when it takes its snapshot.
+          if (this.isGridClosing()) {
+            return
+          }
           const stage = ++i
           const get = this.getOrderFromMap(order.newClientOrderId)
           if (get && get.status !== 'CANCELED') {
@@ -2033,6 +2039,14 @@ function createBotHelper<
             return
           }
           const result = await this.placeRegularOrder(order, ed)
+          if (
+            result &&
+            (result.status === 'NEW' || result.status === 'PARTIALLY_FILLED') &&
+            this.isGridClosing()
+          ) {
+            await this.cancelPlacedAfterClose(result)
+            return
+          }
           if (result) {
             await this.countBalances(lastPrice)
             if (result.status === 'FILLED') {
@@ -2126,6 +2140,38 @@ function createBotHelper<
         this.updateLevels(lastPrice, side)
       }
       this.endMethod(_id)
+    }
+    /**
+     * A close is under way or done: the stop/take-profit close is running
+     * (`blockLimit`, set before its cancel snapshot), the closing order filled
+     * (`stopFilled`, spec 189), or the bot is closed. Reset only by a fresh
+     * start. Spec 215 §4.1.
+     */
+    protected isGridClosing() {
+      return (
+        this.stopFilled ||
+        this.blockLimit ||
+        this.data?.status === BotStatusEnum.closed
+      )
+    }
+    /**
+     * A ladder order the venue accepted after the close began. If a cancel of
+     * the bot's own already claimed it (the stop's snapshot held its
+     * write-ahead row), that cancel finishes the job. Otherwise nothing will
+     * ever cancel it, so cancel it now. Spec 215 §4.2.
+     */
+    protected async cancelPlacedAfterClose(order: Order) {
+      if (this.isOwnCancel(order.clientOrderId)) {
+        return
+      }
+      this.handleLog(
+        `Order ${order.clientOrderId} was placed after the bot began closing, cancelling it`,
+      )
+      const held = this.getOrderFromMap(order.clientOrderId) ?? order
+      const cancel = await this.cancelOrderOnExchange(held, false)
+      if (cancel?.status === 'FILLED') {
+        await this.handleUnknownOrder(cancel)
+      }
     }
     async processLiquidationOrder(order: Order): Promise<void> {
       if (!this.futures) {

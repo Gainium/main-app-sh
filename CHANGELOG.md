@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.13] - 2026-11-01
+
+### Fixed
+
+- A grid bot whose stop loss or take profit closes it while it is still placing its starting orders now stops placing them at once. Before, the start-up placement kept going after the close had cancelled the orders that existed at that moment. Every level placed after that rested on the exchange for a bot that was already closed. An order the exchange accepts after the close began is now cancelled as soon as its placement returns.
+
 ## [1.123.12] - 2026-10-31
 
 ### Fixed
