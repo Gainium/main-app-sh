@@ -407,9 +407,18 @@ function createComboBotHelper<
         (baseOrder
           ? price * (+(settings.baseStep ?? settings.step) / 100)
           : price * (+settings.step / 100)) * stepVal
+      /**
+       * Main-app spec 218. A base minigrid is laid around the price the base
+       * order FILLED at (`price`), whatever type the fill came back labelled
+       * with. `origPrice` is only the request: Hyperliquid's market order is
+       * a padded limit, and when it rests for a moment the placement answer
+       * books it as a LIMIT at the un-padded request price, a price the deal
+       * never traded at. A safety-order minigrid keeps its level price.
+       */
+      const basePrice = +order.price
       const startPrice = baseOrder
-        ? order.type === OrderTypeEnum.market
-          ? +order.price
+        ? Number.isFinite(basePrice) && basePrice > 0
+          ? basePrice
           : +order.origPrice
         : +order.origPrice
       const initialPrice = _initialPrice ?? startPrice

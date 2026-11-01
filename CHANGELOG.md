@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.16] - 2026-11-01
+
+### Fixed
+
+- A combo deal's base grid is now laid around the price the base order actually filled at. On Hyperliquid a market base order is sent as a padded limit, and when it rested for a moment before filling it was recorded as a limit order at the requested price; the base grid was then centred on that requested price instead of the fill. On a thin book this put the grid's buy-backs (of a short) or sells (of a long) on the wrong side of the entry, where they could fill at once and close the deal at a loss.
+
 ## [1.123.15] - 2026-11-01
 
 ### Fixed
