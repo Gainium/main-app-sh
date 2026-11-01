@@ -229,6 +229,10 @@ import {
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
 import { executedFillQty } from './dca/executedFill'
+import {
+  isDatedCanceledRegularFill,
+  shouldBookCanceledRegularFill,
+} from './dca/canceledRegularFill'
 import { closeOrderQuoteMinimum } from './closeOrderMinValue'
 import {
   baseEntryCancelSettleAttempts,
@@ -9219,13 +9223,17 @@ function createDCABotHelper<
       // spent by this average to get `deal.size`. Left out here, the size
       // over-states the position and the take profit asks for coins the deal
       // does not hold. Spec 128 §4.2.
+      // A safety or add-funds order the venue cancelled part filled is booked
+      // by `bookCanceledRegularFill`, so its fill is an entry too. Spec 216
+      // §1.2.
       const entryRows = this.getOrdersByStatusAndDealId({
         status: ['FILLED', 'CANCELED'],
         dealId,
       }).filter(
         (o) =>
           o.status === 'FILLED' ||
-          (o.typeOrder === TypeOrderEnum.dealStart && +o.executedQty > 0),
+          (o.typeOrder === TypeOrderEnum.dealStart && +o.executedQty > 0) ||
+          isDatedCanceledRegularFill(o),
       )
       if (this.futures) {
         let filledDealOrder = entryRows.filter(
@@ -23984,6 +23992,10 @@ function createDCABotHelper<
         }
         return
       }
+      if (order.typeOrder === TypeOrderEnum.dealRegular) {
+        await this.bookCanceledRegularFill(order)
+        return
+      }
       if (order.typeOrder !== TypeOrderEnum.dealTP) {
         return
       }
@@ -24032,6 +24044,47 @@ function createDCABotHelper<
         return
       }
       await this.updatePartiallyFilledTP(order)
+    }
+
+    /**
+     * A safety or add-funds order (`dealRegular`) that ended CANCELED with part
+     * of it executed, and not by this bot's request. Spec `216`.
+     *
+     * The executed part is a position the account holds, and no other event
+     * reports it: the venue's cancel is the last word on the order. It is
+     * booked through the same `updateDeal` branch a fill of this order takes —
+     * an add-funds order into `deal.funds`, settling its `pendingAddFunds`
+     * entry, a safety order into the deal's balances — and only once, keyed on
+     * `processedFilled` like a fill. A cancel the bot asked for is left to the
+     * engine's cancel path (spec 156 §3), and a deal that is not open is left
+     * alone: `updateDeal` would sell the quantity at market there.
+     */
+    private async bookCanceledRegularFill(order: Order) {
+      const { dealId, clientOrderId } = order
+      if (
+        !dealId ||
+        !shouldBookCanceledRegularFill({
+          order,
+          dealStatus: this.getDeal(dealId)?.deal.status,
+          ownCancel: this.isOwnCancel(clientOrderId),
+          alreadyProcessed: !!this.processedFilled
+            .get(dealId)
+            ?.has(clientOrderId),
+        })
+      ) {
+        return
+      }
+      this.processedFilled.set(
+        dealId,
+        (this.processedFilled.get(dealId) ?? new Set<string>()).add(
+          clientOrderId,
+        ),
+      )
+      this.handleLog(
+        `${order.addFundsId ? 'Add funds' : 'Regular'} order ${clientOrderId} of deal ${dealId} was ${order.status} with ${order.executedQty} of ${order.origQty} filled. Booking the filled part`,
+      )
+      this.ordersInBetweenUpdates.add(clientOrderId)
+      await this.updateDeal(this.botId, order)
     }
 
     /**

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.14] - 2026-11-01
+
+### Fixed
+
+- A DCA safety order or add-funds order that the exchange cancels after part of it filled now adds what it bought to the deal. Before, only take-profit and base-order cancels were booked, so those coins were left out of the deal's size, average price and take profit, and an add-funds request stayed pending. The executed part is now booked once, like a fill of that order, and the deal's average counts it. Cancels the bot asked for itself, cancels with nothing or everything filled, and deals that are no longer open are handled as before.
+
 ## [1.123.13] - 2026-11-01
 
 ### Fixed
