@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.15] - 2026-11-01
+
+### Fixed
+
+- A LIMIT base order that part-fills just before the bot re-prices it now opens the deal on what filled. When the exchange's own "cancelled, part filled" report arrived while the bot's cancel was still in flight, and the cancel answer itself showed no fill (or the cancel failed), the bot placed the whole entry again on top of the coins it already held, and the deal left the first fill out of its size, average price and take profit. The report is now kept for the cancel to settle on. Entries that filled nothing are still cancelled and re-placed at the new price.
+
 ## [1.123.14] - 2026-11-01
 
 ### Fixed

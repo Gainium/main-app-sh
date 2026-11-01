@@ -1021,6 +1021,12 @@ function createDCABotHelper<
      * even while the deal still holds entry timers. Spec 125 §4.2.
      */
     unsettledBaseEntries: Set<string> = new Set()
+    /**
+     * Base rows the reposition arm of `checkBaseOrder` is cancelling right
+     * now, with the venue's own end-of-order report for each when the user
+     * stream delivered one that states a fill meanwhile. Spec 217 §4.1.
+     */
+    repositionCancelReports: Map<string, Order | undefined> = new Map()
     /** Trailing guard mode as last read from Redis, and when. */
     trailingGuardModeRead: { mode: TrailingGuardMode; at: number } | null = null
     /** When each deal's trailing lag was last reported, to rate-limit it. */
@@ -10007,25 +10013,47 @@ function createDCABotHelper<
               price: find.price,
               updateTime: find.updateTime,
             }
-            const cancelBase = await this.cancelOrderOnExchange(find)
-            // A cancel that raced a fill ends the way a settle does, so the
-            // deal opens on what traded and the rest is put back on the book —
-            // and a venue that still lists the order live (OKX reads it back
-            // before its asynchronous cancel lands) is waited out instead of
-            // re-placed on top of. Spec 133 §4.1–§4.3.
-            if (cancelBase && find.dealId) {
-              const outcome = await this.bookCanceledBaseEntry(
-                find,
-                cancelBase,
-                observed,
-                find.dealId,
-                true,
-              )
-              if (outcome.booked) {
-                return
+            // The venue's own end-of-order report can reach the stream while
+            // this cancel is in flight, and the cancel puts `find` back over
+            // it in the order map. Record it on the way. Spec 217 §4.1.
+            this.repositionCancelReports ??= new Map()
+            this.repositionCancelReports.set(find.clientOrderId, undefined)
+            let reported: Order | undefined
+            try {
+              const cancelBase = await this.cancelOrderOnExchange(find)
+              // A cancel that raced a fill ends the way a settle does, so the
+              // deal opens on what traded and the rest is put back on the
+              // book — and a venue that still lists the order live (OKX reads
+              // it back before its asynchronous cancel lands) is waited out
+              // instead of re-placed on top of. Spec 133 §4.1–§4.3.
+              if (cancelBase && find.dealId) {
+                const outcome = await this.bookCanceledBaseEntry(
+                  find,
+                  cancelBase,
+                  observed,
+                  find.dealId,
+                  true,
+                )
+                if (outcome.booked) {
+                  return
+                }
+              } else if (cancelBase?.status === 'FILLED') {
+                return this.handleUnknownOrder(cancelBase)
               }
-            } else if (cancelBase?.status === 'FILLED') {
-              return this.handleUnknownOrder(cancelBase)
+            } finally {
+              reported = this.repositionCancelReports.get(find.clientOrderId)
+              this.repositionCancelReports.delete(find.clientOrderId)
+            }
+            // The answer booked nothing — it stated no fill, still listed the
+            // order live, or the cancel failed — but the venue reported the
+            // order ended with a fill. Open the deal on that, never buy the
+            // entry again on top of it. Spec 217 §4.2/§4.4.
+            if (
+              reported &&
+              find.dealId &&
+              this.getDeal(find.dealId)?.deal.status === DCADealStatusEnum.start
+            ) {
+              return await this.settlePartialBaseEntry(reported, find.dealId)
             }
             if (deal?.deal.status === DCADealStatusEnum.start) {
               this.placeBaseOrder(
@@ -23965,6 +23993,7 @@ function createDCABotHelper<
       // executed is a position no deal is tracking and nothing will ever close.
       // Spec 048 §1.2.
       if (order.typeOrder === TypeOrderEnum.dealStart) {
+        this.noteRepositionCancelReport(order)
         if (
           order.dealId &&
           shouldSettlePartialBaseEntry({
@@ -24179,6 +24208,30 @@ function createDCABotHelper<
         dealId,
         this.findDiff(findDeal.currentOrders, findDeal.previousOrders),
       )
+    }
+
+    /**
+     * Record the venue's end-of-order report of a base entry the reposition
+     * arm of `checkBaseOrder` is cancelling right now, when it states a fill,
+     * for that arm to settle on. Shared by the DCA and Combo cancel callbacks.
+     * Spec 217 §4.1.
+     */
+    noteRepositionCancelReport(order: Order) {
+      if (
+        this.repositionCancelReports?.has(order.clientOrderId) &&
+        terminalEntryHoldsAFill(
+          order.status,
+          order.executedQty,
+          order.updateTime,
+        ) &&
+        +order.executedQty >
+          +(
+            this.repositionCancelReports.get(order.clientOrderId)
+              ?.executedQty ?? 0
+          )
+      ) {
+        this.repositionCancelReports.set(order.clientOrderId, { ...order })
+      }
     }
 
     /**

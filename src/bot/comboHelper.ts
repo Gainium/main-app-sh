@@ -2924,6 +2924,7 @@ function createComboBotHelper<
         // callback is the only report of a venue cancel. One that ended part
         // filled is a position the account holds: open the deal on it, exactly
         // as the DCA callback does. Spec 101 §4.1.
+        this.noteRepositionCancelReport(order)
         if (
           order.dealId &&
           shouldSettlePartialBaseEntry({
