@@ -1169,21 +1169,35 @@ function createComboBotHelper<
         )
         deal.closeBySl = true
         this.saveDeal(deal)
-        this.closeDealById(
-          this.botId,
-          deal.deal._id,
-          CloseDCATypeEnum.closeByMarket,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          DCACloseTriggerEnum.base,
-        )
+        this.closeDealAfterBaseMinigrid(deal.deal._id)
       }
       this.endMethod(_id)
+    }
+    /**
+     * Spec 219 §3.2. A completed base minigrid closes the deal like its take
+     * profit does: with the deal close type the user chose (`comboTpLimit`),
+     * as a close by timer does (spec 204 §1.4), and labelled `base`. It used
+     * to be sent at market whatever the bot was set to.
+     */
+    private async closeDealAfterBaseMinigrid(dealId: string) {
+      const deal = this.getDeal(dealId)
+      const settings = deal
+        ? await this.getAggregatedSettings(deal.deal)
+        : this.data?.settings
+      const { closeType, forceMarket } = this.dealCloseOrder(settings ?? {})
+      return this.closeDealById(
+        this.botId,
+        dealId,
+        closeType,
+        undefined,
+        forceMarket,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        DCACloseTriggerEnum.base,
+      )
     }
     override async loadOrders(): Promise<void> {
       const _id = this.startMethod('loadOrders')
@@ -3510,19 +3524,7 @@ function createComboBotHelper<
               deal.closeBySl = true
               this.handleLog(`Close deal ${dealId} after base minigrid close`)
               this.endMethod(_id)
-              return this.closeDealById(
-                this.botId,
-                dealId,
-                CloseDCATypeEnum.closeByMarket,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                DCACloseTriggerEnum.base,
-              )
+              return this.closeDealAfterBaseMinigrid(dealId)
             }
             this.endMethod(_id)
             return this.handleDebug(`Deal ${dealId} already closing`)
@@ -8173,6 +8175,10 @@ function createComboBotHelper<
     }
     /** Spec 204 §1.4: a timer close uses the deal close type, as the TP does. */
     protected override timerCloseOrder(settings: { comboTpLimit?: boolean }) {
+      return this.dealCloseOrder(settings)
+    }
+    /** The combo deal close type (`comboTpLimit`) as a close order. */
+    private dealCloseOrder(settings: { comboTpLimit?: boolean }) {
       return settings.comboTpLimit
         ? { closeType: CloseDCATypeEnum.closeByLimit, forceMarket: false }
         : { closeType: CloseDCATypeEnum.closeByMarket, forceMarket: true }

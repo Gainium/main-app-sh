@@ -22,6 +22,8 @@ import { createRequire } from 'module'
 import { MathHelper } from '../../utils/math'
 import {
   AddFundsTypeEnum,
+  CloseDCATypeEnum,
+  DCACloseTriggerEnum,
   BotType,
   ComboMinigridStatusEnum,
   ExchangeEnum,
@@ -1737,6 +1739,37 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 �
     }
     const r = await restartLoading(bot, db, snapshot)
     expect(r.closes).to.have.length(1)
+  })
+
+  it('spec 219 §3.2 a closed base minigrid closes its deal with the deal close type: limit when the bot is set to limit, market otherwise, labelled base', async () => {
+    for (const comboTpLimit of [true, false]) {
+      const { bot, db, snapshot } = await restingBook()
+      db.minigrids.get('mg-bo').status = 'closed'
+      for (const o of bot.orders.values()) {
+        if (o.minigridId === 'mg-bo' && o.status === 'NEW') o.status = 'CANCELED'
+      }
+      const { r, rows } = await restartOn(bot, db, snapshot)
+      const own = r.getAggregatedSettings.bind(r)
+      r.getAggregatedSettings = async (...a: any[]) => ({
+        ...(await own(...a)),
+        comboTpLimit,
+      })
+      r.recoverClosedBaseMinigrids = (...a: any[]) =>
+        Combo.prototype.recoverClosedBaseMinigrids.apply(r, a)
+      await r.loadOrders()
+      rows.length = 0
+      await new Promise((res) => setTimeout(res, 0))
+      expect(r.closes).to.have.length(1)
+      const [, dealId, closeType, , forceMarket] = r.closes[0]
+      expect(dealId).to.equal(DEAL_ID)
+      expect(closeType, `comboTpLimit ${comboTpLimit}`).to.equal(
+        comboTpLimit
+          ? CloseDCATypeEnum.closeByLimit
+          : CloseDCATypeEnum.closeByMarket,
+      )
+      expect(forceMarket).to.equal(!comboTpLimit)
+      expect(r.closes[0][10]).to.equal(DCACloseTriggerEnum.base)
+    }
   })
 
   it("§2.3.9 decided on orders, not counters: a copy carrying the source's trade counters but no order of its own is closed; one with its own filled grid order is kept", async () => {

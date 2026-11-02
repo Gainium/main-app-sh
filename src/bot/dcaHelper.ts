@@ -304,6 +304,7 @@ import {
   carryForwardBenchmark,
 } from './dca/buyAndHoldBenchmark'
 import {
+  closeTriggerForFilledClose,
   dealCloseEventDescription,
   dealLeftOpenSize,
   leftOpenPositionMessage,
@@ -4105,13 +4106,10 @@ function createDCABotHelper<
               (this.combo ? findDeal.deal.profit.totalUsd : 0) + totalUsd,
           }
           findDeal.deal.feeBalance = 0
-          findDeal.deal.closeTrigger =
-            findDeal.deal.closeTrigger &&
-            findDeal.deal.closeTrigger !== DCACloseTriggerEnum.base
-              ? findDeal.deal.closeTrigger
-              : tpOrder.sl
-                ? DCACloseTriggerEnum.sl
-                : DCACloseTriggerEnum.tp
+          findDeal.deal.closeTrigger = closeTriggerForFilledClose(
+            findDeal.deal.closeTrigger,
+            !!tpOrder.sl,
+          )
           const usdUpdate = this.combo
             ? findDeal.deal.profit.totalUsd
             : totalUsd

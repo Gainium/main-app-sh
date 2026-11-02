@@ -22,10 +22,11 @@ import {
   dealCloseEventDescription,
   dealLeftOpenSize,
   leftOpenPositionMessage,
+  closeTriggerForFilledClose,
   type DealOutcome,
 } from './dealOutcome'
 import { errorDict, getErrorSubType, positionLeftOpen } from '../utils'
-import { DCADealStatusEnum } from '../../../types'
+import { DCACloseTriggerEnum, DCADealStatusEnum } from '../../../types'
 
 // The abandoned deal, as recorded: 125 short, nothing realized.
 const abandoned: DealOutcome = {
@@ -115,5 +116,29 @@ describe('dealOutcome', () => {
     it('the leave message classifies as Position left open', () => {
       expect(getErrorSubType(leaveText)).to.equal(positionLeftOpen)
     })
+  })
+})
+
+describe('closeTriggerForFilledClose (spec 219)', () => {
+  it('§3.1 a deal closing because its base minigrid completed keeps `base` when the closing order fills', () => {
+    expect(closeTriggerForFilledClose(DCACloseTriggerEnum.base, false)).to.equal(
+      DCACloseTriggerEnum.base,
+    )
+    expect(closeTriggerForFilledClose(DCACloseTriggerEnum.base, true)).to.equal(
+      DCACloseTriggerEnum.base,
+    )
+  })
+  it('a trigger already recorded on the deal is kept', () => {
+    expect(closeTriggerForFilledClose(DCACloseTriggerEnum.timer, false)).to.equal(
+      DCACloseTriggerEnum.timer,
+    )
+  })
+  it('an unlabelled deal closed by its own TP / SL order is labelled from that order', () => {
+    expect(closeTriggerForFilledClose(undefined, false)).to.equal(
+      DCACloseTriggerEnum.tp,
+    )
+    expect(closeTriggerForFilledClose(undefined, true)).to.equal(
+      DCACloseTriggerEnum.sl,
+    )
   })
 })

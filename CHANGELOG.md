@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.17] - 2026-11-02
+
+### Fixed
+
+- A combo deal closed because its base grid completed is now always labelled "Base Minigrid". It was relabelled "take profit" whenever a closing order had to be sent, whatever that order's result. That close now also uses the deal close type set on the bot (limit or market) instead of always closing at market.
+
 ## [1.123.16] - 2026-11-01
 
 ### Fixed

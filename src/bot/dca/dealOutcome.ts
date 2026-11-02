@@ -20,7 +20,7 @@
  * defect was a sentence, and a sentence is exactly the kind of thing that gets
  * "tidied" back into being wrong.
  */
-import { DCADealStatusEnum } from '../../../types'
+import { DCACloseTriggerEnum, DCADealStatusEnum } from '../../../types'
 
 export type DealOutcome = {
   _id: string
@@ -197,3 +197,19 @@ export const unbookedEntryQty = (
     .reduce((sum, o) => sum + dealLeftOpenSize(+(o.executedQty ?? 0)), 0)
   return +total.toFixed(10)
 }
+
+/**
+ * The `closeTrigger` a deal ends with when its closing order fills (spec 219).
+ *
+ * A trigger the close already recorded — `base` for a combo deal whose base
+ * minigrid completed, `timer`, `webhook`, … — is what the user is told; only a
+ * deal closed by its own take-profit or stop-loss order, with nothing recorded,
+ * is labelled from that order. `base` used to be overwritten with `tp` (or
+ * `sl`) here, so the same close read "Base Minigrid" when nothing was left to
+ * sell and "take profit" when a closing order was needed, whatever its result.
+ */
+export const closeTriggerForFilledClose = (
+  recorded: DCACloseTriggerEnum | undefined,
+  slOrder: boolean,
+): DCACloseTriggerEnum =>
+  recorded || (slOrder ? DCACloseTriggerEnum.sl : DCACloseTriggerEnum.tp)
