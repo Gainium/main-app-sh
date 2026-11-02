@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.18] - 2026-11-02
+
+### Fixed
+
+- When the bot cancels an order that part-filled, the filled part is kept even if the exchange's answer to the cancel reports no fill. The exchange's own "cancelled, part filled" report could reach the bot while the cancel was in flight, and the later answer then erased that fill from the bot's working copy of the order. A combo deal closing at that moment bought back (or sold) less than it held, leaving the difference open on the account.
+
 ## [1.123.17] - 2026-11-02
 
 ### Fixed

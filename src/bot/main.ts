@@ -11124,6 +11124,19 @@ class MainBot<T extends IMainBot> {
       }
       if (request.status === StatusEnum.ok) {
         if (this.orders) {
+          // Spec `220`. Taken before the copy below overwrites `order`: the
+          // fills already known for this order. That is the row as it was
+          // before the cancel, or the user stream's end-of-order report.
+          // `processOrderQueue` puts that report into the map as a new
+          // object, so `order` cannot see it.
+          const known = [order, this.getOrderFromMap(order.clientOrderId)]
+            .filter((o): o is Order => !!o && +o.executedQty > 0)
+            .map((o) => ({
+              executedQty: o.executedQty,
+              cummulativeQuoteQty: o.cummulativeQuoteQty,
+              price: o.price,
+            }))
+            .sort((a, b) => +b.executedQty - +a.executedQty)[0]
           Object.keys(order).map((key) => {
             if (Object.prototype.hasOwnProperty.call(request.data, key)) {
               if (
@@ -11173,6 +11186,20 @@ class MainBot<T extends IMainBot> {
             }
             order.executedQty = await this.convertOrderExecutedQty(order)
           }
+          // Spec `220`. An order's executed quantity never decreases
+          // (spec `059` §1.1). A cancel answer can state less than the bot
+          // already knows: Hyperliquid's answer is a read-back of the venue's
+          // fill history, and that history can lag the stream. Without this,
+          // the answer's 0 replaced the stream's report in the map and the
+          // delete below dropped the row. A combo close then sized its
+          // buy-back without that fill. Applied after the promotion and the
+          // unit conversion, which are still decided from the answer, because
+          // `known` is already in the map's units.
+          if (known && +known.executedQty > +order.executedQty) {
+            order.executedQty = known.executedQty
+            order.cummulativeQuoteQty = known.cummulativeQuoteQty
+            order.price = known.price
+          }
           if (order.updateTime === -1) {
             order.updateTime = request.data.updateTime
           }
@@ -11181,7 +11208,11 @@ class MainBot<T extends IMainBot> {
           }
           this.emit('bot update', order)
           this.setOrder(order)
-          if (removeFromLocal && +request.data.executedQty === 0) {
+          if (
+            removeFromLocal &&
+            +request.data.executedQty === 0 &&
+            !(+order.executedQty > 0)
+          ) {
             this.deleteOrder(order.clientOrderId)
           }
           this.updateOrderOnDb(order)
