@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.19] - 2026-11-03
+
+### Fixed
+
+- A safety order the exchange refused (for example for lack of balance) is now placed again under a new order id. It used to be re-sent under the refused id; the exchange accepted it, but the bot's record of that id stayed cancelled, so after the next bot reload the order was no longer tracked. The bot then placed a second order at the same price, and a deal restart or close never cancelled the first one.
+
 ## [1.123.18] - 2026-11-02
 
 ### Fixed

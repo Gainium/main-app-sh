@@ -415,6 +415,12 @@ const proberStaleMs = 3 * 60_000
  * CANCELED arrives within seconds; an hour only bounds the map. Spec 095 §4.1.
  */
 const ownCancelTtlMs = 60 * 60_000
+/**
+ * How many written-off client order ids a bot remembers (spec 221). A level
+ * keeps its id only until the ladder is rebuilt, so the oldest entries are
+ * the ones no level can still carry.
+ */
+const writtenOffIdsCap = 2048
 
 type AllowedMethods =
   | 'checkClosedDeals'
@@ -1206,6 +1212,14 @@ class MainBot<T extends IMainBot> {
    * Spec `095` §4.1.
    */
   protected ownCancels: Map<string, number> = new Map()
+  /**
+   * Client ids this bot wrote off as CANCELED after the venue refused them, so
+   * dropped from {@link MainBot#orders}. The id is spent all the same: re-sent,
+   * the venue accepts it, but its row stays CANCELED and the order is lost on
+   * the next reload. The placement loop reads this to give the level a fresh
+   * id. In memory only, capped by count. Spec `221`.
+   */
+  protected writtenOffClientOrderIds?: Set<string>
   /**
    * The coalescer for the burst of placements currently running, or null.
    * Installed by a burst loop around its own orders and removed in that loop's
@@ -2021,6 +2035,28 @@ class MainBot<T extends IMainBot> {
   isOwnCancel(clientOrderId: string | undefined) {
     const at = clientOrderId ? this.ownCancels?.get(clientOrderId) : undefined
     return at !== undefined && Date.now() - at <= ownCancelTtlMs
+  }
+
+  /** Record that the venue refused `clientOrderId` and it was written off. Spec 221. */
+  protected noteWrittenOffClientOrderId(clientOrderId: string | undefined) {
+    if (!clientOrderId) {
+      return
+    }
+    // `??=`: a bot built off the prototype has no field initialisers.
+    const ids = (this.writtenOffClientOrderIds ??= new Set())
+    ids.delete(clientOrderId)
+    ids.add(clientOrderId)
+    if (ids.size > writtenOffIdsCap) {
+      const oldest = ids.values().next().value
+      if (oldest !== undefined) {
+        ids.delete(oldest)
+      }
+    }
+  }
+
+  /** Did this bot write `clientOrderId` off after a venue refusal? Spec 221. */
+  isWrittenOffClientOrderId(clientOrderId: string | undefined) {
+    return !!clientOrderId && !!this.writtenOffClientOrderIds?.has(clientOrderId)
   }
 
   /**
@@ -10347,6 +10383,10 @@ class MainBot<T extends IMainBot> {
             // terminal status in the meantime, the order DID reach the venue and
             // the filter matches nothing, so the record survives.
             if (!servedLocally) {
+              // The venue saw this id and refused it; it must not be re-sent
+              // under the same id, which would land on this CANCELED row and
+              // leave the accepted order untracked. Spec 221.
+              this.noteWrittenOffClientOrderId(order.clientOrderId)
               this.updateOrderOnDb({ ...order, status: 'CANCELED' })
             } else {
               await this.deleteOrderFromDb(order.clientOrderId)

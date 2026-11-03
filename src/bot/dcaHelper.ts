@@ -18850,10 +18850,15 @@ function createDCABotHelper<
         return
       }
       const reissued = (this.reissuedClientOrderIds ??= new Map())
+      // An id the venue refused is written off and dropped from the map, but
+      // it is as spent as a CANCELED one it still holds. Spec 221.
+      const statusOf = (id: string) =>
+        this.getOrderFromMap(id)?.status ??
+        (this.isWrittenOffClientOrderId?.(id) ? 'CANCELED' : undefined)
       const resolution = resolveLevelClientOrderId(
         order.newClientOrderId,
         reissued,
-        (id) => this.getOrderFromMap(id)?.status,
+        statusOf,
       )
       if (resolution.action === 'adopt') {
         this.handleLog(
@@ -18866,7 +18871,7 @@ function createDCABotHelper<
         const fresh = this.getOrderId(this.combo ? 'CMB-RO' : 'D-RO')
         this.handleLog(
           `Order ${resolution.spent} is ${
-            this.getOrderFromMap(resolution.spent)?.status ?? 'gone'
+            statusOf(resolution.spent) ?? 'gone'
           }, re-place its level as ${fresh}`,
         )
         reissued.set(order.newClientOrderId, fresh)
