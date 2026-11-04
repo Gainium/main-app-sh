@@ -294,6 +294,12 @@ import {
 } from './dca/pendingReduceQty'
 import { backedFeeDust } from './dca/comboFeeDust'
 import {
+  carriedBase,
+  setCarriedBase,
+  carryAfterSkippedClose,
+  carryAfterFilledClose,
+} from './dca/comboShortCloseCarry'
+import {
   tpPriceDisplacement,
   worstFee,
   ordersFeeIsThirdAssetOnly,
@@ -1050,6 +1056,19 @@ function createDCABotHelper<
     private afterIndicatorsConnected: (() => void | Promise<void>)[] = []
     ordersInBetweenUpdates: Set<string> = new Set()
     private pendingClose: Set<string> = new Set()
+    /**
+     * Spec `222`. Deal id -> its own buy-back shortfall, written when
+     * `getTPOrder` skipped a combo SHORT close (sized by `prepareTpOrder`)
+     * below the venue minimum. `closeDealById` reads it to add that base to
+     * the bot's `shortCloseCarry`.
+     */
+    private shortCloseBelowMinimum: Map<string, number> = new Map()
+    /**
+     * Spec `222` §1.3. Deal id -> carried base added to the close order
+     * `getTPOrder` last sized for it on the close path. `closeDeal` repays the
+     * carry by this amount when that order fills.
+     */
+    private shortCloseCarryInOrder: Map<string, number> = new Map()
     /**
      * Prepare DB instaces
      *
@@ -3938,6 +3957,7 @@ function createDCABotHelper<
               qty * price * (tpOrder.side === OrderSideEnum.sell ? 1 : -1),
           }
           findDeal.deal.updateTime = tpOrder.updateTime
+          this.settleShortCloseCarry(findDeal, tpOrder)
           const commDeal = await this.getCommDeal(findDeal.deal)
           let feeBaseFull = 0
           let feeQuoteFull = 0
@@ -7328,6 +7348,76 @@ function createDCABotHelper<
       return isPositionAlreadyClosedReason(text)
     }
 
+    /** Spec `222`: persist the bot's per-symbol `shortCloseCarry`. */
+    private writeShortCloseCarry(symbol: string, base: number) {
+      if (!this.data) {
+        return
+      }
+      const shortCloseCarry = setCarriedBase(
+        this.data.shortCloseCarry,
+        symbol,
+        base,
+      )
+      this.data.shortCloseCarry = shortCloseCarry
+      this.updateData({ shortCloseCarry })
+    }
+
+    /**
+     * Spec `222` §1.1. The close `closeDealById` is about to book without an
+     * order was skipped below the venue minimum: carry the base it did not buy
+     * back to this bot's next close on the same symbol. Any other reason for
+     * closing without an order leaves the carry alone.
+     */
+    protected carrySkippedShortClose(findDeal: FullDeal<ExcludeDoc<Deal>>) {
+      const dealId = `${findDeal.deal._id}`
+      const owed = this.shortCloseBelowMinimum.get(dealId)
+      this.shortCloseBelowMinimum.delete(dealId)
+      if (owed === undefined || !this.data) {
+        return
+      }
+      const symbol = findDeal.deal.symbol.symbol
+      const carried = carriedBase(this.data.shortCloseCarry, symbol)
+      const next = carryAfterSkippedClose(carried, owed)
+      if (next === carried) {
+        return
+      }
+      this.handleLog(
+        `Close of deal ${dealId} is below the exchange minimum, base ${owed} not bought back. Carried to the next close: ${next} ${findDeal.deal.symbol.baseAsset} (was ${carried})`,
+      )
+      this.writeShortCloseCarry(symbol, next)
+    }
+
+    /**
+     * Spec `222` §1.3. A combo SHORT close order filled: the carried base that
+     * was sized into it repays the carry, in proportion to how much of it
+     * executed.
+     */
+    protected settleShortCloseCarry(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      order: Order,
+    ) {
+      const dealId = `${findDeal.deal._id}`
+      const inOrder = this.shortCloseCarryInOrder.get(dealId)
+      this.shortCloseCarryInOrder.delete(dealId)
+      if (!inOrder || !this.data) {
+        return
+      }
+      const symbol = findDeal.deal.symbol.symbol
+      const carried = carriedBase(this.data.shortCloseCarry, symbol)
+      const next = carryAfterFilledClose(
+        carried,
+        inOrder,
+        +order.executedQty / +order.origQty,
+      )
+      if (next === carried) {
+        return
+      }
+      this.handleLog(
+        `Close of deal ${dealId} bought back ${carried - next} carried ${findDeal.deal.symbol.baseAsset}. Still carried: ${next}`,
+      )
+      this.writeShortCloseCarry(symbol, next)
+    }
+
     async prepareTpOrder(
       findDeal: FullDeal<ExcludeDoc<Deal>>,
       slSource = false,
@@ -7360,6 +7450,14 @@ function createDCABotHelper<
           slSource,
           priceRequest,
           forceFullFeeSizing,
+          // Spec `222`. `getTPOrder` applies it only to combo SHORT spot
+          // closes with profit in quote.
+          this.combo
+            ? carriedBase(
+                this.data?.shortCloseCarry,
+                findDeal.deal.symbol.symbol,
+              )
+            : undefined,
         )
       )?.sort((a, b) =>
         this.isLong ? b.price - a.price : a.price - b.price,
@@ -7786,6 +7884,8 @@ function createDCABotHelper<
           ) {
             await sleep(500)
           }
+          this.shortCloseBelowMinimum.delete(dealId)
+          this.shortCloseCarryInOrder.delete(dealId)
           const tpOrder = await this.prepareTpOrder(findDeal, slSource, sl)
           if (tpOrder) {
             if (tpOrder.qty <= 0) {
@@ -8241,6 +8341,7 @@ function createDCABotHelper<
               await closeBuy()
             }
             this.handleDebug(`No tp order. Close without order`)
+            this.carrySkippedShortClose(findDeal)
             return this.closeDeal(this.botId, dealId)
           }
         } else {
@@ -19853,6 +19954,10 @@ function createDCABotHelper<
       // without first writing 'confirmed' (that only happens if this resend
       // succeeds).
       forceFullFeeSizing = false,
+      // Spec `222`. Base this bot still owes from earlier combo SHORT closes
+      // skipped below the venue minimum. Only `prepareTpOrder` (the close
+      // path) passes it; `undefined` everywhere else leaves sizing unchanged.
+      shortCloseCarry?: number,
     ) {
       if (this.data) {
         const ed = await this.getExchangeInfo(_symbol)
@@ -20245,6 +20350,39 @@ function createDCABotHelper<
                 _deal?.symbol?.quoteAsset,
               )
           qty -= f
+          // Spec `222`: a combo SHORT spot close with profit in quote also buys
+          // back what earlier closes of this bot skipped below the minimum.
+          // Added before the minimum check, so small shortfalls that together
+          // clear it are bought by whichever close gets them over.
+          const carryShortfall =
+            shortCloseCarry !== undefined &&
+            !this.isLong &&
+            !this.futures &&
+            !(await this.profitBase(_deal))
+          const ownQty = qty
+          let carriedInOrder = 0
+          if (carryShortfall) {
+            // Only what this deal's quote can pay for. `prepareTpOrder` caps a
+            // SHORT spot buy-back at that quote anyway, and a cap that cut the
+            // order back under the minimum would send one the venue refuses.
+            // What does not fit stays carried (§1.3).
+            const fundable =
+              ((_deal?.currentBalances.quote ?? 0) * (1 - (fee.taker ?? 0))) /
+                tpPrice -
+              ownQty
+            carriedInOrder = Math.max(
+              0,
+              Math.min(shortCloseCarry, Number.isFinite(fundable) ? fundable : 0),
+            )
+            qty += carriedInOrder
+          }
+          const belowMinimum =
+            !this.futures &&
+            (qty < symbol.baseAsset.minAmount ||
+              qty * tpPrice < symbol.quoteAsset.minAmount)
+          if (belowMinimum && carryShortfall && dealId) {
+            this.shortCloseBelowMinimum.set(dealId, ownQty)
+          }
           if (qty < symbol.baseAsset.minAmount && !this.futures) {
             this.handleDebug(
               `Order amount less than base min amount. ${qty} qty, ${symbol.baseAsset.minAmount} base min`,
@@ -20258,6 +20396,9 @@ function createDCABotHelper<
               } quote min`,
             )
             return []
+          }
+          if (carryShortfall && dealId) {
+            this.shortCloseCarryInOrder.set(dealId, carriedInOrder)
           }
         }
         // Spec `023` (#714). Nothing below can notice a non-finite size: every

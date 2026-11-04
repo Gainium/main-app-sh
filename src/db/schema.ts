@@ -2097,6 +2097,8 @@ const comboBotSchema: Schema<ComboBotSchema> = new Schema({
     },
   ],
   feeBalance: Number,
+  // Spec 222: base owed by combo SHORT closes skipped below the venue minimum.
+  shortCloseCarry: [{ _id: false, symbol: String, base: Number }],
   stats: botStats,
   symbolStats: [botSymbolsStats],
   resetStatsAfter: Number,

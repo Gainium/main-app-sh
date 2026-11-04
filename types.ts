@@ -3097,6 +3097,11 @@ export interface DCABotSchema<
   hodlIgnoreAt?: boolean
   indicatorsData?: IndicatorsData[]
   feeBalance?: number
+  /**
+   * Combo SHORT spot only (spec 222): base, per symbol, that earlier closes
+   * skipped below the venue minimum and the next close buys back.
+   */
+  shortCloseCarry?: { symbol: string; base: number }[]
   stats?: BotStats
   symbolStats?: BotSymbolsStats[]
   ignoreStats?: boolean

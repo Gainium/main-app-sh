@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.20] - 2026-11-04
+
+### Fixed
+
+- A combo SHORT deal on spot, with profit in quote, whose closing buy-back is below the exchange's minimum order still closes without an order, but the base it did not buy back is now remembered and added to the bot's next close on the same pair. It used to be forgotten, so the bot's base shrank a little with every such close. Only the bot's last deal can now be left short, by less than one minimum order. The carried amount is limited to what the next deal's own quote balance can pay for; the rest keeps carrying.
+
 ## [1.123.19] - 2026-11-03
 
 ### Fixed
