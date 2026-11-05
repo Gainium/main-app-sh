@@ -20636,7 +20636,7 @@ function createDCABotHelper<
           // copy would overstate what is left the moment the two differ, and
           // overstating is the direction that oversells.
           const heldDeal = findDeal?.deal ?? deal
-          const heldQty = this.math.round(
+          const heldFromSize = this.math.round(
             trackedPosition({
               size: dealSize,
               tpHistory: heldDeal?.tpHistory ?? [],
@@ -20647,6 +20647,28 @@ function createDCABotHelper<
             precision,
             true,
           )
+          // Spec `224`. The base-fill handler sizes this close BEFORE
+          // `updateUsage` writes `deal.size`, so on a fresh fill the size still
+          // reads 0 while the entry rows this method sizes from already hold
+          // the fill. Read as 0, the holding took the settle exit below as a
+          // "transition", and on a base-order fill no later build ever comes
+          // to repair it: the deal stayed open with no take-profit. Fall back
+          // to the EXECUTED entry rows (never `origQty` or the nominal
+          // stopgap), net of closes, reduce-funds and the base fee the rows
+          // report — what the size reads once it catches up. One-way: only a
+          // size-derived holding of zero or less is replaced, so a real
+          // transition (nothing executed, or the close already filled) still
+          // reads 0.
+          const heldFromRows = this.math.round(
+            (parseFloat(`${bo?.executedQty ?? 0}`) || 0) +
+              filledQty +
+              add -
+              entryBaseFee,
+            precision,
+            true,
+          )
+          const heldQty =
+            heldFromSize <= 0 && heldFromRows > 0 ? heldFromRows : heldFromSize
           const qtyForFloor = this.math.round(
             symbol.quoteAsset.minAmount / tpOrder.price,
             precision,

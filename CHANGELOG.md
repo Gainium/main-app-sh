@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.22] - 2026-11-05
+
+### Fixed
+
+- A DCA deal whose base order filled close to the exchange's minimum order size, with the fee taken in the coin bought, could be left open with no take-profit and no message. The take-profit was sized before the deal's position had been updated from the fill, so the position read as empty and the close was skipped as a passing state. It is now sized from the filled entry, and placed exactly as it would be a moment later.
+
 ## [1.123.21] - 2026-11-05
 
 ### Fixed
