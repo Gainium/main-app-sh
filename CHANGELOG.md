@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.123.21] - 2026-11-05
+
+### Fixed
+
+- On Kraken spot, Coinbase and KuCoin futures, an order whose placement answer arrived after the order had already filled and closed its deal was reported to the user as "Order not found", even though the exchange, when asked again, confirmed it filled. The confirmation was looked up under the exchange's order id instead of the bot's own id and was lost. It is now found, and no warning is raised.
+
 ## [1.123.20] - 2026-11-04
 
 ### Fixed

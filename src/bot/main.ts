@@ -6642,7 +6642,12 @@ class MainBot<T extends IMainBot> {
         this.canceledMap.delete(origId)
         let find = this.getOrderFromMap(origId)
         if (!find) {
-          find = (await this.ordersDb.readData({ clientOrderId: id })).data
+          // By the CLIENT order id: on a by-id venue `id` now holds the
+          // exchange order id, which no row is keyed by. Asking with it lost
+          // the venue's answer for any order the map had already dropped — a
+          // take-profit that filled on the stream and closed its deal while
+          // the placement read-back was still missing it. Spec 223.
+          find = (await this.ordersDb.readData({ clientOrderId: origId })).data
             ?.result
         }
         if (find) {
