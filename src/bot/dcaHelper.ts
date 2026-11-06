@@ -1076,6 +1076,22 @@ function createDCABotHelper<
     ordersInBetweenUpdates: Set<string> = new Set()
     private pendingClose: Set<string> = new Set()
     /**
+     * Spec `225`. Client order id -> what `sellRemainder` needs to book a
+     * remainder sweep that a limit-only book made us re-place as LIMIT, once
+     * it fills. In memory only: a restart before the fill still sells the
+     * coins, it just leaves that fill unbooked on the closed deal.
+     */
+    private limitRemainderSweeps: Map<
+      string,
+      {
+        dealId: string
+        qty: number
+        price: number
+        sellNotByOrder: boolean
+        updateBalances: boolean
+      }
+    > = new Map()
+    /**
      * Spec `222`. Deal id -> its own buy-back shortfall, written when
      * `getTPOrder` skipped a combo SHORT close (sized by `prepareTpOrder`)
      * below the venue minimum. `closeDealById` reads it to add that base to
@@ -8957,6 +8973,77 @@ function createDCABotHelper<
       }
       this.endMethod(_id)
     }
+    /**
+     * Spec `225`. Re-place a remainder sweep the venue refused because the book
+     * is limit-only, as a reduce-only LIMIT at the latest price under a new
+     * client id (spec `221`: a refused id is never re-sent). Returns the order
+     * only when it already FILLED, for `sellRemainder` to book now; otherwise
+     * the fill is booked by `processFilledOrder` when it arrives. A refusal of
+     * this LIMIT is reported by the send itself.
+     */
+    private async sweepRemainderByLimit(
+      marketGrid: Grid,
+      marketAdditional: OrderAdditionalParams,
+      ed: ClearPairsSchema,
+      booking: {
+        dealId: string
+        qty: number
+        price: number
+        sellNotByOrder: boolean
+        updateBalances: boolean
+      },
+    ): Promise<Order | void> {
+      this.handleLog(
+        `${marketGrid.newClientOrderId} refused, ${ed.pair} book is in limit only mode. Selling the remaining ${marketGrid.qty} of closed deal ${booking.dealId} by limit`,
+      )
+      const grid: Grid = {
+        ...marketGrid,
+        newClientOrderId: this.getOrderId(`D-SR`),
+      }
+      const additional: OrderAdditionalParams = {
+        ...marketAdditional,
+        type: OrderTypeEnum.limit,
+      }
+      this.limitRemainderSweeps.set(grid.newClientOrderId, booking)
+      const result = await this.sendGridToExchange(grid, additional, ed)
+      // Whoever takes the entry out of the map books the fill, so a fill the
+      // stream already handed to `processFilledOrder` is not booked twice.
+      const unbooked = this.limitRemainderSweeps.has(grid.newClientOrderId)
+      if (!result || result.status === 'FILLED') {
+        this.limitRemainderSweeps.delete(grid.newClientOrderId)
+      }
+      if (unbooked && result && result.status === 'FILLED') {
+        return result
+      }
+    }
+    /**
+     * Spec `225`. Book the fill of a remainder sweep `sweepRemainderByLimit`
+     * placed, through the same `sellRemainder` booking an accepted MARKET sweep
+     * gets. Returns whether `order` was one; whoever takes the entry out of
+     * the map books it, so it is booked once. Call it only for a fill not yet
+     * in `processedFilled`.
+     */
+    protected async bookLimitRemainderSweep(order: Order): Promise<boolean> {
+      const limitSweep = this.limitRemainderSweeps.get(order.clientOrderId)
+      if (!limitSweep) {
+        return false
+      }
+      this.limitRemainderSweeps.delete(order.clientOrderId)
+      await this.sellRemainder(
+        limitSweep.dealId,
+        limitSweep.qty,
+        limitSweep.price,
+        limitSweep.sellNotByOrder,
+        undefined,
+        limitSweep.updateBalances,
+        // The status gate was passed when the sweep was placed.
+        true,
+        // Bypasses only the deal-level "already sold" flag.
+        true,
+        { result: order },
+      )
+      return true
+    }
     /** Sell remainder for deal */
     @IdMute(mutex, (dealId: string) => `${dealId}sellRemainder`)
     async sellRemainder(
@@ -9129,7 +9216,40 @@ function createDCABotHelper<
                 : PositionSide.BOTH,
             }
             if (sweep !== 'send') {
-              result = await this.sendGridToExchange(grid, additional, ed)
+              // `returnError` so a limit-only refusal can be told apart; the
+              // report the send would have made is made here instead, same
+              // call as the `'send'` branch below.
+              result = await this.sendGridToExchange(grid, additional, ed, true)
+              if (typeof result === 'string') {
+                const order = this.convertGridToOrder(grid, additional, ed)
+                if (order) {
+                  await this.handleOrderErrors(
+                    result,
+                    order,
+                    'limitOrders()',
+                    `Send new order request ${order.clientOrderId}, qty ${order.origQty}, price ${order.price}, side ${order.side}`,
+                    false,
+                    false,
+                  )
+                }
+                // Spec `225`. The deal is already closed, so unlike `closeDeal`
+                // (spec `157`) there is no deal to keep open: sell the coins
+                // with a LIMIT instead, and book it when it fills.
+                if (isLimitOnlyReason(result)) {
+                  result = await this.sweepRemainderByLimit(
+                    grid,
+                    additional,
+                    ed,
+                    {
+                      dealId,
+                      qty: _qty,
+                      price: orderPrice,
+                      sellNotByOrder,
+                      updateBalances,
+                    },
+                  )
+                }
+              }
             } else {
               // `returnError` so the caller can read the reason. That also
               // skips the report the send makes for everyone else, so make it
@@ -23871,6 +23991,9 @@ function createDCABotHelper<
         }
         if (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId) {
           return this.updateDeal(this.botId, order)
+        }
+        if (await this.bookLimitRemainderSweep(order)) {
+          return
         }
         if (
           order.typeOrder === TypeOrderEnum.dealTP &&

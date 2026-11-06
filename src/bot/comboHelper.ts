@@ -4016,6 +4016,10 @@ function createComboBotHelper<
         : new Set<string>()
       if (dealId && !getSet.has(clientOrderId)) {
         this.processedFilled.set(dealId, getSet.add(clientOrderId))
+        // Spec `225`: a remainder sweep re-placed as LIMIT on a closed deal.
+        if (await this.bookLimitRemainderSweep(order)) {
+          return
+        }
         if (
           order.typeOrder === TypeOrderEnum.dealTP &&
           (order.clientOrderId.indexOf('D-SR') === -1 ||

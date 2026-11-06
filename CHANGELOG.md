@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.2] - 2026-11-06
+
+### Fixed
+
+- When an entry order of a DCA deal filled just after the deal had closed, and the exchange book only accepted limit orders, the market order that sells those coins back was refused and nothing else sold them. The coins are now sold with a limit order at the latest price, and its fill is booked to the closed deal. A market order is still tried first.
+
 ## [1.124.1] - 2026-11-06
 
 ### Fixed
