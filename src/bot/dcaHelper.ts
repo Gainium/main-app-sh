@@ -639,6 +639,38 @@ const POSITION_REPROBE_MARGIN_MS = 5 * 1000
 const POSITION_REPROBE_MAX_MISSES = 3
 
 /**
+ * Spec `226` §3.1. How long a close waits for its remainder sweep to finish on
+ * the venue before it opens the next deal anyway, and how often it looks.
+ */
+const REMAINDER_SWEEP_WAIT_MS = 5 * 1000
+const REMAINDER_SWEEP_POLL_MS = 100
+/** Spec `226`. A tracked sweep nobody reported on for this long is dropped. */
+const REMAINDER_SWEEP_MEMORY_MS = 60 * 60 * 1000
+
+/**
+ * Spec `226`. A take-profit remainder sweep sent by the close path, and how
+ * much of it the closed deal has booked so far (cumulative, as the venue
+ * reports it).
+ */
+type RemainderSweep = {
+  dealId: string
+  symbol: string
+  /** Quantity sent. */
+  origQty: number
+  /** Cumulative base already booked onto the deal. */
+  qty: number
+  /** Cumulative quote already booked onto the deal. */
+  quote: number
+  /** Last status reported for the order. */
+  status: string
+  /** This sweep is the one re-send §1.1.3 allows; it is not re-sent again. */
+  resent: boolean
+  /** The deal write of the booking that created this entry. */
+  ready: Promise<unknown>
+  at: number
+}
+
+/**
  * How often one deal may re-arm its own close after the venue refused it
  * (spec `074` §4.2).
  *
@@ -893,6 +925,13 @@ function createDCABotHelper<
       string,
       { misses: number; timer?: ReturnType<typeof setTimeout> }
     > = new Map()
+    /**
+     * Spec `226`. Close-path remainder sweeps still being reported on, by
+     * client order id. See `trackRemainderSweep`.
+     */
+    remainderSweeps: Map<string, RemainderSweep> = new Map()
+    /** Spec `226` §3.1. */
+    remainderSweepWaitMs = REMAINDER_SWEEP_WAIT_MS
     /** Close after TP filled */
     closeAfterTpFilled: boolean
     /** Spec `202`. `stop()` calls still running on this bot. */
@@ -5563,6 +5602,10 @@ function createDCABotHelper<
           this.handleDebug(`Not reopen after ${dealId}`)
         }
         if (reopen) {
+          // Spec `226` §1.1.1: the next deal's entry must not sit in the way of
+          // this deal's remainder sweep, or the venue cancels the sweep as a
+          // self trade and its coins stay in the account, tracked by no deal.
+          await this.settleRemainderSweeps(dealId)
           const settings = await this.getAggregatedSettings(deal.deal)
           const inRange = await this.checkInRange(deal.deal.symbol.symbol)
           if (inRange) {
@@ -9196,25 +9239,12 @@ function createDCABotHelper<
           if (sweep && sweep !== 'send') {
             result = sweep.result
           } else {
-            const grid: Grid = {
-              price: this.math.round(price, ed.priceAssetPrecision),
-              number: 0,
-              side: !long ? OrderSideEnum.buy : OrderSideEnum.sell,
-              qty: sellQty,
-              type: TypeOrderEnum.dealTP,
-              newClientOrderId: this.getOrderId(`D-SR`),
+            const { grid, additional } = this.remainderSweepOrder(
               dealId,
-            }
-            const additional: OrderAdditionalParams = {
-              dealId,
-              type: OrderTypeEnum.market,
-              reduceOnly: true,
-              positionSide: this.hedge
-                ? this.isLong
-                  ? PositionSide.LONG
-                  : PositionSide.SHORT
-                : PositionSide.BOTH,
-            }
+              sellQty,
+              price,
+              ed,
+            )
             if (sweep !== 'send') {
               // `returnError` so a limit-only refusal can be told apart; the
               // report the send would have made is made here instead, same
@@ -9401,8 +9431,9 @@ function createDCABotHelper<
                 }
               : dealData.assets.required
 
+            let written: Promise<unknown> = Promise.resolve()
             if (this.shouldProceed()) {
-              this.dealsDb
+              written = this.dealsDb
                 .updateData({ _id: dealId } as any, {
                   $set: {
                     commission: dealData.commission,
@@ -9422,6 +9453,21 @@ function createDCABotHelper<
                   }
                 })
             }
+            // Spec `226` §3.2: the close path's sweep of a spot LONG deal. What
+            // the venue reports for it after this answer is booked by
+            // `bookRemainderSweepReport`, on top of what was booked here.
+            if (
+              updateBalances &&
+              sellNotByOrder &&
+              long &&
+              !this.futures &&
+              // `comboHelper` handles its own filled and cancelled reports, so
+              // a combo sweep's later reports would never reach the booking.
+              !this.combo &&
+              !(await this.profitBase(dealData))
+            ) {
+              this.trackRemainderSweep(dealId, symbol, sellQty, result, written)
+            }
           }
           const getDeal = this.deals.get(`${dealId}`)
           if (getDeal && getDeal.deal.status === DCADealStatusEnum.open) {
@@ -9440,6 +9486,282 @@ function createDCABotHelper<
         }
       }
       this.endMethod(_id)
+    }
+
+    /** The market order `sellRemainder` sends for `qty` of a deal's remainder. */
+    protected remainderSweepOrder(
+      dealId: string,
+      qty: number,
+      price: number,
+      ed: ClearPairsSchema,
+    ): { grid: Grid; additional: OrderAdditionalParams } {
+      return {
+        grid: {
+          price: this.math.round(price, ed.priceAssetPrecision),
+          number: 0,
+          side: !this.isLong ? OrderSideEnum.buy : OrderSideEnum.sell,
+          qty,
+          type: TypeOrderEnum.dealTP,
+          newClientOrderId: this.getOrderId(`D-SR`),
+          dealId,
+        },
+        additional: {
+          dealId,
+          type: OrderTypeEnum.market,
+          reduceOnly: true,
+          positionSide: this.hedge
+            ? this.isLong
+              ? PositionSide.LONG
+              : PositionSide.SHORT
+            : PositionSide.BOTH,
+        },
+      }
+    }
+
+    /**
+     * Spec `226` §1.1.2. Remember a close-path remainder sweep, and what its
+     * booking has already counted, so that the reports the venue sends after
+     * the deal has closed are booked onto it. `ready` is that booking's deal
+     * write: the later `$inc`s must land after its `$set`.
+     */
+    protected trackRemainderSweep(
+      dealId: string,
+      symbol: string,
+      origQty: number,
+      answer: Order,
+      ready: Promise<unknown>,
+      resent = false,
+    ) {
+      const now = Date.now()
+      this.remainderSweeps ??= new Map()
+      for (const [id, s] of this.remainderSweeps) {
+        if (now - s.at > REMAINDER_SWEEP_MEMORY_MS) {
+          this.remainderSweeps.delete(id)
+        }
+      }
+      const qty = +answer.executedQty
+      const price = +answer.price
+      const booked = Number.isFinite(qty) && qty > 0 ? qty : 0
+      this.remainderSweeps.set(answer.clientOrderId, {
+        dealId,
+        symbol,
+        origQty,
+        qty: booked,
+        // The same quote `sellRemainder` booked for that quantity.
+        quote: booked && Number.isFinite(price) ? booked * price : 0,
+        status: answer.status,
+        resent,
+        ready,
+        at: now,
+      })
+    }
+
+    /**
+     * Spec `226` §1.1.2. Book a stream report of a tracked remainder sweep onto
+     * its closed deal: the part of the order's cumulative fill not booked yet,
+     * with the same arithmetic `sellRemainder` uses for the close-path sweep.
+     * Returns whether `order` was such a sweep; the caller then has nothing
+     * left to do with it, because the deal is closed.
+     */
+    protected async bookRemainderSweepReport(order: Order): Promise<boolean> {
+      const sweep = this.remainderSweeps?.get(order.clientOrderId)
+      if (!sweep) {
+        return false
+      }
+      await sweep.ready
+      const qty = +order.executedQty
+      const reportedQuote = +(order.cummulativeQuoteQty ?? NaN)
+      const quote =
+        Number.isFinite(reportedQuote) && reportedQuote > 0
+          ? reportedQuote
+          : qty * +order.price
+      if (
+        !Number.isFinite(qty) ||
+        !Number.isFinite(quote) ||
+        qty <= sweep.qty ||
+        quote <= sweep.quote
+      ) {
+        sweep.status = order.status
+        return true
+      }
+      const dq = qty - sweep.qty
+      const dQuote = quote - sweep.quote
+      // Counted before any await, so a second report of the same cumulative
+      // fill finds it booked.
+      sweep.qty = qty
+      sweep.quote = quote
+      const { dealId, symbol } = sweep
+      const read = await this.dealsDb.readData({ _id: dealId } as any, {
+        avgPrice: 1,
+        closeTime: 1,
+      })
+      const avgPrice = +(read.data?.result?.avgPrice ?? NaN)
+      if (
+        read.status === StatusEnum.notok ||
+        !Number.isFinite(avgPrice) ||
+        !(avgPrice > 0)
+      ) {
+        this.handleWarn(
+          `Sell remainder | ${order.clientOrderId} sold ${dq} more of deal ${dealId}, cannot book it: deal not readable`,
+        )
+        sweep.status = order.status
+        return true
+      }
+      const fee = dQuote * ((await this.getUserFee(symbol))?.taker ?? 0)
+      const total = dQuote - dq * avgPrice - fee
+      const totalUsd = total * (await this.getUsdRate(symbol))
+      this.handleLog(
+        `Sell remainder | ${order.clientOrderId} ${order.status}: booking ${dq} more sold for ${dQuote} onto closed deal ${dealId} (${qty} of ${sweep.origQty} sold)`,
+      )
+      if (this.shouldProceed()) {
+        const res = await this.dealsDb.updateData({ _id: dealId } as any, {
+          $inc: {
+            'currentBalances.base': -dq,
+            'currentBalances.quote': dQuote,
+            'profit.total': total,
+            'profit.totalUsd': totalUsd,
+            'profit.pureBase': -dq,
+            'profit.pureQuote': dQuote - fee,
+            commission: fee,
+          },
+          $set: { lastPrice: dQuote / dq, updateTime: order.updateTime },
+        })
+        if (res.status === StatusEnum.notok) {
+          this.handleWarn(`Error saving deal: ${dealId}. Reason: ${res.reason}`)
+        }
+      }
+      if (this.data) {
+        this.data.profit = {
+          ...this.data.profit,
+          total: this.data.profit.total + total,
+          totalUsd: this.data.profit.totalUsd + totalUsd,
+          freeTotal: 0,
+          freeTotalUsd: 0,
+          pureBase: (this.data.profit.pureBase ?? 0) - dq,
+          pureQuote: (this.data.profit.pureQuote ?? 0) + dQuote - fee,
+        }
+        this.saveProfitToDb(
+          totalUsd,
+          read.data?.result?.closeTime ?? +new Date(),
+        )
+        this.updateData({ profit: { ...this.data.profit } })
+        this.emit('bot settings update', { profit: this.data.profit })
+      }
+      sweep.status = order.status
+      return true
+    }
+
+    /**
+     * Spec `226` §1.1.1 / §1.1.3. Wait, at most `remainderSweepWaitMs`, until
+     * every remainder sweep of the closed deal `dealId` has ended on the venue,
+     * so the next deal's orders are not in its way. A sweep the venue ended
+     * with quantity unsold, without being asked to, is sent once more for that
+     * quantity, inside the same wait.
+     */
+    protected async settleRemainderSweeps(dealId: string) {
+      const ofDeal = () =>
+        [...(this.remainderSweeps ?? new Map<string, RemainderSweep>())].filter(
+          ([, s]) => s.dealId === dealId,
+        )
+      if (!ofDeal().length) {
+        return
+      }
+      const terminal = ['FILLED', 'CANCELED', 'EXPIRED']
+      // `??`: a bot built off the prototype has no field initialisers, and a
+      // NaN deadline would never pass.
+      const waitMs = this.remainderSweepWaitMs ?? REMAINDER_SWEEP_WAIT_MS
+      const deadline = Date.now() + waitMs
+      for (;;) {
+        const sweeps = ofDeal()
+        const live = sweeps.filter(([, s]) => !terminal.includes(s.status))
+        if (live.length) {
+          if (Date.now() >= deadline) {
+            this.handleLog(
+              `Sell remainder | ${live
+                .map(([id]) => id)
+                .join(', ')} of deal ${dealId} still working after ${waitMs}ms, opening the next deal`,
+            )
+            return
+          }
+          // A real timer, not the shared `sleep`: this loop must yield to the
+          // order reports it is waiting for, whatever replaces `sleep`.
+          await new Promise((r) => setTimeout(r, REMAINDER_SWEEP_POLL_MS))
+          continue
+        }
+        const unsold = sweeps.find(
+          ([id, s]) =>
+            s.status !== 'FILLED' &&
+            !s.resent &&
+            s.origQty - s.qty > 0 &&
+            !this.isOwnCancel(id),
+        )
+        for (const [id] of sweeps) {
+          this.remainderSweeps.delete(id)
+        }
+        if (!unsold || Date.now() >= deadline) {
+          return
+        }
+        if (!(await this.resendRemainderSweep(unsold[0], unsold[1]))) {
+          return
+        }
+      }
+    }
+
+    /** Spec `226` §1.1.3. The one re-send of a sweep the venue ended unsold. */
+    protected async resendRemainderSweep(
+      clientOrderId: string,
+      sweep: RemainderSweep,
+    ): Promise<boolean> {
+      const { dealId, symbol } = sweep
+      const ed = await this.getExchangeInfo(symbol)
+      if (!ed) {
+        return false
+      }
+      const price = await this.getLatestPrice(symbol)
+      const qty = this.math.round(
+        sweep.origQty - sweep.qty,
+        await this.baseAssetPrecision(symbol),
+        true,
+      )
+      if (
+        !(qty > 0) ||
+        qty < ed.baseAsset.minAmount ||
+        qty * price <
+          closeOrderQuoteMinimum(
+            this.data?.exchange,
+            this.hedge,
+            ed.quoteAsset.minAmount,
+          )
+      ) {
+        this.handleLog(
+          `Sell remainder | ${clientOrderId} of deal ${dealId} ended ${sweep.status} with ${qty} unsold, below the minimums, not sent again`,
+        )
+        return false
+      }
+      this.handleLog(
+        `Sell remainder | ${clientOrderId} of deal ${dealId} ended ${sweep.status} with ${qty} unsold, sending it once more`,
+      )
+      const { grid, additional } = this.remainderSweepOrder(
+        dealId,
+        qty,
+        price,
+        ed,
+      )
+      const answer = await this.sendGridToExchange(grid, additional, ed)
+      if (!answer) {
+        return false
+      }
+      // Tracked as unbooked, then its own answer is booked like any report.
+      this.trackRemainderSweep(
+        dealId,
+        symbol,
+        qty,
+        { ...answer, executedQty: '0', cummulativeQuoteQty: '0' },
+        Promise.resolve(),
+        true,
+      )
+      await this.bookRemainderSweepReport(answer)
+      return true
     }
 
     /**
@@ -23979,6 +24301,10 @@ function createDCABotHelper<
           )
         }
       }
+      // Spec `226` §1.1.2: a remainder sweep of a deal that already closed.
+      if (await this.bookRemainderSweepReport(order)) {
+        return
+      }
       const { dealId, clientOrderId } = order
       const getSet = dealId
         ? (this.processedFilled.get(dealId) ?? new Set<string>())
@@ -24101,6 +24427,10 @@ function createDCABotHelper<
      */
 
     async processPartiallyFilledOrder(order: Order): Promise<void> {
+      // Spec `226` §1.1.2: a remainder sweep of a deal that already closed.
+      if (await this.bookRemainderSweepReport(order)) {
+        return
+      }
       if (order.typeOrder === TypeOrderEnum.dealTP) {
         this.updatePartiallyFilledTP(order)
       }
@@ -24334,6 +24664,10 @@ function createDCABotHelper<
         return
       }
       if (order.typeOrder !== TypeOrderEnum.dealTP) {
+        return
+      }
+      // Spec `226` §1.1.2: a remainder sweep of a deal that already closed.
+      if (await this.bookRemainderSweepReport(order)) {
         return
       }
       if (

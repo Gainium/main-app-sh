@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.3] - 2026-11-06
+
+### Fixed
+
+- When a DCA deal closed on a take-profit that sold only part of the position, the bot opened the next deal while the market sale of the leftover coins was still running. The new deal's buy order could then sit in that sale's way, and the exchange cancelled the sale as a trade against the user's own order, leaving the coins unsold and tracked by no deal. The closed deal also missed what the sale did sell when the exchange reported the fills after the close. The bot now waits up to a few seconds for the sale to finish before opening the next deal. It books every fill of the sale onto the closed deal, and if the exchange cancels the sale with coins left, it sends that rest once more.
+
 ## [1.124.2] - 2026-11-06
 
 ### Fixed
