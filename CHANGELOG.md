@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.0] - 2026-11-06
+
+### Added
+
+- Missed-fill failsafe, available to self-hosted installs (`npm run failsafe`, enabled with `FF_ENABLED=true`). On a live exchange a bot only learns that a resting limit order filled from the exchange's user stream; if that event is lost, the bot keeps waiting on an order that is already gone — a grid stops shifting and a DCA deal stops averaging. The failsafe watches resting limit orders against the live trade feed and, when price has clearly crossed one that the bot still holds as open, tells the bot to re-check its orders with the exchange so the fill is booked. It also checks that every bot is still receiving its user stream and asks a deaf bot to resubscribe.
+
 ## [1.123.22] - 2026-11-05
 
 ### Fixed
