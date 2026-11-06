@@ -349,6 +349,9 @@ const DEFAULT_PER_SYMBOL_SUBTYPES = new Set<string>([
   // pair's exchange minimum, and the user fixes it per pair (remove it or
   // resize). Spelled rather than imported for the same reason as above.
   'Order below exchange minimum',
+  // `refusedBaseEntrySubType` (bot/utils.ts): one pair's book refuses the
+  // entry; the bot's other pairs keep trading. Spec `228`.
+  'Base order cancelled by exchange',
 ])
 
 /** Does this subType describe one contract rather than the whole bot? */

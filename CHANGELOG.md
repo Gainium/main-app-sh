@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.6] - 2026-11-06
+
+### Fixed
+
+- When the exchange kept cancelling a DCA or combo bot's base order with nothing filled (for example, no liquidity within the exchange's price limit), the bot opened a new deal after every cancel, indefinitely and without telling the user. After three such cancels in a row on a pair, the bot now posts a message naming the pair, pauses automatic new deals on it for a window that grows up to an hour, and resumes as soon as a base order fills.
+
 ## [1.124.5] - 2026-11-06
 
 ### Fixed

@@ -206,6 +206,29 @@ export function isUnattributedUnfilledBaseEntryCancel(
   return !ownCancel && !hasPendingCheck && liveEntries === 0
 }
 
+/**
+ * Consecutive unfilled venue cancels of a base order, on one bot and pair,
+ * after which automatic new deals on that pair are paused. One refusal can be
+ * a passing gap in the book; this many in a row is a condition the next
+ * attempt will hit too. Spec `228`.
+ */
+export const refusedBaseEntryPauseAfter = 3
+
+/** Whether the `attempt`-th consecutive refusal pauses the pair. */
+export function refusedBaseEntryPauses(attempt: number): boolean {
+  return attempt >= refusedBaseEntryPauseAfter
+}
+
+/** The bot message for a pair paused by {@link refusedBaseEntryPauses}. */
+export function refusedBaseEntryMessage(
+  symbol: string,
+  refusals: number,
+  pausedUntil: number,
+): string {
+  const until = new Date(pausedUntil).toISOString().slice(0, 16).replace('T', ' ')
+  return `${symbol}: the exchange cancelled the last ${refusals} base orders without filling any of them, so no deal could be opened. This usually means there is no liquidity within the exchange's price limit for the order. New deals on this pair are paused until ${until} UTC and will then be retried.`
+}
+
 /** What the top-up decision reads. */
 export type TopUpSettledBaseEntryInputs = {
   /** What the settled row executed, as the venue reported it. */

@@ -197,6 +197,7 @@ import {
   limitOnlyEntryReplaced,
   orderBelowExchangeMinSubType,
   positionLeftOpen,
+  refusedBaseEntrySubType,
   trailingCloseFailed,
 } from './utils'
 import {
@@ -241,6 +242,8 @@ import {
   isSettledBaseEntryAnswer,
   isUnattributedUnfilledBaseEntryCancel,
   pickRestoreBaseEntry,
+  refusedBaseEntryMessage,
+  refusedBaseEntryPauses,
   settledBaseEntryFill,
   shouldSettlePartialBaseEntry,
   shouldTopUpSettledBaseEntry,
@@ -414,6 +417,7 @@ import {
   notEnoughBalanceNewDeal,
   orderBelowExchangeMin,
   newDealNearDelivery,
+  refusedBaseEntry,
   standingConditionKey,
   tpCoverageDrift,
 } from './conditionLatch'
@@ -707,6 +711,21 @@ const uncoveredCloseBackoff = new RetryBackoff({
   namespace: 'ucr',
   minMs: 5 * 60 * 1000,
   maxMs: 60 * 60 * 1000,
+})
+
+/**
+ * Consecutive base orders the venue cancelled with nothing filled, per bot and
+ * pair (spec `228`). `attempt` is the run length; from
+ * `refusedBaseEntryPauseAfter` on, the window is the pause on new deals. An
+ * ASAP bot refuses ~every 85 s, so 5 min → 1 h turns a thousand doomed orders a
+ * day into about two dozen. `memoryMs` is two hours so refusals spaced by a
+ * start cooldown still count as one run. A filled base order clears it.
+ */
+const refusedBaseEntryBackoff = new RetryBackoff({
+  namespace: 'rbe',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+  memoryMs: 2 * 60 * 60 * 1000,
 })
 
 /**
@@ -1064,6 +1083,13 @@ function createDCABotHelper<
      * venue unfilled, one per deal. Cleared by `clearClassProperties`.
      */
     canceledBaseEntryTimers: Map<string, NodeJS.Timeout> = new Map()
+    /**
+     * Pairs whose new deals are paused after repeated unfilled venue cancels
+     * of their base order: symbol → until (ms). Spec `228`. In memory so the
+     * per-minute start loop never reads Redis; after a restart the first
+     * refusal re-records at the run's attempt and restores the pause.
+     */
+    refusedBaseEntryPausedUntil: Map<string, number> = new Map()
     /**
      * Reposition ticks of a resting base-order remainder, one per deal
      * (spec `111` §4.3). Cleared by `clearClassProperties`.
@@ -17863,6 +17889,24 @@ function createDCABotHelper<
      * every other pair. Same shape as {@link reportLimitOnlyEntryReplaced}.
      */
     async reportOrderBelowExchangeMin(symbol: string, message: string) {
+      await this.reportPerPairWarning(
+        orderBelowExchangeMinSubType,
+        symbol,
+        message,
+      )
+    }
+
+    /**
+     * A per-pair standing warning: a `Bot warning` event plus a bot message
+     * under `subType`, which must be per-symbol (`isPerSymbolSubType`) so the
+     * notification's pair tag is the pair in the text. `force`: the caller's
+     * {@link ConditionLatch} is the rate limit.
+     */
+    async reportPerPairWarning(
+      subType: string,
+      symbol: string,
+      message: string,
+    ) {
       this.botEventDb.createData({
         userId: this.userId,
         botId: this.botId,
@@ -17875,7 +17919,7 @@ function createDCABotHelper<
       })
       await this.processError(
         this.botId,
-        orderBelowExchangeMinSubType,
+        subType,
         false,
         false,
         true,
@@ -18765,7 +18809,19 @@ function createDCABotHelper<
       }
       const ed = await this.getExchangeInfo(symbol)
       if (
-        await this.refuseNewDealNearDelivery(symbol, ed, skip, dynamic, trigger)
+        (await this.refuseNewDealNearDelivery(
+          symbol,
+          ed,
+          skip,
+          dynamic,
+          trigger,
+        )) ||
+        (await this.refuseNewDealAfterRefusedEntries(
+          symbol,
+          skip,
+          dynamic,
+          trigger,
+        ))
       ) {
         this.endMethod(_id)
         if (cbIfNotOpened) {
@@ -24332,6 +24388,10 @@ function createDCABotHelper<
           )
         }
       }
+      if (order.typeOrder === TypeOrderEnum.dealStart) {
+        // Spec `228` §4.4: the pair's book took an entry.
+        this.clearRefusedBaseEntries(order.symbol)
+      }
       // Spec `226` §1.1.2: a remainder sweep of a deal that already closed.
       if (await this.bookRemainderSweepReport(order)) {
         return
@@ -25013,6 +25073,101 @@ function createDCABotHelper<
         false,
         DCACloseTriggerEnum.auto,
       )
+      await this.noteRefusedBaseEntry(deal?.deal.symbol?.symbol)
+    }
+
+    /** The run counter of spec `228`. A method so a harness can replace it. */
+    refusedBaseEntryLedger(): Pick<RetryBackoff, 'record' | 'clear'> {
+      return refusedBaseEntryBackoff
+    }
+
+    /**
+     * Count one more unfilled venue cancel of a base order on `symbol`. From
+     * `refusedBaseEntryPauseAfter` in a row on, pause automatic new deals on
+     * the pair for the backoff window and tell the user once per run. Spec
+     * `228` §4.1/§4.2.
+     */
+    async noteRefusedBaseEntry(symbol?: string): Promise<void> {
+      if (!symbol) {
+        return
+      }
+      const state = await this.refusedBaseEntryLedger().record(
+        [this.botId, symbol],
+        'base order cancelled by the exchange with nothing filled',
+      )
+      if (!refusedBaseEntryPauses(state.attempt)) {
+        return
+      }
+      ;(this.refusedBaseEntryPausedUntil ??= new Map()).set(symbol, state.until)
+      this.handleLog(
+        `${state.attempt} base orders on ${symbol} in a row were cancelled by the exchange with nothing filled. New deals on ${symbol} paused until ${new Date(state.until).toISOString()}`,
+      )
+      if (
+        this.standingConditionLatch.shouldReport(
+          standingConditionKey(refusedBaseEntry, symbol),
+          +new Date(),
+        )
+      ) {
+        await this.reportPerPairWarning(
+          refusedBaseEntrySubType,
+          symbol,
+          refusedBaseEntryMessage(symbol, state.attempt, state.until),
+        )
+      }
+    }
+
+    /**
+     * Refuse an automatic new deal on a pair paused by
+     * {@link noteRefusedBaseEntry}. A manual open and a terminal deal go
+     * through, like {@link refuseNewDealNearDelivery}. Spec `228` §4.3.
+     *
+     * @returns {boolean} true when the deal was refused
+     */
+    async refuseNewDealAfterRefusedEntries(
+      symbol: string,
+      skip: boolean,
+      dynamic: boolean,
+      trigger?: NewDealTrigger,
+    ): Promise<boolean> {
+      const until = this.refusedBaseEntryPausedUntil?.get(symbol)
+      if (!until) {
+        return false
+      }
+      if (until <= +new Date()) {
+        this.refusedBaseEntryPausedUntil.delete(symbol)
+        return false
+      }
+      const settings = await this.getAggregatedSettings()
+      if (
+        (settings as { type?: DCATypeEnum }).type === DCATypeEnum.terminal ||
+        resolveNewDealTrigger(
+          skip,
+          dynamic,
+          settings.startCondition,
+          trigger,
+        ) === 'manual'
+      ) {
+        return false
+      }
+      this.handleDebug(
+        `New deal on ${symbol} paused until ${new Date(until).toISOString()}: the exchange keeps cancelling its base orders with nothing filled`,
+      )
+      return true
+    }
+
+    /**
+     * A base order on `symbol` traded: the run of refusals is over. Spec
+     * `228` §4.4. Cheap when there was no run (one Redis DEL per base fill).
+     */
+    clearRefusedBaseEntries(symbol?: string): void {
+      if (!symbol) {
+        return
+      }
+      this.refusedBaseEntryPausedUntil?.delete(symbol)
+      this.standingConditionLatch?.clear(
+        standingConditionKey(refusedBaseEntry, symbol),
+      )
+      void this.refusedBaseEntryLedger().clear([this.botId, symbol])
     }
 
     /** One pending restore per deal; a newer cancel replaces it. Spec 095 §4.7. */

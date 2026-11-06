@@ -92,6 +92,13 @@ export const notEnoughBalanceNewDeal = 'notEnoughBalanceNewDeal'
 export const baseGridBelowMinimumBudget = 'baseGridBelowMinimumBudget'
 
 /**
+ * The venue keeps cancelling a pair's base orders with nothing filled, and new
+ * deals on it are paused (spec `228`). Standing until a base order on the pair
+ * fills. Keyed by PAIR: the book of one pair can be empty while the rest trade.
+ */
+export const refusedBaseEntry = 'refusedBaseEntry'
+
+/**
  * A DCA `openNewDeal` refused because the exchange minimum would raise the base
  * order or a safety order past what the user configured, on a bot set to
  * refuse such orders (the default; `allowRaiseToExchangeMin` off).

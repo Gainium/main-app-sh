@@ -3976,6 +3976,10 @@ function createComboBotHelper<
       this.handleLog(
         `Processing ${order.clientOrderId} ${order.typeOrder} ${order.dcaLevel}`,
       )
+      if (order.typeOrder === TypeOrderEnum.dealStart) {
+        // Spec `228` §4.4: the pair's book took an entry.
+        this.clearRefusedBaseEntries(order.symbol)
+      }
       if (
         +(this.lastFilledOrderMap.get(order.symbol)?.updateTime ?? '0') <
         +order.updateTime
@@ -7835,7 +7839,19 @@ function createComboBotHelper<
       }
       const ed = await this.getExchangeInfo(symbol)
       if (
-        await this.refuseNewDealNearDelivery(symbol, ed, skip, dynamic, trigger)
+        (await this.refuseNewDealNearDelivery(
+          symbol,
+          ed,
+          skip,
+          dynamic,
+          trigger,
+        )) ||
+        (await this.refuseNewDealAfterRefusedEntries(
+          symbol,
+          skip,
+          dynamic,
+          trigger,
+        ))
       ) {
         this.endMethod(_id)
         if (cbIfNotOpened) {

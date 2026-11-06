@@ -574,6 +574,14 @@ export const limitOnlyEntryReplaced = 'Market entry replaced with limit'
 export const orderBelowExchangeMinSubType = 'Order below exchange minimum'
 
 /**
+ * New deals on a pair are paused because the exchange kept cancelling its base
+ * orders with nothing filled (spec `228`). Per pair, raised directly through
+ * `processError` like {@link orderBelowExchangeMinSubType}, never matched by
+ * text.
+ */
+export const refusedBaseEntrySubType = 'Base order cancelled by exchange'
+
+/**
  * The venue refused an order because position + resting orders on the contract
  * have reached the account's risk tier. Same name as the builtin boterrorrules
  * subType, so installs without the DB rule classify it identically. Gated per
