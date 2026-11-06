@@ -629,6 +629,16 @@ const positionGoneReadings = new RetryBackoff({
 })
 
 /**
+ * Spec `225`. A first "position gone" reading schedules its own second probe
+ * instead of waiting for the next price tick, grid refusal or reload to ask —
+ * those can be hours apart. Fires this long after both windows have passed,
+ * so the throttle above lets it through.
+ */
+const POSITION_REPROBE_MARGIN_MS = 5 * 1000
+/** Spec `225` §1.1.5. Unanswered re-probes in a row before giving up. */
+const POSITION_REPROBE_MAX_MISSES = 3
+
+/**
  * How often one deal may re-arm its own close after the venue refused it
  * (spec `074` §4.2).
  *
@@ -873,6 +883,15 @@ function createDCABotHelper<
     missingTpRearm: Map<
       string,
       { attempt: number; timer?: ReturnType<typeof setTimeout> }
+    > = new Map()
+    /**
+     * Spec `225`. Deals with a self-scheduled position re-probe pending, and
+     * how many re-probes in a row the venue left unanswered. See
+     * `armPositionReprobe`.
+     */
+    positionReprobes: Map<
+      string,
+      { misses: number; timer?: ReturnType<typeof setTimeout> }
     > = new Map()
     /** Close after TP filled */
     closeAfterTpFilled: boolean
@@ -28079,7 +28098,7 @@ function createDCABotHelper<
       if (probeCooldown.suppressed) {
         return false
       }
-      await positionProbeBackoff.record(
+      const probeWindow = await positionProbeBackoff.record(
         [this.botId, dealId],
         outcome,
       )
@@ -28121,6 +28140,18 @@ function createDCABotHelper<
           // stale, so this cannot slide forward forever.
           await positionProbeBackoff.clear([this.botId, dealId])
           await positionGoneReadings.clear([this.botId, dealId])
+          this.clearPositionReprobe(dealId)
+        } else {
+          // Spec `225` §1.1.5: only continues a re-probe chain already armed
+          // by a first reading; an unanswered first probe arms nothing.
+          this.armPositionReprobe(
+            dealId,
+            outcome,
+            trigger,
+            settle,
+            probeWindow.until,
+            true,
+          )
         }
         this.handleDebug(
           `Deal ${dealId} TP level close ${outcome}; ${verdict.verdict} — leaving the deal open`,
@@ -28141,6 +28172,16 @@ function createDCABotHelper<
         // seen again, so a real divergence still converges on the next window.
         this.handleLog(
           `Deal ${dealId} TP level close ${outcome} and ${verdict.verdict} on ${this.data?.exchange} — waiting for a second reading before closing the deal`,
+        )
+        // Spec `225`: take that reading ourselves once both windows pass,
+        // rather than waiting for the next price tick or ladder re-placement.
+        this.armPositionReprobe(
+          dealId,
+          outcome,
+          trigger,
+          settle,
+          Math.max(probeWindow.until, reading.until),
+          false,
         )
         return false
       }
@@ -28167,6 +28208,7 @@ function createDCABotHelper<
       }
       await positionProbeBackoff.clear([this.botId, dealId])
       await positionGoneReadings.clear([this.botId, dealId])
+      this.clearPositionReprobe(dealId)
       if (settle) {
         await settle()
         return true
@@ -28176,6 +28218,93 @@ function createDCABotHelper<
       // no closing order — there is nothing to send one for.
       await this.closeDeal(this.botId, dealId)
       return true
+    }
+
+    /**
+     * Spec `225`. Schedule this bot's own re-probe of a deal whose venue
+     * position read as gone, so the second reading `reconcileDealPosition`
+     * needs does not wait for an unrelated event. It is one more probe through
+     * the same throttle and readings count — it cannot settle on one answer.
+     *
+     * @param until when the windows that would suppress the re-probe end.
+     * @param miss the probe that asked was not answered: continue an armed
+     *   chain (bounded by `POSITION_REPROBE_MAX_MISSES`), never start one.
+     */
+    protected armPositionReprobe(
+      dealId: string,
+      outcome: string,
+      trigger: string | undefined,
+      settle: (() => Promise<unknown>) | undefined,
+      until: number,
+      miss: boolean,
+    ) {
+      const prev = this.positionReprobes.get(dealId)
+      if (miss && !prev) {
+        return
+      }
+      const misses = miss ? (prev?.misses ?? 0) + 1 : 0
+      if (prev?.timer) {
+        clearTimeout(prev.timer)
+      }
+      if (misses > POSITION_REPROBE_MAX_MISSES) {
+        this.positionReprobes.delete(dealId)
+        this.handleLog(
+          `Deal ${dealId} position re-probe left unanswered ${POSITION_REPROBE_MAX_MISSES} times — no longer re-probing on a timer`,
+        )
+        return
+      }
+      const delay =
+        Math.max(until - Date.now(), 0) + POSITION_REPROBE_MARGIN_MS
+      const entry: { misses: number; timer?: ReturnType<typeof setTimeout> } =
+        { misses }
+      entry.timer = setTimeout(() => {
+        entry.timer = undefined
+        void this.runPositionReprobe(dealId, outcome, trigger, settle).catch(
+          (e: unknown) =>
+            this.handleWarn(
+              `Deal ${dealId} position re-probe failed: ${(e as Error)?.message ?? e}`,
+            ),
+        )
+      }, delay)
+      entry.timer.unref?.()
+      this.positionReprobes.set(dealId, entry)
+      this.handleDebug(
+        `Deal ${dealId} position re-probe in ${Math.round(delay / 1000)}s`,
+      )
+    }
+
+    protected clearPositionReprobe(dealId: string) {
+      const entry = this.positionReprobes.get(dealId)
+      if (entry?.timer) {
+        clearTimeout(entry.timer)
+      }
+      this.positionReprobes.delete(dealId)
+    }
+
+    /** Spec `225` §1.1.4. Live state only: the deal may have moved on. */
+    private async runPositionReprobe(
+      dealId: string,
+      outcome: string,
+      trigger: string | undefined,
+      settle: (() => Promise<unknown>) | undefined,
+    ) {
+      const live = this.getDeal(dealId)
+      if (
+        !this.shouldProceed() ||
+        !live ||
+        live.deal.status !== DCADealStatusEnum.open ||
+        live.closeBySl
+      ) {
+        this.clearPositionReprobe(dealId)
+        return
+      }
+      await this.reconcileDealPosition(live, outcome, trigger, settle)
+      const entry = this.positionReprobes.get(dealId)
+      if (entry && !entry.timer) {
+        // Neither re-armed (unanswered) nor cleared (found / settled): another
+        // probe owns the deal now, e.g. one that ran inside our window.
+        this.positionReprobes.delete(dealId)
+      }
     }
 
     @IdMute(mutex, (botId: string) => `${botId}checkTPLevel`)

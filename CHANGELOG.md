@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.1] - 2026-11-06
+
+### Fixed
+
+- A combo or DCA deal whose position the exchange shows as gone could stay open for hours after the first "no position" reading. The second reading needed to close it was taken only when the price came back to the take-profit or the bot re-placed its ladders. The bot now takes that second reading itself once the five-minute window has passed. Two agreeing readings are still required before a deal is closed.
+
 ## [1.124.0] - 2026-11-06
 
 ### Added
