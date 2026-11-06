@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.5] - 2026-11-06
+
+### Fixed
+
+- When the exchange cancelled a DCA or combo deal's first order before anything traded, and the bot only found out by re-checking its orders after its user-stream connection came back, the deal stayed in "start" with nothing on the exchange for up to a day. It is now cancelled within seconds, as it already was when the exchange's cancel message arrived directly.
+
 ## [1.124.4] - 2026-11-06
 
 ### Fixed

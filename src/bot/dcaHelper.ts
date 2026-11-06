@@ -14090,6 +14090,15 @@ function createDCABotHelper<
             if (mergedOrder.status === 'PARTIALLY_FILLED') {
               partiallyFilledOrders.push(mergedOrder)
             }
+            // Spec 227: when the stream lost the cancel report, this answer is
+            // the only one the bot gets. The row is already out of the map, so
+            // it does not count as a live entry of its own deal.
+            if (
+              mergedOrder.status === 'CANCELED' &&
+              mergedOrder.typeOrder === TypeOrderEnum.dealStart
+            ) {
+              this.checkUnfilledBaseEntryCancel(mergedOrder)
+            }
           } else {
             this.handleDebug(
               `${mergedOrder.typeOrder} order ${mergedOrder.clientOrderId} not changed.`,
