@@ -1535,25 +1535,16 @@ function createDCABotHelper<
       sendOptions: OrderAdditionalParams,
       ed: ClearPairsSchema,
     ): Promise<Order | string | void | undefined> {
-      const balances = await this.checkAssets(true)
-      const asset = ed.baseAsset.name
-      const find = balances?.get(asset)
-      if (!find) {
-        this.handleDebug(`Asset ${asset} not found in user balances`)
+      const sized = await this.adaptiveCloseQty(
+        findDeal,
+        tpOrder,
+        tpOrder.price,
+        ed,
+      )
+      if (!sized) {
         return
       }
-      // Same three-way minimum as the market close: the wallet's free base
-      // (shared with every other bot on this account), the TP itself, and
-      // what this deal still holds — so it can only ever sell LESS.
-      const toPlace = Math.min(
-        this.math.round(
-          find.free,
-          await this.baseAssetPrecision(ed.pair),
-          true,
-        ),
-        tpOrder.qty,
-        this.dealOwnBasePosition(findDeal),
-      )
+      const { toPlace, asset } = sized
       if (toPlace >= tpOrder.qty) {
         return
       }
@@ -1582,6 +1573,48 @@ function createDCABotHelper<
         ed,
         true,
       )
+    }
+
+    /**
+     * The amount adaptive close re-sends a refused close at — shared by the
+     * resting TP (`sendTpAtFreeBalance`) and the market close
+     * (`closeDealById`), so the two cannot size differently.
+     *
+     * Spec `053` §4.3/§4.6/§4.7. A three-way minimum, so it can only ever
+     * close LESS: what the wallet can fund, the TP itself, and what this deal
+     * still holds. The wallet term is in the asset that PAYS for the close: a
+     * SELL (long) spends base; a BUY (short spot) spends quote, converted at
+     * `price`. The result is floored to the base step, because `deal.size` is
+     * a running float sum (`245.60000000000002`) that the venue refuses as
+     * "too much precision" — the retry then failed for a reason of its own.
+     * `undefined` when the funding asset is not in the balances.
+     */
+    protected async adaptiveCloseQty(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      tpOrder: Pick<Grid, 'qty' | 'side'>,
+      price: number,
+      ed: ClearPairsSchema,
+    ): Promise<{ toPlace: number; asset: string; free: number } | undefined> {
+      const balances = await this.checkAssets(true)
+      const buy = tpOrder.side === OrderSideEnum.buy
+      const asset = buy ? ed.quoteAsset.name : ed.baseAsset.name
+      const find = balances?.get(asset)
+      if (!find) {
+        this.handleDebug(`Asset ${asset} not found in user balances`)
+        return
+      }
+      const precision = await this.baseAssetPrecision(ed.pair)
+      const fundable = buy
+        ? price > 0
+          ? find.free / price
+          : 0
+        : find.free
+      const toPlace = this.math.round(
+        Math.min(fundable, tpOrder.qty, this.dealOwnBasePosition(findDeal)),
+        precision,
+        true,
+      )
+      return { toPlace, asset, free: find.free }
     }
 
     protected dealOwnBasePosition(
@@ -8098,36 +8131,25 @@ function createDCABotHelper<
                   this.handleDebug(
                     `TP order got not enough balance, but adaptive close is on`,
                   )
-                  const balances = await this.checkAssets(true)
-                  const asset = symbol.baseAsset.name
-                  const find = balances?.get(asset)
-                  if (!find) {
+                  // Spec 053 §4.3. The wallet's free balance is shared with
+                  // every other bot and deal the user runs on this asset; a bot
+                  // accounts against its OWN isolated allocation (§3.4), so the
+                  // close is also capped at what this deal still holds — a
+                  // third term of a `Math.min`, so it can only close LESS.
+                  // §4.6/§4.7: floored to the base step, funded in the asset
+                  // the close spends (see `adaptiveCloseQty`).
+                  const sized = await this.adaptiveCloseQty(
+                    findDeal,
+                    tpOrder,
+                    price
+                      ? this.math.round(+price, symbol.priceAssetPrecision)
+                      : tpOrder.price,
+                    symbol,
+                  )
+                  if (sized) {
+                    const { toPlace, asset } = sized
                     this.handleDebug(
-                      `Asset ${asset} not found in user balances`,
-                    )
-                  } else {
-                    const toPlace = Math.min(
-                      this.math.round(
-                        find.free,
-                        await this.baseAssetPrecision(symbol.pair),
-                        true,
-                      ),
-                      tpOrder.qty,
-                      // Spec 053 §4.3. `find.free` is the WHOLE wallet's free
-                      // base, which on a spot account is shared with every other
-                      // bot and deal the user runs on this asset. A bot accounts
-                      // against its OWN isolated allocation (§3.4), so the close
-                      // is capped at what this deal still holds even when the
-                      // wallet — or a take-profit drifted oversized by the
-                      // #694/#696 family — would allow more. Being a third term
-                      // of a `Math.min` it can only ever close LESS, so it
-                      // cannot refuse a close that is fundable today, and it
-                      // subtracts nothing belonging to a sibling deal: the
-                      // measure is deal-local and never looks at the account.
-                      this.dealOwnBasePosition(findDeal),
-                    )
-                    this.handleDebug(
-                      `Found free ${find.free}, to place ${toPlace}`,
+                      `Found free ${sized.free} ${asset}, to place ${toPlace}`,
                     )
                     if (
                       toPlace < symbol.baseAsset.minAmount ||

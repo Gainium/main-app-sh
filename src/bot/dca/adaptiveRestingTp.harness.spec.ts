@@ -44,7 +44,12 @@ class FakeBase {
 const loadModule = createRequire(__filename)
 let Helper: any
 
-const build = (o: { walletFree: number; dealSize: number }) => {
+const build = (o: {
+  walletFree: number
+  dealSize: number
+  quoteFree?: number
+  precision?: number
+}) => {
   class TestBot extends Helper {
     sent: any[] = []
     logs: string[] = []
@@ -53,10 +58,13 @@ const build = (o: { walletFree: number; dealSize: number }) => {
     }
     handleDebug() {}
     async checkAssets() {
-      return new Map([['BTC', { free: o.walletFree, locked: 0 }]])
+      return new Map([
+        ['BTC', { free: o.walletFree, locked: 0 }],
+        ['USDC', { free: o.quoteFree ?? 0, locked: 0 }],
+      ])
     }
     async baseAssetPrecision() {
-      return 8
+      return o.precision ?? 8
     }
     getOrdersByStatusAndDealId() {
       return []
@@ -125,5 +133,44 @@ describe('adaptive close re-sizes a refused resting TP', () => {
       undefined,
     )
     expect(bot.sent).to.have.length(0)
+  })
+
+  // Spec 053 §4.6. `deal.size` is a running float sum, so the deal-own term
+  // can carry drift (`245.60000000000002`) that Binance refuses with -1111
+  // "too much precision" — the retry failed for a reason it then repeated.
+  it('sends the shrunken amount on the base step, even when the deal size carries float drift', async () => {
+    const { bot, deal } = build({
+      walletFree: 1000,
+      dealSize: 245.60000000000002,
+      precision: 2,
+    })
+    await bot.sendTpAtFreeBalance(
+      deal,
+      { ...tp, qty: 245.74, price: 0.5 },
+      opts,
+      ED,
+    )
+    expect(bot.sent).to.have.length(1)
+    expect(bot.sent[0].order.qty).to.equal(245.6)
+    expect(bot.sent[0].options.acAfter).to.equal(245.6)
+  })
+
+  // Spec 053 §4.7. A SHORT spot deal closes with a BUY, funded in QUOTE: the
+  // free base of the wallet says nothing about whether it can be paid for.
+  it('sizes a BUY close from the free quote at the TP price, rounded down', async () => {
+    const { bot, deal } = build({
+      walletFree: 1000,
+      quoteFree: 50,
+      dealSize: 0.001,
+    })
+    await bot.sendTpAtFreeBalance(
+      deal,
+      { ...tp, qty: 0.001, price: 60000, side: OrderSideEnum.buy },
+      opts,
+      ED,
+    )
+    expect(bot.sent).to.have.length(1)
+    // 50 / 60000 = 0.000833333… → floored to 8 dp
+    expect(bot.sent[0].order.qty).to.equal(0.00083333)
   })
 })

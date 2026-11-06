@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.4] - 2026-11-06
+
+### Fixed
+
+- With adaptive close on, a spot take-profit refused for balance is re-sent at a smaller amount. That amount could carry more decimals than the exchange's quantity step allows, so the exchange refused the retry too and the take-profit stayed off the book until the next attempt. The re-sent amount is now rounded down to the pair's quantity step. For a short spot deal the close is a buy, so the re-sent amount is now sized from the free quote balance at the close price instead of the free base balance. The first close attempt is unchanged.
+
 ## [1.124.3] - 2026-11-06
 
 ### Fixed
