@@ -96,13 +96,27 @@ export class DealMonitor {
   ) {
     const { price, time } = data
     const dealId = deal._id.toString()
-    const stats = this.stats.get(dealId)
-    if (stats && (data.time - stats.start <= 30 * 1000 || !stats.wasChanged)) {
-      this.updateDealStats(combo, deal, stats, price, usdRate, time, fee)
-    } else {
-      if (stats) {
-        await this.completeStats(combo, dealId, data.time, { ...stats })
-      }
+    // Every sample is measured, and a window that has changed closes on the
+    // sample that measured it. The window used to close on the NEXT sample
+    // and persist the previous one's value, dropping the newest price; a deal
+    // is sampled at most once a minute and only when its price moves, so on a
+    // quiet pair the stored uPnL the dashboard sorts by was hours behind the
+    // one it shows, and a new deal needed three samples before it had one at
+    // all. Spec 229.
+    let stats = this.stats.get(dealId)
+    const firstSample = !stats
+    if (!stats) {
+      stats = this.addNewDeal(deal, dealId, price, time)
+    }
+    this.updateDealStats(combo, deal, stats, price, usdRate, time, fee)
+    // A deal that has never been stored is written on its first measurement
+    // (once per deal), so it does not sort as "missing" until later samples.
+    const neverStored =
+      firstSample &&
+      !deal.stats?.updatedAt &&
+      typeof stats.unrealizedProfitNet === 'number'
+    if (stats.wasChanged && (time - stats.start > 30 * 1000 || neverStored)) {
+      await this.completeStats(combo, dealId, time, { ...stats })
       this.addNewDeal(deal, dealId, price, time)
     }
   }
@@ -370,17 +384,29 @@ export class DealMonitor {
     }
   }
 
-  private addNewDeal(deal: InputDeal, id: string, price: number, time: number) {
+  private addNewDeal(
+    deal: InputDeal,
+    id: string,
+    price: number,
+    time: number,
+  ): DealStatsMap {
     const { avgPrice } = deal
     const long = deal.strategy === StrategyEnum.long
-    // A window that just closed wrote the fee-inclusive fields; the deal
-    // snapshot the bot hands us does not see that write, so carry the persist
-    // marker over from the previous window rather than re-reading it stale.
+    // A window that just closed wrote the fee-inclusive fields and the
+    // extremes; the deal snapshot the bot hands us does not see that write,
+    // so carry them over from the previous window rather than re-reading them
+    // stale (a stale extreme re-marks every window changed and rewrites it).
     const previous = this.stats.get(id)
-    this.stats.set(id, {
+    const next: DealStatsMap = {
       start: time,
-      drawdownPercent: deal.stats?.drawdownPercent ?? 0,
-      runUpPercent: deal.stats?.runUpPercent ?? 0,
+      drawdownPercent: Math.max(
+        previous?.drawdownPercent ?? 0,
+        deal.stats?.drawdownPercent ?? 0,
+      ),
+      runUpPercent: Math.max(
+        previous?.runUpPercent ?? 0,
+        deal.stats?.runUpPercent ?? 0,
+      ),
       avgDealPrice: avgPrice,
       timeCountStart: time,
       currentCount:
@@ -400,7 +426,9 @@ export class DealMonitor {
         (deal.stats?.updatedAt ? +new Date(deal.stats.updatedAt) : 0),
       netPersistedValue:
         previous?.netPersistedValue ?? deal.stats?.unrealizedProfitNet,
-    })
+    }
+    this.stats.set(id, next)
+    return next
   }
 
   private async completeStats(

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.7] - 2026-11-07
+
+### Fixed
+
+- Sorting open deals by unrealized P&L ($ or %) could put them out of order compared with the numbers on screen. The stored value the sort uses was written from the price sample before the one that saved it, so on a pair that trades rarely it could be hours behind the live value, and a newly opened deal needed three price changes before it had a stored value at all. The stored value is now taken from the sample that saves it, and a new deal is stored on its first price sample.
+
 ## [1.124.6] - 2026-11-06
 
 ### Fixed

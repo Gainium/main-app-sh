@@ -54,6 +54,10 @@ const makeDeal = (id: string) =>
       unrealizedProfit: 0,
       usage: 0,
       maxUsage: 0,
+      // a deal stored before, at its current value (spec 229 writes a
+      // never-stored deal, or a changed one past its window, at once)
+      unrealizedProfitNet: 0,
+      updatedAt: new Date(T0 - 3_600_000),
     },
     flags: [],
     tpFilledHistory: [],
@@ -93,7 +97,7 @@ describe('deal stats survive the deal close (spec 064 §4.3)', () => {
     )
     await monitor.addDealStats(
       false,
-      { symbol: 'X-USDT', price: AVG_PRICE * 0.9, time: T0 + 31_000 } as any,
+      { symbol: 'X-USDT', price: AVG_PRICE * 0.9, time: T0 + 20_000 } as any,
       1,
       deal,
       0,
