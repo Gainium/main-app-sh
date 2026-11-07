@@ -353,7 +353,11 @@ export class DealMonitor {
         stats.wasChanged = true
       }
     }
-    if (stats.wasChanged && unrealizedProfit) {
+    // Kept current on every sample: a window can also be closed by the
+    // fee-inclusive refresh below, which sets `wasChanged` after this point,
+    // and the write then has to carry this sample's value, not the one the
+    // window was seeded with.
+    if (typeof unrealizedProfit === 'number' && isFinite(unrealizedProfit)) {
       stats.unrealizedProfit = unrealizedProfit
       stats.usage = usage ?? 0
       stats.maxUsage = maxUsage ?? 0

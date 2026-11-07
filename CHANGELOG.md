@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.9] - 2026-11-07
+
+### Fixed
+
+- Open deals' stored unrealized P&L (before fees) could be written as 0, or as an older value, when the deal's fee-inclusive value was refreshed. Totals built on it, such as the dashboard's Unrealized PnL when the fee-inclusive total was unavailable, showed 0. Every stats write now carries the unrealized P&L, usage and max usage of the sample that writes it.
+
 ## [1.124.8] - 2026-11-07
 
 ### Fixed

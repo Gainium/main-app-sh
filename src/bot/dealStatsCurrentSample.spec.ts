@@ -228,4 +228,32 @@ describe('stored uPnL is the persisting sample, new deals are stored at once (sp
     expect(writes).to.have.length(0)
     await monitor.removeDealStats('same-on-load')
   })
+  it('every write carries the gross uPnL, usage and max usage of its sample', async () => {
+    // a window closed only by the fee-inclusive refresh (no new extreme, no
+    // profit/loss flip) used to write the gross values the window was seeded
+    // with — 0 when the bot snapshot has none
+    const deal = makeDeal('gross-on-net-write', {
+      updatedAt: new Date(T0 - 120 * MIN),
+      unrealizedProfitNet: net(makeDeal('x'), 99).unrealizedUsd,
+      drawdownPercent: 0.5,
+      currentCount: 'loss',
+    })
+    delete deal.stats.unrealizedProfit
+    delete deal.stats.usage
+    delete deal.stats.maxUsage
+    await tick(deal, 98.3, T0)
+    expect(writes).to.have.length(1)
+    const set = writes[0].update.$set
+    expect(set['stats.unrealizedProfit']).to.be.closeTo(10 * 98.3 - 1000, 1e-9)
+    expect(set['stats.usage']).to.be.greaterThan(0)
+    expect(set['stats.maxUsage']).to.be.greaterThan(0)
+    // and the refresh write after the interval carries the newer price
+    await tick(deal, 97, T0 + NET_STATS_REFRESH_MS + MIN)
+    expect(writes).to.have.length(2)
+    expect(writes[1].update.$set['stats.unrealizedProfit']).to.be.closeTo(
+      10 * 97 - 1000,
+      1e-9,
+    )
+    await monitor.removeDealStats('gross-on-net-write')
+  })
 })
