@@ -1033,6 +1033,11 @@ function createDCABotHelper<
     sessionCheckTimer: NodeJS.Timeout | null = null
     statsTimer: NodeJS.Timeout | null = null
     lastStatsCheck = 0
+    /**
+     * Open deals given a stats sample since this bot loaded. `priceTimerFn`
+     * seeds the rest once from the price already held (spec 230 §1.1.2).
+     */
+    dealsStatsSampled: Set<string> = new Set()
     indicatorCheckTimers: { [x: string]: NodeJS.Timeout | null | undefined } =
       {}
     indicatorCheckTimersFired: {
@@ -28085,6 +28090,108 @@ function createDCABotHelper<
 
       this.lockSLCheck = false
     }
+    /**
+     * Send one stats sample of an open deal to the deal monitor, and record
+     * that this load has sampled it. Combo overrides the payload.
+     */
+    async sendDealStats(d: FullDeal<ExcludeDoc<Deal>>, msg: PriceMessage) {
+      if (!this.data) {
+        return
+      }
+      this.dealsStatsSampled.add(`${d.deal._id}`)
+      const data: BotParentProcessStatsEventDtoDcaCombo = {
+        event: 'processStats',
+        botId: this.botId,
+        botType: this.combo ? BotType.combo : BotType.dca,
+        payload: {
+          combo: this.combo,
+          data: msg,
+          deal: {
+            _id: d.deal._id,
+            settings: {
+              futures: d.deal.settings.futures,
+              marginType: d.deal.settings.marginType,
+              leverage: d.deal.settings.leverage,
+              comboTpBase: d.deal.settings.comboTpBase,
+              coinm: d.deal.settings.coinm,
+              profitCurrency: d.deal.settings.profitCurrency,
+            },
+            currentBalances: d.deal.currentBalances,
+            initialBalances: d.deal.initialBalances,
+            profit: {
+              total: d.deal.profit.total,
+              pureBase: 0,
+              pureQuote: 0,
+            },
+            feePaid: d.deal.feePaid,
+            avgPrice: d.deal.avgPrice,
+            strategy: d.deal.strategy,
+            usage: d.deal.usage,
+            stats: d.deal.stats,
+            flags: d.deal.flags,
+            tpFilledHistory: d.deal.tpFilledHistory,
+            reduceFunds: d.deal.reduceFunds,
+            botId: this.botId,
+          },
+          fee: (await this.getUserFee(d.deal.symbol.symbol))?.maker ?? 0,
+          usdRate: (await this.getUsdRate(d.deal.symbol.symbol)) ?? 0,
+        },
+      }
+      this.dispatchDealStats(d, data)
+    }
+
+    protected dispatchDealStats(
+      d: FullDeal<ExcludeDoc<Deal>>,
+      data: BotParentProcessStatsEventDtoDcaCombo,
+    ) {
+      try {
+        DealStats.getInstance().updateStats(data)
+      } catch (e) {
+        this.handleErrors(
+          `Cannot send deal ${d.deal._id} stats to parent process ${e}`,
+          'priceUpdateCallback',
+          '',
+          false,
+          false,
+          false,
+        )
+      }
+    }
+
+    /**
+     * Give every open deal not yet sampled since this bot loaded one stats
+     * sample, priced from the latest price the bot already holds for its pair.
+     * A deal is otherwise sampled only when its pair's price changes, so after
+     * a restart a deal on a pair that has not traded kept the uPnL stored
+     * before it indefinitely (the REST fallback poll stops at an unchanged
+     * price). No exchange request: a pair with no held price is sampled by the
+     * REST poll in the same timer run. Spec 230 §1.1.2.
+     */
+    async seedDealStats() {
+      const open = this.getOpenDeals(false)
+      const openIds = new Set(open.map((d) => `${d.deal._id}`))
+      for (const id of this.dealsStatsSampled) {
+        if (!openIds.has(id)) {
+          this.dealsStatsSampled.delete(id)
+        }
+      }
+      for (const d of open) {
+        if (this.dealsStatsSampled.has(`${d.deal._id}`)) {
+          continue
+        }
+        const symbol = d.deal.symbol.symbol
+        const price = this.getLastStreamData(symbol)?.price
+        if (!price) {
+          continue
+        }
+        await this.sendDealStats(d, {
+          symbol,
+          price,
+          time: +new Date(),
+          volume: 0,
+        })
+      }
+    }
     /** Set price timer */
 
     startPriceTimer() {
@@ -28113,6 +28220,11 @@ function createDCABotHelper<
         )}priceTimerFn`,
     )
     async priceTimerFn(_exchange?: ExchangeEnum) {
+      // Not awaited: this method holds a per-exchange mutex shared by every
+      // bot in the worker. Spec 230 §1.1.3.
+      this.seedDealStats().catch((e) =>
+        this.handleDebug(`seedDealStats failed: ${(e as Error)?.message ?? e}`),
+      )
       const symbols: Set<string> = new Set()
       // Stream health is per symbol, not per deal: the tracker's "did we serve
       // this last run" memory assumes one observation per symbol per run. Two
@@ -29258,59 +29370,7 @@ function createDCABotHelper<
           const _activeDeals = this.getOpenDeals(false, msg.symbol)
           this.lastCheckPerSymbol.set(msg.symbol, +new Date())
           for (const d of _activeDeals) {
-            if (this.data) {
-              const data: BotParentProcessStatsEventDtoDcaCombo = {
-                event: 'processStats',
-                botId: this.botId,
-                botType: this.combo ? BotType.combo : BotType.dca,
-                payload: {
-                  combo: this.combo,
-                  data: msg,
-                  deal: {
-                    _id: d.deal._id,
-                    settings: {
-                      futures: d.deal.settings.futures,
-                      marginType: d.deal.settings.marginType,
-                      leverage: d.deal.settings.leverage,
-                      comboTpBase: d.deal.settings.comboTpBase,
-                      coinm: d.deal.settings.coinm,
-                      profitCurrency: d.deal.settings.profitCurrency,
-                    },
-                    currentBalances: d.deal.currentBalances,
-                    initialBalances: d.deal.initialBalances,
-                    profit: {
-                      total: d.deal.profit.total,
-                      pureBase: 0,
-                      pureQuote: 0,
-                    },
-                    feePaid: d.deal.feePaid,
-                    avgPrice: d.deal.avgPrice,
-                    strategy: d.deal.strategy,
-                    usage: d.deal.usage,
-                    stats: d.deal.stats,
-                    flags: d.deal.flags,
-                    tpFilledHistory: d.deal.tpFilledHistory,
-                    reduceFunds: d.deal.reduceFunds,
-                    botId: this.botId,
-                  },
-                  fee:
-                    (await this.getUserFee(d.deal.symbol.symbol))?.maker ?? 0,
-                  usdRate: (await this.getUsdRate(d.deal.symbol.symbol)) ?? 0,
-                },
-              }
-              try {
-                DealStats.getInstance().updateStats(data)
-              } catch (e) {
-                this.handleErrors(
-                  `Cannot send deal ${d.deal._id} stats to parent process ${e}`,
-                  'priceUpdateCallback',
-                  '',
-                  false,
-                  false,
-                  false,
-                )
-              }
-            }
+            await this.sendDealStats(d, msg)
           }
           await this.checkDynamic(this.botId, msg.symbol, +msg.price)
         }

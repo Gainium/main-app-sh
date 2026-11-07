@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.124.8] - 2026-11-07
+
+### Fixed
+
+- After a restart, an open deal on a pair that had not traded since kept the unrealized P&L stored before the restart, so sorting open deals by unrealized P&L could still place it out of order. Each open deal now gets one price sample when its bot loads, from the latest price the bot already holds, and a stored value that is out of date is written by that first sample.
+
 ## [1.124.7] - 2026-11-07
 
 ### Fixed

@@ -73,7 +73,6 @@ import { IdMute, IdMutex } from '../utils/mutex'
 import utils from '../utils'
 const { sleep } = utils
 import { RunWithDelay } from '../utils/delay'
-import { DealStats } from './worker/statsService'
 import createDCABotHelper from './dcaHelper'
 import { isDefinitiveOrderNotFound } from './main'
 import {
@@ -8626,6 +8625,56 @@ function createComboBotHelper<
       return { ...diff, new: place }
     }
 
+    /** Combo's stats payload (spec 230: shared by the load seed). */
+    override async sendDealStats(
+      d: Parameters<InstanceType<typeof ActualBaseClass>['sendDealStats']>[0],
+      msg: PriceMessage,
+    ) {
+      if (!this.data) {
+        return
+      }
+      this.dealsStatsSampled.add(`${d.deal._id}`)
+      const data: BotParentProcessStatsEventDtoDcaCombo = {
+        event: 'processStats',
+        botId: this.botId,
+        botType: this.botType === BotType.combo ? BotType.combo : BotType.dca,
+        payload: {
+          combo: this.botType === BotType.combo,
+          data: msg,
+          deal: {
+            _id: d.deal._id,
+            settings: {
+              futures: d.deal.settings.futures,
+              marginType: d.deal.settings.marginType,
+              leverage: d.deal.settings.leverage,
+              comboTpBase: d.deal.settings.comboTpBase,
+              coinm: d.deal.settings.coinm,
+              profitCurrency: d.deal.settings.profitCurrency,
+            },
+            currentBalances: d.deal.currentBalances,
+            initialBalances: d.deal.initialBalances,
+            profit: {
+              total: d.deal.profit.total,
+              pureBase: d.deal.profit.pureBase,
+              pureQuote: d.deal.profit.pureQuote,
+            },
+            feePaid: d.deal.feePaid,
+            avgPrice: d.deal.avgPrice,
+            strategy: d.deal.strategy,
+            usage: d.deal.usage,
+            stats: d.deal.stats,
+            flags: d.deal.flags,
+            tpFilledHistory: d.deal.tpFilledHistory,
+            reduceFunds: d.deal.reduceFunds,
+            botId: this.botId,
+          },
+          fee: (await this.getUserFee(d.deal.symbol.symbol))?.maker ?? 0,
+          usdRate: (await this.getUsdRate(d.deal.symbol.symbol)) ?? 0,
+        },
+      }
+      this.dispatchDealStats(d, data)
+    }
+
     @IdMute(
       mutex,
       (botId: string, msg: PriceMessage) => `${botId}price${msg.symbol}`,
@@ -8667,59 +8716,7 @@ function createComboBotHelper<
       ) {
         this.lastCheckPerSymbol.set(msg.symbol, +new Date())
         for (const d of this.getOpenDeals(false, msg.symbol)) {
-          if (this.data) {
-            const data: BotParentProcessStatsEventDtoDcaCombo = {
-              event: 'processStats',
-              botId: this.botId,
-              botType:
-                this.botType === BotType.combo ? BotType.combo : BotType.dca,
-              payload: {
-                combo: this.botType === BotType.combo,
-                data: msg,
-                deal: {
-                  _id: d.deal._id,
-                  settings: {
-                    futures: d.deal.settings.futures,
-                    marginType: d.deal.settings.marginType,
-                    leverage: d.deal.settings.leverage,
-                    comboTpBase: d.deal.settings.comboTpBase,
-                    coinm: d.deal.settings.coinm,
-                    profitCurrency: d.deal.settings.profitCurrency,
-                  },
-                  currentBalances: d.deal.currentBalances,
-                  initialBalances: d.deal.initialBalances,
-                  profit: {
-                    total: d.deal.profit.total,
-                    pureBase: d.deal.profit.pureBase,
-                    pureQuote: d.deal.profit.pureQuote,
-                  },
-                  feePaid: d.deal.feePaid,
-                  avgPrice: d.deal.avgPrice,
-                  strategy: d.deal.strategy,
-                  usage: d.deal.usage,
-                  stats: d.deal.stats,
-                  flags: d.deal.flags,
-                  tpFilledHistory: d.deal.tpFilledHistory,
-                  reduceFunds: d.deal.reduceFunds,
-                  botId: this.botId,
-                },
-                fee: (await this.getUserFee(d.deal.symbol.symbol))?.maker ?? 0,
-                usdRate: (await this.getUsdRate(d.deal.symbol.symbol)) ?? 0,
-              },
-            }
-            try {
-              DealStats.getInstance().updateStats(data)
-            } catch (e) {
-              this.handleErrors(
-                `Cannot send deal ${d.deal._id} stats to parent process ${e}`,
-                'priceUpdateCallback',
-                '',
-                false,
-                false,
-                false,
-              )
-            }
-          }
+          await this.sendDealStats(d, msg)
         }
         this.checkMinigridRange(msg.price, msg.symbol)
 

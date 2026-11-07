@@ -109,13 +109,20 @@ export class DealMonitor {
       stats = this.addNewDeal(deal, dealId, price, time)
     }
     this.updateDealStats(combo, deal, stats, price, usdRate, time, fee)
-    // A deal that has never been stored is written on its first measurement
-    // (once per deal), so it does not sort as "missing" until later samples.
-    const neverStored =
+    // The first sample this process takes of a deal writes it when its stored
+    // uPnL is stale (never stored, or a different value older than the refresh
+    // interval). Otherwise a value stored before a restart waits for a second
+    // sample, which on a pair that has not traded since never comes. Only the
+    // uPnL qualifies: a first-sample extreme keeps the 30 s window. Spec 230.
+    const staleOnFirstSample =
       firstSample &&
-      !deal.stats?.updatedAt &&
-      typeof stats.unrealizedProfitNet === 'number'
-    if (stats.wasChanged && (time - stats.start > 30 * 1000 || neverStored)) {
+      typeof stats.unrealizedProfitNet === 'number' &&
+      stats.unrealizedProfitNet !== stats.netPersistedValue &&
+      time - (stats.netPersistedAt ?? 0) >= NET_STATS_REFRESH_MS
+    if (
+      stats.wasChanged &&
+      (time - stats.start > 30 * 1000 || staleOnFirstSample)
+    ) {
       await this.completeStats(combo, dealId, time, { ...stats })
       this.addNewDeal(deal, dealId, price, time)
     }

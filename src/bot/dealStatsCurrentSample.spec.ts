@@ -111,15 +111,15 @@ describe('stored uPnL is the persisting sample, new deals are stored at once (sp
       1e-9,
     )
     // and it was written by the 97.5 sample itself, not a later one
-    expect(+last.update.$set['stats.updatedAt']).to.be.at.most(
-      T0 + 23 * MIN,
-    )
+    expect(+last.update.$set['stats.updatedAt']).to.be.at.most(T0 + 23 * MIN)
     await monitor.removeDealStats('quiet')
   })
 
   it('§1.1.1 a changed window is written by the sample that changed it', async () => {
+    // stored 9 min ago: fresh at the first sample (spec 230 §1.1.1 does not
+    // apply), past the refresh interval at the second
     const deal = makeDeal('one-sample', {
-      updatedAt: new Date(T0 - 60 * MIN),
+      updatedAt: new Date(T0 - 9 * MIN),
       unrealizedProfitNet: net(makeDeal('x'), 99).unrealizedUsd,
       drawdownPercent: 0.5,
     })
@@ -187,5 +187,45 @@ describe('stored uPnL is the persisting sample, new deals are stored at once (sp
     await tick(deal, 90.3, T0 + MIN + NET_STATS_REFRESH_MS + 1)
     expect(writes).to.have.length(2)
     await monitor.removeDealStats('deep')
+  })
+
+  it('spec 230 §1.1.1 a stale stored deal is written on its first sample after a load', async () => {
+    // stored at 99 two hours ago (before a restart); the pair has not traded
+    // since, so the first sample after the load is the only one it gets
+    const deal = makeDeal('stale-on-load', {
+      updatedAt: new Date(T0 - 120 * MIN),
+      unrealizedProfitNet: net(makeDeal('x'), 99).unrealizedUsd,
+      drawdownPercent: 0.5,
+    })
+    await tick(deal, 98.3, T0)
+    expect(writes).to.have.length(1)
+    expect(writes[0].update.$set['stats.unrealizedProfitNet']).to.be.closeTo(
+      net(deal, 98.3).unrealizedUsd,
+      1e-9,
+    )
+    expect(+writes[0].update.$set['stats.updatedAt']).to.equal(T0)
+    await monitor.removeDealStats('stale-on-load')
+  })
+
+  it('spec 230 §1.1.1 a recently stored deal is not rewritten on its first sample', async () => {
+    const deal = makeDeal('fresh-on-load', {
+      updatedAt: new Date(T0 - 2 * MIN),
+      unrealizedProfitNet: net(makeDeal('x'), 99).unrealizedUsd,
+      drawdownPercent: 0.5,
+    })
+    await tick(deal, 98.3, T0)
+    expect(writes).to.have.length(0)
+    await monitor.removeDealStats('fresh-on-load')
+  })
+
+  it('spec 230 §1.1.1 a stale deal whose stored value is still right is not rewritten', async () => {
+    const deal = makeDeal('same-on-load', {
+      updatedAt: new Date(T0 - 120 * MIN),
+      unrealizedProfitNet: net(makeDeal('x'), 98.3).unrealizedUsd,
+      drawdownPercent: 0.5,
+    })
+    await tick(deal, 98.3, T0)
+    expect(writes).to.have.length(0)
+    await monitor.removeDealStats('same-on-load')
   })
 })

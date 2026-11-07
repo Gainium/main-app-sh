@@ -48,8 +48,9 @@ const makeDeal = (id: string, over: Record<string, unknown> = {}) =>
       unrealizedProfit: 0,
       usage: 0,
       maxUsage: 0,
-      // a deal stored before (spec 229 writes a never-stored deal at once)
-      updatedAt: new Date(T0 - 3_600_000),
+      // a deal stored a minute ago: spec 229 writes a never-stored deal at
+      // once, and spec 230 a stale one, on its first sample
+      updatedAt: new Date(T0 - 60_000),
     },
     flags: [],
     tpFilledHistory: [],
