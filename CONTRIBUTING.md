@@ -378,6 +378,11 @@ npm run test:integration  # Integration tests
    - Add GraphQL schema comments
    - Document any breaking changes
 
+4. **Changelog**
+   - If the change is user-visible, add an entry under [`.changes/`](./.changes/README.md).
+     Don't edit the `version` in `package.json` or add a release section to
+     `CHANGELOG.md`: both are assigned when the change is released.
+
 ### Code Review Checklist
 
 - [ ] Bot logic follows established patterns

@@ -1,0 +1,40 @@
+#!/bin/sh
+# psh guard — versions and CHANGELOG release headers are assigned at push time.
+#
+# Refuses a push carrying a commit that changes package.json "version" or adds a
+# "## [x.y.z]" CHANGELOG header, unless that commit is a psh release commit
+# (trailer "Released-by: psh"). Changes describe themselves in a .changes/
+# fragment instead (see .changes/README.md); psh numbers them when pushing, so
+# two changes can never claim the same version or collide on the changelog.
+#
+# Self-contained on purpose: it must work in any checkout, with or without psh
+# installed. Canonical copy: Gainium/scripts hooks/pre-push.
+# Override for a one-off (e.g. commits made before psh existed):
+#   PSH_ALLOW_MANUAL_VERSION=1 git push ...
+[ "${PSH_ALLOW_MANUAL_VERSION:-}" = 1 ] && exit 0
+
+rc=0
+while read -r _lref lsha _rref rsha; do
+  case "$lsha" in *[!0]*) ;; *) continue ;; esac # branch deletion
+  case "$rsha" in
+    *[!0]*) if git cat-file -e "$rsha" 2>/dev/null; then set -- "$rsha..$lsha"; else set -- "$lsha" --not --remotes; fi ;;
+    *) set -- "$lsha" --not --remotes ;;
+  esac
+  for c in $(git rev-list --no-merges "$@"); do
+    git log -1 --format=%B "$c" | grep -qx 'Released-by: psh' && continue
+    git rev-parse -q --verify "$c^" >/dev/null || continue
+    if git diff "$c^" "$c" -- package.json | grep -qE '^[+-][[:space:]]*"version"[[:space:]]*:' ||
+      git diff "$c^" "$c" -- CHANGELOG.md | grep -qE '^\+## \[[0-9]'; then
+      echo "pre-push: $(git log -1 --format='%h %s' "$c")" >&2
+      echo "          sets a version or a CHANGELOG release header by hand." >&2
+      rc=1
+    fi
+  done
+done
+if [ "$rc" != 0 ]; then
+  echo "" >&2
+  echo "Versions are assigned at push time. Drop the bump, describe the change in a" >&2
+  echo ".changes/ fragment (see .changes/README.md) and push with psh." >&2
+  echo "One-off override: PSH_ALLOW_MANUAL_VERSION=1 git push ..." >&2
+fi
+exit "$rc"
