@@ -182,6 +182,24 @@ export class RetryBackoff {
     }
   }
 
+  /**
+   * The stored state, even when its window is over — for a caller that must
+   * know how long the run already is (a restarted worker re-entering it).
+   * Fail-open: any Redis error reads as no state.
+   */
+  async peek(parts: string[]): Promise<BackoffState | null> {
+    const key = this.key(parts)
+    try {
+      const redis = await RedisClient.getInstance()
+      return parse(await redis.get(key))
+    } catch (e) {
+      logger.error(
+        `${logPrefix} peek ${key} error: ${(e as Error)?.message ?? e}`,
+      )
+      return null
+    }
+  }
+
   /** Drop a cooldown — call when the underlying constraint is known to be gone. */
   async clear(parts: string[]): Promise<void> {
     try {

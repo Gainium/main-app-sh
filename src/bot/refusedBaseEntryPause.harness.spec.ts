@@ -17,6 +17,7 @@ process.env.NODE_ENV = 'testing'
  * Run: `npm test` (mocha).
  */
 import { describe, it, before, afterEach } from 'mocha'
+import sinon from 'sinon'
 import { expect } from 'chai'
 import { createRequire } from 'module'
 import { refusedBaseEntryPauseAfter } from './dca/partialBaseEntry'
@@ -37,8 +38,12 @@ class FakeBase {
 }
 
 /** Same contract as `RetryBackoff.record/clear`: 5 min doubling, 1 h cap. */
-const memoryLedger = () => {
-  const runs = new Map<string, { attempt: number; interval: number }>()
+const memoryLedger = (
+  runs = new Map<
+    string,
+    { attempt: number; interval: number; until: number; reason: string }
+  >(),
+) => {
   return {
     runs,
     async record(parts: string[], reason: string) {
@@ -46,8 +51,13 @@ const memoryLedger = () => {
       const prev = runs.get(k)
       const interval = prev ? Math.min(prev.interval * 2, 3_600_000) : 300_000
       const attempt = (prev?.attempt ?? 0) + 1
-      runs.set(k, { attempt, interval })
-      return { until: Date.now() + interval, reason, interval, attempt }
+      const state = { until: Date.now() + interval, reason, interval, attempt }
+      runs.set(k, state)
+      return state
+    },
+    /** Same contract as `RetryBackoff.peek`: the stored state, even if past. */
+    async peek(parts: string[]) {
+      return runs.get(parts.join(':')) ?? null
     },
     async clear(parts: string[]) {
       runs.delete(parts.join(':'))
@@ -55,13 +65,22 @@ const memoryLedger = () => {
   }
 }
 
-type Opts = { type?: DCATypeEnum }
+type Opts = {
+  type?: DCATypeEnum
+  /** The Redis ledger survives a worker restart; pass the old bot's here. */
+  ledger?: ReturnType<typeof memoryLedger>
+  startCondition?: StartConditionEnum
+}
 
 const buildBot = (Cls: any, opts: Opts = {}) => {
   const reports: { subType: string; symbol: string; message: string }[] = []
   const closed: string[] = []
   const deals = new Map<string, any>()
-  const ledger = memoryLedger()
+  const ledger = opts.ledger ?? memoryLedger()
+  /** When the ASAP start loop was asked to run again (fake-clock ms). */
+  const starts: number[] = []
+  /** Run inside `closeDealById`, like the post-close start of an ASAP bot. */
+  const onClose: ((symbol: string) => Promise<void>)[] = []
   const bot: any = Object.create(Cls.prototype)
   Object.assign(bot, {
     botId: BOT_ID,
@@ -79,6 +98,12 @@ const buildBot = (Cls: any, opts: Opts = {}) => {
     closed,
     deals,
     ledger,
+    starts,
+    onClose,
+    openNewDealTimer: new Map(),
+    openDealAfterTimer: async () => {
+      starts.push(Date.now())
+    },
   })
   Object.assign(bot, {
     shouldProceed: () => true,
@@ -89,7 +114,7 @@ const buildBot = (Cls: any, opts: Opts = {}) => {
     },
     refusedBaseEntryLedger: () => ledger,
     getAggregatedSettings: async () => ({
-      startCondition: StartConditionEnum.asap,
+      startCondition: opts.startCondition ?? StartConditionEnum.asap,
       type: opts.type ?? DCATypeEnum.regular,
     }),
     getDeal: (id: string) => deals.get(id),
@@ -98,6 +123,7 @@ const buildBot = (Cls: any, opts: Opts = {}) => {
     closeDealById: async (_b: string, dealId: string) => {
       closed.push(dealId)
       deals.get(dealId).deal.status = DCADealStatusEnum.canceled
+      for (const cb of onClose) await cb(deals.get(dealId).deal.symbol.symbol)
     },
     botEventDb: { createData: () => undefined },
     processError: async (
@@ -202,6 +228,112 @@ for (const [name, get] of [
       const bot = buildBot(get())
       for (let i = 0; i < refusedBaseEntryPauseAfter; i++) await refuse(bot)
       expect(await autoRefused(bot, OTHER)).to.equal(false)
+    })
+  })
+}
+
+for (const [name, get] of [
+  ['DCA', () => Dca],
+  ['Combo', () => Combo],
+] as const) {
+  describe(`${name}: the refused-entry pause survives a restart and ends by itself (spec 228 §4.6-§4.8)`, () => {
+    let clock: sinon.SinonFakeTimers | undefined
+    before(function () {
+      this.timeout(300000)
+      Dca ??= loadModule('./dcaHelper').default(FakeBase as any)
+      Combo ??= loadModule('./comboHelper').default()
+    })
+    afterEach(() => {
+      clock?.restore()
+      clock = undefined
+    })
+
+    it('§4.6 a restart between refusal 3 and 4 keeps the pause and does not warn again', async () => {
+      const before = buildBot(get())
+      for (let i = 0; i < refusedBaseEntryPauseAfter; i++) await refuse(before)
+      expect(before.reports, 'warned once before the restart').to.have.length(1)
+      // The worker restarts: memory is gone, the Redis ledger is not.
+      const after = buildBot(get(), { ledger: before.ledger })
+      expect(await autoRefused(after), 'still paused after the restart').to.equal(
+        true,
+      )
+      // Even if a deal gets through (a manual open the venue refuses too), the
+      // run continues at attempt 4 and the user is not told a second time.
+      await refuse(after)
+      expect(
+        before.ledger.runs.get(`${BOT_ID}:${SYMBOL}`)?.attempt,
+        'one run across the restart',
+      ).to.equal(refusedBaseEntryPauseAfter + 1)
+      expect(after.reports, 'no repeat warning').to.have.length(0)
+      expect(await autoRefused(after, OTHER), 'other pair unaffected').to.equal(
+        false,
+      )
+    })
+
+    it('§4.6 a restart after the window ended: the next refusal pauses again, silently', async () => {
+      const before = buildBot(get())
+      for (let i = 0; i < refusedBaseEntryPauseAfter; i++) await refuse(before)
+      const k = `${BOT_ID}:${SYMBOL}`
+      before.ledger.runs.get(k)!.until = Date.now() - 1
+      const after = buildBot(get(), { ledger: before.ledger })
+      expect(await autoRefused(after), 'window over: the pair is tried').to.equal(
+        false,
+      )
+      await refuse(after)
+      expect(await autoRefused(after), 'one more refusal re-pauses').to.equal(true)
+      expect(after.reports, 'same run, no repeat warning').to.have.length(0)
+    })
+
+    it('§4.7 an automatic deal refused by the pause re-arms the start at the end of the window', async () => {
+      clock = sinon.useFakeTimers({
+        now: 1_800_000_000_000,
+        toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      })
+      const bot = buildBot(get())
+      for (let i = 0; i < refusedBaseEntryPauseAfter; i++) await refuse(bot)
+      const until = bot.refusedBaseEntryPausedUntil.get(SYMBOL)
+      expect(await autoRefused(bot)).to.equal(true)
+      await clock.tickAsync(until - Date.now() - 1)
+      expect(bot.starts, 'nothing before the window ends').to.have.length(0)
+      await clock.tickAsync(5_000)
+      expect(bot.starts, 'the start loop runs once the window ends').to.have.length(1)
+      expect(await autoRefused(bot), 'and the pair is no longer paused').to.equal(
+        false,
+      )
+    })
+
+    it('§4.7 a non-ASAP bot arms nothing (its own signal starts the next deal)', async () => {
+      clock = sinon.useFakeTimers({
+        now: 1_800_000_000_000,
+        toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      })
+      const bot = buildBot(get(), {
+        startCondition: StartConditionEnum.tradingviewSignals,
+      })
+      for (let i = 0; i < refusedBaseEntryPauseAfter; i++) await refuse(bot)
+      expect(await autoRefused(bot)).to.equal(true)
+      await clock.tickAsync(2 * 60 * 60 * 1000)
+      expect(bot.starts).to.have.length(0)
+    })
+
+    it('§4.8 the start that follows the pausing cancel is already refused and re-armed', async () => {
+      clock = sinon.useFakeTimers({
+        now: 1_800_000_000_000,
+        toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      })
+      const bot = buildBot(get())
+      const postClose: boolean[] = []
+      // An ASAP bot asks for the next deal while the cancel is still closing.
+      bot.onClose.push(async (symbol: string) => {
+        postClose.push(await autoRefused(bot, symbol))
+      })
+      for (let i = 0; i < refusedBaseEntryPauseAfter; i++) await refuse(bot)
+      expect(
+        postClose,
+        'the start right after the pausing cancel does not send a 4th order',
+      ).to.deep.equal([false, false, true])
+      await clock.tickAsync(60 * 60 * 1000)
+      expect(bot.starts, 'and it re-arms the start').to.have.length(1)
     })
   })
 }

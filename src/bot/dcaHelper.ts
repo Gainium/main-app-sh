@@ -718,15 +718,23 @@ const uncoveredCloseBackoff = new RetryBackoff({
  * pair (spec `228`). `attempt` is the run length; from
  * `refusedBaseEntryPauseAfter` on, the window is the pause on new deals. An
  * ASAP bot refuses ~every 85 s, so 5 min → 1 h turns a thousand doomed orders a
- * day into about two dozen. `memoryMs` is two hours so refusals spaced by a
- * start cooldown still count as one run. A filled base order clears it.
+ * day into about two dozen. `memoryMs` is a day, as for `dpg`: the pause is
+ * restored from this key when a worker restarts (§4.6), and restarts come hours
+ * apart, so a two-hour memory let every restart begin a fresh run and spend
+ * three more doomed orders. A filled base order clears it.
  */
 const refusedBaseEntryBackoff = new RetryBackoff({
   namespace: 'rbe',
   minMs: 5 * 60 * 1000,
   maxMs: 60 * 60 * 1000,
-  memoryMs: 2 * 60 * 60 * 1000,
+  memoryMs: 24 * 60 * 60 * 1000,
 })
+
+/**
+ * Spec `228` §4.7. The ASAP start re-armed by a paused pair fires this long
+ * after the pause ends, so the gate it meets has already lifted.
+ */
+const REFUSED_BASE_ENTRY_RESTART_MARGIN_MS = 1000
 
 /**
  * How long a futures deal stops re-sending its RESTING take-profit after the
@@ -1091,10 +1099,12 @@ function createDCABotHelper<
     /**
      * Pairs whose new deals are paused after repeated unfilled venue cancels
      * of their base order: symbol → until (ms). Spec `228`. In memory so the
-     * per-minute start loop never reads Redis; after a restart the first
-     * refusal re-records at the run's attempt and restores the pause.
+     * per-minute start loop never reads Redis; a restarted worker restores it
+     * once per pair from the Redis run counter (§4.6).
      */
     refusedBaseEntryPausedUntil: Map<string, number> = new Map()
+    /** Pairs {@link restoreRefusedBaseEntryPause} has already read. */
+    refusedBaseEntryRestored: Set<string> = new Set()
     /**
      * Reposition ticks of a resting base-order remainder, one per deal
      * (spec `111` §4.3). Cleared by `clearClassProperties`.
@@ -25065,6 +25075,14 @@ function createDCABotHelper<
       this.handleLog(
         `Deal ${dealId} has no base order on the exchange after an external cancel. Cancelling the deal`,
       )
+      // Counted before the close (spec `228` §4.8): an ASAP bot starts the
+      // next deal from inside the close, and that start must already see the
+      // pause this refusal opens, or it sends one more doomed order.
+      await this.noteRefusedBaseEntry(deal?.deal.symbol?.symbol).catch((e) =>
+        this.handleWarn(
+          `Cannot count the refused base entry of deal ${dealId}: ${(e as Error)?.message ?? e}`,
+        ),
+      )
       await this.closeDealById(
         this.botId,
         dealId,
@@ -25078,12 +25096,50 @@ function createDCABotHelper<
         false,
         DCACloseTriggerEnum.auto,
       )
-      await this.noteRefusedBaseEntry(deal?.deal.symbol?.symbol)
     }
 
     /** The run counter of spec `228`. A method so a harness can replace it. */
-    refusedBaseEntryLedger(): Pick<RetryBackoff, 'record' | 'clear'> {
+    refusedBaseEntryLedger(): Pick<RetryBackoff, 'record' | 'clear' | 'peek'> {
       return refusedBaseEntryBackoff
+    }
+
+    /**
+     * Once per pair per worker: pick up a run of refusals a previous worker
+     * recorded (spec `228` §4.6). The pause and the "user was told" latch live
+     * in memory, the run counter in Redis; without this a restart forgot the
+     * pause and warned again. The latch is restored for any run already past
+     * the threshold — even one whose window has ended — because the user was
+     * told about that run.
+     */
+    async restoreRefusedBaseEntryPause(symbol: string): Promise<void> {
+      const restored = (this.refusedBaseEntryRestored ??= new Set())
+      if (restored.has(symbol)) {
+        return
+      }
+      restored.add(symbol)
+      const state = await this.refusedBaseEntryLedger().peek([
+        this.botId,
+        symbol,
+      ])
+      if (!state || !refusedBaseEntryPauses(state.attempt)) {
+        return
+      }
+      this.standingConditionLatch.shouldReport(
+        standingConditionKey(refusedBaseEntry, symbol),
+        +new Date(),
+      )
+      if (
+        state.until > +new Date() &&
+        !this.refusedBaseEntryPausedUntil?.has(symbol)
+      ) {
+        ;(this.refusedBaseEntryPausedUntil ??= new Map()).set(
+          symbol,
+          state.until,
+        )
+        this.handleLog(
+          `${state.attempt} base orders on ${symbol} in a row were cancelled by the exchange with nothing filled. New deals on ${symbol} stay paused until ${new Date(state.until).toISOString()}`,
+        )
+      }
     }
 
     /**
@@ -25096,6 +25152,7 @@ function createDCABotHelper<
       if (!symbol) {
         return
       }
+      await this.restoreRefusedBaseEntryPause(symbol)
       const state = await this.refusedBaseEntryLedger().record(
         [this.botId, symbol],
         'base order cancelled by the exchange with nothing filled',
@@ -25134,6 +25191,7 @@ function createDCABotHelper<
       dynamic: boolean,
       trigger?: NewDealTrigger,
     ): Promise<boolean> {
+      await this.restoreRefusedBaseEntryPause(symbol)
       const until = this.refusedBaseEntryPausedUntil?.get(symbol)
       if (!until) {
         return false
@@ -25157,6 +25215,26 @@ function createDCABotHelper<
       this.handleDebug(
         `New deal on ${symbol} paused until ${new Date(until).toISOString()}: the exchange keeps cancelling its base orders with nothing filled`,
       )
+      // Spec `228` §4.7. Refusing is the end of this start; an ASAP bot has
+      // no other trigger that would ask again, so without this the pair stayed
+      // quiet until the next worker restart, not until `until`. Other start
+      // conditions ask again on their own signal.
+      if (settings.startCondition === StartConditionEnum.asap) {
+        const prev = this.openNewDealTimer.get(symbol)
+        if (prev) {
+          clearTimeout(prev)
+        }
+        this.openNewDealTimer.set(
+          symbol,
+          setTimeout(
+            () => {
+              this.openNewDealTimer.delete(symbol)
+              void this.openDealAfterTimer()
+            },
+            until - +new Date() + REFUSED_BASE_ENTRY_RESTART_MARGIN_MS,
+          ),
+        )
+      }
       return true
     }
 

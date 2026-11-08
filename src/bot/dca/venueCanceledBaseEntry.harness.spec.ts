@@ -823,6 +823,9 @@ describe('a venue-cancelled base entry is never booked (spec 048)', () => {
             async closeDealById(_b: string, dealId: string) {
               closed.push(dealId)
             }
+            // Spec 228's refusal counter runs before the close; it has its
+            // own harness, and here it would only reach a real Redis.
+            async noteRefusedBaseEntry() {}
             async startDeal(o: any) {
               throw new Error(`startDeal(${o.clientOrderId}) must not run`)
             }

@@ -146,6 +146,9 @@ const buildBot = (Cls: any, opts: Opts = {}) => {
     closeDealById: async (_b: string, dealId: string) => {
       closed.push(dealId)
     },
+    // Spec 228's refusal counter runs before the close; it has its own
+    // harness, and here it would only reach a real Redis.
+    noteRefusedBaseEntry: async () => undefined,
   }
   Object.assign(bot, stubs)
   return bot
