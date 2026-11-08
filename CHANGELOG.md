@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.125.2] - 2026-11-08
+
+### Fixed
+
+- Grid close: an order whose cancel the exchange accepted, but whose cancel answer still described it as open, was dropped from tracking, so the exchange's own cancel confirmation was ignored and the order stayed open in the bot's records after the bot closed. During a close the order now stays tracked until the exchange confirms it, and one still unconfirmed when the close sweep ends is cancelled once more to settle its state.
+
 ## [1.125.1] - 2026-11-08
 
 ### Fixed

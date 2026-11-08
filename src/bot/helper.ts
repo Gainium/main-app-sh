@@ -2591,6 +2591,15 @@ function createBotHelper<
       return a.orderTime - b.orderTime
     }
     /**
+     * Spec `231`. Set for the duration of a close sweep (`closing` below):
+     * a cancel the venue accepted but still answers as NEW keeps the order
+     * tracked until the venue's own report finishes it.
+     */
+    protected closingSweep = false
+    protected override keepsUnconfirmedCancelTracked(_order: Order): boolean {
+      return this.closingSweep
+    }
+    /**
      * Cancel all orders<br />
      *
      * Update data in {@link BotHelper#orders}, save to orders collection in db, emit via {@link BotHelper#ioUpdate}<br />
@@ -2598,6 +2607,8 @@ function createBotHelper<
      * After each request run {@link BotHelper#countBalances}<br />
      *
      * @param {boolean} [cancelPartiallyFilled] cancel order with status PARTIALLY FILLED. Default = false
+     * @param {boolean} [closing] the bot is closing (stop, close by limit/market,
+     *   stop and sell) — not a `start`/`reloadBot` clean-up. Spec `231`.
      */
     /**
      * The first refusal of the running {@link BotHelper#cancelAllOrder} sweep
@@ -2643,6 +2654,7 @@ function createBotHelper<
     async cancelAllOrder(
       cancelPartiallyFilled = false,
       setErrors = true,
+      closing = false,
     ): Promise<string | void> {
       let lastPrice = 0
       let keyRefusal: string | null = null
@@ -2663,6 +2675,10 @@ function createBotHelper<
         await this.primeCancelBatch(newOrders)
         this.sweepKeyRefusal = null
         let skipped = 0
+        // Spec `231`. Cancels the venue accepted but whose answer still said
+        // NEW: they stay tracked, and are asked again once the loop is done.
+        const unconfirmed: string[] = []
+        this.closingSweep = closing
         try {
           for (const order of newOrders) {
             i++
@@ -2678,6 +2694,9 @@ function createBotHelper<
             if (cancel?.status === 'FILLED') {
               await this.handleUnknownOrder(cancel)
             }
+            if (closing && cancel?.status === 'NEW') {
+              unconfirmed.push(order.clientOrderId)
+            }
             await this.countBalances(lastPrice)
             if (!this.firstRun) {
               const progress = {
@@ -2689,7 +2708,28 @@ function createBotHelper<
               this.updateProgress(progress)
             }
           }
+          // Spec `231` §4.2. Still held as resting means the venue's report
+          // has not arrived; a second cancel makes the venue state it
+          // ("already cancelled" goes to the unknown-order lookup) before the
+          // caller closes the user stream.
+          for (const id of unconfirmed) {
+            if (this.sweepKeyRefusal) {
+              break
+            }
+            const held = this.getOrderFromMap(id)
+            if (!held || !['NEW', 'PARTIALLY_FILLED'].includes(held.status)) {
+              continue
+            }
+            this.handleLog(
+              `Cancel of ${id} was accepted but the exchange still reports it open. Cancelling again to confirm`,
+            )
+            const again = await this.cancelOrderOnExchange(held, setErrors)
+            if (again?.status === 'FILLED') {
+              await this.handleUnknownOrder(again)
+            }
+          }
         } finally {
+          this.closingSweep = false
           this.clearCancelBatch()
           keyRefusal = this.sweepKeyRefusal ?? null
           this.sweepKeyRefusal = null
@@ -3382,7 +3422,9 @@ function createBotHelper<
         }).find((o) => o.typeOrder === TypeOrderEnum.stop)
         if (!findTP && !this.stopFilled) {
           const price = await this.getLatestPrice(pair)
-          await this.reportCloseCancelRefused(await this.cancelAllOrder(true))
+          await this.reportCloseCancelRefused(
+            await this.cancelAllOrder(true, true, true),
+          )
           const progress = {
             text: BotProgressCodeEnum.placeStop,
             stage: 0,
@@ -3648,7 +3690,7 @@ function createBotHelper<
       }
       this.blockLimit = true
       await this.reportCloseCancelRefused(
-        await this.cancelAllOrder(cancelPartiallyFilled, false),
+        await this.cancelAllOrder(cancelPartiallyFilled, false, true),
       )
       this.lockTpSlCheck = true
       if (this.exchange && this.data) {
@@ -5247,7 +5289,7 @@ function createBotHelper<
             result === TpSlReturn.sl)
         ) {
           this.blockLimit = true
-          await this.cancelAllOrder(true)
+          await this.cancelAllOrder(true, true, true)
           const payload: { grid?: Grid; additional?: OrderAdditionalParams } =
             {}
           const price = !oldTpSl

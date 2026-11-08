@@ -10840,6 +10840,16 @@ class MainBot<T extends IMainBot> {
     return
   }
 
+  /**
+   * Whether a cancel the venue accepted but still answers as NEW keeps the
+   * order tracked, so the venue's own report can finish it. The base bot says
+   * no (unchanged behaviour); the grid helper says yes during a close sweep.
+   * Spec `231`.
+   */
+  protected keepsUnconfirmedCancelTracked(_order: Order): boolean {
+    return false
+  }
+
   /** Back-off before the single re-send of a refused teardown cancel. Spec `180`. */
   protected refusedCancelRetryDelay(): number {
     return Math.round(2_000 * (1 + Math.random() * 0.5))
@@ -11185,7 +11195,11 @@ class MainBot<T extends IMainBot> {
           // before the cancel, or the user stream's end-of-order report.
           // `processOrderQueue` puts that report into the map as a new
           // object, so `order` cannot see it.
-          const known = [order, this.getOrderFromMap(order.clientOrderId)]
+          // Spec `231`. Whether the bot still holds the order as resting now
+          // that the answer is in — `processOrderQueue` drops it from the map
+          // once the venue's own report has finished it.
+          const heldWhenAnswered = this.getOrderFromMap(order.clientOrderId)
+          const known = [order, heldWhenAnswered]
             .filter((o): o is Order => !!o && +o.executedQty > 0)
             .map((o) => ({
               executedQty: o.executedQty,
@@ -11264,10 +11278,22 @@ class MainBot<T extends IMainBot> {
           }
           this.emit('bot update', order)
           this.setOrder(order)
+          // Spec `231`. A cancel the venue accepted whose answer still says
+          // NEW is not finished: a read-back answer (Hyperliquid) can lag the
+          // cancel. Dropping it here unregisters the id, so the venue's own
+          // report a moment later is discarded and the row stays NEW for good.
+          // Kept tracked only where the caller asks for it (a grid close sweep);
+          // everywhere else the delete below is unchanged.
+          const unconfirmed =
+            order.status === 'NEW' &&
+            !!heldWhenAnswered &&
+            ['NEW', 'PARTIALLY_FILLED'].includes(heldWhenAnswered.status) &&
+            this.keepsUnconfirmedCancelTracked(order)
           if (
             removeFromLocal &&
             +request.data.executedQty === 0 &&
-            !(+order.executedQty > 0)
+            !(+order.executedQty > 0) &&
+            !unconfirmed
           ) {
             this.deleteOrder(order.clientOrderId)
           }
