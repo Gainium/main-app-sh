@@ -5253,7 +5253,42 @@ export interface DCABacktestingResult extends SchemaI {
   multiPairs?: number
   symbolStats?: SymbolStats[]
   periodicStats?: PeriodicStats[]
+  dealStats?: DealStats
+  randomEdge?: RandomEdge
   messages?: string[]
+}
+/**
+ * Fixed-size summary of a backtest's closed deals (@gainium/backtester
+ * 1.29.0, helper/dealStats). Kept in place of the deal list, which has no
+ * upper bound. Returns are each deal's profit %; durations are ms.
+ */
+export type DealStats = {
+  closed: number
+  winners: number
+  mean: number
+  sd: number
+  min: number
+  max: number
+  p5: number
+  p25: number
+  p50: number
+  p75: number
+  p95: number
+  histogram: { from: number; step: number; counts: number[] }
+  duration: { mean: number; p50: number; p95: number; max: number }
+}
+/**
+ * Strategy vs random entries, run server-side on request: the same settings
+ * and period with random entries (the engine's `edge: random`). Only these
+ * summaries are kept; neither run's deals are.
+ */
+export type RandomEdge = {
+  time: number
+  strategy: { n: number; mean: number; sd: number }
+  random: { n: number; mean: number; sd: number }
+  /** Welch's t of strategy − random; absent under two deals a side. */
+  t?: number
+  verdict?: 'beats' | 'worse' | 'same'
 }
 export type PeriodicStats = {
   period: string
@@ -5391,6 +5426,8 @@ export interface ComboBacktestingResult extends SchemaI {
   multiPairs?: number
   symbolStats?: SymbolStats[]
   periodicStats?: PeriodicStats[]
+  dealStats?: DealStats
+  randomEdge?: RandomEdge
   messages?: string[]
 }
 
@@ -5506,6 +5543,8 @@ export type DCABacktestingResultShort = {
   multiPairs?: number
   symbolStats?: SymbolStats[]
   periodicStats?: PeriodicStats[]
+  dealStats?: DealStats
+  randomEdge?: RandomEdge
   messages?: string[]
 }
 
@@ -6072,6 +6111,13 @@ export type ServerSideBacktestPayload =
         exchangeUUID: string
       }
       config: BacktestingSettings & { periodName?: string }
+      /**
+       * Strategy vs random for a saved backtest of this user: the run uses
+       * random entries (`edge: random`) and writes only `randomEdge` (and
+       * `dealStats` when the backtest has none) onto that backtest. No new
+       * backtest is saved and no deals are kept.
+       */
+      edge?: { type: 'random'; backtestId: string }
     }
   | {
       type: BotType.grid

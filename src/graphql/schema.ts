@@ -2459,7 +2459,47 @@ export const BotSchema = /* GraphQL */ `
     multiPairs: Float
     symbolStats: [SymbolStats]
     periodicStats: [PeriodicStats]
+    dealStats: BacktestDealStats
+    randomEdge: BacktestRandomEdge
     messages: [String]
+  }
+  type BacktestDealStatsHistogram {
+    from: Float
+    step: Float
+    counts: [Float]
+  }
+  type BacktestDealStatsDuration {
+    mean: Float
+    p50: Float
+    p95: Float
+    max: Float
+  }
+  type BacktestDealStats {
+    closed: Float
+    winners: Float
+    mean: Float
+    sd: Float
+    min: Float
+    max: Float
+    p5: Float
+    p25: Float
+    p50: Float
+    p75: Float
+    p95: Float
+    histogram: BacktestDealStatsHistogram
+    duration: BacktestDealStatsDuration
+  }
+  type BacktestReturnStats {
+    n: Float
+    mean: Float
+    sd: Float
+  }
+  type BacktestRandomEdge {
+    time: Float
+    strategy: BacktestReturnStats
+    random: BacktestReturnStats
+    t: Float
+    verdict: String
   }
   type PeriodicStats {
     period: String
@@ -2502,6 +2542,8 @@ export const BotSchema = /* GraphQL */ `
     multiPairs: Float
     symbolStats: [SymbolStats]
     periodicStats: [PeriodicStats]
+    dealStats: BacktestDealStats
+    randomEdge: BacktestRandomEdge
     messages: [String]
   }
   type hedgeComboBacktestHedgeResult {
@@ -2526,6 +2568,7 @@ export const BotSchema = /* GraphQL */ `
     multiPairs: Float
     symbolStats: [SymbolStats]
     periodicStats: [PeriodicStats]
+    dealStats: BacktestDealStats
     messages: [String]
   }
   type hedgeComboBacktestSideConfig {
@@ -2776,7 +2819,34 @@ export const BotSchema = /* GraphQL */ `
     multiPairs: Float
     symbolStats: [SymbolStatsInput]
     periodicStats: [PeriodicStatsInput]
+    dealStats: BacktestDealStatsInput
     messages: [String]
+  }
+  input BacktestDealStatsHistogramInput {
+    from: Float
+    step: Float
+    counts: [Float]
+  }
+  input BacktestDealStatsDurationInput {
+    mean: Float
+    p50: Float
+    p95: Float
+    max: Float
+  }
+  input BacktestDealStatsInput {
+    closed: Float
+    winners: Float
+    mean: Float
+    sd: Float
+    min: Float
+    max: Float
+    p5: Float
+    p25: Float
+    p50: Float
+    p75: Float
+    p95: Float
+    histogram: BacktestDealStatsHistogramInput
+    duration: BacktestDealStatsDurationInput
   }
   input PeriodicStatsInput {
     period: String
@@ -2810,6 +2880,7 @@ export const BotSchema = /* GraphQL */ `
     multiPairs: Float
     symbolStats: [SymbolStatsInput]
     periodicStats: [PeriodicStatsInput]
+    dealStats: BacktestDealStatsInput
     messages: [String]
   }
   input hedgeComboBacktestInputHedgeResult {
@@ -2834,6 +2905,7 @@ export const BotSchema = /* GraphQL */ `
     multiPairs: Float
     symbolStats: [SymbolStatsInput]
     periodicStats: [PeriodicStatsInput]
+    dealStats: BacktestDealStatsInput
     messages: [String]
   }
   input hedgeComboBacktestInputSideConfig {

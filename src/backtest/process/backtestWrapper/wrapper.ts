@@ -22,6 +22,8 @@ import {
   BaseReturn,
   BacktestRequestStatus,
   BotStatusEnum,
+  type DealStats,
+  type RandomEdge,
 } from '../../../../types'
 
 import type {
@@ -32,6 +34,12 @@ import type {
   DCABotSettings,
   Settings,
 } from '@gainium/backtester/dist/types'
+import { EdgeBacktestEnum } from '@gainium/backtester/dist/types'
+import {
+  compareReturnStats,
+  dealStatsOf,
+  returnStatsOf,
+} from '@gainium/backtester/dist/helper/dealStats'
 import { v4 } from 'uuid'
 import { GRAPH_QL_PORT, MAIN_SERVICE_HOST } from '../../../config'
 import {
@@ -452,12 +460,124 @@ class BacktestWrapper {
     this.handleLog(`Done ${this.math.round(value * 100, 0)}% ${text}`, 'debug')
   }
 
+  /**
+   * Strategy vs random entries for a saved DCA / combo backtest of this user.
+   * The engine's random mode reruns the same settings and period with random
+   * entries, sized from the backtest's own average usage. When the backtest
+   * predates `dealStats`, the original is rerun first to get it. Both runs'
+   * deals stay in memory: only the fixed-size summaries are written back.
+   */
+  private async runRandomEdge(
+    backtestId: string,
+    prices: Prices,
+    symbols: Symbols[],
+  ): Promise<ResultType | null> {
+    const fail = async (reason: string) => {
+      this.handleLog(`Random edge ${backtestId}: ${reason}`, 'error')
+      await this.updateRequest(BacktestRequestStatus.failed)
+      return null
+    }
+    // the two collections share the result shape; one handle for both
+    const db = (
+      this.data.type === BotType.combo
+        ? this.comboBacktestDb
+        : this.dcaBacktestDb
+    ) as typeof this.dcaBacktestDb
+    const found = await db.readData({ _id: backtestId, userId: this.userId })
+    const saved = found.status === StatusEnum.ok ? found.data?.result : null
+    if (!saved) {
+      return fail('backtest not found')
+    }
+    if (!saved.usage?.avgRealUsage) {
+      return fail('backtest has no usage to size random entries')
+    }
+    const input = dcaBacktesterInput(this.data.data, prices, symbols)
+    this.updateRequest(BacktestRequestStatus.loadingData)
+    const onProcessing = () =>
+      this.updateRequest(BacktestRequestStatus.processing)
+
+    let dealStats: DealStats | undefined = saved.dealStats?.closed
+      ? saved.dealStats
+      : undefined
+    if (!dealStats) {
+      const original = (await new DCABackteser(
+        input,
+        this.handleBacktestLog,
+      ).test(undefined, this.handleBacktestLog, onProcessing)) as
+        | DCABacktestingResult
+        | undefined
+      if (!original) {
+        return fail('original rerun returned no result')
+      }
+      dealStats = original.dealStats ?? dealStatsOf(original.deals)
+    }
+
+    const random = (await new DCABackteser(
+      {
+        ...input,
+        // the engine rewrites the settings for the random strategy
+        settings: JSON.parse(JSON.stringify(input.settings)),
+        edge: EdgeBacktestEnum.random,
+        previousData: saved as unknown as DCABacktestingResult,
+      },
+      this.handleBacktestLog,
+    ).test(undefined, this.handleBacktestLog, onProcessing)) as
+      | DCABacktestingResult
+      | undefined
+    if (!random) {
+      return fail('random run returned no result')
+    }
+    const strategyStats = {
+      n: dealStats.closed,
+      mean: dealStats.mean,
+      sd: dealStats.sd,
+    }
+    const randomStats = returnStatsOf(
+      random.deals
+        .filter((d) => d.status === 'closed')
+        .map((d) => d.profit.perc)
+        .filter((v) => Number.isFinite(v)),
+    )
+    const cmp = compareReturnStats(strategyStats, randomStats)
+    const randomEdge: RandomEdge = {
+      time: Date.now(),
+      strategy: strategyStats,
+      random: randomStats,
+      ...(cmp ?? {}),
+    }
+    const write = await db.updateData(
+      { _id: backtestId, userId: this.userId },
+      { $set: { randomEdge, dealStats } },
+    )
+    if (write.status !== StatusEnum.ok) {
+      return fail(`could not save the result: ${write.reason}`)
+    }
+    this.handleLog(
+      `Random edge ${backtestId}: ${randomEdge.verdict ?? 'no verdict'} t=${randomEdge.t ?? '-'}`,
+    )
+    await this.updateRequest(BacktestRequestStatus.success, saved.shareId ?? '')
+    return [
+      {
+        id: backtestId,
+        time: random.duration.processingDataTime,
+        shareId: saved.shareId ?? '',
+        type: this.data.type,
+      },
+    ]
+  }
+
   public async run(): Promise<ResultType | null> {
     this.handleLog('Running backtest', 'debug')
     const prices = await this.loadPrices()
     this.handleLog('Prices loaded', 'debug')
     const symbols = await this.getSymbols()
     this.handleLog('Symbols loaded', 'debug')
+    if (
+      (this.data.type === BotType.dca || this.data.type === BotType.combo) &&
+      this.data.edge?.type === 'random'
+    ) {
+      return this.runRandomEdge(this.data.edge.backtestId, prices, symbols)
+    }
     const symbolsToUse = this.data.config.multiIdependent
       ? symbols.map((s) => [s])
       : [symbols]

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.125.0] - 2026-11-08
+
+### Added
+
+- Saved DCA and combo backtests keep `dealStats`, a fixed-size summary of the deal returns (count, winners, mean, spread, quantiles, a 20-bin histogram and deal durations), in place of the deal list, which has no upper bound. Hedge sides accept it as well.
+- Strategy vs random for a saved DCA or combo backtest can run server-side: a server-side request with `edge: { type: 'random', backtestId }` reruns the backtest's settings and period with random entries and writes `randomEdge` (both sides' count, mean and spread of the deal return %, Welch's t and a verdict) onto that backtest. When the backtest has no `dealStats`, its original run is repeated first to get it. Neither run's deals are stored.
+
 ## [1.124.9] - 2026-11-07
 
 ### Fixed

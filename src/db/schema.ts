@@ -32,6 +32,8 @@ import type {
   SymbolStats,
   FavoriteIndicatorsSchema,
   PeriodicStats,
+  DealStats,
+  RandomEdge,
   StoreFilesSchema,
   BacktestRequestSchema,
   BotStats,
@@ -2774,6 +2776,38 @@ const periodicStats: Schema<PeriodicStats> = new Schema({
   runup: Number,
 })
 
+const returnStatsShape = { n: Number, mean: Number, sd: Number }
+
+const dealStatsSchema: Schema<DealStats> = new Schema(
+  {
+    closed: Number,
+    winners: Number,
+    mean: Number,
+    sd: Number,
+    min: Number,
+    max: Number,
+    p5: Number,
+    p25: Number,
+    p50: Number,
+    p75: Number,
+    p95: Number,
+    histogram: { from: Number, step: Number, counts: [Number] },
+    duration: { mean: Number, p50: Number, p95: Number, max: Number },
+  },
+  { _id: false },
+)
+
+const randomEdgeSchema: Schema<RandomEdge> = new Schema(
+  {
+    time: Number,
+    strategy: returnStatsShape,
+    random: returnStatsShape,
+    t: Number,
+    verdict: String,
+  },
+  { _id: false },
+)
+
 const backtestRequest: Schema<BacktestRequestSchema> = new Schema({
   cost: Number,
   symbols: [
@@ -2945,6 +2979,8 @@ const backtestCommon = {
   multiPairs: Number,
   symbolStats: [symbolStats],
   periodicStats: [periodicStats],
+  dealStats: dealStatsSchema,
+  randomEdge: randomEdgeSchema,
   messages: [String],
 }
 
@@ -2976,6 +3012,7 @@ const hedgeBacktestCommon = {
   multiPairs: Number,
   symbolStats: [symbolStats],
   periodicStats: [periodicStats],
+  dealStats: dealStatsSchema,
   messages: [String],
 }
 
