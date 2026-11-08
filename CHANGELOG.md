@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.125.3] - 2026-11-08
+
+### Fixed
+
+- A pair paused after the exchange kept cancelling its base orders unfilled now stays paused across a bot restart without warning again, and an ASAP bot retries it by itself when the pause ends
+
 ## [1.125.2] - 2026-11-08
 
 ### Fixed
