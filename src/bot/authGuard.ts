@@ -130,6 +130,18 @@ export const isVenueLockout = (reason?: string | null): boolean => {
   return VENUE_LOCKOUT_SIGNATURES.some((s) => r.includes(s))
 }
 
+/**
+ * Does this refusal say the KEY may not make the call — a permission the key
+ * lacks (Kraken `EGeneral:Permission denied`, Bybit `Permission denied, please
+ * check your API key permissions.`) or a dead credential? Unlike a rate limit
+ * or a lockout it is a property of the account, not of one request, so every
+ * further call of the same kind with that key is refused too. Spec `232`.
+ */
+export const isKeyPermissionRefusal = (reason?: string | null): boolean =>
+  !!reason &&
+  (reason.toLowerCase().includes('permission denied') ||
+    isHardAuthFailure(reason))
+
 const logPrefix = '[AuthFailureGuard]'
 
 const AUTH_MIN_MS = 5 * 60 * 1000

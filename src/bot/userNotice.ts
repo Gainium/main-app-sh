@@ -103,3 +103,18 @@ export const manualEntryNotAddedMessage = (symbol: string, why: string) =>
 
 export const stoppingNoticeMessage = (deals: number) =>
   `Stopping the bot: closing ${deals} deal${deals === 1 ? '' : 's'} first. The bot shows as closed once they are done.`
+
+/** How many order ids {@link closeCancelRefusedMessage} lists before "and N more". */
+export const closeCancelRefusedListCap = 40
+
+/**
+ * A grid close whose cancels the exchange refused because the API key may not
+ * cancel orders. Names the exchange's own order ids, which is what the user
+ * needs to find and cancel them there. Spec `232`.
+ */
+export const closeCancelRefusedMessage = (orderIds: string[], err: string) => {
+  const shown = orderIds.slice(0, closeCancelRefusedListCap)
+  const more = orderIds.length - shown.length
+  const n = orderIds.length
+  return `The bot was closed, but ${n} of its order${n === 1 ? '' : 's'} could not be cancelled and ${n === 1 ? 'remains' : 'remain'} on the exchange: the API key is not allowed to cancel orders${detail(err)}. Cancel ${n === 1 ? 'it' : 'them'} on the exchange, and give the key permission to cancel and query orders before starting a bot with it again. Order ids: ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}.`
+}

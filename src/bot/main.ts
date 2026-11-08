@@ -10830,6 +10830,16 @@ class MainBot<T extends IMainBot> {
     return this.blockPriceCheck || this.cancelRetryWanted(order)
   }
 
+  /**
+   * A cancel the venue refused reached the generic "report it" branch of
+   * {@link MainBot#cancelOrderOnExchange}. The base bot does nothing more; the
+   * grid helper uses it to stop a close sweep on a key that may not cancel.
+   * Spec `232`.
+   */
+  protected noteCancelRefused(_order: Order, _reason: string): void {
+    return
+  }
+
   /** Back-off before the single re-send of a refused teardown cancel. Spec `180`. */
   protected refusedCancelRetryDelay(): number {
     return Math.round(2_000 * (1 + Math.random() * 0.5))
@@ -11159,6 +11169,7 @@ class MainBot<T extends IMainBot> {
             promotePartialToFilled,
           ])
         }
+        this.noteCancelRefused(order, request.reason)
         this.handleErrors(
           request.reason,
           'limitOrders()',

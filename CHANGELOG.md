@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.125.1] - 2026-11-08
+
+### Fixed
+
+- Grid close on an API key that is not allowed to cancel orders: the close no longer sends a cancel for every order once the exchange has refused one for the key's permissions (on Kraken each further attempt extended a lockout of the whole key), and the user now gets a bot error naming the orders that remain on the exchange, instead of the bot closing with no message.
+
 ## [1.125.0] - 2026-11-08
 
 ### Added

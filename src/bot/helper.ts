@@ -1,8 +1,10 @@
 import type DB from '../db'
 import {
+  closeCancelRefusedMessage,
   exchangeInfoMissingStopMessage,
   startFailedMessage,
 } from './userNotice'
+import { isKeyPermissionRefusal } from './authGuard'
 import {
   OrderSideEnum,
   StatusEnum,
@@ -19,6 +21,7 @@ import {
   FuturesStrategyEnum,
   BotType,
   BotFlags,
+  MessageTypeEnum,
 } from '../../types'
 import MainBot, {
   isDefinitiveOrderNotFound,
@@ -2596,11 +2599,53 @@ function createBotHelper<
      *
      * @param {boolean} [cancelPartiallyFilled] cancel order with status PARTIALLY FILLED. Default = false
      */
+    /**
+     * The first refusal of the running {@link BotHelper#cancelAllOrder} sweep
+     * that said the KEY may not cancel. Spec `232`.
+     */
+    private sweepKeyRefusal?: string | null
+
+    protected override noteCancelRefused(_order: Order, reason: string) {
+      if (!this.sweepKeyRefusal && isKeyPermissionRefusal(reason)) {
+        this.sweepKeyRefusal = reason
+      }
+    }
+
+    /**
+     * After a close sweep the key was not allowed to finish, tell the user
+     * which orders are still on the exchange. They stay tracked as the
+     * exchange has them; only the user can cancel them. Spec `232` §4.3.
+     */
+    private async reportCloseCancelRefused(refusal: string | void) {
+      if (!refusal) {
+        return
+      }
+      const left = this.getOrdersByStatusAndDealId({
+        status: this.orderStatuses,
+      })
+      if (!left.length) {
+        return
+      }
+      await this.reportUserRefusal(
+        closeCancelRefusedMessage(
+          left.map((o) =>
+            o.orderId && `${o.orderId}` !== '-1'
+              ? `${o.orderId}`
+              : o.clientOrderId,
+          ),
+          refusal,
+        ),
+        this.data?.settings.pair,
+        MessageTypeEnum.error,
+      )
+    }
+
     async cancelAllOrder(
       cancelPartiallyFilled = false,
       setErrors = true,
-    ): Promise<void> {
+    ): Promise<string | void> {
       let lastPrice = 0
+      let keyRefusal: string | null = null
       if (this.exchange && this.data && this.orders) {
         const lastPriceRequest = await this.getLatestPrice(
           this.data.settings.pair,
@@ -2616,9 +2661,18 @@ function createBotHelper<
         // this loop returns early, so every order the batch cancels is also
         // reached by the loop and written down locally.
         await this.primeCancelBatch(newOrders)
+        this.sweepKeyRefusal = null
+        let skipped = 0
         try {
           for (const order of newOrders) {
             i++
+            // Spec `232` §4.2: the key may not cancel, so every further
+            // cancel is refused the same way — and on Kraken each one extends
+            // a lockout of the whole key. The order stays as it is.
+            if (this.sweepKeyRefusal) {
+              skipped++
+              continue
+            }
             const cancel = await this.cancelOrderOnExchange(order, setErrors)
 
             if (cancel?.status === 'FILLED') {
@@ -2637,9 +2691,17 @@ function createBotHelper<
           }
         } finally {
           this.clearCancelBatch()
+          keyRefusal = this.sweepKeyRefusal ?? null
+          this.sweepKeyRefusal = null
+        }
+        if (keyRefusal) {
+          this.handleWarn(
+            `Cancel sweep stopped: the key may not cancel orders (${keyRefusal}). ${skipped} cancel(s) not sent`,
+          )
         }
         this.sendEndProcess(true)
       }
+      return keyRefusal ?? undefined
     }
     protected async checkPriceToStart() {
       if (!this.data) {
@@ -3320,7 +3382,7 @@ function createBotHelper<
         }).find((o) => o.typeOrder === TypeOrderEnum.stop)
         if (!findTP && !this.stopFilled) {
           const price = await this.getLatestPrice(pair)
-          await this.cancelAllOrder(true)
+          await this.reportCloseCancelRefused(await this.cancelAllOrder(true))
           const progress = {
             text: BotProgressCodeEnum.placeStop,
             stage: 0,
@@ -3585,7 +3647,9 @@ function createBotHelper<
         return await this.processSellAtStop(close)
       }
       this.blockLimit = true
-      await this.cancelAllOrder(cancelPartiallyFilled, false)
+      await this.reportCloseCancelRefused(
+        await this.cancelAllOrder(cancelPartiallyFilled, false),
+      )
       this.lockTpSlCheck = true
       if (this.exchange && this.data) {
         if (this.swapAssetData && this.swapAssetData.status !== 'FILLED') {
