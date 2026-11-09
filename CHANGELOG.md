@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.1] - 2026-11-09
+
+### Fixed
+
+- A market take-profit that filled while its bot worker restarted is now recognised by the restart check, so the deal closes instead of staying open
+
 ## [1.126.0] - 2026-11-09
 
 ### Added
