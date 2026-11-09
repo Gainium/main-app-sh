@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.0] - 2026-11-09
+
+### Added
+
+- DCA deals now record the ladder levels the price moved past before they could be placed. The bot never buys them at market by itself; each one can be executed from the deal, and "Execute next DCA" no longer re-executes a level that already filled.
+
 ## [1.125.6] - 2026-11-09
 
 ### Fixed
