@@ -12,6 +12,7 @@ import {
   isDisplacementInLadder,
   isLevelFilled,
   percentageLadderEnd,
+  toleratedLadderEnd,
 } from './gridBreakpoints'
 
 describe('spec 164 — grid breakpoint bounds', () => {
@@ -70,5 +71,17 @@ describe('spec 164 — grid breakpoint bounds', () => {
     expect(
       isLevelFilled(level, [row({ typeOrder: TypeOrderEnum.dealTP })]),
     ).to.equal(false)
+  })
+
+  it('toleratedLadderEnd widens the deepest level by a tenth of the depth', () => {
+    expect(toleratedLadderEnd(1.18458, 0.97728, true)).to.be.closeTo(
+      0.95655,
+      1e-5,
+    )
+    expect(toleratedLadderEnd(1, 1.2, false)).to.be.closeTo(1.22, 1e-12)
+    // The recorded wick (spec 164): still beyond the widened end.
+    expect(toleratedLadderEnd(0.315, 0.205, true)).to.be.closeTo(0.194, 1e-12)
+    expect(toleratedLadderEnd(1, undefined, true)).to.equal(undefined)
+    expect(toleratedLadderEnd(0, 0.5, true)).to.equal(0.5)
   })
 })

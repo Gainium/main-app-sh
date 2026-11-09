@@ -37,6 +37,46 @@ export function percentageLadderEnd(
 }
 
 /**
+ * How far past its own deepest level a ladder still accepts a moved level, as
+ * a fraction of the ladder's depth (start to deepest level).
+ *
+ * The deepest level is not a hard wall. When a ladder's step shrinks below one
+ * price tick (a step scale under 1 over many levels), the build pushes each
+ * later level a tick past the previous one, so the real ladder runs past its
+ * closed-form depth, and every applied breakpoint restarts that chain from the
+ * moved price. A hard wall at the closed form then discarded breakpoints of
+ * levels that had really filled, the rebuilt ladder stopped matching the
+ * deal's fills, and the smart orders stalled with nothing resting. The wall
+ * exists for wicks far beyond the ladder (to ~1 % of the price), which a tenth
+ * of the ladder's depth still refuses.
+ */
+export const LADDER_END_SLACK = 0.1
+
+/**
+ * The deepest price a level may be moved to: `ladderEnd` widened by
+ * {@link LADDER_END_SLACK} of the depth from `start`. Returns `ladderEnd`
+ * unchanged when either is not a positive finite number.
+ */
+export function toleratedLadderEnd(
+  start: number,
+  ladderEnd: number | undefined,
+  long: boolean,
+): number | undefined {
+  if (
+    ladderEnd === undefined ||
+    !Number.isFinite(ladderEnd) ||
+    !Number.isFinite(start) ||
+    start <= 0
+  ) {
+    return ladderEnd
+  }
+  const depth = Math.abs(start - ladderEnd)
+  return long
+    ? ladderEnd - depth * LADDER_END_SLACK
+    : ladderEnd + depth * LADDER_END_SLACK
+}
+
+/**
  * Can a level be moved to `displacedPrice`?
  *
  * Never to a price that is not a positive finite number. Never past

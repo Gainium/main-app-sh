@@ -287,6 +287,7 @@ import {
   isDisplacementInLadder,
   isLevelFilled,
   percentageLadderEnd,
+  toleratedLadderEnd,
 } from './dca/gridBreakpoints'
 import { resolveLevelClientOrderId } from './clientOrderIdReissue'
 import { splitPendingFunds } from './dca/pendingFundsResend'
@@ -23411,21 +23412,28 @@ function createDCABotHelper<
           let balanceUseQty = 0
 
           const ordersCount = this.dcaLadderSize(settings)
-          // Spec `164`: a stored breakpoint beyond this ladder's deepest level
-          // (a wick past the deal's whole DCA coverage) is not applied. Only a
-          // percentage ladder has a closed-form depth; on every other ladder
-          // a breakpoint must still be a positive finite price.
+          // Spec `164`: a stored breakpoint far beyond this ladder's deepest
+          // level (a wick past the deal's whole DCA coverage) is not applied.
+          // Only a percentage ladder has a closed-form depth; on every other
+          // ladder a breakpoint must still be a positive finite price. The
+          // bound is widened by `LADDER_END_SLACK`: a ladder whose step shrinks
+          // below one tick runs past its closed-form depth, and its real
+          // breakpoints lie there.
           const ladderEnd =
             settings.dcaCondition === DCAConditionEnum.percentage && !scaleAr
-              ? this.math.round(
-                  percentageLadderEnd(
-                    latestPrice,
-                    gridStep,
-                    stepScale,
-                    ordersCount ?? 0,
-                    long,
+              ? toleratedLadderEnd(
+                  latestPrice,
+                  this.math.round(
+                    percentageLadderEnd(
+                      latestPrice,
+                      gridStep,
+                      stepScale,
+                      ordersCount ?? 0,
+                      long,
+                    ),
+                    symbol.priceAssetPrecision,
                   ),
-                  symbol.priceAssetPrecision,
+                  long,
                 )
               : undefined
           const useVolumeChange =
@@ -23954,13 +23962,25 @@ function createDCABotHelper<
                 latestPrice !== 0 &&
                 ((latestPrice < firstOrder.price && this.isLong) ||
                   (latestPrice > firstOrder.price && !this.isLong))
-              // Spec `164` §1.2: a market past the ladder's deepest level is a
-              // wick, not a place to rest one level. The level keeps its price.
+              // Spec `164` §1.2: a market far past the ladder's deepest level
+              // is a wick, not a place to rest one level. The level keeps its
+              // price. Widened by `LADDER_END_SLACK`, as in the build: a market
+              // a few ticks past a converging ladder's last level is where its
+              // remaining levels must be bought, not a wick.
               const ladderEnd = long
                 ? Math.min(...orders.map((o) => o.price))
                 : Math.max(...orders.map((o) => o.price))
               const beyondLadder =
-                gapped && !isDisplacementInLadder(latestPrice, ladderEnd, long)
+                gapped &&
+                !isDisplacementInLadder(
+                  latestPrice,
+                  toleratedLadderEnd(
+                    deal?.initialPrice || boPrice || price,
+                    ladderEnd,
+                    long,
+                  ),
+                  long,
+                )
               if (beyondLadder) {
                 this.handleLog(
                   `Deal ${dealId}: no breakpoint for level ${firstOrder.price} at market ${latestPrice}: beyond the ladder's deepest level ${ladderEnd}`,
