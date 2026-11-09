@@ -14590,7 +14590,12 @@ function createDCABotHelper<
           // Take-profits dropped below as never sent. They are not resting, so
           // the grid comparison further down must not count them. Spec 172.
           const unsentTPs = new Set<string>()
-          if (activeTPSLOrders.length && deal && !forTPCheck) {
+          // A deal that closes at MARKET rests no take-profit, but it can hold
+          // one it SENT moments before the restart, whose fill report the old
+          // process never handled. Ask the venue about it too, and act only on
+          // a fill: for such a deal nothing below re-places or retires a
+          // take-profit — the TP level check owns that. Spec 234.
+          if (activeTPSLOrders.length && deal) {
             for (const activeTPSLOrder of activeTPSLOrders) {
               if (this.isOrderQuarantined(activeTPSLOrder)) continue
               if (this.restartProbeExhausted()) continue
@@ -14611,6 +14616,9 @@ function createDCABotHelper<
                 this.handleWarn(
                   `Order ${activeTPSLOrder.clientOrderId} not found on exchange: ${tpslOrderData?.reason}`,
                 )
+                if (forTPCheck) {
+                  continue
+                }
                 // A take-profit restored from the Redis snapshot that was
                 // never sent: the process stopped inside `startDeal` after the
                 // snapshot had it and before its write-ahead row. Waiting out
@@ -14652,7 +14660,11 @@ function createDCABotHelper<
                   tpslOrderData.data,
                   activeTPSLOrder,
                 )
-                if (updatedOrder.status === 'CANCELED') {
+                if (updatedOrder.status === 'CANCELED' && forTPCheck) {
+                  this.handleDebug(
+                    `TP/SL order ${updatedOrder.clientOrderId} is CANCELED on a market-close deal, left to the TP level check.`,
+                  )
+                } else if (updatedOrder.status === 'CANCELED') {
                   this.deleteOrder(updatedOrder.clientOrderId)
                   this.handleDebug(
                     `TP/SL order ${updatedOrder.clientOrderId} is CANCELED.`,
