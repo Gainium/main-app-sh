@@ -10392,7 +10392,18 @@ class MainBot<T extends IMainBot> {
               // under the same id, which would land on this CANCELED row and
               // leave the accepted order untracked. Spec 221.
               this.noteWrittenOffClientOrderId(order.clientOrderId)
-              this.updateOrderOnDb({ ...order, status: 'CANCELED' })
+              // Record WHY, so a written-off safety order the platform should
+              // have retried can be told apart from one the user's balance or
+              // keys refused (sentinel `deals.safety-order-written-off`).
+              this.updateOrderOnDb({
+                ...order,
+                status: 'CANCELED',
+                refusal: {
+                  reason: `${request.reason ?? ''}`.slice(0, 300),
+                  subType: this.getErrorSubType(`${request.reason ?? ''}`),
+                  at: Date.now(),
+                },
+              })
             } else {
               await this.deleteOrderFromDb(order.clientOrderId)
             }

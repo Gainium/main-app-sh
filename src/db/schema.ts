@@ -968,6 +968,17 @@ const orderSchema: Schema<OrderSchema> = new Schema({
     required: false,
     default: undefined,
   },
+  // Why a placement was written off — see `OrderRefusal` in core/types.ts.
+  // Additive, absent on every accepted order and on older write-offs.
+  refusal: {
+    type: {
+      reason: String,
+      subType: String,
+      at: Number,
+    },
+    required: false,
+    default: undefined,
+  },
   ...CreatedUpdated,
 })
 

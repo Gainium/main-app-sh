@@ -248,6 +248,26 @@ describe('spec 206 — a refusal answered after stop() still retires the row', (
     expect(bot.ordersDb.rows.get(CLIENT_ID)).to.equal(undefined)
   })
 
+  it('a venue refusal records why on the written-off row', async () => {
+    ComplianceGuard.check = notRestricted as any
+    const bot: any = makeBot(async () => ({
+      status: StatusEnum.notok,
+      reason: 'EGeneral:Expired request',
+      data: null,
+    }))
+    bot.getErrorSubType = (r: string) =>
+      r.includes('Expired') ? 'Uncategorized' : 'Not enough balance'
+    const before = Date.now()
+
+    await bot.sendOrderToExchange(makeOrder())
+
+    const row = bot.ordersDb.rows.get(CLIENT_ID)
+    expect(row.status).to.equal('CANCELED')
+    expect(row.refusal.reason).to.equal('EGeneral:Expired request')
+    expect(row.refusal.subType).to.equal('Uncategorized')
+    expect(row.refusal.at).to.be.at.least(before)
+  })
+
   it('§4.3 leaves an ambiguous failure for the reconcile, as before', async () => {
     ComplianceGuard.check = notRestricted as any
     const bot: any = makeBot(async () => {

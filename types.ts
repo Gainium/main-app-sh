@@ -4153,6 +4153,16 @@ export type CommonOrder = {
  * again — a fill, a cancel, a successful lookup — the order is rebuilt from
  * that truth and the quarantine goes with it.
  */
+/** @see Order.refusal */
+export type OrderRefusal = {
+  /** The venue's (or connector's) own words, truncated. */
+  reason: string
+  /** `getErrorSubType(reason)`, e.g. `Not enough balance`, `Uncategorized`. */
+  subType: string
+  /** ms epoch the write-off was made. */
+  at: number
+}
+
 export type OrderQuarantine = {
   /** Definitive not-founds seen, at most one per order-check run. */
   strikes: number
@@ -4184,6 +4194,14 @@ export type Order = CommonOrder & {
   typeOrder: TypeOrder
   /** @see OrderQuarantine — absent for every order that behaves normally. */
   quarantine?: OrderQuarantine
+  /**
+   * Why a placement was written off (status CANCELED, orderId -1). Absent on
+   * every order the venue accepted, and on write-offs made before this was
+   * recorded. `subType` is the bot-error class (`getErrorSubType`), so a
+   * reader can tell a user-owned refusal (balance, keys) from a platform one
+   * by its owner in `boterrorsubtypes`.
+   */
+  refusal?: OrderRefusal
   botId: string
   userId: string
   dealId?: string
