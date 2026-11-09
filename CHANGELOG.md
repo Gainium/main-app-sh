@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.125.4] - 2026-11-09
+
+### Fixed
+
+- The public API's deal list (`GET /api/v2/deals/:dealType`) sorted every matching deal the account owns in memory to return one page, because no index matched its `createTime`, `_id` order. The DCA and combo deal collections now declare indexes in that exact order, with and without the status filter, so a page is read straight off the index. Results and their order are unchanged.
+
 ## [1.125.3] - 2026-11-08
 
 ### Fixed

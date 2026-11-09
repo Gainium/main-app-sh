@@ -3739,6 +3739,10 @@ export const registerIndexes = () => {
 
   comboDealSchema.index({ userId: 1 })
   comboDealSchema.index({ botId: 1 })
+  // `GET /api/v2/deals/combo` pages with sort {createTime:-1, _id:-1} — see the
+  // matching dcaDealSchema pair (spec 228).
+  comboDealSchema.index({ userId: 1, status: 1, createTime: -1, _id: -1 })
+  comboDealSchema.index({ userId: 1, createTime: -1, _id: -1 })
   // Spec 044 §8.13 reservation reads (FundingReservation): only deals stamped
   // `baseFundingBeta` ever hold funds, and both reads carry that stamp and the
   // user, so this index holds beta deals only.
@@ -3821,6 +3825,16 @@ export const registerIndexes = () => {
   // absence of options exactly as they are, or `syncIndexes()` drops and
   // rebuilds it on the next start.
   dcaDealSchema.index({ userId: 1, status: 1, createTime: -1 })
+  // `GET /api/v2/deals/:dealType` pages with sort {createTime:-1, _id:-1}: the
+  // `_id` tiebreaker (spec 065) makes page boundaries stable, but no index above
+  // ends in `_id`, so the planner read every matching deal the user has, sorted
+  // them in memory and then applied skip/limit — the whole history for one
+  // 20-row page, on every page. These two deliver that exact order straight off
+  // the index (with and without the status filter), so a page costs
+  // skip + limit keys. All keys are write-once except `status`, which moves
+  // once, on open -> closed. Spec 228.
+  dcaDealSchema.index({ userId: 1, status: 1, createTime: -1, _id: -1 })
+  dcaDealSchema.index({ userId: 1, createTime: -1, _id: -1 })
   // Spec 044 §8.13 reservation reads (FundingReservation): only deals stamped
   // `baseFundingBeta` ever hold funds, and both reads carry that stamp and the
   // user, so this index holds beta deals only.
