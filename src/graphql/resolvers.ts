@@ -5634,6 +5634,7 @@ const resolvers = <
           dealId: string
           botId: string
           expectedLevel?: number
+          missedLevel?: number
         }
       },
       { token, req, paperContext }: InputRequest,
@@ -5645,13 +5646,13 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { botId, dealId, expectedLevel } = input
+      const { botId, dealId, expectedLevel, missedLevel } = input
       return await Bot.executeNextDcaLevel(
         botId,
         dealId,
         user.data._id.toString(),
         paperContext,
-        { expectedLevel },
+        { expectedLevel, missedLevel },
       )
     },
     reduceDealFunds: async (

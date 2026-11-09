@@ -1840,6 +1840,13 @@ export interface DCADealsSchema extends SchemaI {
     qty: number
   }[]
   ignoreLevels?: number[]
+  /**
+   * Spec 233: ladder levels the market ran past while they were not resting,
+   * which the engine will not place (they lie on the near side of the last
+   * fill). Recorded so the user is told and can execute one by hand
+   * (`executeNextDcaLevel` with `missedLevel`). Absent or empty = none.
+   */
+  missedLevels?: { level: number; price: number; qty: number }[]
   isDeleted?: boolean
   feeBalance?: number
   moveSlActivated?: boolean
@@ -4225,6 +4232,13 @@ export type Order = CommonOrder & {
   ackAt?: number
   tpSlTarget?: string
   dcaLevel?: number
+  /**
+   * Spec 233: the DCA ladder level (1-based `levelNumber`) a `dealRegular`
+   * order was sent for, so its fill names its level even when it filled away
+   * from that level's price. Absent on orders sent before it was recorded and
+   * on every non-ladder order.
+   */
+  ladderLevel?: number
   minigridId?: string
   addFundsId?: string
   reduceFundsId?: string

@@ -8730,6 +8730,11 @@ class MainBot<T extends IMainBot> {
       minigridId: order.minigridId,
       minigridBudget: order.minigridBudget,
       sl: order.sl,
+      // Spec 233: a ladder order carries its level, so its fill names it.
+      ...(order.type === TypeOrderEnum.dealRegular &&
+      typeof order.levelNumber === 'number'
+        ? { ladderLevel: order.levelNumber }
+        : {}),
       ...additionalParams,
     }
     if (response.price.indexOf('e') !== -1) {

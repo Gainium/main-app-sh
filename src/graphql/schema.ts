@@ -1427,6 +1427,8 @@ export const BotSchema = /* GraphQL */ `
     dealId: String!
     botId: String!
     expectedLevel: Int
+    "Spec 233: execute this skipped level (deal.missedLevels) instead of the next one."
+    missedLevel: Int
   }
   """
   Cancel and re-place one deal's orders (safety orders and take profit)
@@ -4855,6 +4857,8 @@ export const BotSchema = /* GraphQL */ `
     assets: botAssets
     dcaBot: [dcaDealBot]
     gridBreakpoints: [gridBreakpoint]
+    "Spec 233: ladder levels the bot skipped and will not place by itself."
+    missedLevels: [dcaMissedLevel]
     strategy: StrategyEnum
     exchange: String
     exchangeUUID: String
@@ -4998,6 +5002,11 @@ export const BotSchema = /* GraphQL */ `
   type gridBreakpoint {
     price: Float
     displacedPrice: Float
+  }
+  type dcaMissedLevel {
+    level: Int
+    price: Float
+    qty: Float
   }
   type dcaDealBot {
     settings: DCABotSettings

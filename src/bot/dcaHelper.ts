@@ -291,6 +291,12 @@ import {
 } from './dca/gridBreakpoints'
 import { resolveLevelClientOrderId } from './clientOrderIdReissue'
 import { splitPendingFunds } from './dca/pendingFundsResend'
+import {
+  missedLadderLevels,
+  resolveLadderLevels,
+  sameMissedLevels,
+  type MissedLevel,
+} from './dca/missedLevels'
 import { isComboFundsOrderRow } from './combo/comboDealFunds'
 import {
   pendingReduceQty,
@@ -23807,6 +23813,68 @@ function createDCABotHelper<
       return []
     }
     /**
+     * Spec 233: record the ladder levels this deal skipped (`deal.missedLevels`).
+     *
+     * Bookkeeping only. It never places, cancels or moves an order: the levels
+     * it names are the ones `createCurrentDealOrders` already leaves out, on the
+     * near side of the last fill. Writes the deal only when the list changed,
+     * and tells the user once per newly skipped level.
+     */
+    recordMissedLevels(
+      deal: ExcludeDoc<Deal>,
+      ladder: Grid[],
+      dealId: string,
+    ): MissedLevel[] {
+      const rows = this.getOrdersByStatusAndDealId({
+        status: ['FILLED', 'PARTIALLY_FILLED', 'NEW'],
+        dealId,
+      })
+      const missed = missedLadderLevels(
+        ladder,
+        rows,
+        +(deal.lastPrice ?? 0),
+        this.isLong,
+        deal.missedLevels,
+        deal.gridBreakpoints ?? [],
+      )
+      if (sameMissedLevels(deal.missedLevels, missed)) {
+        return missed
+      }
+      const known = new Set((deal.missedLevels ?? []).map((m) => m.level))
+      const added = missed.filter((m) => !known.has(m.level))
+      deal.missedLevels = missed
+      const findDeal = this.getDeal(dealId)
+      if (findDeal) {
+        findDeal.deal.missedLevels = missed
+        this.saveDeal(findDeal, { missedLevels: missed })
+      }
+      if (added.length && this.shouldProceed()) {
+        this.handleLog(
+          `Deal ${dealId}: DCA level(s) ${added.map((m) => m.level).join(', ')} were skipped: the market passed them before they could rest`,
+        )
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: `DCA level${added.length > 1 ? 's' : ''} ${added.map((m) => m.level).join(', ')} ${added.length > 1 ? 'were' : 'was'} skipped: the price moved past ${added.length > 1 ? 'them' : 'it'} before ${added.length > 1 ? 'they' : 'it'} could be placed. The bot will not buy ${added.length > 1 ? 'them' : 'it'} at market by itself; you can execute ${added.length > 1 ? 'them' : 'it'} from the deal.`,
+          paperContext: !!this.data?.paperContext,
+          deal: dealId,
+          symbol: deal.symbol?.symbol,
+          type: MessageTypeEnum.info,
+        })
+      }
+      return missed
+    }
+    /** Spec 233: is this slice entry one of the deal's skipped levels? */
+    isMissedLevelOrder(o: Grid, missed: Set<number>): boolean {
+      return (
+        o.type === TypeOrderEnum.dealRegular &&
+        typeof o.levelNumber === 'number' &&
+        missed.has(o.levelNumber)
+      )
+    }
+    /**
      * Create current deal orders
      *
      * @param {number} price Price from which to start
@@ -23943,6 +24011,34 @@ function createDCABotHelper<
               (o) => !isLevelFilled(o, filledLevels),
             )
           }
+          // Spec 233: name the levels this slice leaves behind the last fill,
+          // and keep them out of it — before the gap path below picks its
+          // first level, so a skipped level is never moved to the market. A
+          // skipped level stays out until it fills (the user executes it): a
+          // later fill moves the last fill price, and must not put a skipped
+          // level back on the far side of it to be bought by the bot. This
+          // only ever removes orders from the slice.
+          // An unchecked rebuild (an order cancel, a merge) records nothing but
+          // still keeps the recorded levels out.
+          const missedSet = new Set<number>()
+          if (
+            !all &&
+            deal &&
+            !this.combo &&
+            settings.dcaCondition !== DCAConditionEnum.indicators
+          ) {
+            const missed = !noCheck
+              ? this.recordMissedLevels(deal, orders, dealId)
+              : (deal.missedLevels ?? [])
+            for (const m of missed) {
+              missedSet.add(m.level)
+            }
+            if (missedSet.size) {
+              currentOrders = currentOrders.filter(
+                (o) => !this.isMissedLevelOrder(o, missedSet),
+              )
+            }
+          }
           const [firstOrder] = currentOrders
           if (!noCheck) {
             if (
@@ -24025,6 +24121,12 @@ function createDCABotHelper<
             }
           }
 
+          if (missedSet.size) {
+            // The gap path above may have rebuilt the slice unfiltered.
+            currentOrders = currentOrders.filter(
+              (o) => !this.isMissedLevelOrder(o, missedSet),
+            )
+          }
           if (!all && useSmartOrders) {
             currentOrders = currentOrders.slice(
               0,
@@ -32285,7 +32387,7 @@ function createDCABotHelper<
     async executeNextDcaLevel(
       _botId: string,
       dealId: string,
-      opts?: { expectedLevel?: number },
+      opts?: { expectedLevel?: number; missedLevel?: number },
     ) {
       const _id = this.startMethod('executeNextDcaLevel')
       this.handleDebug(
@@ -32329,13 +32431,62 @@ function createDCABotHelper<
       // IS `levels.complete`, MINUS the add-funds fills that also incremented
       // it (spec `031` §5). `deal.funds` records exactly those, and is the same
       // correction `getDealDCAByMarketToCheck` applies to the same two fields.
-      const level = nextLadderLevel(deal.deal)
+      // Spec 233: `missedLevel` executes one of the deal's skipped levels (a
+      // level the market ran past, which the bot will not buy by itself)
+      // instead of the next one. It must still be skipped right now: the
+      // ladder is re-resolved here, not taken from the dashboard.
+      const missedLevel =
+        typeof opts?.missedLevel === 'number' && Number.isInteger(opts.missedLevel)
+          ? opts.missedLevel
+          : undefined
+      const level = missedLevel ?? nextLadderLevel(deal.deal)
       if (!ladderSize || level > ladderSize) {
         return fail(
           `This deal has no DCA levels left to execute (${level - 1}/${ladderSize} used)`,
         )
       }
+      {
+        const ladder = await this.createInitialDealOrders(
+          deal.deal.symbol.symbol,
+          deal.deal.initialPrice,
+          dealId,
+          deal.deal,
+        )
+        const rows = this.getOrdersByStatusAndDealId({
+          status: ['FILLED', 'PARTIALLY_FILLED', 'NEW'],
+          dealId,
+        })
+        if (missedLevel !== undefined) {
+          const skipped = missedLadderLevels(
+            ladder,
+            rows,
+            +(deal.deal.lastPrice ?? 0),
+            this.isLong,
+            deal.deal.missedLevels,
+            deal.deal.gridBreakpoints ?? [],
+          )
+          if (!skipped.some((m) => m.level === missedLevel)) {
+            return fail(
+              `DCA level ${missedLevel} is not a skipped level of this deal any more — nothing was executed.`,
+            )
+          }
+        } else if (
+          resolveLadderLevels(
+            ladder,
+            rows,
+            deal.deal.gridBreakpoints ?? [],
+          ).filled.has(level)
+        ) {
+          // The count says "next", but this level has already filled: the
+          // deal skipped a level before it (spec 233). Executing it would
+          // fill the same level twice.
+          return fail(
+            `DCA level ${level} has already filled on this deal — nothing was executed. Its skipped levels can be executed one by one.`,
+          )
+        }
+      }
       if (
+        missedLevel === undefined &&
         typeof opts?.expectedLevel === 'number' &&
         opts.expectedLevel !== level
       ) {
@@ -32403,7 +32554,7 @@ function createDCABotHelper<
           }).filter(
             (o) =>
               o.typeOrder === TypeOrderEnum.dealRegular &&
-              +o.price === ladderPrice,
+              (+o.price === ladderPrice || o.ladderLevel === level),
           )
           for (const o of resting) {
             const canceled = await this.cancelOrderOnExchange(o)
@@ -32471,9 +32622,11 @@ function createDCABotHelper<
             event: 'Deal',
             botType: this.botType,
             description:
-              settings.dcaCondition === DCAConditionEnum.indicators
-                ? `DCA level ${level} was executed manually at ${price} without waiting for its signal`
-                : `DCA level ${level} was executed manually at ${price} instead of waiting for ${ladderPrice}`,
+              missedLevel !== undefined
+                ? `Skipped DCA level ${level} was executed manually at ${price}`
+                : settings.dcaCondition === DCAConditionEnum.indicators
+                  ? `DCA level ${level} was executed manually at ${price} without waiting for its signal`
+                  : `DCA level ${level} was executed manually at ${price} instead of waiting for ${ladderPrice}`,
             paperContext: !!this.data?.paperContext,
             deal: dealId,
             symbol,

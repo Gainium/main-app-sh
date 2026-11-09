@@ -941,6 +941,8 @@ const orderSchema: Schema<OrderSchema> = new Schema({
   paperContext: Boolean,
   tpSlTarget: String,
   dcaLevel: Number,
+  // Spec 233: DCA ladder level a dealRegular order was sent for.
+  ladderLevel: Number,
   minigridId: String,
   addFundsId: String,
   reduceFundsId: String,
@@ -2421,6 +2423,11 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
       displacedPrice: Number,
     },
   ],
+  // Spec 233: ladder levels the engine will not place (see core/types.ts).
+  missedLevels: {
+    type: [{ _id: false, level: Number, price: Number, qty: Number }],
+    default: undefined,
+  },
   paperContext: Boolean,
   type: { type: String, enum: DCATypeEnum },
   strategy: {

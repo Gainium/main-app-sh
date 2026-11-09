@@ -1,0 +1,955 @@
+{
+ "long-precision-drift": {
+  "symbol": "SIGNUSDT",
+  "strategy": "LONG",
+  "settings": {
+   "dcaCondition": "percentage",
+   "ordersCount": 2,
+   "step": "2",
+   "stepScale": "1.1",
+   "volumeScale": "1",
+   "orderSize": "3",
+   "baseOrderSize": "3",
+   "orderSizeType": "quote",
+   "useSmartOrders": false,
+   "activeOrdersCount": 1,
+   "useDca": true,
+   "dcaCustom": [],
+   "useTp": true,
+   "tpPerc": "2",
+   "dealCloseCondition": "techInd",
+   "dealCloseConditionSL": "tp",
+   "useSl": false,
+   "scaleDcaType": "percentage",
+   "futures": false,
+   "coinm": false,
+   "leverage": 1,
+   "marginType": "isolated",
+   "indicators": [],
+   "indicatorGroups": []
+  },
+  "initialPrice": 0.01801,
+  "lastPrice": 0.01725,
+  "avgPrice": 0.017621808035714285,
+  "gridBreakpoints": [],
+  "rows": [
+   {
+    "status": "FILLED",
+    "origPrice": "0.01725",
+    "price": "0.01725",
+    "origQty": "173.91",
+    "orderId": "venue"
+   }
+  ],
+  "pair": {
+   "baseAsset": {
+    "minAmount": 0,
+    "maxAmount": 900000000000000000000,
+    "step": 0.01
+   },
+   "quoteAsset": {
+    "minAmount": 1
+   },
+   "priceAssetPrecision": 6
+  },
+  "market": 0.008157
+ },
+ "long-no-skips": {
+  "symbol": "INTWBUSDT",
+  "strategy": "LONG",
+  "settings": {
+   "dcaCondition": "percentage",
+   "ordersCount": 19,
+   "step": "2",
+   "stepScale": "1.1",
+   "volumeScale": "1",
+   "orderSize": "5.6",
+   "baseOrderSize": "5.6",
+   "orderSizeType": "quote",
+   "useSmartOrders": false,
+   "activeOrdersCount": 1,
+   "useDca": true,
+   "dcaCustom": [],
+   "useTp": true,
+   "tpPerc": "2",
+   "dealCloseCondition": "tp",
+   "dealCloseConditionSL": "tp",
+   "useSl": false,
+   "scaleDcaType": "percentage",
+   "futures": false,
+   "coinm": false,
+   "leverage": 1,
+   "marginType": "isolated",
+   "indicators": [],
+   "indicatorGroups": []
+  },
+  "initialPrice": 33.47,
+  "lastPrice": 6.32,
+  "avgPrice": 18.383412408759124,
+  "gridBreakpoints": [
+   {
+    "price": 12.2,
+    "displacedPrice": 10.03
+   }
+  ],
+  "rows": [
+   {
+    "status": "FILLED",
+    "origPrice": "32.8",
+    "price": "32.8",
+    "origQty": "0.17",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "32.06",
+    "price": "32.06",
+    "origQty": "0.17",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "31.25",
+    "price": "31.25",
+    "origQty": "0.18",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "30.36",
+    "price": "30.36",
+    "origQty": "0.18",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "29.38",
+    "price": "29.38",
+    "origQty": "0.19",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "28.3",
+    "price": "28.3",
+    "origQty": "0.2",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "27.11",
+    "price": "27.11",
+    "origQty": "0.21",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "25.81",
+    "price": "25.81",
+    "origQty": "0.22",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "24.38",
+    "price": "24.38",
+    "origQty": "0.23",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "22.8",
+    "price": "22.8",
+    "origQty": "0.25",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "21.06",
+    "price": "21.06",
+    "origQty": "0.27",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "19.15",
+    "price": "19.15",
+    "origQty": "0.29",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "17.05",
+    "price": "17.05",
+    "origQty": "0.33",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "14.74",
+    "price": "14.74",
+    "origQty": "0.38",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "10.03",
+    "price": "10.03",
+    "origQty": "0.56",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "9.4",
+    "price": "9.4",
+    "origQty": "0.6",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "6.32",
+    "price": "6.32",
+    "origQty": "0.89",
+    "orderId": "venue"
+   }
+  ],
+  "pair": {
+   "baseAsset": {
+    "minAmount": 0.01,
+    "maxAmount": 9222449,
+    "step": 0.01
+   },
+   "quoteAsset": {
+    "minAmount": 5
+   },
+   "priceAssetPrecision": 2
+  },
+  "market": 5.28
+ },
+ "short-out-of-base-coin": {
+  "symbol": "METUSDT",
+  "strategy": "SHORT",
+  "settings": {
+   "dcaCondition": "percentage",
+   "ordersCount": 32,
+   "step": "2",
+   "stepScale": "1.1",
+   "volumeScale": "1",
+   "orderSize": "5.6",
+   "baseOrderSize": "5.6",
+   "orderSizeType": "quote",
+   "useSmartOrders": true,
+   "activeOrdersCount": 5,
+   "useDca": true,
+   "dcaCustom": [],
+   "useTp": true,
+   "tpPerc": "2",
+   "dealCloseCondition": "tp",
+   "dealCloseConditionSL": "tp",
+   "useSl": false,
+   "scaleDcaType": "percentage",
+   "futures": false,
+   "coinm": false,
+   "leverage": 1,
+   "marginType": "isolated",
+   "indicators": [],
+   "indicatorGroups": []
+  },
+  "initialPrice": 0.09539999999999998,
+  "lastPrice": 0.5285,
+  "avgPrice": 0.11387547993019195,
+  "gridBreakpoints": [
+   {
+    "price": 0.1101,
+    "displacedPrice": 0.5285
+   }
+  ],
+  "rows": [
+   {
+    "status": "FILLED",
+    "origPrice": "0.0973",
+    "price": "0.0973",
+    "origQty": "57.6",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.0994",
+    "price": "0.0994",
+    "origQty": "56.3",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.1017",
+    "price": "0.1017",
+    "origQty": "55.1",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.1042",
+    "price": "0.1042",
+    "origQty": "53.7",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.107",
+    "price": "0.107",
+    "origQty": "52.3",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.5266",
+    "price": "0.5285",
+    "origQty": "10.6",
+    "orderId": "venue"
+   }
+  ],
+  "pair": {
+   "baseAsset": {
+    "minAmount": 0.1,
+    "maxAmount": 92141578,
+    "step": 0.1
+   },
+   "quoteAsset": {
+    "minAmount": 5
+   },
+   "priceAssetPrecision": 4
+  },
+  "market": 0.308
+ },
+ "short-wick-beyond-ladder": {
+  "symbol": "ZECUSDT",
+  "strategy": "SHORT",
+  "settings": {
+   "dcaCondition": "percentage",
+   "ordersCount": 32,
+   "step": "2",
+   "stepScale": "1.1",
+   "volumeScale": "1",
+   "orderSize": "5.6",
+   "baseOrderSize": "5.6",
+   "orderSizeType": "quote",
+   "useSmartOrders": true,
+   "activeOrdersCount": 5,
+   "useDca": true,
+   "dcaCustom": [],
+   "useTp": true,
+   "tpPerc": "2",
+   "dealCloseCondition": "tp",
+   "dealCloseConditionSL": "tp",
+   "useSl": false,
+   "scaleDcaType": "percentage",
+   "futures": false,
+   "coinm": false,
+   "leverage": 1,
+   "marginType": "isolated",
+   "indicators": [],
+   "indicatorGroups": []
+  },
+  "initialPrice": 211.18,
+  "lastPrice": 1379.94,
+  "avgPrice": 258.8660617760618,
+  "gridBreakpoints": [
+   {
+    "price": 345.36,
+    "displacedPrice": 1379.94
+   }
+  ],
+  "rows": [
+   {
+    "status": "FILLED",
+    "origPrice": "215.4",
+    "price": "215.4",
+    "origQty": "0.026",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "220.05",
+    "price": "220.05",
+    "origQty": "0.025",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "225.16",
+    "price": "225.16",
+    "origQty": "0.025",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "230.78",
+    "price": "230.78",
+    "origQty": "0.024",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "236.96",
+    "price": "236.96",
+    "origQty": "0.024",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "243.76",
+    "price": "243.76",
+    "origQty": "0.023",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "251.24",
+    "price": "251.24",
+    "origQty": "0.022",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "259.47",
+    "price": "259.47",
+    "origQty": "0.022",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "268.52",
+    "price": "268.52",
+    "origQty": "0.021",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "329.32",
+    "price": "329.32",
+    "origQty": "0.017",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "1379.94",
+    "price": "1379.94",
+    "origQty": "0.004",
+    "orderId": "venue"
+   }
+  ],
+  "pair": {
+   "baseAsset": {
+    "minAmount": 0.001,
+    "maxAmount": 90000,
+    "step": 0.001
+   },
+   "quoteAsset": {
+    "minAmount": 5
+   },
+   "priceAssetPrecision": 2
+  },
+  "market": 1199.99
+ },
+ "long-placeholder-row": {
+  "symbol": "SPKUSDT",
+  "strategy": "LONG",
+  "settings": {
+   "dcaCondition": "percentage",
+   "ordersCount": 19,
+   "step": "2",
+   "stepScale": "1.1",
+   "volumeScale": "1",
+   "orderSize": "5.6",
+   "baseOrderSize": "5.6",
+   "orderSizeType": "quote",
+   "useSmartOrders": false,
+   "activeOrdersCount": 1,
+   "useDca": true,
+   "dcaCustom": [],
+   "useTp": true,
+   "tpPerc": "2",
+   "dealCloseCondition": "tp",
+   "dealCloseConditionSL": "tp",
+   "useSl": false,
+   "scaleDcaType": "percentage",
+   "futures": false,
+   "coinm": false,
+   "leverage": 1,
+   "marginType": "isolated",
+   "indicators": [],
+   "indicatorGroups": []
+  },
+  "initialPrice": 0.075835,
+  "lastPrice": 0.01434,
+  "avgPrice": 0.0425092190797805,
+  "gridBreakpoints": [],
+  "rows": [
+   {
+    "status": "FILLED",
+    "origPrice": "0.074318",
+    "price": "0.074318",
+    "origQty": "75",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.07265",
+    "price": "0.07265",
+    "origQty": "77",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.070815",
+    "price": "0.070815",
+    "origQty": "79",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.068796",
+    "price": "0.068796",
+    "origQty": "81",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.066575",
+    "price": "0.066575",
+    "origQty": "84",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.064132",
+    "price": "0.064132",
+    "origQty": "87",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.061445",
+    "price": "0.061445",
+    "origQty": "91",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.058489",
+    "price": "0.058489",
+    "origQty": "96",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.055238",
+    "price": "0.055238",
+    "origQty": "101",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.051662",
+    "price": "0.051662",
+    "origQty": "108",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.047728",
+    "price": "0.047728",
+    "origQty": "117",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.043401",
+    "price": "0.043401",
+    "origQty": "129",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.038641",
+    "price": "0.038641",
+    "origQty": "145",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.033405",
+    "price": "0.033405",
+    "origQty": "168",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.027645",
+    "price": "0.027645",
+    "origQty": "203",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.021309",
+    "price": "0.021309",
+    "origQty": "263",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "0.01434",
+    "price": "0.01434",
+    "origQty": "391",
+    "orderId": "venue"
+   },
+   {
+    "status": "NEW",
+    "origPrice": "0.006674",
+    "price": "0.006674",
+    "origQty": "839",
+    "orderId": "-1"
+   }
+  ],
+  "pair": {
+   "baseAsset": {
+    "minAmount": 1,
+    "maxAmount": 913205152,
+    "step": 1
+   },
+   "quoteAsset": {
+    "minAmount": 5
+   },
+   "priceAssetPrecision": 6
+  },
+  "market": 0.015896
+ },
+ "long-gap-then-deeper": {
+  "symbol": "TSLAUSDT",
+  "strategy": "LONG",
+  "settings": {
+   "dcaCondition": "percentage",
+   "ordersCount": 18,
+   "step": "0.43",
+   "stepScale": "1.06",
+   "volumeScale": "1.2",
+   "orderSize": "60",
+   "baseOrderSize": "60",
+   "orderSizeType": "quote",
+   "useSmartOrders": true,
+   "activeOrdersCount": 1,
+   "useDca": true,
+   "dcaCustom": [],
+   "useTp": true,
+   "tpPerc": "3",
+   "dealCloseCondition": "techInd",
+   "dealCloseConditionSL": "tp",
+   "useSl": false,
+   "dcaByMarket": false,
+   "scaleDcaType": "percentage",
+   "dcaVolumeBaseOn": "scale",
+   "minimumDeviation": "1",
+   "futures": true,
+   "coinm": false,
+   "leverage": 2,
+   "marginType": "cross",
+   "indicators": [],
+   "indicatorGroups": []
+  },
+  "initialPrice": 413.93,
+  "lastPrice": 358.92,
+  "avgPrice": 376.93,
+  "gridBreakpoints": [
+   {
+    "price": 387.28,
+    "displacedPrice": 378.26
+   },
+   {
+    "price": 378.24,
+    "displacedPrice": 359.43
+   }
+  ],
+  "rows": [
+   {
+    "status": "FILLED",
+    "origPrice": "412.15",
+    "price": "412.15",
+    "origQty": "0.15",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "410.26",
+    "price": "410.26",
+    "origQty": "0.18",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "408.26",
+    "price": "408.26",
+    "origQty": "0.21",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "406.14",
+    "price": "406.14",
+    "origQty": "0.26",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "403.9",
+    "price": "403.9",
+    "origQty": "0.31",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "401.51",
+    "price": "401.51",
+    "origQty": "0.37",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "398.99",
+    "price": "398.99",
+    "origQty": "0.45",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "396.31",
+    "price": "396.31",
+    "origQty": "0.54",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "393.48",
+    "price": "393.48",
+    "origQty": "0.66",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "390.47",
+    "price": "390.47",
+    "origQty": "0.79",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "378.29",
+    "price": "378.26",
+    "origQty": "0.98",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "378.25",
+    "price": "378.25",
+    "origQty": "1.18",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "359.43",
+    "price": "359.43",
+    "origQty": "1.49",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "358.92",
+    "price": "358.92",
+    "origQty": "3.71",
+    "orderId": "venue"
+   }
+  ],
+  "pair": {
+   "baseAsset": {
+    "minAmount": 0.01,
+    "maxAmount": 0,
+    "step": 0.01
+   },
+   "quoteAsset": {
+    "minAmount": 5
+   },
+   "priceAssetPrecision": 2
+  },
+  "market": 359.66
+ },
+ "long-fill-at-breakpoint-price": {
+  "symbol": "NVDAUSDT",
+  "strategy": "LONG",
+  "settings": {
+   "dcaCondition": "percentage",
+   "ordersCount": 17,
+   "step": "0.45",
+   "stepScale": "1.05",
+   "volumeScale": "1.2",
+   "orderSize": "60",
+   "baseOrderSize": "60",
+   "orderSizeType": "quote",
+   "useSmartOrders": true,
+   "activeOrdersCount": 1,
+   "useDca": true,
+   "dcaCustom": [],
+   "useTp": true,
+   "tpPerc": "3",
+   "dealCloseCondition": "techInd",
+   "dealCloseConditionSL": "tp",
+   "useSl": false,
+   "dcaByMarket": false,
+   "scaleDcaType": "percentage",
+   "dcaVolumeBaseOn": "scale",
+   "minimumDeviation": "1",
+   "futures": true,
+   "coinm": false,
+   "leverage": 2,
+   "marginType": "cross",
+   "indicators": [],
+   "indicatorGroups": []
+  },
+  "initialPrice": 242.44,
+  "lastPrice": 214,
+  "avgPrice": 222.79,
+  "gridBreakpoints": [
+   {
+    "price": 226.94,
+    "displacedPrice": 226.92
+   },
+   {
+    "price": 223.12,
+    "displacedPrice": 216.67
+   },
+   {
+    "price": 214.25,
+    "displacedPrice": 214
+   }
+  ],
+  "rows": [
+   {
+    "status": "FILLED",
+    "origPrice": "241.35",
+    "price": "241.35",
+    "origQty": "0.25",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "240.2",
+    "price": "240.2",
+    "origQty": "0.3",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "239",
+    "price": "239",
+    "origQty": "0.36",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "237.74",
+    "price": "237.74",
+    "origQty": "0.44",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "236.41",
+    "price": "236.41",
+    "origQty": "0.53",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "235.02",
+    "price": "235.02",
+    "origQty": "0.64",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "233.56",
+    "price": "233.56",
+    "origQty": "0.77",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "232.02",
+    "price": "232.02",
+    "origQty": "0.93",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "230.41",
+    "price": "230.41",
+    "origQty": "1.12",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "228.72",
+    "price": "228.72",
+    "origQty": "1.35",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "226.92",
+    "price": "226.92",
+    "origQty": "1.64",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "225.07",
+    "price": "225.07",
+    "origQty": "1.98",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "216.67",
+    "price": "216.67",
+    "origQty": "2.47",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "216.63",
+    "price": "216.63",
+    "origQty": "4.27",
+    "orderId": "venue"
+   },
+   {
+    "status": "FILLED",
+    "origPrice": "214.25",
+    "price": "214",
+    "origQty": "5.18",
+    "orderId": "venue"
+   }
+  ],
+  "pair": {
+   "baseAsset": {
+    "minAmount": 0.01,
+    "maxAmount": 0,
+    "step": 0.01
+   },
+   "quoteAsset": {
+    "minAmount": 5
+   },
+   "priceAssetPrecision": 2
+  },
+  "market": 178.86
+ }
+}

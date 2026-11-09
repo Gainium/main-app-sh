@@ -14659,7 +14659,7 @@ class Bot<T extends UserSchema = UserSchema> {
     dealId: string,
     userId: string,
     paperContext: boolean,
-    opts?: { expectedLevel?: number },
+    opts?: { expectedLevel?: number; missedLevel?: number },
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
