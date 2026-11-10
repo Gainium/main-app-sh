@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.3] - 2026-11-10
+
+### Fixed
+
+- An order lookup no longer shrinks a part-filled entry that was already topped up at market back to its book fill
+
 ## [1.126.2] - 2026-11-10
 
 ### Fixed
