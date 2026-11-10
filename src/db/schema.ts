@@ -3988,6 +3988,10 @@ export const registerIndexes = () => {
   // Bot-engine per-bot transaction load (botId far more selective than userId).
   transactionSchema.index({ botId: 1, userId: 1 })
 
+  // API-key lookup: every signed API request finds its user by the key id.
+  // Sparse: a user with no API key is not in it.
+  userSchema.index({ 'apiKeys._id': 1 }, { sparse: true })
+
   userPeriod.index({ userId: 1 })
 
   botProfitChart.index({ botId: 1 })
