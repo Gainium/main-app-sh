@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.126.4] - 2026-11-10
+
+### Fixed
+
+- A part-filled LIMIT base entry on a bot that does not enter at market no longer buys its remainder at market as well as resting it as a LIMIT order
+- A grid bot that stops itself (take profit or stop loss with the stop action, liquidation, a filled close order, missing exchange info) now cancels part-filled levels too, instead of leaving them resting on the exchange
+
 ## [1.126.3] - 2026-11-10
 
 ### Fixed
