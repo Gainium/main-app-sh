@@ -32,6 +32,7 @@ import RedisClient from '../db/redis'
 import { filesDb, userDb } from '../db/dbInit'
 import { CORS_ORIGIN, GRAPH_QL_PORT, JWT_SECRET, SERVER_HOST } from '../config'
 import { addHealthEndpoint } from '../utils/healthServer'
+import { resolveSessionUser, SessionRejection } from '../utils/sessionUser'
 import swaggerDoc from './swagger.json'
 import { startAdminConfigSync } from '../utils/adminConfig'
 import { startEncryptKeyBackfill } from '../utils/encryptKeyBackfill'
@@ -565,19 +566,19 @@ async function start() {
       res.status(400).send('Backtest id is required')
       return
     }
-    const userFind = await userDb.readData({
-      tokens: { $elemMatch: { token } },
+    const session = await resolveSessionUser(token, userDb, {
+      source: 'loadBacktestDetails',
     })
-    if (userFind.status === StatusEnum.notok) {
-      res.status(400).send(`User read error ${userFind.reason}`)
+    if (session.rejection === SessionRejection.unreadable) {
+      res.status(400).send(`User read error ${session.reason}`)
       return
     }
-    if (!userFind.data?.result) {
-      res.status(400).send('User not found')
+    if (!session.ok) {
+      res.status(400).send(session.reason)
       return
     }
     const file = await filesDb.readData({
-      userId: `${userFind.data.result._id}`,
+      userId: `${session.user._id}`,
       'meta.id': backtestId,
     })
     if (file.status === StatusEnum.notok) {

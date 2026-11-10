@@ -1,5 +1,6 @@
 import { Server } from 'socket.io'
 import { hasStringCredentials } from '../utils/streamCredentials'
+import { resolveSessionUser } from '../utils/sessionUser'
 import { StatusEnum, BotType, liveupdate } from '../../types'
 import http from 'http'
 import logger from '../utils/logger'
@@ -283,26 +284,19 @@ class UserStreamService {
       )
       return this.handleError(socket, 'Invalid connect payload')
     }
-    /** Check if token exist on user */
-    const user = await this.db.readData({
-      $and: [
-        { tokens: { $elemMatch: { token: userToken } } },
-        { _id: userId as any },
-      ],
+    /** Check the session is valid, not expired and belongs to the user */
+    const session = await resolveSessionUser(userToken, this.db, {
+      source: 'stream user connect',
+      userId,
     })
-
-    if (user.status === StatusEnum.notok) {
-      socket.emit('message', this.prepareMessage(StatusEnum.notok, user.reason))
-      return this.handleError(socket, user.reason)
-    }
-    if (user.status === StatusEnum.ok && user.data && !user.data.result) {
+    if (!session.ok) {
       socket.emit(
         'message',
-        this.prepareMessage(StatusEnum.notok, 'User not found'),
+        this.prepareMessage(StatusEnum.notok, session.reason),
       )
-      return this.handleError(socket, 'User not found')
+      return this.handleError(socket, session.reason)
     }
-    const { username } = user.data.result
+    const { username } = session.user
     if (socket.rooms.has(userId)) {
       socket.emit(
         'message',
