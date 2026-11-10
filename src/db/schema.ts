@@ -3539,6 +3539,20 @@ export const registerIndexes = () => {
   // {userId, exchangeUUID, asset}; with only the userId index each such op
   // scans every doc the user owns (1.5k+ for dust-heavy accounts).
   balancesSchema.index({ userId: 1, exchangeUUID: 1, asset: 1 })
+  // One row per connection and asset. Every insert site upserts on exactly
+  // these three fields after a read that found nothing; concurrent refreshes
+  // of one connection (adding an exchange starts several) all read "nothing"
+  // and, without a unique index, each inserted its own row. Later writes
+  // reach only the first, and Portfolio kept summing the stale copies. With
+  // this index the server retries the losing upsert as an update.
+  // Different key order and name on purpose: it sits ALONGSIDE the index
+  // above instead of replacing it, so while existing duplicates still block
+  // this build (main-app migration v53 removes them) boot-time syncIndexes
+  // has nothing to drop and the writes keep their index.
+  balancesSchema.index(
+    { exchangeUUID: 1, asset: 1, userId: 1 },
+    { unique: true, name: 'balance_identity_unique' },
+  )
   // Backs the account-wide balances listing (no connection filter), which sorts
   // on {asset, _id}. Neither index above can serve that order — {userId} has no
   // asset component and the compound one is ordered by exchangeUUID first — so

@@ -1,6 +1,7 @@
 import { model } from 'mongoose'
 import schema, { registerIndexes } from './schema'
 import { collections } from './config'
+import logger from '../utils/logger'
 
 import {
   BalancesSchema,
@@ -200,7 +201,16 @@ export const syncIndexes = async (user = true) => {
   await models.reconcileSweep.syncIndexes()
   await models.fundingLot.syncIndexes()
   await models.quantRulesEvent.syncIndexes()
-  await models.balance.syncIndexes()
+  // Fails while duplicate balance rows predate the unique identity index
+  // (schema.ts). Logged rather than thrown so it cannot skip the sync of
+  // every collection after it; main-app migration v53 removes the duplicates.
+  await models.balance
+    .syncIndexes()
+    .catch((e) =>
+      logger.error(
+        `syncIndexes | balances: ${(e as Error)?.message ?? e} — duplicate rows block the unique identity index until they are removed`,
+      ),
+    )
   await models.backtest.syncIndexes()
   await models.gridBacktest.syncIndexes()
   await models.comboBacktest.syncIndexes()
