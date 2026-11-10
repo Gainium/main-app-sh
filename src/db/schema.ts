@@ -3491,6 +3491,10 @@ export const snapshotMongoTtlSeconds = (): number => {
 }
 
 export const registerIndexes = () => {
+  // Session lookup: every authenticated request finds its user by
+  // `tokens.token`. Sparse: a user holding no session is not in it.
+  userSchema.index({ 'tokens.token': 1 }, { sparse: true })
+
   brokerCodes.index({ exchange: 1, zone: 1 }, { unique: true })
 
   reconcileSweepSchema.index({ created: -1 })
