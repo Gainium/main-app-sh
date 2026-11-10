@@ -7776,6 +7776,24 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * A DCA base entry is topped up at market only on a bot that may enter at
+     * market. One that may not rests the remainder from `startDeal` instead
+     * (spec `111` §1.1.6: it never sends a MARKET order on its own), so a
+     * venue `FILLED`-short report — KuCoin ends a cancelled part-fill that way
+     * — must not also buy it. Combo deals rest nothing and keep the top-up.
+     * Spec `235`.
+     */
+    protected override async remainderMayGoToMarket(order: Order) {
+      if (this.combo || order.typeOrder !== TypeOrderEnum.dealStart) {
+        return true
+      }
+      const settings = await this.getAggregatedSettings(
+        this.getDeal(order.dealId)?.deal,
+      )
+      return this.baseEntryMayEnterAtMarket(settings)
+    }
+
     override allowToProcessBr(id: string, type?: TypeOrderEnum) {
       return (
         type === TypeOrderEnum.dealTP ||
@@ -11323,6 +11341,12 @@ function createDCABotHelper<
         this.settledBaseEntries?.delete(orderBo.clientOrderId) ?? false
       const dealId = orderBo.dealId
       if (this.combo || !dealId) {
+        return
+      }
+      // `buyRemainder` already sent this entry's remainder at market. The row
+      // handed in can predate its merge (a venue re-read overwrites it), so
+      // its shortfall is not left to buy. Spec `235`.
+      if (this.partiallyFilledFilledSet?.has(orderBo.clientOrderId)) {
         return
       }
       const deal = this.getDeal(dealId)

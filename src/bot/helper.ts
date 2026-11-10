@@ -2239,7 +2239,7 @@ function createBotHelper<
           )
           this.resetPosition()
 
-          this.stop()
+          this.stop(true)
         }
       }
     }
@@ -3039,7 +3039,7 @@ function createBotHelper<
           )
           this.ignoreErrors = true
           this.serviceRestart = false
-          await this.stop()
+          await this.stop(true)
           if (this.data) {
             this.data.status = BotStatusEnum.closed
             await this.updateData({ status: this.data.status })
@@ -3653,7 +3653,7 @@ function createBotHelper<
           await this.profitAfterPositionClosed(order)
           this.resetPosition()
         }
-        this.stop()
+        this.stop(true)
       }
     }
     /**
@@ -5281,7 +5281,7 @@ function createBotHelper<
             result === TpSlReturn.tp) ||
           (this.data.settings.slAction === 'stop' && result === TpSlReturn.sl)
         ) {
-          this.stop()
+          this.stop(true)
         } else if (
           (this.data.settings.tpSlAction === 'stopAndSell' &&
             result === TpSlReturn.tp) ||

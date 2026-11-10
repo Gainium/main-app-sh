@@ -7326,6 +7326,16 @@ class MainBot<T extends IMainBot> {
     return true
   }
 
+  /**
+   * Whether `buyRemainder` may buy this order's unfilled rest at MARKET.
+   * Always, here; the DCA engine says no for the base entry of a bot that may
+   * not enter at market, whose remainder rests as a LIMIT instead (spec `111`).
+   * Spec `235`.
+   */
+  protected async remainderMayGoToMarket(_order: Order): Promise<boolean> {
+    return true
+  }
+
   private async buyRemainder(order: Order, count = 1): Promise<Order> {
     if (count >= 20) {
       return order
@@ -7396,6 +7406,15 @@ class MainBot<T extends IMainBot> {
       if (isCancelledLimitSafetyOrder(order)) {
         this.handleLog(
           `Order ${order.clientOrderId} not ${order.side} full qty: executed - ${order.executedQty}, total - ${order.origQty}, the rest was cancelled on the exchange — no remainder order sent, count ${count}`,
+        )
+        return order
+      }
+      // A LIMIT-only entry rests its remainder (spec `111`); buying it here as
+      // well bought it twice. Before the set below, so nothing is marked as
+      // topped up. Spec `235`.
+      if (!(await this.remainderMayGoToMarket(order))) {
+        this.handleLog(
+          `Order ${order.clientOrderId} not ${order.side} full qty: executed - ${order.executedQty}, total - ${order.origQty}, the bot does not enter at market — no remainder order sent, count ${count}`,
         )
         return order
       }
