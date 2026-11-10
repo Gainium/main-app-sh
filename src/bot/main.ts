@@ -6650,6 +6650,26 @@ class MainBot<T extends IMainBot> {
           find = (await this.ordersDb.readData({ clientOrderId: origId })).data
             ?.result
         }
+        if (find && this.partiallyFilledFilledSet?.has(origId)) {
+          // A part-filled order already topped up at market by `buyRemainder`
+          // holds the WHOLE entry: book fill + remainder, status FILLED. The
+          // venue only knows the book order, so it answers that order's own
+          // end state (KuCoin: CANCELED with the part fill). Copying that over
+          // the row loses the remainder from the map and from Mongo, and the
+          // deal undercounts what it bought. Same guard as spec `088` in
+          // `fillPartiallyFilledOrder`. Spec `235`.
+          const venueRaw = +request.data.executedQty
+          const venueQty =
+            Number.isFinite(venueRaw) && venueRaw > 0
+              ? +(await this.convertOrderExecutedQty(request.data))
+              : 0
+          if (find.status === 'FILLED' && +find.executedQty > venueQty) {
+            this.handleLog(
+              `Order ${origId} venue reports ${request.data.status} ${venueQty}, keeping merged remainder ${find.executedQty} FILLED`,
+            )
+            return find
+          }
+        }
         if (find) {
           if (find.status !== request.data.status) {
             find.status = request.data.status
