@@ -1,5 +1,6 @@
 import { DEFAULT_DB_LIMIT, StatusEnum } from '../../../types'
 import { botMessageDb } from '../../db/dbInit'
+import { literalSearchPattern } from '../../db/utils'
 
 // The notifications panel asks for its default page-1 load with NO input at all
 // (main-dash-redesign `useNotifications` sends no `input` when
@@ -80,14 +81,16 @@ export const botMessageFeedFilter = (
   // set they apply to is bounded by the 90-day read TTL.
   if (type) filter.type = type
   if (botId) filter.botId = botId
-  if (search) {
+  // Search text is matched literally, never as a pattern.
+  const text = literalSearchPattern(search)
+  if (text) {
     filter.$or = [
-      { message: { $regex: search, $options: 'i' } },
-      { botName: { $regex: search, $options: 'i' } },
-      { botId: { $regex: search, $options: 'i' } },
-      { symbol: { $regex: search, $options: 'i' } },
-      { exchange: { $regex: search, $options: 'i' } },
-      { subType: { $regex: search, $options: 'i' } },
+      { message: { $regex: text, $options: 'i' } },
+      { botName: { $regex: text, $options: 'i' } },
+      { botId: { $regex: text, $options: 'i' } },
+      { symbol: { $regex: text, $options: 'i' } },
+      { exchange: { $regex: text, $options: 'i' } },
+      { subType: { $regex: text, $options: 'i' } },
     ]
   }
   return filter

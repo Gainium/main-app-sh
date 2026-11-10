@@ -165,6 +165,7 @@ import {
 import { createOrUpdateUser, findUser as _findUser } from './handlers/user'
 import { resetUser } from '../utils/user'
 import {
+  literalSearchPattern,
   mapBacktestListOptions,
   mapDataGridOptionsToMongoOptions,
 } from '../db/utils'
@@ -1446,8 +1447,9 @@ const resolvers = <
         paperContext: paperContext ? { $eq: true } : { $ne: true },
         'settings.name': { $exists: true, $ne: '' },
       }
-      if (search) {
-        s['settings.name'] = { $regex: search, $options: 'i' }
+      const searchText = literalSearchPattern(search)
+      if (searchText) {
+        s['settings.name'] = { $regex: searchText, $options: 'i' }
       }
       const f: ProjectionFields<MainBot> = {
         id: '$_id',

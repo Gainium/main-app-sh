@@ -76,6 +76,23 @@ describe('spec 137 — feed filter per view', () => {
     expect(f!.$or).to.be.an('array').with.length.greaterThan(0)
   })
 
+  it('search text is matched literally and capped', () => {
+    const plain = botMessageFeedFilter(USER, false, { search: 'okx' })
+    expect((plain!.$or as object[])[0]).to.deep.equal({
+      message: { $regex: 'okx', $options: 'i' },
+    })
+    const meta = botMessageFeedFilter(USER, false, {
+      search: 'BTC/USDT (5m).*',
+    })
+    expect((meta!.$or as object[])[0]).to.deep.equal({
+      message: { $regex: 'BTC/USDT \\(5m\\)\\.\\*', $options: 'i' },
+    })
+    const long = botMessageFeedFilter(USER, false, { search: 'a'.repeat(500) })
+    expect(
+      (long!.$or as { message: { $regex: string } }[])[0].message.$regex.length,
+    ).to.equal(100)
+  })
+
   it('§3.4 severity and bot narrow any view', () => {
     const f = botMessageFeedFilter(USER, false, {
       view: 'all',

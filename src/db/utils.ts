@@ -24,8 +24,20 @@ const checkNumber = (value: string | number) =>
 // the query, and a value like `.*` silently matches everything instead of the
 // literal-substring match the operator names imply. Escaping restores those
 // semantics and closes the regex injection.
-const escapeRegExp = (value: string) =>
+export const escapeRegExp = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** Longest free-text search matched against the database. */
+export const SEARCH_TEXT_MAX = 100
+
+/**
+ * A search box's text as a literal `$regex` source: cut to
+ * `SEARCH_TEXT_MAX` characters, then escaped. Empty / non-string → `null`.
+ */
+export const literalSearchPattern = (value: unknown): string | null =>
+  typeof value === 'string' && value
+    ? escapeRegExp(value.slice(0, SEARCH_TEXT_MAX))
+    : null
 
 export const mapDataGridOptionsToMongoOptions = (input?: {
   sortModel?: GridSortModel[]
