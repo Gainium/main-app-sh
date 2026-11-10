@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.2] - 2026-11-10
+
+### Fixed
+
+- Concurrent balance refreshes of one exchange connection no longer create duplicate balance rows that inflate the portfolio total
+
 ## [1.126.1] - 2026-11-09
 
 ### Fixed
