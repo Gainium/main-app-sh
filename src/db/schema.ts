@@ -3991,6 +3991,8 @@ export const registerIndexes = () => {
   // API-key lookup: every signed API request finds its user by the key id.
   // Sparse: a user with no API key is not in it.
   userSchema.index({ 'apiKeys._id': 1 }, { sparse: true })
+  // Balance-stream events find the account's owner by the exchange uuid.
+  userSchema.index({ 'exchanges.uuid': 1 }, { sparse: true })
 
   userPeriod.index({ userId: 1 })
 
