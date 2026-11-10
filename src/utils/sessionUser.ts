@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken'
 import { JWT_SECRET } from '../config'
 import { StatusEnum } from '../../types'
 import logger from './logger'
+import { isSessionCurrent } from './sessionVersion'
 
 import type DB from '../db'
 import type { UserSchema } from '../../types'
@@ -14,9 +15,11 @@ import type { UserSchema } from '../../types'
  *      (`authenticateJWT`) enforces before any resolver runs;
  *   2. presence in `user.tokens[]` — what `findUser` enforces, and what makes
  *      logout / "sign out other sessions" take effect;
- *   3. optionally, that the token belongs to the `userId` the caller claims.
+ *   3. the session is at the user's current session version
+ *      (`sessionVersion.ts`), which is how one user's sessions are ended;
+ *   4. optionally, that the token belongs to the `userId` the caller claims.
  *
- * The GraphQL path gets (1) from the middleware and (2) from `findUser`. Paths
+ * The GraphQL path gets (1) from the middleware and (2)+(3) from `findUser`. Paths
  * that sit outside that middleware (the Socket.IO user stream, REST routes
  * registered ahead of it) must come through here instead of querying
  * `tokens[]` on their own, or they keep honouring a session the rest of the
@@ -40,6 +43,8 @@ export enum SessionRejection {
   invalid = 'invalid',
   /** Verifies, but is not (or no longer) in any user's `tokens[]`. */
   unknown = 'unknown',
+  /** In `tokens[]`, but issued before the user's sessions were ended. */
+  revoked = 'revoked',
   /** The user lookup itself failed. */
   unreadable = 'unreadable',
 }
@@ -116,6 +121,9 @@ export const resolveSessionUser = async <T extends UserSchema>(
   const user = userFind.data?.result
   if (!user) {
     return reject(SessionRejection.unknown)
+  }
+  if (!isSessionCurrent(token, user)) {
+    return reject(SessionRejection.revoked)
   }
   return { ok: true, user: user as T, rejection: undefined, reason: null }
 }

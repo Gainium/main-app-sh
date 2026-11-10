@@ -5,6 +5,11 @@ import {
   LOGIN_SESSION_TTL_SECONDS,
 } from '../../utils/sessionTtl'
 import { hashPassword } from '../../utils/password'
+import {
+  isSessionCurrent,
+  sessionVersionClaim,
+} from '../../utils/sessionVersion'
+import logger from '../../utils/logger'
 import type { ClearUserSchema, UserSchema } from '../../../types'
 import { getFullLocationByIp } from './ip'
 import { JWT_SECRET } from '../../config'
@@ -58,6 +63,7 @@ export const createOrUpdateUser = async (
     {
       username: email,
       authorized: true,
+      ...sessionVersionClaim(findUser.data.result),
     },
     JWT_SECRET,
     LOGIN_SESSION_TTL_SECONDS,
@@ -189,7 +195,16 @@ export const findUser = async <T extends UserSchema>(
             tokens: { $elemMatch: { token } },
           })
     if (userFind.status === StatusEnum.ok) {
-      if (userFind.data && userFind.data.result) {
+      if (
+        token !== 'demo' &&
+        userFind.data?.result &&
+        !isSessionCurrent(token, userFind.data.result)
+      ) {
+        // Same answer as a session that is no longer in `tokens[]`.
+        logger.warn(
+          `Session rejected | findUser | revoked | user ${userFind.data.result._id}`,
+        )
+      } else if (userFind.data && userFind.data.result) {
         return {
           status: StatusEnum.ok as typeof StatusEnum.ok,
           reason: null,

@@ -421,8 +421,12 @@ const userSchema: Schema<UserSchema> = new Schema({
       // Device context captured at login, for the user's session list.
       ip: String,
       userAgent: String,
+      // Session version of a row kept by a "sign out the others" write.
+      tv: Number,
     },
   ],
+  // Per-user session version. No default on purpose: absent reads as 0.
+  tokenVersion: Number,
   exchanges: [
     {
       provider: { ...RequiredString, enum: ExchangeEnum },

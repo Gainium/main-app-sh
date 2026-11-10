@@ -98,6 +98,31 @@ describe('resolveSessionUser', () => {
     expect(res.reason).to.equal(SESSION_USER_NOT_FOUND_REASON)
   })
 
+  it("rejects a session issued before the user's session version was raised", async () => {
+    const warn = sinon.stub(logger, 'warn')
+    const token = sign(60)
+    const row = { _id: USER_ID, username: 'u', tokens: [{ token }] }
+    const { db } = fakeDb([{ ...row, tokenVersion: 1 } as Row])
+    const res = await resolveSessionUser(token, db, {
+      ...opts,
+      source: 'stream user connect',
+      userId: USER_ID,
+    })
+    expect(res.rejection).to.equal(SessionRejection.revoked)
+    expect(res.reason).to.equal(SESSION_USER_NOT_FOUND_REASON)
+    expect(warn.firstCall.args.join(' ')).to.equal(
+      `Session rejected | stream user connect | revoked | user ${USER_ID}`,
+    )
+    // Same token, counter never raised: still a session.
+    const before = await resolveSessionUser(token, fakeDb([row]).db, opts)
+    expect(before.ok).to.equal(true)
+    // Kept by a "sign out the others" write: the row carries the new version.
+    const kept = fakeDb([
+      { ...row, tokenVersion: 1, tokens: [{ token, tv: 1 }] } as Row,
+    ])
+    expect((await resolveSessionUser(token, kept.db, opts)).ok).to.equal(true)
+  })
+
   it('rejects a token signed with another secret, without a lookup', async () => {
     sinon.stub(logger, 'warn')
     const token = jwt.sign({ username: 'u' }, 'someone-elses-secret')

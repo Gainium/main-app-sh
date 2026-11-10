@@ -163,6 +163,7 @@ import {
   verifyPassword as verifyPasswordHash,
 } from '../utils/password'
 import { createOrUpdateUser, findUser as _findUser } from './handlers/user'
+import { isSessionRow, keepSessions } from '../utils/sessionVersion'
 import { resetUser } from '../utils/user'
 import {
   literalSearchPattern,
@@ -7641,11 +7642,18 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      // Raises the session version as well, and stamps the kept rows with
+      // it: a session issued before this moment is refused from here on even
+      // if its row is written back.
       const saveDataRequest = await userDb.updateData(
         { _id: user.data._id },
         {
-          $pull: {
-            tokens: { token: { $ne: token }, source: { $ne: 'admin' } },
+          $inc: { tokenVersion: 1 },
+          $set: {
+            tokens: keepSessions(
+              user.data,
+              (t) => isSessionRow(t, token) || t.source === 'admin',
+            ),
           },
         },
         true,
@@ -9800,12 +9808,16 @@ const resolvers = <
       // survived the very reset performed to get rid of it. The caller's own
       // token is retained so changing your password does not sign you out of
       // the tab you did it from.
-      const remainingTokens = (user.data.tokens ?? []).filter(
-        (t) => t.token === token,
+      // The session version is raised in the same write and the kept row is
+      // stamped with it, so anything issued before this moment is refused
+      // even if its row comes back.
+      const remainingTokens = keepSessions(user.data, (t) =>
+        isSessionRow(t, token),
       )
       const result = await userDb.updateData(
         { _id: user.data._id.toString() },
         {
+          $inc: { tokenVersion: 1 },
           $set: {
             password: await hashPassword(password),
             tokens: remainingTokens,

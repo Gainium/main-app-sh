@@ -51,7 +51,10 @@ async function resetPassword() {
       // very reset performed to evict them. Same reasoning as
       // GHSA-4m6h-m5mj-733x on `changePassword`; unlike that one there is no
       // caller session to preserve here, so everything goes.
-      { $set: { password: hashedPassword, tokens: [] } },
+      {
+        $inc: { tokenVersion: 1 },
+        $set: { password: hashedPassword, tokens: [] },
+      },
     )
 
     if (updateResult.status === StatusEnum.notok) {

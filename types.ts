@@ -2252,6 +2252,9 @@ export type UserToken = {
   // Device context captured at login, for the user's session list.
   ip?: string
   userAgent?: string
+  // Session version stamped on a row that survived a "sign out the others"
+  // write; overrides the token's own `tv` claim (see sessionVersion.ts).
+  tv?: number
   // Mongoose stamps an ObjectId on each array sub-document at runtime; used as
   // the stable id when listing / revoking an individual session.
   _id?: { toString(): string }
@@ -2455,6 +2458,8 @@ export interface UserSchema extends SchemaI {
     paper?: LargeAccountContextStatsDoc
   }
   tokens: UserToken[]
+  // Per-user session version; absent = 0 (see sessionVersion.ts).
+  tokenVersion?: number
   exchanges: ExchangeInUser[]
   timezone: string
   weekStart?: string
