@@ -230,7 +230,18 @@ export const syncIndexes = async (user = true) => {
   await models.snapshot.syncIndexes()
   await models.transaction.syncIndexes()
   if (user && SYNC_USER === 'true') {
-    await models.user.syncIndexes()
+    // Create-only, never a full sync: an edition built on core may register
+    // its own, wider model on `users`, and a full sync from this schema would
+    // drop every index that model declares and this one does not, unique ones
+    // included. A failed build (duplicate values under a unique index) is
+    // logged rather than thrown so it cannot skip the collections after it.
+    await models.user
+      .createIndexes()
+      .catch((e) =>
+        logger.error(
+          `syncIndexes | users: ${(e as Error)?.message ?? e} — an index on users could not be created; uniqueness on its field is NOT enforced until it is`,
+        ),
+      )
   }
   await models.userFiles.syncIndexes()
   await models.dcaBacktestRequest.syncIndexes()
