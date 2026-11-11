@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.9] - 2026-11-11
+
+### Fixed
+
+- A Combo deal whose market entry filled no longer waits for an exchange stream update to open
+
 ## [1.126.8] - 2026-11-11
 
 ### Fixed
