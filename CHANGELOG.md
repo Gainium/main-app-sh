@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.5] - 2026-11-11
+
+### Changed
+
+- Signed-in requests find their account through a database index on the session token; the index is created on the users collection at the next start
+
 ## [1.126.4] - 2026-11-10
 
 ### Fixed
