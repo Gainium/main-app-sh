@@ -1326,7 +1326,7 @@ function createBotHelper<
           defaultStatuses: true,
         })
         await this.primeReconcileBatch(toCheck)
-        for (const o of toCheck) {
+        for (const [i, o] of toCheck.entries()) {
           let attemptsForOrder = 0
           const getOrder = await this.getOrderForReconcile(o, {
             pace: true,
@@ -1335,6 +1335,16 @@ function createBotHelper<
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
             unresolvedLookupAttempts += attemptsForOrder
+            // Spec 237: the key may not read orders, so every remaining lookup
+            // would be refused the same way. Leave them unread, untouched.
+            if (isKeyPermissionRefusal(getOrder?.reason)) {
+              const rest = toCheck.slice(i + 1)
+              unresolved.push(...rest.map((r) => r.clientOrderId))
+              this.handleWarn(
+                `Reconcile stopped after a key refusal (${getOrder?.reason}); ${rest.length} order(s) not asked`,
+              )
+              break
+            }
             continue
           }
           if (getOrder.status === StatusEnum.notok) {

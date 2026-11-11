@@ -186,7 +186,11 @@ import GridReduceOnlyGuard, {
   type GridReduceOnlyLevel,
 } from './gridReduceOnlyGuard'
 import { isPositionAlreadyClosedReason } from './positionAlreadyClosed'
-import AuthFailureGuard, { isHardAuthFailure, isVenueLockout } from './authGuard'
+import AuthFailureGuard, {
+  isHardAuthFailure,
+  isKeyPermissionRefusal,
+  isVenueLockout,
+} from './authGuard'
 import RetryBackoff from './retryBackoff'
 import { wantsUserStreamOpen } from './userStreamReopen'
 import { ConditionLatch, STANDING_CONDITION_REARM_MS } from './conditionLatch'
@@ -796,7 +800,9 @@ export function isRetirableNeverPlacedOrder(
  * skipped the order. A rate limit is retried even though it carries the
  * transport marker: the window it is waiting on is the account's, and it does
  * open again within seconds, which is not true of a connector that has just
- * failed six transport attempts in a row.
+ * failed six transport attempts in a row. *
+ * A refusal of the key itself ({@link isKeyPermissionRefusal}) is `stop`: it
+ * is a property of the account, not of the request, so no re-ask can succeed.
  */
 export function reconcileRetryDecision(res?: {
   status: StatusEnum
@@ -806,6 +812,9 @@ export function reconcileRetryDecision(res?: {
   if (res?.status === StatusEnum.ok && res.data) return 'done'
   if (isDefinitiveOrderNotFound(res)) return 'stop'
   if (isReconcileDeferred(res ?? undefined)) return 'stop'
+  // The KEY may not make this call (spec 237): every re-ask with it is refused
+  // the same way, and on Kraken each refusal counts toward the account lockout.
+  if (isKeyPermissionRefusal(res?.reason)) return 'stop'
   if (isRateLimitReason(res?.reason ?? undefined)) return 'retry'
   if (isTransportRetryExhausted(res?.reason)) return 'stop'
   return 'retry'

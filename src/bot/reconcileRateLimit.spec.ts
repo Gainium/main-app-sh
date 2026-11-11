@@ -71,6 +71,18 @@ describe('reconcileRetryDecision', () => {
       }),
     ).to.equal('stop')
   })
+  it('stops on a refusal of the key itself (spec 237)', () => {
+    for (const reason of [
+      'EGeneral:Permission denied',
+      'Permission denied, please check your API key permissions.',
+      'EAPI:Invalid key',
+    ]) {
+      expect(
+        reconcileRetryDecision({ status: StatusEnum.notok, reason, data: null }),
+        reason,
+      ).to.equal('stop')
+    }
+  })
 })
 
 describe('reconcileLookup on a rate limit', () => {

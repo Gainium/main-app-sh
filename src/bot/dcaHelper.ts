@@ -384,7 +384,7 @@ import {
   type TpCoverageProbe,
 } from './dca/tpCoverageReconcile'
 import RetryBackoff from './retryBackoff'
-import AuthFailureGuard from './authGuard'
+import AuthFailureGuard, { isKeyPermissionRefusal } from './authGuard'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
 import { removePaperFormExchangeName } from '../exchange/helpers'
@@ -14100,7 +14100,7 @@ function createDCABotHelper<
           defaultStatuses: true,
         })
         await this.primeReconcileBatch(toCheck)
-        for (const o of toCheck) {
+        for (const [i, o] of toCheck.entries()) {
           let attemptsForOrder = 0
           const getOrder = await this.getOrderForReconcile(o, {
             onAttempts: (n) => (attemptsForOrder = n),
@@ -14110,6 +14110,19 @@ function createDCABotHelper<
             unresolved.push(o.clientOrderId)
             unresolvedLookupAttempts += attemptsForOrder
             noteVenueAnswer(o, false)
+            // Spec 237: the key may not read orders, so every remaining lookup
+            // would be refused the same way. Leave them unread, untouched.
+            if (isKeyPermissionRefusal(getOrder?.reason)) {
+              const rest = toCheck.slice(i + 1)
+              for (const r of rest) {
+                unresolved.push(r.clientOrderId)
+                noteVenueAnswer(r, false)
+              }
+              this.handleWarn(
+                `Reconcile stopped after a key refusal (${getOrder?.reason}); ${rest.length} order(s) not asked`,
+              )
+              break
+            }
             continue
           }
           if (getOrder.status === StatusEnum.notok) {
