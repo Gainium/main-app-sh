@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.126.6] - 2026-11-11
+
+### Changed
+
+- Signed API requests find their account through a database index on the API key id; the index is created on the users collection at the next start
+- Balance updates from an exchange stream find the account's owner through a database index on the exchange connection id
+
 ## [1.126.5] - 2026-11-11
 
 ### Changed
