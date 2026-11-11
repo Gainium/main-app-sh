@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.13] - 2026-11-11
+
+### Fixed
+
+- An order check after a user-stream reconnect stops on the first lookup the exchange refuses because the API key may not read orders, instead of asking about every order three times; the orders stay as they were
+
 ## [1.126.12] - 2026-11-11
 
 ### Added
