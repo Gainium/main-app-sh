@@ -76,6 +76,11 @@ import { RunWithDelay } from '../utils/delay'
 import createDCABotHelper from './dcaHelper'
 import { isDefinitiveOrderNotFound } from './main'
 import {
+  marketEntryNeedsRecheck,
+  marketEntryRecheckDelayMs,
+  marketEntryRecheckMaxAttempts,
+} from './marketEntryFill'
+import {
   comboPercentAtPrice,
   comboPnlAtPrice,
   comboPriceForTarget,
@@ -181,6 +186,11 @@ function createComboBotHelper<
     private closeRequested: Set<string> = new Set()
     /** Spec `175`: deals whose venue position is being asked about right now. */
     private flatProbeRunning: Set<string> = new Set()
+    /**
+     * Spec `235`: pending re-checks of a MARKET base entry whose placement
+     * answer was not FILLED, one per deal. Cleared by `clearClassProperties`.
+     */
+    private marketEntryRecheckTimers: Map<string, NodeJS.Timeout> = new Map()
     private feeOrderReasons: Map<string, string[]> = new Map()
     private lastFilledOrderMap: Map<string, Order> = new Map()
     /**
@@ -3943,7 +3953,88 @@ function createComboBotHelper<
       this.usedOrderId = new Map()
       this.closesRunning = new Map()
       this.closeRequested = new Set()
+      for (const timer of (this.marketEntryRecheckTimers ?? new Map()).values()) {
+        clearTimeout(timer)
+      }
+      this.marketEntryRecheckTimers = new Map()
     }
+
+    /**
+     * Ask the venue about a MARKET base entry `marketEntryRecheckDelayMs`
+     * after its placement answer, if the row is still live then. One pending
+     * check per deal. Spec 235 §4.3.
+     */
+    armMarketEntryRecheck(order: Order, attempt = 1) {
+      const dealId = order.dealId
+      if (
+        !dealId ||
+        attempt > marketEntryRecheckMaxAttempts ||
+        !marketEntryNeedsRecheck({
+          order,
+          dealStatus: this.getDeal(dealId)?.deal.status,
+        })
+      ) {
+        return
+      }
+      const timers = (this.marketEntryRecheckTimers ??= new Map())
+      const pending = timers.get(dealId)
+      if (pending) {
+        clearTimeout(pending)
+      }
+      const timer = setTimeout(() => {
+        timers.delete(dealId)
+        this.recheckMarketEntry(
+          order.clientOrderId,
+          order.symbol,
+          dealId,
+          attempt,
+        ).catch((e) =>
+          this.handleWarn(
+            `Cannot re-check base order ${order.clientOrderId} of deal ${dealId}: ${(e as Error)?.message ?? e}`,
+          ),
+        )
+      }, marketEntryRecheckDelayMs)
+      timers.set(dealId, timer)
+    }
+
+    /**
+     * The re-check itself: read the order from the venue through the
+     * unknown-order lookup (`justPlaced`, so a lookup that gets no answer
+     * never writes the order off) and book a FILLED answer through the
+     * ordinary fill path. Places, cancels and re-places nothing. Spec 235 §4.3.
+     */
+    async recheckMarketEntry(
+      clientOrderId: string,
+      symbol: string,
+      dealId: string,
+      attempt: number,
+    ) {
+      if (!this.shouldProceed()) {
+        return
+      }
+      const held = this.getOrderFromMap(clientOrderId)
+      if (
+        !held ||
+        !marketEntryNeedsRecheck({
+          order: held,
+          dealStatus: this.getDeal(dealId)?.deal.status,
+        })
+      ) {
+        return
+      }
+      this.handleLog(
+        `Base order ${clientOrderId} of deal ${dealId} is still ${held.status} ${marketEntryRecheckDelayMs / 1000}s after placement with no fill report. Asking the exchange (${attempt}/${marketEntryRecheckMaxAttempts})`,
+      )
+      const filled = await this._handleUnknownOrder(clientOrderId, symbol, true)
+      if (filled?.status === 'FILLED') {
+        return await this.handleUnknownOrder(filled)
+      }
+      const now = this.getOrderFromMap(clientOrderId)
+      if (now) {
+        this.armMarketEntryRecheck(now, attempt + 1)
+      }
+    }
+
     override async afterBotStop() {
       // super handles stopPriceTimer / stopReconcileSweep /
       // stopQuantRulesRetries — combo bots arm the price timer + reconcile
@@ -7780,6 +7871,10 @@ function createComboBotHelper<
               // to the send is a report of the venue's cancel the deal must
               // not wait on the order queue for. Spec 205.
               this.checkUnfilledBaseEntryCancel(result)
+              // Nor does it arm one for a MARKET entry the venue accepted
+              // without reporting it filled, so a user stream that stays silent
+              // left the deal in `start` until it reconnected. Spec 235 §4.3.
+              this.armMarketEntryRecheck(result)
             }
           }
         }

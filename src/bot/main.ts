@@ -72,6 +72,7 @@ import {
   canRecoverReduceOnlyRemainder,
   isKrakenUsdmUnderfilledReduceOnlyClose,
 } from './reduceOnlyRemainder'
+import { isFullyExecutedMarketPartial } from './marketEntryFill'
 import {
   isBelowVenueMinOrderValue,
   isCancelledLimitSafetyOrder,
@@ -7818,6 +7819,11 @@ class MainBot<T extends IMainBot> {
             order.status = 'FILLED'
           }
         }
+        // Every venue, not only Bybit: a market order executed in full is
+        // filled even when the report still says PARTIALLY_FILLED. Spec 235 §4.2.
+        if (!this.coinm && isFullyExecutedMarketPartial(order)) {
+          order.status = 'FILLED'
+        }
         const origExecutedQty = +order.executedQty
         order = await this.fillPartiallyFilledOrder(order)
         const newExecutedQty = +order.executedQty
@@ -10749,6 +10755,16 @@ class MainBot<T extends IMainBot> {
         )
         if (answerFee) {
           Object.assign(orderToPush, answerFee)
+        }
+        // A market order answered PARTIALLY_FILLED for its whole size has
+        // filled, and the venue owes no further report for it — a Combo entry
+        // saved this way waited in `start` for hours on a silent user stream.
+        // Spec 235 §4.1.
+        if (!this.coinm && isFullyExecutedMarketPartial(orderToPush)) {
+          this.handleLog(
+            `Order ${order.clientOrderId} placement answer is PARTIALLY_FILLED with ${orderToPush.executedQty} of ${orderToPush.origQty} executed. Saving it as FILLED`,
+          )
+          orderToPush.status = 'FILLED'
         }
         // Retired as CANCELED while it still had no exchange id, so no cancel
         // ever reached the venue — yet the venue just accepted it. Spec 155 §4.4.
