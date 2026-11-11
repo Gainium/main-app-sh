@@ -3,6 +3,7 @@ import { JWT_SECRET } from '../config'
 import { StatusEnum } from '../../types'
 import logger from './logger'
 import { isSessionCurrent } from './sessionVersion'
+import { sessionLookup } from './sessionTokenHash'
 
 import type DB from '../db'
 import type { UserSchema } from '../../types'
@@ -109,7 +110,7 @@ export const resolveSessionUser = async <T extends UserSchema>(
       'Session check | JWT_SECRET is not set in this process: session signature and expiry are NOT verified here, only presence',
     )
   }
-  const filter = { tokens: { $elemMatch: { token } } }
+  const filter = sessionLookup(token)
   const userFind = await userDb.readData(
     (byUserId
       ? { $and: [filter, { _id: opts.userId }] }

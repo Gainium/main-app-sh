@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken'
 
 import { StatusEnum } from '../../types'
 import logger from './logger'
+import { hashSessionToken, sessionLookup } from './sessionTokenHash'
 import {
   resolveSessionUser,
   SessionRejection,
@@ -17,10 +18,13 @@ const USER_ID = '64f0c0ffee64f0c0ffee64f0'
 const OTHER_ID = '64f0c0ffee64f0c0ffee64f1'
 
 type Row = { _id: string; username: string; tokens: Record<string, unknown>[] }
-type Filter = {
-  tokens?: { $elemMatch: { token: string } }
-  $and?: [{ tokens: { $elemMatch: { token: string } } }, { _id: string }]
+type Lookup = {
+  $or: [
+    { tokens: { $elemMatch: { tokenHash: string } } },
+    { tokens: { $elemMatch: { token: string } } },
+  ]
 }
+type Filter = Partial<Lookup> & { $and?: [Lookup, { _id: string }] }
 
 /** The two filter shapes the helper sends, over an in-memory user list. */
 const fakeDb = (rows: Row[], fail = false) => {
@@ -31,12 +35,14 @@ const fakeDb = (rows: Row[], fail = false) => {
       if (fail) {
         return { status: StatusEnum.notok, reason: 'db down', data: null }
       }
-      const token = (filter.$and?.[0] ?? filter).tokens?.$elemMatch.token
+      const [byHash, byToken] = (filter.$and?.[0] ?? (filter as Lookup)).$or
+      const hash = byHash.tokens.$elemMatch.tokenHash
+      const token = byToken.tokens.$elemMatch.token
       const id = filter.$and?.[1]._id
       const result =
         rows.find(
           (r) =>
-            r.tokens.some((t) => t.token === token) &&
+            r.tokens.some((t) => t.tokenHash === hash || t.token === token) &&
             (id === undefined || r._id === id),
         ) ?? null
       return { status: StatusEnum.ok, reason: null, data: { result } }
@@ -66,6 +72,20 @@ describe('resolveSessionUser', () => {
     expect(res.ok).to.equal(true)
     expect(res.user?._id).to.equal(USER_ID)
     expect(res.rejection).to.equal(undefined)
+  })
+
+  it('resolves a session whose row holds only the hash of the token', async () => {
+    const token = sign(60)
+    const { db } = fakeDb([
+      {
+        _id: USER_ID,
+        username: 'u',
+        tokens: [{ tokenHash: hashSessionToken(token), source: 'email' }],
+      },
+    ])
+    const res = await resolveSessionUser(token, db, opts)
+    expect(res.ok).to.equal(true)
+    expect(res.user?._id).to.equal(USER_ID)
   })
 
   it('rejects an expired token even though it is still in tokens[]', async () => {
@@ -189,7 +209,7 @@ describe('resolveSessionUser', () => {
     })
     expect(own.ok).to.equal(true)
     expect(calls[0]).to.deep.equal({
-      $and: [{ tokens: { $elemMatch: { token } } }, { _id: USER_ID }],
+      $and: [sessionLookup(token), { _id: USER_ID }],
     })
     const other = await resolveSessionUser(token, db, {
       ...opts,

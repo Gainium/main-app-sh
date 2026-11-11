@@ -1,4 +1,7 @@
 import jwt from 'jsonwebtoken'
+import { isSessionRow } from './sessionTokenHash'
+
+export { isSessionRow }
 
 /**
  * Per-user session version.
@@ -25,6 +28,7 @@ export const SESSION_VERSION_CLAIM = 'tv'
 
 export type SessionRowLike = {
   token?: string
+  tokenHash?: string
   source?: string
   tv?: number
 }
@@ -46,10 +50,6 @@ export const sessionVersionClaim = (
   user: SessionVersionedUser | null | undefined,
   raisedBy = 0,
 ): { tv: number } => ({ tv: userSessionVersion(user) + raisedBy })
-
-/** Whether a `tokens[]` row is the row of this session token. */
-export const isSessionRow = (row: SessionRowLike, token: string): boolean =>
-  row.token === token
 
 const claimedVersion = (token: string): number | undefined => {
   try {

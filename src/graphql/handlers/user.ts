@@ -10,6 +10,7 @@ import {
   sessionVersionClaim,
 } from '../../utils/sessionVersion'
 import logger from '../../utils/logger'
+import { sessionLookup, sessionRowToken } from '../../utils/sessionTokenHash'
 import type { ClearUserSchema, UserSchema } from '../../../types'
 import { getFullLocationByIp } from './ip'
 import { JWT_SECRET } from '../../config'
@@ -74,7 +75,7 @@ export const createOrUpdateUser = async (
       $push: {
         tokens: [
           {
-            token: jwtToken,
+            ...sessionRowToken(jwtToken),
             createdAt: +sessionCreatedAt,
             expiredAt: expire,
             ip,
@@ -132,7 +133,7 @@ export const createOrUpdateUser = async (
       password: await hashPassword(password),
       tokens: [
         {
-          token: jwtToken,
+          ...sessionRowToken(jwtToken),
           createdAt: +new Date(),
           expiredAt: expire,
           ip,
@@ -191,9 +192,9 @@ export const findUser = async <T extends UserSchema>(
         ? await userDb.readData({
             demo: true,
           })
-        : await userDb.readData({
-            tokens: { $elemMatch: { token } },
-          })
+        : await userDb.readData(
+            sessionLookup(token) as Parameters<DB<T>['readData']>[0],
+          )
     if (userFind.status === StatusEnum.ok) {
       if (
         token !== 'demo' &&

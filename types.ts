@@ -2243,7 +2243,11 @@ export type CleanDCADealsSchema = ExcludeDoc<DCADealsSchema>
 
 export type CleanComboDealsSchema = ExcludeDoc<ComboDealsSchema>
 export type UserToken = {
-  token: string
+  // The session token itself. Absent on rows written with
+  // SESSION_TOKEN_WRITE_PLAINTEXT off; match rows through sessionTokenHash.ts.
+  token?: string
+  // Hex SHA-256 of the session token. Absent on rows written before it existed.
+  tokenHash?: string
   expiredAt: number
   createdAt: number
   // Login method that minted this token ('web' | 'email' | OAuth type | 'admin'

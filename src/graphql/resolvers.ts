@@ -164,6 +164,7 @@ import {
 } from '../utils/password'
 import { createOrUpdateUser, findUser as _findUser } from './handlers/user'
 import { isSessionRow, keepSessions } from '../utils/sessionVersion'
+import { sessionRowPull } from '../utils/sessionTokenHash'
 import { resetUser } from '../utils/user'
 import {
   literalSearchPattern,
@@ -716,7 +717,7 @@ const resolvers = <
           location: locationForIp(t.ip),
           createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : null,
           expiredAt: t.expiredAt ? new Date(t.expiredAt).toISOString() : null,
-          current: t.token === token,
+          current: isSessionRow(t, token),
         }))
         .sort((a, b) => {
           // Current session first, then most-recently created.
@@ -7574,10 +7575,11 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      const own = (user.data.tokens ?? []).find((t) => isSessionRow(t, token))
       const saveDataRequest = await userDb.updateData(
         { _id: user.data._id },
         {
-          $pull: { tokens: { token } },
+          $pull: { tokens: sessionRowPull(own ?? {}, token) },
         },
         true,
       )

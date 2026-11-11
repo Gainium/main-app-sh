@@ -408,7 +408,9 @@ const userSchema: Schema<UserSchema> = new Schema({
   password: RequiredString,
   tokens: [
     {
-      token: RequiredString,
+      // Not required: a row may hold only `tokenHash` (sessionTokenHash.ts).
+      token: String,
+      tokenHash: String,
       createdAt: {
         type: Date,
         default: Date.now,
@@ -505,6 +507,9 @@ const userSchema: Schema<UserSchema> = new Schema({
   videos: [{ id: String, watch80: Boolean, closed: Boolean }],
   licenseKey: String,
 })
+// Session lookup by token hash (utils/sessionTokenHash.ts). Sparse: a user
+// with no hashed session is not in it.
+userSchema.index({ 'tokens.tokenHash': 1 }, { sparse: true })
 
 const workingShift = [{ start: RequiredNumber, end: Number }]
 
@@ -3498,6 +3503,9 @@ export const registerIndexes = () => {
   // Session lookup: every authenticated request finds its user by
   // `tokens.token`. Sparse: a user holding no session is not in it.
   userSchema.index({ 'tokens.token': 1 }, { sparse: true })
+  // Session lookup by token hash (utils/sessionTokenHash.ts). Sparse: a user
+  // with no hashed session is not in it.
+  userSchema.index({ 'tokens.tokenHash': 1 }, { sparse: true })
 
   brokerCodes.index({ exchange: 1, zone: 1 }, { unique: true })
 
