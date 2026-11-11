@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.8] - 2026-11-11
+
+### Fixed
+
+- Searching bot notifications or bot names for text containing characters such as `(`, `.` or `*` now matches that text literally; search text is limited to 100 characters
+
 ## [1.126.7] - 2026-11-11
 
 ### Changed
