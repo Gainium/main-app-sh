@@ -132,6 +132,7 @@ import {
   hedgeDcaBacktestDb,
   brokerCodesDb,
 } from '../db/dbInit'
+import { withTerminalMoveGuard } from './handlers/terminalMove'
 import { backtestNotFound, dealNotFound, errorAccess } from './errorResponse'
 import {
   createPaperUser,
@@ -5003,30 +5004,37 @@ const resolvers = <
         importFrom: dealId,
         skipBalanceCheck: true,
       }
-      const newBot = await Bot.createDCABot(
-        user.data._id.toString(),
-        { ...newBotData, vars: { list: [], paths: [] } },
-        paperContext,
-        async () =>
-          combo
-            ? await Bot.closeComboDeal(
-                `${user.data._id}`,
-                `${dcaBot._id}`,
-                dealId,
-                CloseDCATypeEnum.cancel,
-                true,
-                paperContext,
-                DCACloseTriggerEnum.auto,
-              )
-            : await Bot.closeDCADeal(
-                `${user.data._id}`,
-                `${dcaBot._id}`,
-                dealId,
-                CloseDCATypeEnum.cancel,
-                true,
-                paperContext,
-                DCACloseTriggerEnum.auto,
-              ),
+      const newBot = await withTerminalMoveGuard(
+        `${user.data._id}`,
+        `${dealId}`,
+        dcaDeal.status === DCADealStatusEnum.closed ||
+          dcaDeal.status === DCADealStatusEnum.canceled,
+        () =>
+          Bot.createDCABot(
+            user.data._id.toString(),
+            { ...newBotData, vars: { list: [], paths: [] } },
+            paperContext,
+            async () =>
+              combo
+                ? await Bot.closeComboDeal(
+                    `${user.data._id}`,
+                    `${dcaBot._id}`,
+                    dealId,
+                    CloseDCATypeEnum.cancel,
+                    true,
+                    paperContext,
+                    DCACloseTriggerEnum.auto,
+                  )
+                : await Bot.closeDCADeal(
+                    `${user.data._id}`,
+                    `${dcaBot._id}`,
+                    dealId,
+                    CloseDCATypeEnum.cancel,
+                    true,
+                    paperContext,
+                    DCACloseTriggerEnum.auto,
+                  ),
+          ),
       )
       if (newBot.status === StatusEnum.notok) {
         return newBot
@@ -5231,23 +5239,29 @@ const resolvers = <
         importFrom: gridBot._id,
         indicatorGroups: [],
       }
-      const newBot = await Bot.createDCABot(
-        user.data._id.toString(),
-        { ...newBotData, vars: { list: [], paths: [] } },
-        paperContext,
-        async () =>
-          await Bot.changeStatus(
-            `${user.data._id}`,
-            {
-              status: BotStatusEnum.closed,
-              id: `${gridBot._id}`,
-              cancelPartiallyFilled: true,
-              type: BotType.grid,
-              closeGridType: CloseGRIDTypeEnum.cancel,
-            },
+      const newBot = await withTerminalMoveGuard(
+        `${user.data._id}`,
+        `${gridBot._id}`,
+        gridBot.status === BotStatusEnum.closed || !!gridBot.isDeleted,
+        () =>
+          Bot.createDCABot(
+            user.data._id.toString(),
+            { ...newBotData, vars: { list: [], paths: [] } },
             paperContext,
-            false,
-            true,
+            async () =>
+              await Bot.changeStatus(
+                `${user.data._id}`,
+                {
+                  status: BotStatusEnum.closed,
+                  id: `${gridBot._id}`,
+                  cancelPartiallyFilled: true,
+                  type: BotType.grid,
+                  closeGridType: CloseGRIDTypeEnum.cancel,
+                },
+                paperContext,
+                false,
+                true,
+              ),
           ),
       )
       if (newBot.status === StatusEnum.notok) {
