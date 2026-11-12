@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.14] - 2026-11-12
+
+### Fixed
+
+- Moving a deal or grid to the terminal twice no longer creates a second terminal deal holding the same coins
+
 ## [1.126.13] - 2026-11-11
 
 ### Fixed
