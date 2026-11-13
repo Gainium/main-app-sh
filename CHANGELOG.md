@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.15] - 2026-11-13
+
+### Fixed
+
+- A DCA take-profit that closed the whole position while several safety-order fills from the same exchange message were still being booked no longer sends market orders to "close the rest" of those fills, and the closed deal books them at their own fill price
+
 ## [1.126.14] - 2026-11-12
 
 ### Fixed
