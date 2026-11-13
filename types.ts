@@ -3122,6 +3122,9 @@ export interface DCABotSchema<
   symbolStats?: BotSymbolsStats[]
   ignoreStats?: boolean
   flags?: string[]
+  /** Ids of the out-of-band profit corrections already added to `profit`
+   * (`applyProfitCorrection`, core spec 239); a repeat is a no-op. */
+  profitCorrections?: string[]
   resetStatsAfter?: number
   dealsReduceForBot?: {
     id: string

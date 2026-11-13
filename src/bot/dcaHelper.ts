@@ -190,8 +190,14 @@ import {
 } from '../../types'
 import { ExchangeIntervals } from '../../types'
 import {
+  addProfitCorrection,
+  invalidProfitCorrection,
+  type ProfitCorrectionDelta,
+} from './profitCorrection'
+import {
   closeNotActioned,
   convertDCABot,
+  convertDCABotToObject,
   convertComboBot,
   futuresPosition,
   limitOnlyEntryReplaced,
@@ -15290,6 +15296,78 @@ function createDCABotHelper<
             ],
           }).length,
         )
+      }
+    }
+
+    /**
+     * Add an out-of-band correction to this bot's realized-profit aggregate
+     * (core spec 239). Internal-API method, reached by bot id through
+     * `callBotFunctionFromMeta` on the DCA bot host.
+     *
+     * The worker owns `data.profit` while it runs (it `$set`s the whole object
+     * on every booking and restores it from the Redis snapshot on a service
+     * restart), so a correction written to the database alone is overwritten
+     * at the next booking. This adds the delta to the in-memory copy, then
+     * persists it like a booking does, plus the id in `profitCorrections` so a
+     * repeat of the same correction is a no-op.
+     *
+     * Returns `applied`, `duplicate`, or `refused: <why>`. Never throws: a
+     * throw inside a worker method leaves the caller's RPC without a reply.
+     */
+    public async applyProfitCorrection(
+      delta: ProfitCorrectionDelta,
+      reason: string,
+      correctionId: string,
+    ): Promise<string> {
+      let added = false
+      try {
+        const invalid = invalidProfitCorrection(delta, correctionId)
+        if (invalid) {
+          return `refused: ${invalid}`
+        }
+        if (this.botType !== BotType.dca || this.combo) {
+          return 'refused: only a DCA bot keeps profitCorrections'
+        }
+        if (!this.loadingComplete || !this.data?.profit) {
+          // loadData() would replace `data` from the snapshot after us.
+          return 'refused: bot data not loaded yet'
+        }
+        const applied: string[] =
+          (this.data as { profitCorrections?: string[] }).profitCorrections ??
+          []
+        if (applied.includes(correctionId)) {
+          this.handleLog(`Profit correction ${correctionId} already applied`)
+          return 'duplicate'
+        }
+        const before = this.data.profit
+        const profitCorrections = [...applied, correctionId]
+        this.data.profit = addProfitCorrection(this.data.profit, delta)
+        ;(this.data as { profitCorrections?: string[] }).profitCorrections =
+          profitCorrections
+        added = true
+        this.handleLog(
+          `Profit correction ${correctionId} (${reason}): total ${before.total} -> ${this.data.profit.total}, totalUsd ${before.totalUsd} -> ${this.data.profit.totalUsd}, pureBase ${before.pureBase ?? 0} -> ${this.data.profit.pureBase}, pureQuote ${before.pureQuote ?? 0} -> ${this.data.profit.pureQuote}`,
+        )
+        await this.updateData({
+          profit: { ...this.data.profit },
+          profitCorrections,
+        })
+        // updateData schedules the Redis snapshot with a delay; a restart
+        // inside that window would restore the uncorrected profit, so write
+        // the snapshot now.
+        await this.setToRedis(
+          'botData',
+          //@ts-ignore
+          convertDCABotToObject(this.data),
+        )
+        this.emit('bot settings update', { profit: this.data.profit })
+        return 'applied'
+      } catch (e) {
+        const why = (e as Error)?.message ?? `${e}`
+        this.handleWarn(`Profit correction ${correctionId} failed: ${why}`)
+        // Once added in memory the correction stays: the next booking
+        // persists it, and a repeat must still be a no-op.
+        return added ? `applied, persist failed: ${why}` : `refused: ${why}`
       }
     }
 

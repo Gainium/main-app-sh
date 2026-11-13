@@ -2188,6 +2188,8 @@ const dcaBotSchema: Schema<DCABotSchema> = new Schema({
   resetStatsAfter: Number,
   ignoreStats: Boolean,
   flags: [String],
+  // Out-of-band profit corrections already added to `profit` (spec 239).
+  profitCorrections: [String],
   action: {
     type: String,
     enum: ActionsEnum,
