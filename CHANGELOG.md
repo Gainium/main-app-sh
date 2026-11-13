@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.18] - 2026-11-13
+
+### Fixed
+
+- Hedge legs on spot: a funding buy raised to the exchange minimum is judged against what the safety orders need, so a slightly short market fill no longer cancels the deal and strands the bought coins
+
 ## [1.126.17] - 2026-11-13
 
 ### Fixed
