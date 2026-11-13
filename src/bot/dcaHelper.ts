@@ -22376,7 +22376,7 @@ function createDCABotHelper<
         )
         return 'held'
       }
-      this.handleDebug(
+      this.handleLog(
         `Hedge funding ${action}: ${decision.mode}, safety orders need ${decision.required} ${decision.needAsset}, held ${decision.held}, used ${decision.heldUsed}, price ${price}`,
       )
       const entryPrice = +this.math.round(price, ed.priceAssetPrecision)
@@ -23024,16 +23024,26 @@ function createDCABotHelper<
       const lotId =
         executed > 0 ? await this.recordFundingLot(symbol, dealId, r, price) : ''
       // (b) A fill short within the tolerance funds the deal as executed.
+      // A quantity raised to the exchange minimum buys more than the deal
+      // needs: judge the fill against the need, not the raised order.
       const step = ed?.baseAsset.step ?? 0
-      const shortfall = Math.max(0, trade.baseQty - executed)
-      if (shortfall > trade.baseQty * FUNDING_FILL_TOLERANCE + step + 1e-12) {
+      const need =
+        trade.raisedToMin && trade.needQty > 0
+          ? Math.min(trade.needQty, trade.baseQty)
+          : trade.baseQty
+      const needNote =
+        need < trade.baseQty
+          ? `, raised to the exchange minimum; needed ${need}`
+          : ''
+      const shortfall = Math.max(0, need - executed)
+      if (shortfall > need * FUNDING_FILL_TOLERANCE + step + 1e-12) {
         return report(
-          `the order filled ${executed} of ${trade.baseQty}${lotId ? ` (recorded in funding lot ${lotId})` : ''}`,
+          `the order filled ${executed} of ${trade.baseQty}${needNote}${lotId ? ` (recorded in funding lot ${lotId})` : ''}`,
         )
       }
-      if (shortfall > 1e-12) {
+      if (executed < trade.baseQty - 1e-12) {
         this.handleLog(
-          `Funding trade ${id} filled ${executed} of ${trade.baseQty} ${ed?.baseAsset.name ?? ''} (short ${this.math.round(shortfall, 12)}, within tolerance): the deal is funded with what executed`,
+          `Funding trade ${id} filled ${executed} of ${trade.baseQty} ${ed?.baseAsset.name ?? ''}${needNote} (short ${this.math.round(shortfall, 12)} of the need, within tolerance): the deal is funded with what executed`,
         )
       }
       return { lotId, executed }

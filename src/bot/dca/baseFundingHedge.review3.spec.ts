@@ -20,6 +20,7 @@ import { expect } from 'chai'
 import { createRequire } from 'module'
 import { MathHelper } from '../../utils/math'
 import { FundingLock, MemoryFundingLockStore } from '../fundingLock'
+import { planFunding } from '../baseFunding'
 import {
   ActionsEnum,
   BaseFundingEnum,
@@ -666,6 +667,143 @@ describe('Spec 044 phase 3 — adversarial review pass 3', () => {
         ActionsEnum.buyDiff,
       )
       expect(r).to.equal('virtual')
+    })
+  })
+
+  describe('funding buy raised to the exchange minimum (fill judged against the need)', () => {
+    /** Quote-sized fill (Bybit spot): `origQty × PRICE` of quote spent at `PRICE × askOverLast`. */
+    const quoteSizedFill = (askOverLast: number) =>
+      async function (this: any, order: any) {
+        this.sent.push(order)
+        if (order.typeOrder !== TypeOrderEnum.funding) {
+          return { ...order, status: 'FILLED', executedQty: order.origQty }
+        }
+        const ask = PRICE * askOverLast
+        const executed =
+          Math.floor(((+order.origQty * PRICE) / ask) * 1000) / 1000
+        return {
+          ...order,
+          status: 'FILLED',
+          orderId: '42',
+          executedQty: `${executed}`,
+          cummulativeQuoteQty: `${executed * ask}`,
+        }
+      }
+
+    it('a buyDiff leg whose 0.02 SOL shortfall was raised to 0.051 opens on a 0.049 fill', async () => {
+      // Safety orders need 0.1 SOL (two 0.05 at the $5 minimum); 0.08 is held.
+      const account = newAccount(0.08, 1000)
+      const { bot, dealId, findDeal } = buildBot({
+        account,
+        settings: { orderSize: '0.05' },
+      })
+      bot.sendOrderToExchange = quoteSizedFill(1.03)
+      const r = await bot.fundHedgeLegEntry(
+        SYMBOL,
+        dealId,
+        marketBase(dealId, false),
+        ActionsEnum.buyDiff,
+      )
+      const sent = fundingSent(bot)
+      expect(sent).to.have.length(1)
+      // The 0.02 shortfall ($2), raised to the $5 minimum (× 1.005 headroom).
+      expect(+sent[0].origQty).to.equal(0.051)
+      expect(bot.errors).to.deep.equal([])
+      expect(r).to.equal('virtual')
+      expect(bot.closed).to.have.length(0)
+      // Held 0.08 + bought 0.049 covers the 0.1 the safety orders need.
+      expect(findDeal.deal.fundingHold).to.deep.include({
+        asset: 'base',
+        committed: 0.1,
+      })
+    })
+
+    it('Bybit KORUSDT: 1621 raised to the 1 USDT minimum at 0.00062, 1600.3 filled at 0.000628 — funds the deal', async () => {
+      const account = newAccount(0, 1000)
+      const { bot, dealId } = buildBot({ account, combo: true })
+      const KOR: any = {
+        pair: 'KORUSDT',
+        baseAsset: { minAmount: 0.1, step: 0.1, name: 'KOR' },
+        quoteAsset: { minAmount: 1, step: 0.000001, name: 'USDT' },
+        priceAssetPrecision: 6,
+      }
+      bot.getExchangeInfo = async () => KOR
+      const trade = planFunding({
+        needAsset: 'base',
+        // 2000 KOR of safety orders, 1500 held: a 500 KOR (≈ $0.31) shortfall.
+        required: 2000,
+        held: 1500,
+        price: 0.00062,
+        feeRate: 0.001,
+        buyHeadroom: 0.005,
+        minNotional: 1,
+        minBase: 0.1,
+        basePrecision: 1,
+      }).diff!
+      expect(trade.baseQty).to.equal(1621)
+      expect(trade.raisedToMin).to.equal(true)
+      bot.sendOrderToExchange = async function (this: any, order: any) {
+        this.sent.push(order)
+        return {
+          ...order,
+          status: 'FILLED',
+          orderId: '42',
+          executedQty: '1600.3',
+          cummulativeQuoteQty: '1.00502',
+        }
+      }
+      const r = await bot.placeFundingTradeDetailed(
+        'KORUSDT',
+        dealId,
+        trade,
+        0.00062,
+      )
+      expect(bot.errors).to.deep.equal([])
+      expect(r).to.not.equal(null)
+      expect(r.executed).to.equal(1600.3)
+      expect(
+        bot.fundedNeedAfterFill(2000, 1500, r.executed, 'base', 0.00062, 0.001),
+      ).to.equal(2000)
+    })
+
+    it('a raised buy whose need sits at the minimum still refuses a fill short of that need', async () => {
+      const account = newAccount(0, 1000)
+      const { bot, dealId } = buildBot({ account, combo: true })
+      bot.getExchangeInfo = async () => ({
+        pair: 'KORUSDT',
+        baseAsset: { minAmount: 0.1, step: 0.1, name: 'KOR' },
+        quoteAsset: { minAmount: 1, step: 0.000001, name: 'USDT' },
+        priceAssetPrecision: 6,
+      })
+      const trade = planFunding({
+        needAsset: 'base',
+        required: 1595,
+        held: 0,
+        price: 0.00062,
+        feeRate: 0.001,
+        buyHeadroom: 0.005,
+        minNotional: 1,
+        basePrecision: 1,
+      }).diff!
+      expect(trade.raisedToMin).to.equal(true)
+      bot.sendOrderToExchange = async function (this: any, order: any) {
+        this.sent.push(order)
+        return {
+          ...order,
+          status: 'FILLED',
+          orderId: '42',
+          executedQty: '1550',
+          cummulativeQuoteQty: '0.961',
+        }
+      }
+      const r = await bot.placeFundingTradeDetailed(
+        'KORUSDT',
+        dealId,
+        trade,
+        0.00062,
+      )
+      expect(r).to.equal(null)
+      expect(bot.errors).to.have.length(1)
     })
   })
 })

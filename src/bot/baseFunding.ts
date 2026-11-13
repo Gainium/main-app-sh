@@ -79,6 +79,12 @@ export type FundingTrade = {
   quoteValue: number
   /** The quantity was raised to meet the exchange minimum. */
   raisedToMin: boolean
+  /**
+   * What the need alone calls for, in base, before any raise to the exchange
+   * minimum (same rounding as `baseQty`; equal to it when not raised). A
+   * raised order's fill is judged against this, not `baseQty`.
+   */
+  needQty: number
   /** `spendable` covers the order; null when `spendable` was not given. */
   affordable: boolean | null
 }
@@ -119,6 +125,15 @@ const tradeFor = (want: number, input: FundingInput): FundingTrade | null => {
   if (side === OrderSideEnum.buy) {
     baseQty *= 1 + Math.min(Math.max(finiteOrZero(input.buyHeadroom), 0), 0.05)
   }
+  // Same float clean-up and round-up as the order quantity below.
+  const roundUp = (q: number) =>
+    math.round(
+      math.round(q, input.basePrecision + 8),
+      input.basePrecision,
+      false,
+      true,
+    )
+  const needQty = roundUp(baseQty)
   let raisedToMin = false
   const minNotional = finiteOrZero(input.minNotional)
   if (minNotional && baseQty * price < minNotional) {
@@ -132,12 +147,7 @@ const tradeFor = (want: number, input: FundingInput): FundingTrade | null => {
   }
   // Round UP so the trade never falls short — after first dropping float
   // noise, or 0.05 − 0.032 = 0.018000000000000002 buys a whole extra step.
-  baseQty = math.round(
-    math.round(baseQty, input.basePrecision + 8),
-    input.basePrecision,
-    false,
-    true,
-  )
+  baseQty = roundUp(baseQty)
   const quoteValue = baseQty * price
   const spendable = input.spendable
   const affordable =
@@ -146,7 +156,7 @@ const tradeFor = (want: number, input: FundingInput): FundingTrade | null => {
       : side === OrderSideEnum.buy
         ? spendable >= quoteValue
         : spendable >= baseQty
-  return { side, baseQty, quoteValue, raisedToMin, affordable }
+  return { side, baseQty, quoteValue, raisedToMin, needQty, affordable }
 }
 
 export function planFunding(input: FundingInput): FundingPlan {
