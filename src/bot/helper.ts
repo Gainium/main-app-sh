@@ -3443,6 +3443,14 @@ function createBotHelper<
           }
           this.updateProgress(progress)
           let result: Order | void
+          if (this.futures && this.data.position.qty <= 0) {
+            // Spec 240: a flat futures grid has nothing to close. The grid is
+            // already cancelled above, so a qty-0 close (refused by
+            // `sendOrderToExchange`) left the bot open with nothing resting.
+            this.updateProgress()
+            this.handleLog('Position already closed. Executing stop method')
+            return await this.stop(true)
+          }
           if (this.futures) {
             result = await this.sendGridToExchange(
               {
@@ -3504,7 +3512,9 @@ function createBotHelper<
           if (result && result.status === 'FILLED') {
             this.processFilledStop(result)
           }
-          if (result && result.status !== 'FILLED') {
+          // Spec 240 §4.3: a refused close (no order back) is retried like a
+          // CANCELED one instead of leaving the grid open with nothing resting.
+          if (!result || result.status !== 'FILLED') {
             this.closeOrderTimer = setTimeout(() => {
               this.handleLog('Reposition limit stop order')
               this.processSellAtStop(type)
