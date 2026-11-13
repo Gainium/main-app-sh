@@ -3831,6 +3831,41 @@ function createDCABotHelper<
       return { feeByAsset, feePaid: { base: feeBaseFull, quote: feeQuoteFull } }
     }
     /**
+     * Spec `238`. Entry fills of a deal the venue already reported FILLED whose
+     * `updateDeal` is still queued, and what they add to `currentBalances`.
+     * The take-profit is sized from FILLED rows, so a close has to count them
+     * too. Add-funds fills move `initialBalances` as well and are left to
+     * `updateDeal`; a combo books from its own rebuilt ledger.
+     */
+    private queuedEntryFills(dealId: string) {
+      const booked = this.dealUpdateOrders.get(dealId)
+      const orders = this.combo
+        ? []
+        : this.getOrdersByStatusAndDealId({
+            dealId,
+            status: ['FILLED', 'CANCELED'],
+          }).filter(
+            (o) =>
+              o.typeOrder === TypeOrderEnum.dealRegular &&
+              this.ordersInBetweenUpdates.has(o.clientOrderId) &&
+              !booked?.has(o.clientOrderId) &&
+              !isAddFundsOrder(o) &&
+              executedFillQty(o) > 0,
+          )
+      return orders.reduce(
+        (acc, o) => {
+          const buy = o.side === OrderSideEnum.buy
+          const q = executedFillQty(o)
+          return {
+            orders: acc.orders,
+            base: acc.base + q * (buy ? 1 : -1),
+            quote: acc.quote + q * +o.price * (buy ? -1 : 1),
+          }
+        },
+        { orders, base: 0, quote: 0 },
+      )
+    }
+    /**
      * Close deal when TP is filled
      *
      * @param {Order} tpOrder Order which close the deal
@@ -3918,8 +3953,11 @@ function createDCABotHelper<
           let sweep: { result: Order | string | void; qty: number } | void =
             undefined
           const preLedger = findDeal.deal.currentBalances
+          // Spec `238`: the position includes fills still queued for booking.
+          const preQueued = this.queuedEntryFills(dealId)
           const preBase =
             (preLedger?.base ?? NaN) +
+            preQueued.base +
             qty * (tpOrder.side === OrderSideEnum.buy ? 1 : -1)
           const preRemainder = this.isLong
             ? preBase
@@ -4048,6 +4086,33 @@ function createDCABotHelper<
             !Number.isFinite(ledger?.base) ||
             !Number.isFinite(ledger?.quote) ||
             (ledger.base === 0 && ledger.quote === 0)
+          // Spec `238` §4.2: the close is committed, so the fills still queued
+          // for booking are booked here, once — re-read, as a queued
+          // `updateDeal` may have booked one meanwhile — and their queued
+          // `updateDeal` returns "already processed" instead of buying or
+          // selling them again as late fills. A lost ledger is rebuilt from
+          // every filled row below and needs none of this (§4.3).
+          if (!ledgerLost) {
+            const queued = this.queuedEntryFills(dealId)
+            if (queued.orders.length) {
+              const booked =
+                this.dealUpdateOrders.get(dealId) ?? new Set<string>()
+              for (const o of queued.orders) {
+                booked.add(o.clientOrderId)
+                this.ordersInBetweenUpdates.delete(o.clientOrderId)
+              }
+              this.dealUpdateOrders.set(dealId, booked)
+              findDeal.deal.currentBalances = {
+                base: ledger.base + queued.base,
+                quote: ledger.quote + queued.quote,
+              }
+              this.handleLog(
+                `Deal ${dealId} closes with ${queued.orders.length} entry fill(s) not booked yet (${queued.orders
+                  .map((o) => o.clientOrderId)
+                  .join(', ')}), booked at close`,
+              )
+            }
+          }
           if (
             ledgerLost &&
             Number.isFinite(findDeal.deal.initialBalances?.base) &&
