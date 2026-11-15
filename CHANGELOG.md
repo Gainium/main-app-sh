@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.127.3] - 2026-11-15
+
+### Fixed
+
+- DCA deal whose first order the exchange definitively refuses (balance, agreement, permissions) is now cancelled immediately instead of staying open with nothing bought until the hourly stuck-deal cleanup
+
 ## [1.127.2] - 2026-11-15
 
 ### Changed
