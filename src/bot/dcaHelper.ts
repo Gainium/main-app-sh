@@ -356,7 +356,10 @@ import {
   unactionedCloseMessage,
   verdictForMissingDealOnClose,
 } from './dca/dealOutcome'
-import { isRetirableStrandedStart } from './dca/strandedStartClose'
+import {
+  isRetirableStrandedStart,
+  shouldRetireRefusedEntry,
+} from './dca/strandedStartClose'
 import {
   closeIsAboveBreakEven,
   isRetryableTrailingCloseRejection,
@@ -5470,11 +5473,16 @@ function createDCABotHelper<
      * No `processError`: nothing here is broken for the user to act on, and the
      * sweep can retire a backlog of these in one pass. The bot's `deals.active`
      * counter is deliberately untouched — it tracks the worker's map, which
-     * never held this deal.
+     * never held this deal. {@link DCABotHelper#retireRefusedStartDeal} is the
+     * caller whose map DOES hold it, and settles both itself.
+     *
+     * @param graceMs how old the deal must be; the sweep's 24 h by default.
+     * Only a placement that has just been definitively refused passes `0`.
      */
     async retireStrandedStartDeal(
       dealId: string,
       closeTrigger?: DCACloseTriggerEnum,
+      graceMs?: number,
     ): Promise<boolean> {
       if (!this.shouldProceed()) {
         return false
@@ -5503,6 +5511,7 @@ function createDCABotHelper<
           createTime: deal.createTime,
           now: +new Date(),
           orders: orders.data.result ?? [],
+          graceMs,
         })
       ) {
         return false
@@ -5538,6 +5547,60 @@ function createDCABotHelper<
         symbol,
         type: MessageTypeEnum.warning,
       })
+      return true
+    }
+
+    /**
+     * Retire a deal whose opening order the venue has just definitively
+     * refused, instead of leaving it in `start`, holding nothing, until the
+     * stuck-start sweep reaches it up to a day later. Spec `241`.
+     *
+     * The database write is {@link DCABotHelper#retireStrandedStartDeal}'s, with
+     * no grace and nothing else relaxed: every order row must still carry the
+     * no-venue-id placeholder with nothing executed, and the write is filtered
+     * on `status: start`. Only once that write lands is the deal dropped from
+     * this worker's map and the bot's `deals.active` counter given back.
+     *
+     * Not `closeDealById`: its `processDealClose` calls
+     * `restoreFromRangeOrError()`, which would put a bot the refusal has just
+     * moved to `error` straight back to `open` and hide the error. Nor does
+     * this reopen a deal; the bot's next entry comes from its own start
+     * condition, as after any other cancelled deal.
+     *
+     * Same per-deal lock as `closeDealById`, so a user's close of this deal and
+     * this retire never interleave.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, dealId: string) => `${botId}${dealId ?? 'closeById'}`,
+    )
+    async retireRefusedStartDeal(
+      _botId: string,
+      dealId: string,
+    ): Promise<boolean> {
+      const fullDeal = this.getDeal(dealId)
+      if (!fullDeal || fullDeal.deal.status !== DCADealStatusEnum.start) {
+        return false
+      }
+      if (
+        !(await this.retireStrandedStartDeal(
+          dealId,
+          DCACloseTriggerEnum.auto,
+          0,
+        ))
+      ) {
+        return false
+      }
+      fullDeal.deal.status = DCADealStatusEnum.canceled
+      await this.clearDealTimer(dealId)
+      this.removeDealFromStopLossMethods(dealId)
+      this.pendingClose.delete(dealId)
+      this.removeOrdersByDeal(dealId)
+      this.deleteDeal(dealId)
+      this.resetAssets()
+      await this.updateBotDeals(this.botId, false)
+      this.updateUsage(dealId, true)
+      await this.checkDealsAllowedMethods()
       return true
     }
 
@@ -13197,6 +13260,24 @@ function createDCABotHelper<
                 if (this.data.settings.type === DCATypeEnum.terminal) {
                   this.endMethod(_id)
                   return this.stop()
+                }
+                // The venue's answer to this deal's opening order was a
+                // definitive no, and no branch above is retrying it: nothing is
+                // on the exchange and nothing will be. Cancel the deal now
+                // rather than leave it in `start`, holding nothing, for the
+                // stuck-start sweep. Spec `241`.
+                const refusedDeal = dealId ? this.getDeal(dealId) : undefined
+                if (
+                  dealId &&
+                  shouldRetireRefusedEntry({
+                    reason: result,
+                    terminal: false,
+                    dealStatus: refusedDeal?.deal.status,
+                    retryScheduled: !!refusedDeal?.deal.startBlocked?.retryAfter,
+                    fundingHold: !!refusedDeal?.deal.fundingHold,
+                  })
+                ) {
+                  await this.retireRefusedStartDeal(this.botId, dealId)
                 }
               }
             } else if (result.status === 'FILLED') {
