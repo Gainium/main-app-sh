@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.127.2] - 2026-11-15
+
+### Changed
+
+- A chasing limit order now waits at the best bid (buy) or best ask (sell) instead of crossing at the last trade price
+
 ## [1.127.1] - 2026-11-15
 
 ### Fixed
