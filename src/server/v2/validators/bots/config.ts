@@ -1538,8 +1538,19 @@ export type FieldConfig = {
   maxLength?: number
 }
 
+/**
+ * Order-execution objects (OrderExecution in core/types.ts). Not part of the
+ * public v2 API yet: the bot form sets them over GraphQL until the engine
+ * honours every mode, then they get a nested validator here.
+ */
+type ExecutionSettingKey =
+  | 'entryExecution'
+  | 'dcaExecution'
+  | 'tpExecution'
+  | 'slExecution'
+
 export const dcaBotSchemaConfig: Record<
-  keyof typeof DCA_FORM_DEFAULTS,
+  Exclude<keyof typeof DCA_FORM_DEFAULTS, ExecutionSettingKey>,
   FieldConfig
 > = {
   pair: { validators: [ValidatorsEnum.shouldBeArray], min: 1 },
@@ -2371,7 +2382,7 @@ export const dcaBotSchemaConfig: Record<
 // Combo Bot extends DCA Bot with some additional/overridden fields
 // Some fields in ComboBotSettings type are not used - add dummy check for now
 export const comboBotSchemaConfig: Record<
-  keyof typeof COMBO_FORM_DEFAULTS,
+  Exclude<keyof typeof COMBO_FORM_DEFAULTS, ExecutionSettingKey>,
   FieldConfig
 > = {
   ...dcaBotSchemaConfig,

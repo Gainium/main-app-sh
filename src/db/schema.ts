@@ -200,6 +200,23 @@ const CreatedUpdated = {
   updated: { type: Date, default: Date.now },
 }
 
+/** `OrderExecution` (core/types.ts) — how an order is executed. */
+const orderExecutionSchema = new Schema(
+  {
+    mode: { type: String, enum: ['market', 'limit', 'chase', 'split'] },
+    repriceSec: Number,
+    maxChasePerc: Number,
+    timeoutSec: Number,
+    slices: Number,
+    pace: { type: String, enum: ['iceberg', 'twap'] },
+    sliceIntervalSec: Number,
+    sliceMode: { type: String, enum: ['market', 'chase', 'limit'] },
+    floorPerc: Number,
+    onFloor: { type: String, enum: ['pause', 'market'] },
+  },
+  { _id: false },
+)
+
 const favoritePairsSchema: Schema<FavoritePairsSchema> = new Schema({
   userId: RequiredString,
   provider: { ...RequiredString, enum: ExchangeEnum },
@@ -1619,6 +1636,10 @@ const dcaBotSettings = new Schema({
   minTp: String,
   closeDealType: { type: String, enum: CloseDCATypeEnum },
   closeOrderType: { type: String, enum: OrderTypeEnum },
+  entryExecution: { type: orderExecutionSchema, default: undefined },
+  dcaExecution: { type: orderExecutionSchema, default: undefined },
+  tpExecution: { type: orderExecutionSchema, default: undefined },
+  slExecution: { type: orderExecutionSchema, default: undefined },
   allowRaiseToExchangeMin: Boolean,
   reduceToAvailableBalance: Boolean,
   reduceToAvailableMinSize: String,
@@ -2404,6 +2425,9 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     closeDealType: { type: String, enum: CloseDCATypeEnum },
     closeOrderType: { type: String, enum: OrderTypeEnum },
     dcaByMarket: Boolean,
+    dcaExecution: { type: orderExecutionSchema, default: undefined },
+    tpExecution: { type: orderExecutionSchema, default: undefined },
+    slExecution: { type: orderExecutionSchema, default: undefined },
     orderSizeType: { type: String, enum: OrderSizeTypeEnum },
     useMultiSl: Boolean,
     multiSl: [multiTP],
@@ -2439,6 +2463,9 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
     type: [{ _id: false, level: Number, price: Number, qty: Number }],
     default: undefined,
   },
+  // Spec 242: split order / limit close in progress (see core/types.ts).
+  executionSplit: { type: Schema.Types.Mixed, default: undefined },
+  closeExecution: { type: Schema.Types.Mixed, default: undefined },
   paperContext: Boolean,
   type: { type: String, enum: DCATypeEnum },
   strategy: {

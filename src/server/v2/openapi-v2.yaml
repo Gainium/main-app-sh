@@ -246,6 +246,65 @@ components:
         type: string
         example: 507f1f77bcf86cd799439012
   schemas:
+    OrderExecution:
+      type: object
+      description: >-
+        How an order is executed. market fills at once. limit rests at the
+        trigger price (take profit at a known price, DCA levels) or is placed
+        once at the current price (signals). chase re-places a limit at the
+        current price every repriceSec, never beyond maxChasePerc from the
+        trigger price, and executes the rest at market after timeoutSec. split
+        places the order in slices (iceberg one at a time, or twap on a timer).
+        A stop loss accepts market, chase and split only.
+      required:
+        - mode
+      properties:
+        mode:
+          type: string
+          enum: [market, limit, chase, split]
+        repriceSec:
+          type: number
+          minimum: 5
+          maximum: 600
+          description: chase — seconds between re-placements.
+        maxChasePerc:
+          type: number
+          minimum: 0
+          maximum: 20
+          description: chase — furthest % from the trigger price; 0 = no cap.
+        timeoutSec:
+          type: number
+          minimum: 0
+          maximum: 86400
+          description: limit / chase — seconds before the unfilled rest is executed at market; 0 = never.
+        slices:
+          type: integer
+          minimum: 2
+          maximum: 50
+        pace:
+          type: string
+          enum: [iceberg, twap]
+        sliceIntervalSec:
+          type: number
+          minimum: 5
+          maximum: 3600
+        sliceMode:
+          type: string
+          enum: [market, chase, limit]
+          description: limit is only valid with a known trigger price and not for a stop loss.
+        floorPerc:
+          type: number
+          minimum: 0
+          maximum: 50
+          description: split — stop placing slices when price moves this % against the trigger; 0 = no floor.
+        onFloor:
+          type: string
+          enum: [pause, market]
+      example:
+        mode: chase
+        repriceSec: 10
+        maxChasePerc: 1
+        timeoutSec: 35
     APIListResponse:
       allOf:
         - $ref: "#/components/schemas/APIResponse"
@@ -1804,6 +1863,34 @@ components:
                 - LIMIT
                 - MARKET
               example: LIMIT
+            entryExecution:
+              description: >-
+                How the base order is executed. Null or absent: derived from the older fields
+                (startOrderType, dcaByMarket, closeOrderType, closeDealType).
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/OrderExecution'
+            dcaExecution:
+              description: >-
+                How DCA orders are executed. Null or absent: derived from the older fields
+                (startOrderType, dcaByMarket, closeOrderType, closeDealType).
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/OrderExecution'
+            tpExecution:
+              description: >-
+                How the take profit is executed. Null or absent: derived from the older fields
+                (startOrderType, dcaByMarket, closeOrderType, closeDealType).
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/OrderExecution'
+            slExecution:
+              description: >-
+                How the stop loss is executed. Null or absent: derived from the older fields
+                (startOrderType, dcaByMarket, closeOrderType, closeDealType).
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/OrderExecution'
             terminalDealType:
               type: string
               description: Terminal deal handling type

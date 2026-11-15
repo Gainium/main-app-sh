@@ -1,4 +1,8 @@
 import {
+  EXECUTION_SETTING_KEYS,
+  validateOrderExecution,
+} from '../../../bot/dca/orderExecution'
+import {
   BotSettings,
   ComboBotSettings,
   CreateComboBotInput,
@@ -63,6 +67,20 @@ const validateCommonSchema = <
     )[]
   ).forEach((key) => {
     if (key === 'exchangeUUID' || key === 'exchange' || key === 'vars') {
+      return
+    }
+    // Spec 242 — order execution objects (DCA / combo / terminal only). They
+    // have no entry in the flat field config, so they are validated here.
+    if (
+      (EXECUTION_SETTING_KEYS as readonly string[]).includes(key) &&
+      'closeOrderType' in defaults
+    ) {
+      const error = validateOrderExecution(
+        (input as unknown as Record<string, unknown>)[key],
+      )
+      if (error) {
+        response.errors.push([key, `Field ${key} ${error}`])
+      }
       return
     }
     if (!(key in defaults)) {

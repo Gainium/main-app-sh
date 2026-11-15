@@ -260,6 +260,23 @@ import {
   resolveLimitTimeouts,
   defaultLimitFallbackMs,
 } from './dca/limitTimeouts'
+import {
+  clampChasePrice,
+  closeTimerPlan,
+  closeTypeForStage,
+  entryChaseCapPerc,
+  entryOrderType,
+  entrySplitEligible,
+  planSplitSizes,
+  resolveExecution,
+  restingTpTimeoutMs,
+  splitFloorBreached,
+  stageForClose,
+  triggerFromCloseCondition,
+  type ExecutionSettings,
+  type ExecutionTrigger,
+} from './dca/orderExecution'
+import type { OrderExecution } from '../../types'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import { BotServiceType } from '../config'
 import {
@@ -980,6 +997,60 @@ function createDCABotHelper<
     timer: NodeJS.Timeout | null
     /** Timeout first time */
     startTimeoutTime: Map<string, number>
+    /**
+     * Spec 242 — a bot-driven LIMIT close in progress, per deal: the stage's
+     * execution, the price the close first triggered at (chase cap) and when
+     * it was first placed (timeout). Survives re-placements, which re-enter
+     * `closeDealById` without the original trigger.
+     */
+    closeExecutionContext?: Map<
+      string,
+      { execution: OrderExecution; triggerPrice: number; startedAt: number }
+    >
+    /** Deals whose next `closeDealById` is a re-placement by `checkTPOrder`. */
+    closeReplacements?: Set<string>
+    /** Spec 242 — first placement price of a chasing base order, per deal. */
+    entryTriggerPrice?: Map<string, number>
+    /** Spec 242 — resting take-profit expiry timers, per deal. */
+    restingTpTimers?: Map<string, NodeJS.Timeout>
+    /** Spec 242 §4.5 — split closes in progress, per deal. */
+    splitCloses?: Map<
+      string,
+      {
+        stage: 'tp' | 'sl'
+        execution: OrderExecution
+        side: 'BUY' | 'SELL'
+        triggerPrice: number
+        sizes: number[]
+        index: number
+        remaining: number
+        orderId?: string
+        sliceStartedAt: number
+        timer?: NodeJS.Timeout
+        closeTrigger?: DCACloseTriggerEnum
+      }
+    >
+    /** Deals whose next `closeDealById` is the split's own final close. */
+    splitFinalizing?: Set<string>
+    /** Spec 242 — the last reduce-funds order placed per deal (split slices). */
+    lastReduceOrderId?: Map<string, string>
+    /** Spec 242 §6.5 — base-order splits per deal (slice 1 = the base order). */
+    entrySplits?: Map<
+      string,
+      {
+        execution: OrderExecution
+        side: 'BUY' | 'SELL'
+        triggerPrice: number
+        sizes: number[]
+        index: number
+        remaining: number
+        orderId?: string
+        sliceStartedAt: number
+        timer?: NodeJS.Timeout
+      }
+    >
+    /** Spec 242 — the last add-funds order placed per deal (entry slices). */
+    lastAddOrderId?: Map<string, string>
     /**
      * Market fallback for a close-by-limit and the base-entry top-up window —
      * the timeout the base-order switch does not govern. Spec `100` §1.3.
@@ -3889,6 +3960,20 @@ function createDCABotHelper<
     ) {
       const _id = this.startMethod('closeDeal')
       let stop = false
+      // Spec 242 — the deal's close is over.
+      this.closeExecutionContext?.delete(dealId)
+      this.closeReplacements?.delete(dealId)
+      this.entryTriggerPrice?.delete(dealId)
+      this.clearSplitClose(dealId)
+      this.lastReduceOrderId?.delete(dealId)
+      this.clearEntrySplit(dealId)
+      this.lastAddOrderId?.delete(dealId)
+      this.persistExecutionState(dealId)
+      const restingTimer = this.restingTpTimers?.get(dealId)
+      if (restingTimer) {
+        clearTimeout(restingTimer)
+        this.restingTpTimers?.delete(dealId)
+      }
       const findDeal = this.getDeal(dealId)
       if (
         findDeal &&
@@ -6394,7 +6479,8 @@ function createDCABotHelper<
         if ((this.indicatorActions.closeDealSl.get(symbol) ?? 0) < lastTime) {
           this.indicatorActions.closeDealSl.set(symbol, lastTime)
           this.closeAllDeals(
-            settings.closeDealType ?? CloseDCATypeEnum.closeByMarket,
+            // Spec 242 — the stop loss's own execution (legacy: closeDealType).
+            closeTypeForStage('sl', settings, 'indicator'),
             symbol,
             false,
             true,
@@ -6441,7 +6527,8 @@ function createDCABotHelper<
         if ((this.indicatorActions.closeDealTp.get(symbol) ?? 0) < lastTime) {
           this.indicatorActions.closeDealTp.set(symbol, lastTime)
           this.closeAllDeals(
-            settings.closeDealType ?? CloseDCATypeEnum.closeByMarket,
+            // Spec 242 — the take profit's own execution (legacy: closeDealType).
+            closeTypeForStage('tp', settings, 'indicator'),
             symbol,
             true,
             true,
@@ -8070,6 +8157,22 @@ function createDCABotHelper<
         this.orders &&
         this.exchange
       ) {
+        // Spec 242 §4.5 — a close whose stage executes as a split order
+        // becomes a sequence of partial closes.
+        if (
+          await this.maybeStartSplitClose(
+            dealId,
+            findDeal,
+            closeType,
+            forceMarket,
+            price,
+            slSource || sl,
+            closeTrigger,
+          )
+        ) {
+          this.endMethod(_id)
+          return
+        }
         this.allowToPlaceOrders.set(dealId, false)
         const fastClose =
           this.combo &&
@@ -8154,6 +8257,84 @@ function createDCABotHelper<
             const symbol = await this.getExchangeInfo(
               findDeal.deal.symbol.symbol,
             )
+            if (
+              symbol &&
+              closeType === CloseDCATypeEnum.closeByLimit &&
+              !price &&
+              !forceMarket
+            ) {
+              // Spec 242 §4.3 — the stage's execution governs timing and the
+              // chase cap. Created on the first placement, kept across
+              // re-placements (which arrive without `closeTrigger`).
+              this.closeExecutionContext ??= new Map()
+              // Only a re-placement keeps the running close's start time and
+              // trigger price; any other call is a new close.
+              if (!this.closeReplacements?.delete(dealId)) {
+                this.closeExecutionContext.delete(dealId)
+              }
+              let ctx = this.closeExecutionContext.get(dealId)
+              if (!ctx) {
+                const closeSettings = await this.getAggregatedSettings(
+                  findDeal.deal,
+                )
+                const stage = stageForClose(closeTrigger, slSource || sl)
+                // The take-profit / stop-loss type says what kind of trigger
+                // this is; `closeTrigger` alone does not (an indicator take
+                // profit arrives as `tp`).
+                const trigger: ExecutionTrigger =
+                  stage === 'close'
+                    ? 'manual'
+                    : closeTrigger === DCACloseTriggerEnum.webhook
+                      ? 'webhook'
+                      : triggerFromCloseCondition(
+                          stage === 'tp'
+                            ? closeSettings.dealCloseCondition
+                            : closeSettings.dealCloseConditionSL,
+                        )
+                const resolved = resolveExecution(
+                  stage,
+                  closeSettings,
+                  trigger,
+                  { isCombo: !!this.combo, closeType },
+                )
+                ctx = {
+                  // This path only runs for a LIMIT close. A stage that
+                  // resolves to anything else (a stored split before phase 3,
+                  // or market) keeps the legacy close-by-limit timing.
+                  execution:
+                    resolved.mode === 'limit' || resolved.mode === 'chase'
+                      ? resolved
+                      : resolveExecution('close', closeSettings, 'manual', {
+                          isCombo: !!this.combo,
+                          closeType,
+                        }),
+                  triggerPrice: tpOrder.price,
+                  startedAt: Date.now(),
+                }
+                this.closeExecutionContext.set(dealId, ctx)
+                this.persistExecutionState(dealId)
+              }
+              if (
+                ctx.execution.mode === 'chase' &&
+                (ctx.execution.maxChasePerc ?? 0) > 0
+              ) {
+                const capped = clampChasePrice({
+                  price: tpOrder.price,
+                  triggerPrice: ctx.triggerPrice,
+                  maxChasePerc: ctx.execution.maxChasePerc ?? 0,
+                  side: tpOrder.side === 'BUY' ? 'BUY' : 'SELL',
+                })
+                if (capped !== tpOrder.price) {
+                  this.handleLog(
+                    `Deal ${dealId} close price ${tpOrder.price} capped at ${capped} (max chase ${ctx.execution.maxChasePerc}% from ${ctx.triggerPrice})`,
+                  )
+                  tpOrder.price = this.math.round(
+                    capped,
+                    symbol.priceAssetPrecision,
+                  )
+                }
+              }
+            }
             if (symbol) {
               // Spec 015 §7.4 Chain B. Combo included on review — §2/§3's
               // zeroing now covers combo's own (balance-based, not
@@ -8480,6 +8661,10 @@ function createDCABotHelper<
                           `close refused | deal ${dealId} (${symbol.pair}) not restoring: real-fee close ${realFeeOrder.newClientOrderId} may be live on the venue`,
                         )
                       } else if (!retrying) {
+                        // Spec 242 — the close was refused and the deal stays
+                        // open: no limit close is in progress any more.
+                        this.closeExecutionContext?.delete(dealId)
+                        this.persistExecutionState(dealId)
                         await this.restoreOrReportRefusedClose(
                           dealId,
                           symbol.pair,
@@ -8503,48 +8688,33 @@ function createDCABotHelper<
                           limitTimer: null,
                           enterMarketTimer: null,
                         }
-                        if (
-                          this.orderLimitRepositionTimeout !== 0 &&
-                          !this.data.settings.notUseLimitReposition
-                        ) {
-                          if (!this.startTimeoutTime.get(deal.deal._id)) {
-                            this.startTimeoutTime.set(
-                              deal.deal._id,
-                              new Date().getTime(),
-                            )
-                          }
-
-                          if (
-                            this.limitFallbackTimeout === 0 ||
-                            (this.limitFallbackTimeout !== 0 &&
-                              new Date().getTime() +
-                                this.orderLimitRepositionTimeout >
-                                (this.startTimeoutTime.get(deal.deal._id) ??
-                                  new Date().getTime()) +
-                                  this.limitFallbackTimeout)
-                          ) {
-                            dealTimer.limitTimer = setTimeout(
-                              () =>
-                                this.checkTPOrder(
-                                  this.botId,
-                                  tpOrder.newClientOrderId,
-                                  dealId,
-                                  closeType,
-                                  reopen,
-                                  undefined,
-                                  checkProfit,
-                                ),
-                              this.orderLimitRepositionTimeout,
-                            )
-                          }
+                        // Spec 242 §4.3 — one timer per placement: re-price
+                        // (chase) or execute the rest at market once the
+                        // stage's timeout has elapsed since the FIRST
+                        // placement. Replaces two blocks where the
+                        // forced-market timer, armed after one reposition
+                        // interval, overwrote the reposition timer — which
+                        // sent every close-by-limit to market after ~10 s.
+                        const ctx = this.closeExecutionContext?.get(dealId)
+                        const execution = ctx?.execution
+                        const plan = closeTimerPlan({
+                          elapsedMs: Date.now() - (ctx?.startedAt ?? Date.now()),
+                          repriceSec:
+                            execution?.repriceSec ??
+                            this.orderLimitRepositionTimeout / 1000,
+                          timeoutSec:
+                            execution?.timeoutSec ??
+                            this.limitFallbackTimeout / 1000,
+                          reprice: execution
+                            ? execution.mode === 'chase'
+                            : this.orderLimitRepositionTimeout !== 0 &&
+                              !this.data.settings.notUseLimitReposition,
+                        })
+                        if (dealTimer.limitTimer) {
+                          clearTimeout(dealTimer.limitTimer)
+                          dealTimer.limitTimer = null
                         }
-                        if (
-                          this.limitFallbackTimeout !== 0 &&
-                          !dealTimer.enterMarketTimer &&
-                          (!this.data.settings.notUseLimitReposition ||
-                            (this.data.settings.notUseLimitReposition &&
-                              this.data.settings.useLimitTimeout))
-                        ) {
+                        if (plan.action !== 'none') {
                           dealTimer.limitTimer = setTimeout(
                             () =>
                               this.checkTPOrder(
@@ -8553,10 +8723,10 @@ function createDCABotHelper<
                                 dealId,
                                 closeType,
                                 reopen,
-                                true,
+                                plan.action === 'market' ? true : undefined,
                                 checkProfit,
                               ),
-                            this.orderLimitRepositionTimeout,
+                            plan.delayMs,
                           )
                         }
                         this.dealTimersMap.set(deal.deal._id, dealTimer)
@@ -9028,6 +9198,8 @@ function createDCABotHelper<
       ) {
         const settings = await this.getAggregatedSettings(findDeal.deal)
         this.handleLog('Base order FILLED')
+        // Spec 242 §6.5 — a split base order continues with its next slice.
+        this.onEntryBaseFilled(dealId)
         const initialPrice = parseFloat(orderBo.price)
         const qty = parseFloat(orderBo.executedQty)
         await this.clearDealTimer(dealId)
@@ -10629,6 +10801,8 @@ function createDCABotHelper<
           if (cancelOrder?.status === 'FILLED') {
             return this.handleUnknownOrder(cancelOrder)
           }
+          // Spec 242 — a re-placement continues the running close.
+          ;(this.closeReplacements ??= new Set()).add(dealId)
           this.closeDealById(
             this.botId,
             dealId,
@@ -12108,7 +12282,8 @@ function createDCABotHelper<
           this.handleDebug('Get latest price. Latest price = 0. getBaseOrder')
           return
         }
-        const baseOrderType = settings.startOrderType ?? OrderTypeEnum.market
+        // Spec 242 — a stored base-order execution decides the order type.
+        const baseOrderType = entryOrderType(settings) ?? OrderTypeEnum.market
         // `forceLimit` wins over `forceMarket`: it is only ever set by the
         // limit-only fallback in `placeBaseOrder`, which exists precisely
         // because the venue has just refused the market order this would
@@ -12127,6 +12302,29 @@ function createDCABotHelper<
             (type === OrderTypeEnum.market ? slippage : 0) *
               (this.isLong ? 1 : -1) *
               (this.useCompountReduce ? -1 : 1))
+        // Spec 242 §4.3 — a chasing base order is never re-placed further
+        // than its cap from the price of its first placement.
+        const entryCap = entryChaseCapPerc(settings)
+        if (type === OrderTypeEnum.limit && dealId && entryCap > 0) {
+          this.entryTriggerPrice ??= new Map()
+          const trigger = this.entryTriggerPrice.get(dealId)
+          if (trigger === undefined) {
+            this.entryTriggerPrice.set(dealId, price)
+          } else {
+            const capped = clampChasePrice({
+              price,
+              triggerPrice: trigger,
+              maxChasePerc: entryCap,
+              side: this.isLong ? 'BUY' : 'SELL',
+            })
+            if (capped !== price) {
+              this.handleLog(
+                `Deal ${dealId} base order price ${price} capped at ${capped} (max chase ${entryCap}% from ${trigger})`,
+              )
+              price = capped
+            }
+          }
+        }
         let useLimit = false
         if (
           settings.startOrderType === OrderTypeEnum.limit &&
@@ -12585,6 +12783,10 @@ function createDCABotHelper<
           orderSizeType,
           forceLimit,
         )
+        // Spec 242 §6.5 — a split base order sends only its first slice.
+        if (baseOrder && dealId && !forceMarket) {
+          await this.applyEntrySplit(dealId, symbol, baseOrder, fixSize)
+        }
         if (
           dealId &&
           shouldDiscardUnbuiltBaseEntry({
@@ -19661,12 +19863,14 @@ function createDCABotHelper<
           return this.handleWarn(`Signal for ${symbol} cannot be passed`)
         }
         this.closeAllDeals(
+          // Spec 242 — each stage's own execution. Legacy: the take profit
+          // follows closeDealType, the stop loss closes at market.
           ignoreSettings
             ? CloseDCATypeEnum.closeByMarket
             : settings.dealCloseCondition === CloseConditionEnum.webhook
-              ? settings.closeDealType
+              ? closeTypeForStage('tp', settings, 'webhook')
               : settings.dealCloseConditionSL === CloseConditionEnum.webhook
-                ? CloseDCATypeEnum.closeByMarket
+                ? closeTypeForStage('sl', settings, 'webhook')
                 : undefined,
           symbol ?? undefined,
           true,
@@ -24750,7 +24954,9 @@ function createDCABotHelper<
           this.latestDealFillTime.set(dealId, fillTime)
         }
         if (order.typeOrder === TypeOrderEnum.dealTP && order.reduceFundsId) {
-          return this.updateDeal(this.botId, order)
+          const updated = await this.updateDeal(this.botId, order)
+          this.onSplitSliceFilled(dealId, order.clientOrderId)
+          return updated
         }
         if (await this.bookLimitRemainderSweep(order)) {
           return
@@ -24814,6 +25020,9 @@ function createDCABotHelper<
         if (order.typeOrder === TypeOrderEnum.dealRegular) {
           this.ordersInBetweenUpdates.add(order.clientOrderId)
           this.updateDeal(this.botId, order)
+          if (order.addFundsId) {
+            this.onEntrySliceFilled(dealId, order.clientOrderId)
+          }
         }
       } else {
         this.handleLog(`Order ${clientOrderId} was already processed`)
@@ -24852,8 +25061,1067 @@ function createDCABotHelper<
           tpHistory: findDeal.deal.tpHistory,
           updateTime: findDeal.deal.updateTime,
         })
+        await this.armRestingTpTimeout(findDeal.deal, order.clientOrderId)
       }
     }
+
+    /**
+     * Spec 242 §4.2 — a resting take profit with an "Enter market timeout"
+     * starts counting at its first partial fill. Armed once per deal; not for a
+     * bot-driven limit close, which has its own timer.
+     */
+    private async armRestingTpTimeout(deal: ExcludeDoc<Deal>, orderId: string) {
+      const dealId = `${deal._id}`
+      if (
+        this.restingTpTimers?.has(dealId) ||
+        this.closeExecutionContext?.has(dealId)
+      ) {
+        return
+      }
+      const settings = await this.getAggregatedSettings(deal)
+      const ms = restingTpTimeoutMs(settings, !!this.combo)
+      if (!ms) {
+        return
+      }
+      this.restingTpTimers ??= new Map()
+      this.restingTpTimers.set(
+        dealId,
+        setTimeout(() => void this.expireRestingTp(dealId, orderId), ms),
+      )
+      this.handleLog(
+        `Deal ${dealId} take profit ${orderId} part filled; the rest is executed at market in ${ms / 1000}s if still open`,
+      )
+    }
+
+    /**
+     * Spec 242 §4.2 — the resting take profit is still not filled after its
+     * timeout: cancel it and execute the rest at market. Same cancel-then-close
+     * sequence as `checkTPOrder`.
+     */
+    async expireRestingTp(dealId: string, orderId: string) {
+      this.restingTpTimers?.delete(dealId)
+      const find = this.getOrderFromMap(orderId)
+      if (!find || find.status === 'FILLED' || find.status === 'CANCELED') {
+        return
+      }
+      this.handleLog(
+        `Deal ${dealId} take profit ${orderId} timed out part filled; executing the rest at market`,
+      )
+      const cancelOrder = await this.cancelOrderOnExchange(find)
+      if (cancelOrder?.status === 'FILLED') {
+        return this.handleUnknownOrder(cancelOrder)
+      }
+      this.closeDealById(
+        this.botId,
+        dealId,
+        CloseDCATypeEnum.closeByMarket,
+        undefined,
+        true,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        cancelOrder?.sl,
+        DCACloseTriggerEnum.tp,
+      )
+    }
+    /**
+     * Spec 242 §6.5 — on the base order's first placement, plan the split and
+     * send only slice 1; re-placements (repositioning) reuse the plan.
+     */
+    private async applyEntrySplit(
+      dealId: string,
+      symbol: string,
+      baseOrder: { origQty: string; price: string; side?: string },
+      fixSize: number,
+    ) {
+      const existing = this.entrySplits?.get(dealId)
+      if (existing) {
+        if (existing.index === 0) {
+          baseOrder.origQty = `${existing.sizes[0]}`
+        }
+        return
+      }
+      const settings = await this.getAggregatedSettings(this.getDeal(dealId)?.deal)
+      if (
+        !entrySplitEligible(settings, {
+          isCombo: !!this.combo,
+          terminal: settings.type === DCATypeEnum.terminal,
+          riskReward: !!settings.useRiskReward,
+          compoundReduce: !!this.useCompountReduce,
+          fixSize: fixSize || 0,
+          spotShort: !this.futures && !this.isLong,
+          singlePosition: !!this.singlePositionActive,
+        })
+      ) {
+        return
+      }
+      const ed = await this.getExchangeInfo(symbol)
+      const total = +baseOrder.origQty
+      if (!ed || !(total > 0)) {
+        return
+      }
+      const execution = settings.entryExecution as OrderExecution
+      const price = +baseOrder.price
+      const sizes = planSplitSizes({
+        totalQty: total,
+        slices: execution.slices ?? 5,
+        step: ed.baseAsset.step,
+        minQty: ed.baseAsset.minAmount,
+        minNotional: ed.quoteAsset.minAmount,
+        price,
+      })
+      if (sizes.length <= 1) {
+        this.handleLog(
+          `Deal ${dealId} split base order: too small to split; one order`,
+        )
+        return
+      }
+      ;(this.entrySplits ??= new Map()).set(dealId, {
+        execution,
+        side: this.isLong ? 'BUY' : 'SELL',
+        triggerPrice: price,
+        sizes,
+        index: 0,
+        remaining: sizes[0],
+        sliceStartedAt: 0,
+      })
+      baseOrder.origQty = `${sizes[0]}`
+      this.handleLog(
+        `Deal ${dealId} split base order: ${sizes.length} slices [${sizes.join(', ')}], ${execution.pace === 'twap' ? `every ${execution.sliceIntervalSec ?? 30}s` : 'one at a time'}; the base order is slice 1`,
+      )
+    }
+
+    private clearEntrySplit(dealId: string, persist = true) {
+      const st = this.entrySplits?.get(dealId)
+      if (st?.timer) {
+        clearTimeout(st.timer)
+      }
+      this.entrySplits?.delete(dealId)
+      if (persist && st) {
+        this.persistExecutionState(dealId)
+      }
+    }
+
+    private armEntryTimer(dealId: string, ms: number, fn: () => void) {
+      const st = this.entrySplits?.get(dealId)
+      if (!st) {
+        return
+      }
+      if (st.timer) {
+        clearTimeout(st.timer)
+      }
+      st.timer = setTimeout(fn, Math.max(0, ms))
+      this.persistExecutionState(dealId)
+    }
+
+    /** The base order (slice 1) filled: the next slice follows. */
+    onEntryBaseFilled(dealId: string) {
+      const st = this.entrySplits?.get(dealId)
+      if (!st || st.index !== 0) {
+        return
+      }
+      st.index = 1
+      st.remaining = st.sizes[1] ?? 0
+      st.sliceStartedAt = 0
+      this.armEntryTimer(
+        dealId,
+        (st.execution.sliceIntervalSec ?? 30) * 1000,
+        () => void this.placeEntrySlice(dealId),
+      )
+    }
+
+    /** Place the current add-funds slice of a split base order. */
+    private async placeEntrySlice(dealId: string) {
+      const st = this.entrySplits?.get(dealId)
+      const deal = this.getDeal(dealId)
+      if (!st || !deal || deal.deal.status !== DCADealStatusEnum.open) {
+        this.clearEntrySplit(dealId)
+        return
+      }
+      if (st.index >= st.sizes.length) {
+        this.handleLog(`Deal ${dealId} split base order complete`)
+        this.clearEntrySplit(dealId)
+        return
+      }
+      const e = st.execution
+      const last =
+        this.getLastStreamData(deal.deal.symbol.symbol)?.price ||
+        st.triggerPrice
+      if (
+        splitFloorBreached({
+          side: st.side === 'BUY' ? 'SELL' : 'BUY',
+          triggerPrice: st.triggerPrice,
+          lastPrice: last,
+          floorPerc: e.floorPerc ?? 0,
+        })
+      ) {
+        if (e.onFloor === 'market') {
+          const rest = +st.sizes
+            .slice(st.index)
+            .reduce((a, b) => a + b, 0)
+            .toFixed(12)
+          this.handleLog(
+            `Deal ${dealId} split base order: price ${last} past the ${e.floorPerc}% floor; buying the rest (${rest}) at market`,
+          )
+          st.sizes = [...st.sizes.slice(0, st.index), rest]
+          st.remaining = rest
+          return this.sendEntrySlice(dealId, false, undefined)
+        }
+        this.handleLog(
+          `Deal ${dealId} split base order: price ${last} past the ${e.floorPerc}% floor; paused`,
+        )
+        this.armEntryTimer(dealId, 5_000, () => void this.placeEntrySlice(dealId))
+        return
+      }
+      const chase = e.sliceMode !== 'market'
+      const limitPrice = chase
+        ? clampChasePrice({
+            price: last,
+            triggerPrice: st.triggerPrice,
+            maxChasePerc: e.maxChasePerc ?? 0,
+            side: st.side,
+          })
+        : undefined
+      return this.sendEntrySlice(dealId, chase, limitPrice)
+    }
+
+    private async sendEntrySlice(
+      dealId: string,
+      chase: boolean,
+      limitPrice: number | undefined,
+    ) {
+      const st = this.entrySplits?.get(dealId)
+      if (!st) {
+        return
+      }
+      const e = st.execution
+      st.sliceStartedAt = st.sliceStartedAt || Date.now()
+      this.lastAddOrderId?.delete(dealId)
+      const indexBefore = st.index
+      await this.addDealFunds(this.botId, dealId, {
+        qty: `${st.remaining}`,
+        asset: OrderSizeTypeEnum.base,
+        type: AddFundsTypeEnum.fixed,
+        useLimitPrice: chase,
+        ...(chase && limitPrice ? { limitPrice: `${limitPrice}` } : {}),
+      })
+      const current = this.entrySplits?.get(dealId)
+      if (
+        !current ||
+        (e.pace !== 'twap' && current.index !== indexBefore)
+      ) {
+        return
+      }
+      current.orderId = this.lastAddOrderId?.get(dealId)
+      this.handleLog(
+        `Deal ${dealId} split base order: slice ${current.index + 1}/${current.sizes.length} (${current.remaining}) ${chase ? `limit ${limitPrice}` : 'at market'}`,
+      )
+      if (e.pace === 'twap') {
+        this.armEntryTimer(
+          dealId,
+          (e.sliceIntervalSec ?? 30) * 1000,
+          () => void this.advanceEntryOnTimer(dealId),
+        )
+      } else if (chase) {
+        this.armEntryTimer(
+          dealId,
+          (e.repriceSec ?? 10) * 1000,
+          () => void this.repriceEntrySlice(dealId),
+        )
+      }
+    }
+
+    /** An add-funds slice filled. */
+    onEntrySliceFilled(dealId: string, clientOrderId: string) {
+      const st = this.entrySplits?.get(dealId)
+      const sliceId = st?.orderId ?? this.lastAddOrderId?.get(dealId)
+      if (!st || st.index === 0 || sliceId !== clientOrderId || st.remaining <= 0) {
+        return
+      }
+      st.orderId = undefined
+      if (st.execution.pace === 'twap') {
+        st.remaining = 0
+        return
+      }
+      st.index += 1
+      st.remaining = st.sizes[st.index] ?? 0
+      st.sliceStartedAt = 0
+      if (st.index >= st.sizes.length) {
+        this.handleLog(`Deal ${dealId} split base order complete`)
+        this.clearEntrySplit(dealId)
+        return
+      }
+      this.armEntryTimer(
+        dealId,
+        (st.execution.sliceIntervalSec ?? 30) * 1000,
+        () => void this.placeEntrySlice(dealId),
+      )
+    }
+
+    /** Cancel the open entry slice; unfilled quantity, or null if it filled. */
+    private async cancelEntrySlice(dealId: string): Promise<number | null> {
+      const st = this.entrySplits?.get(dealId)
+      if (!st?.orderId) {
+        return st?.remaining ?? 0
+      }
+      const order = this.getOrderFromMap(st.orderId)
+      if (!order || order.status === 'FILLED') {
+        return null
+      }
+      const cancelled = await this.cancelOrderOnExchange(order)
+      if (cancelled?.status === 'FILLED') {
+        void this.handleUnknownOrder(cancelled)
+        return null
+      }
+      const executed = +(cancelled?.executedQty ?? order.executedQty ?? 0) || 0
+      return Math.max(0, +(st.remaining - executed).toFixed(12))
+    }
+
+    private async repriceEntrySlice(dealId: string) {
+      const st = this.entrySplits?.get(dealId)
+      if (!st) {
+        return
+      }
+      const left = await this.cancelEntrySlice(dealId)
+      if (left === null) {
+        return
+      }
+      st.remaining = left
+      st.orderId = undefined
+      if (left <= 0) {
+        st.index += 1
+        st.remaining = st.sizes[st.index] ?? 0
+        st.sliceStartedAt = 0
+        return this.placeEntrySlice(dealId)
+      }
+      const timeoutMs = (st.execution.timeoutSec ?? 35) * 1000
+      if (timeoutMs > 0 && Date.now() - st.sliceStartedAt >= timeoutMs) {
+        this.handleLog(
+          `Deal ${dealId} split base order: slice ${st.index + 1} timed out; buying it at market`,
+        )
+        return this.sendEntrySlice(dealId, false, undefined)
+      }
+      return this.placeEntrySlice(dealId)
+    }
+
+    private async advanceEntryOnTimer(dealId: string) {
+      const st = this.entrySplits?.get(dealId)
+      if (!st) {
+        return
+      }
+      const left = st.remaining > 0 ? await this.cancelEntrySlice(dealId) : 0
+      st.index += 1
+      if (st.index < st.sizes.length && left) {
+        st.sizes[st.index] = +(st.sizes[st.index] + left).toFixed(12)
+      } else if (st.index >= st.sizes.length && left) {
+        // The last slice did not fill by the next tick: buy what is left.
+        st.sizes.push(left)
+      }
+      st.remaining = st.sizes[st.index] ?? 0
+      st.orderId = undefined
+      st.sliceStartedAt = 0
+      return this.placeEntrySlice(dealId)
+    }
+
+    /**
+     * Spec 242 §4.5 — divert a take-profit / stop-loss close into a split
+     * when that stage executes as `split`. Returns true when the split owns
+     * the close. Not for combo bots (no partial-close primitive), a forced
+     * market close, a close at a given price, or the split's own final close.
+     */
+    private async maybeStartSplitClose(
+      dealId: string,
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      closeType: CloseDCATypeEnum,
+      forceMarket: boolean,
+      price: string,
+      slFlag: boolean,
+      closeTrigger?: DCACloseTriggerEnum,
+    ): Promise<boolean> {
+      if (this.splitFinalizing?.has(dealId)) {
+        return false
+      }
+      const running = this.splitCloses?.get(dealId)
+      if (running) {
+        const incoming = stageForClose(closeTrigger, slFlag)
+        if (!forceMarket && !price && incoming === running.stage) {
+          // The same trigger firing again changes nothing.
+          return true
+        }
+        // A manual, bot or API close — or any forced one — wins over a
+        // running split: drop the open slice and let this close proceed.
+        this.handleLog(
+          `Deal ${dealId} split order interrupted by a ${closeTrigger ?? 'manual'} close`,
+        )
+        const left = running.orderId ? await this.cancelSplitSlice(dealId) : 0
+        this.clearSplitClose(dealId)
+        if (left === null) {
+          this.handleDebug(
+            `Deal ${dealId} split slice filled while interrupting; the close sizes from what is left`,
+          )
+        }
+        return false
+      }
+      if (
+        this.combo ||
+        forceMarket ||
+        price ||
+        (closeType !== CloseDCATypeEnum.closeByMarket &&
+          closeType !== CloseDCATypeEnum.closeByLimit)
+      ) {
+        return false
+      }
+      const stage = stageForClose(closeTrigger, slFlag)
+      if (stage === 'close') {
+        return false
+      }
+      const settings = await this.getAggregatedSettings(findDeal.deal)
+      const trigger: ExecutionTrigger =
+        closeTrigger === DCACloseTriggerEnum.webhook
+          ? 'webhook'
+          : triggerFromCloseCondition(
+              stage === 'tp'
+                ? settings.dealCloseCondition
+                : settings.dealCloseConditionSL,
+            )
+      const execution = resolveExecution(stage, settings, trigger)
+      if (execution.mode !== 'split') {
+        return false
+      }
+      return this.startSplitClose(
+        dealId,
+        findDeal,
+        execution,
+        stage,
+        closeTrigger,
+      )
+    }
+
+    private async startSplitClose(
+      dealId: string,
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      execution: OrderExecution,
+      stage: 'tp' | 'sl',
+      closeTrigger?: DCACloseTriggerEnum,
+    ): Promise<boolean> {
+      const ed = await this.getExchangeInfo(findDeal.deal.symbol.symbol)
+      const tpOrder = await this.prepareTpOrder(findDeal, false, stage === 'sl')
+      if (!ed || !tpOrder || !(tpOrder.qty > 0)) {
+        return false
+      }
+      // Slices "at the trigger price" rest at the take-profit level itself.
+      const triggerPrice =
+        execution.sliceMode === 'limit'
+          ? tpOrder.price
+          : this.getLastStreamData(findDeal.deal.symbol.symbol)?.price ||
+            tpOrder.price
+      const sizes = planSplitSizes({
+        totalQty: tpOrder.qty,
+        slices: execution.slices ?? 5,
+        step: ed.baseAsset.step,
+        minQty: ed.baseAsset.minAmount,
+        minNotional: ed.quoteAsset.minAmount,
+        price: triggerPrice,
+      })
+      if (sizes.length <= 1) {
+        this.handleLog(
+          `Deal ${dealId} split order: position too small to split; closing in one order`,
+        )
+        return false
+      }
+      // Nothing new rests on the deal while it is closed in slices, and its
+      // safety orders go: a split stop loss must not keep buying.
+      this.allowToPlaceOrders.set(dealId, false)
+      const ladder = this.getOrdersByStatusAndDealId({
+        status: 'NEW',
+        dealId,
+      }).filter((o) => o.typeOrder === TypeOrderEnum.dealRegular)
+      for (const o of ladder) {
+        await this.cancelOrderOnExchange(o)
+      }
+      this.splitCloses ??= new Map()
+      this.splitCloses.set(dealId, {
+        stage,
+        execution,
+        side: tpOrder.side === 'BUY' ? 'BUY' : 'SELL',
+        triggerPrice,
+        sizes,
+        index: 0,
+        remaining: sizes[0],
+        sliceStartedAt: Date.now(),
+        closeTrigger,
+      })
+      // Persist before the first slice goes out, so a restart in between
+      // resumes the split instead of resting a full-size take profit.
+      this.persistExecutionState(dealId)
+      this.handleLog(
+        `Deal ${dealId} ${stage === 'sl' ? 'stop loss' : 'take profit'} split order: ${sizes.length} slices [${sizes.join(', ')}], ${execution.pace === 'twap' ? `every ${execution.sliceIntervalSec ?? 30}s` : 'one at a time'}, trigger ${triggerPrice}`,
+      )
+      void this.placeSplitSlice(dealId)
+      return true
+    }
+
+    private clearSplitClose(dealId: string, persist = true) {
+      const st = this.splitCloses?.get(dealId)
+      if (st?.timer) {
+        clearTimeout(st.timer)
+      }
+      this.splitCloses?.delete(dealId)
+      if (persist && st) {
+        this.persistExecutionState(dealId)
+      }
+    }
+
+    /**
+     * Spec 242 — a restart drops in-memory timers. For every open deal whose
+     * persisted state says a split or a limit close was running:
+     *  - split close: block re-placement, cancel what restoreWork put back and
+     *    any slice left open, then re-plan the rest of the position into the
+     *    slices that were left and continue;
+     *  - split base order: cancel an open add-funds slice and re-plan the
+     *    quantity still to buy into the slices that were left;
+     *  - limit close: close again by limit with the original start time, so the
+     *    timeout still counts from the first placement (market if it is over).
+     */
+    async resumeExecutionState() {
+      for (const d of this.getOpenDeals()) {
+        const dealId = `${d.deal._id}`
+        try {
+          const split = d.deal.executionSplit
+          if (split && !this.splitCloses?.has(dealId) && !this.entrySplits?.has(dealId)) {
+            await this.resumeSplit(d, split)
+            continue
+          }
+          const close = d.deal.closeExecution
+          if (close && !this.closeExecutionContext?.has(dealId)) {
+            await this.resumeLimitClose(dealId, close)
+          }
+        } catch (e) {
+          this.handleWarn(
+            `Deal ${dealId} could not resume its order execution: ${(e as Error)?.message ?? e}`,
+          )
+        }
+      }
+    }
+
+    private async resumeSplit(
+      d: FullDeal<ExcludeDoc<Deal>>,
+      split: NonNullable<Deal['executionSplit']>,
+    ) {
+      const dealId = `${d.deal._id}`
+      const slicesLeft = Math.max(1, split.sizes.length - split.index)
+      if (split.stage === 'entry') {
+        if (split.index === 0) {
+          // The base order is still to fill; its re-placement reuses the plan.
+          ;(this.entrySplits ??= new Map()).set(dealId, {
+            execution: split.execution,
+            side: this.isLong ? 'BUY' : 'SELL',
+            triggerPrice: split.triggerPrice,
+            sizes: split.sizes,
+            index: 0,
+            remaining: split.sizes[0],
+            sliceStartedAt: 0,
+          })
+          return
+        }
+        let left = +split.sizes
+          .slice(split.index)
+          .reduce((a, b) => a + b, 0)
+          .toFixed(12)
+        const open = this.getOrdersByStatusAndDealId({ status: 'NEW', dealId }).filter(
+          (o) => o.typeOrder === TypeOrderEnum.dealRegular && !!o.addFundsId,
+        )
+        for (const o of open) {
+          const c = await this.cancelOrderOnExchange(o)
+          left -= +(c?.executedQty ?? 0) || 0
+        }
+        const ed = await this.getExchangeInfo(d.deal.symbol.symbol)
+        if (!ed || !(left > 0)) {
+          this.persistExecutionState(dealId)
+          return
+        }
+        const sizes = planSplitSizes({
+          totalQty: +left.toFixed(12),
+          slices: slicesLeft,
+          step: ed.baseAsset.step,
+          minQty: ed.baseAsset.minAmount,
+          minNotional: ed.quoteAsset.minAmount,
+          price: split.triggerPrice,
+        })
+        ;(this.entrySplits ??= new Map()).set(dealId, {
+          execution: split.execution,
+          side: this.isLong ? 'BUY' : 'SELL',
+          triggerPrice: split.triggerPrice,
+          sizes: [0, ...sizes],
+          index: 1,
+          remaining: sizes[0],
+          sliceStartedAt: 0,
+        })
+        this.handleLog(
+          `Deal ${dealId} split base order resumed after restart: ${sizes.length} slices [${sizes.join(', ')}] left`,
+        )
+        this.armEntryTimer(dealId, 5_000, () => void this.placeEntrySlice(dealId))
+        return
+      }
+      // Split close.
+      this.allowToPlaceOrders.set(dealId, false)
+      const open = this.getOrdersByStatusAndDealId({ status: 'NEW', dealId }).filter(
+        (o) =>
+          o.typeOrder === TypeOrderEnum.dealRegular ||
+          o.typeOrder === TypeOrderEnum.dealTP,
+      )
+      for (const o of open) {
+        const c = await this.cancelOrderOnExchange(o)
+        if (c?.status === 'FILLED') {
+          void this.handleUnknownOrder(c)
+        }
+      }
+      const fresh = this.getDeal(dealId)
+      const ed = await this.getExchangeInfo(d.deal.symbol.symbol)
+      const tpOrder = fresh
+        ? await this.prepareTpOrder(fresh, false, split.stage === 'sl')
+        : undefined
+      if (!fresh || !ed || !tpOrder || !(tpOrder.qty > 0)) {
+        this.allowToPlaceOrders.delete(dealId)
+        this.persistExecutionState(dealId)
+        return
+      }
+      const sizes = planSplitSizes({
+        totalQty: tpOrder.qty,
+        slices: slicesLeft,
+        step: ed.baseAsset.step,
+        minQty: ed.baseAsset.minAmount,
+        minNotional: ed.quoteAsset.minAmount,
+        price: split.triggerPrice,
+      })
+      ;(this.splitCloses ??= new Map()).set(dealId, {
+        stage: split.stage,
+        execution: split.execution,
+        side: tpOrder.side === 'BUY' ? 'BUY' : 'SELL',
+        triggerPrice: split.triggerPrice,
+        sizes,
+        index: 0,
+        remaining: sizes[0],
+        sliceStartedAt: 0,
+        closeTrigger:
+          split.stage === 'sl' ? DCACloseTriggerEnum.sl : DCACloseTriggerEnum.tp,
+      })
+      this.handleLog(
+        `Deal ${dealId} split order resumed after restart: ${sizes.length} slices [${sizes.join(', ')}] left`,
+      )
+      this.armSplitTimer(dealId, 5_000, () => void this.placeSplitSlice(dealId))
+    }
+
+    private async resumeLimitClose(
+      dealId: string,
+      close: NonNullable<Deal['closeExecution']>,
+    ) {
+      const overdue =
+        close.timeoutSec > 0 &&
+        Date.now() - close.startedAt >= close.timeoutSec * 1000
+      this.handleLog(
+        `Deal ${dealId} limit close resumed after restart${overdue ? ': past its timeout, closing at market' : ''}`,
+      )
+      if (!overdue) {
+        ;(this.closeExecutionContext ??= new Map()).set(dealId, {
+          execution: {
+            mode: close.mode,
+            repriceSec: close.repriceSec,
+            timeoutSec: close.timeoutSec,
+            maxChasePerc: close.maxChasePerc ?? 0,
+          },
+          triggerPrice: close.triggerPrice,
+          startedAt: close.startedAt,
+        })
+        ;(this.closeReplacements ??= new Set()).add(dealId)
+      }
+      await this.closeDealById(
+        this.botId,
+        dealId,
+        overdue ? CloseDCATypeEnum.closeByMarket : CloseDCATypeEnum.closeByLimit,
+        undefined,
+        overdue,
+      )
+    }
+
+    /**
+     * Spec 242 — mirror the in-memory split / limit-close state onto the deal,
+     * so a restart can resume it and the invariant sentinel can see it.
+     */
+    private persistExecutionState(dealId: string) {
+      const deal = this.getDeal(dealId)
+      if (!deal) {
+        return
+      }
+      const exit = this.splitCloses?.get(dealId)
+      const entry = this.entrySplits?.get(dealId)
+      const st = exit ?? entry
+      const now = Date.now()
+      const executionSplit = st
+        ? {
+            stage: exit ? exit.stage : ('entry' as const),
+            execution: st.execution,
+            sizes: st.sizes,
+            index: st.index,
+            triggerPrice: st.triggerPrice,
+            startedAt: deal.deal.executionSplit?.startedAt ?? now,
+            updatedAt: now,
+          }
+        : null
+      const ctx = this.closeExecutionContext?.get(dealId)
+      const closeExecution =
+        ctx &&
+        (ctx.execution.mode === 'limit' || ctx.execution.mode === 'chase')
+          ? {
+              mode: ctx.execution.mode,
+              triggerPrice: ctx.triggerPrice,
+              startedAt: ctx.startedAt,
+              timeoutSec: ctx.execution.timeoutSec ?? 0,
+              repriceSec: ctx.execution.repriceSec ?? 10,
+              maxChasePerc: ctx.execution.maxChasePerc ?? 0,
+            }
+          : null
+      if (
+        !executionSplit &&
+        !closeExecution &&
+        !deal.deal.executionSplit &&
+        !deal.deal.closeExecution
+      ) {
+        return
+      }
+      deal.deal.executionSplit = executionSplit
+      deal.deal.closeExecution = closeExecution
+      this.saveDeal(deal, { executionSplit, closeExecution })
+    }
+
+    private armSplitTimer(dealId: string, ms: number, fn: () => void) {
+      const st = this.splitCloses?.get(dealId)
+      if (!st) {
+        return
+      }
+      if (st.timer) {
+        clearTimeout(st.timer)
+      }
+      st.timer = setTimeout(fn, Math.max(0, ms))
+      this.persistExecutionState(dealId)
+    }
+
+    /** Place the current slice, or the final close for the last one. */
+    private async placeSplitSlice(dealId: string) {
+      const st = this.splitCloses?.get(dealId)
+      const deal = this.getDeal(dealId)
+      if (!st || !deal || deal.deal.status !== DCADealStatusEnum.open) {
+        this.clearSplitClose(dealId)
+        return
+      }
+      const e = st.execution
+      const last =
+        this.getLastStreamData(deal.deal.symbol.symbol)?.price ||
+        st.triggerPrice
+      if (
+        splitFloorBreached({
+          side: st.side,
+          triggerPrice: st.triggerPrice,
+          lastPrice: last,
+          floorPerc: e.floorPerc ?? 0,
+        })
+      ) {
+        if (e.onFloor === 'market') {
+          this.handleLog(
+            `Deal ${dealId} split order: price ${last} past the ${e.floorPerc}% floor; executing the rest at market`,
+          )
+          return this.finishSplitClose(dealId, true)
+        }
+        this.handleLog(
+          `Deal ${dealId} split order: price ${last} past the ${e.floorPerc}% floor; paused`,
+        )
+        this.armSplitTimer(dealId, 5_000, () => void this.placeSplitSlice(dealId))
+        return
+      }
+      if (st.index >= st.sizes.length - 1) {
+        return this.finishSplitClose(dealId, e.sliceMode === 'market')
+      }
+      const chase = e.sliceMode !== 'market'
+      const fixed = e.sliceMode === 'limit'
+      let limitPrice: number | undefined
+      if (fixed) {
+        limitPrice = st.triggerPrice
+      } else if (chase) {
+        limitPrice = clampChasePrice({
+          price: last,
+          triggerPrice: st.triggerPrice,
+          maxChasePerc: e.maxChasePerc ?? 0,
+          side: st.side,
+        })
+      }
+      st.sliceStartedAt = st.sliceStartedAt || Date.now()
+      this.lastReduceOrderId?.delete(dealId)
+      const indexBefore = st.index
+      await this.reduceDealFunds(this.botId, dealId, {
+        qty: `${st.remaining}`,
+        asset: OrderSizeTypeEnum.base,
+        type: AddFundsTypeEnum.fixed,
+        useLimitPrice: chase,
+        ...(chase && limitPrice ? { limitPrice: `${limitPrice}` } : {}),
+      })
+      const current = this.splitCloses?.get(dealId)
+      if (
+        !current ||
+        (current.execution.pace !== 'twap' && current.index !== indexBefore)
+      ) {
+        // Gone, or this slice already filled and the next one is scheduled.
+        return
+      }
+      current.orderId = this.lastReduceOrderId?.get(dealId)
+      this.handleLog(
+        `Deal ${dealId} split order: slice ${current.index + 1}/${current.sizes.length} (${current.remaining}) ${chase ? `limit ${limitPrice}` : 'at market'}`,
+      )
+      if (e.pace === 'twap') {
+        this.armSplitTimer(
+          dealId,
+          (e.sliceIntervalSec ?? 30) * 1000,
+          () => void this.advanceSplitOnTimer(dealId),
+        )
+      } else if (fixed) {
+        // Rests at the level; only an explicit timeout sends it to market.
+        const timeoutMs = (e.timeoutSec ?? 0) * 1000
+        if (timeoutMs > 0) {
+          this.armSplitTimer(
+            dealId,
+            timeoutMs,
+            () => void this.repriceSplitSlice(dealId),
+          )
+        }
+      } else if (chase) {
+        this.armSplitTimer(
+          dealId,
+          (e.repriceSec ?? 10) * 1000,
+          () => void this.repriceSplitSlice(dealId),
+        )
+      }
+    }
+
+    /** A slice's reduce order filled: move on. */
+    onSplitSliceFilled(dealId: string, clientOrderId: string) {
+      const st = this.splitCloses?.get(dealId)
+      // A market slice can fill inside `reduceDealFunds`, before the runner
+      // stores its id: fall back to the id recorded just before sending.
+      const sliceId = st?.orderId ?? this.lastReduceOrderId?.get(dealId)
+      if (!st || sliceId !== clientOrderId || st.remaining <= 0) {
+        return
+      }
+      if (st.execution.pace === 'twap') {
+        // The timer places the next slice on schedule.
+        st.remaining = 0
+        st.orderId = undefined
+        return
+      }
+      st.index += 1
+      st.remaining = st.sizes[st.index] ?? 0
+      st.orderId = undefined
+      st.sliceStartedAt = 0
+      this.armSplitTimer(
+        dealId,
+        (st.execution.sliceIntervalSec ?? 30) * 1000,
+        () => void this.placeSplitSlice(dealId),
+      )
+    }
+
+    /**
+     * Cancel the open slice order. Returns the quantity still unfilled, or
+     * null when the order turned out filled (the fill path takes over).
+     */
+    private async cancelSplitSlice(dealId: string): Promise<number | null> {
+      const st = this.splitCloses?.get(dealId)
+      if (!st?.orderId) {
+        return st?.remaining ?? 0
+      }
+      const order = this.getOrderFromMap(st.orderId)
+      if (!order || order.status === 'FILLED') {
+        return null
+      }
+      const cancelled = await this.cancelOrderOnExchange(order)
+      if (cancelled?.status === 'FILLED') {
+        void this.handleUnknownOrder(cancelled)
+        return null
+      }
+      const executed = +(cancelled?.executedQty ?? order.executedQty ?? 0) || 0
+      return Math.max(0, +(st.remaining - executed).toFixed(12))
+    }
+
+    /** Chasing slice still open after `repriceSec`: re-place or go to market. */
+    private async repriceSplitSlice(dealId: string) {
+      const st = this.splitCloses?.get(dealId)
+      if (!st) {
+        return
+      }
+      const left = await this.cancelSplitSlice(dealId)
+      if (left === null) {
+        return
+      }
+      st.remaining = left
+      st.orderId = undefined
+      const timeoutMs = (st.execution.timeoutSec ?? 35) * 1000
+      if (left <= 0) {
+        this.onSplitSliceFilledLocally(dealId)
+        return
+      }
+      if (timeoutMs > 0 && Date.now() - st.sliceStartedAt >= timeoutMs) {
+        this.handleLog(
+          `Deal ${dealId} split order: slice ${st.index + 1} timed out; executing it at market`,
+        )
+        const indexBefore = st.index
+        await this.reduceDealFunds(this.botId, dealId, {
+          qty: `${left}`,
+          asset: OrderSizeTypeEnum.base,
+          type: AddFundsTypeEnum.fixed,
+          useLimitPrice: false,
+        })
+        if (st.index === indexBefore && st.remaining > 0) {
+          st.orderId = this.lastReduceOrderId?.get(dealId)
+        }
+        return
+      }
+      return this.placeSplitSlice(dealId)
+    }
+
+    /** A slice finished through a cancel that reported it fully executed. */
+    private onSplitSliceFilledLocally(dealId: string) {
+      const st = this.splitCloses?.get(dealId)
+      if (!st) {
+        return
+      }
+      st.index += 1
+      st.remaining = st.sizes[st.index] ?? 0
+      st.sliceStartedAt = 0
+      this.armSplitTimer(
+        dealId,
+        (st.execution.sliceIntervalSec ?? 30) * 1000,
+        () => void this.placeSplitSlice(dealId),
+      )
+    }
+
+    /** TWAP: on each interval, roll any unfilled rest into the next slice. */
+    private async advanceSplitOnTimer(dealId: string) {
+      const st = this.splitCloses?.get(dealId)
+      if (!st) {
+        return
+      }
+      const left = st.remaining > 0 ? await this.cancelSplitSlice(dealId) : 0
+      st.index += 1
+      if (st.index < st.sizes.length && left) {
+        st.sizes[st.index] = +(st.sizes[st.index] + left).toFixed(12)
+      }
+      st.remaining = st.sizes[st.index] ?? 0
+      st.orderId = undefined
+      st.sliceStartedAt = 0
+      return this.placeSplitSlice(dealId)
+    }
+
+    /**
+     * The last slice: the deal's ordinary close, which books its result. A
+     * chasing last slice keeps the split's re-price, cap and timeout.
+     */
+    private async finishSplitClose(dealId: string, market: boolean) {
+      const st = this.splitCloses?.get(dealId)
+      if (!st) {
+        return
+      }
+      const left =
+        st.orderId && st.remaining > 0 ? await this.cancelSplitSlice(dealId) : 0
+      if (left === null) {
+        // The open slice filled meanwhile; its fill moves the split on.
+        return
+      }
+      const e = st.execution
+      this.clearSplitClose(dealId)
+      if (!market && e.sliceMode === 'limit') {
+        // Last slice rests at the level like the others.
+        ;(this.splitFinalizing ??= new Set()).add(dealId)
+        try {
+          await this.closeDealById(
+            this.botId,
+            dealId,
+            CloseDCATypeEnum.closeByLimit,
+            undefined,
+            false,
+            false,
+            undefined,
+            `${st.triggerPrice}`,
+            undefined,
+            st.stage === 'sl',
+            st.closeTrigger,
+          )
+        } finally {
+          this.splitFinalizing?.delete(dealId)
+        }
+        const timeoutMs = (e.timeoutSec ?? 0) * 1000
+        if (timeoutMs > 0) {
+          ;(this.restingTpTimers ??= new Map()).set(
+            dealId,
+            setTimeout(() => {
+              this.restingTpTimers?.delete(dealId)
+              const deal = this.getDeal(dealId)
+              if (deal?.deal.status === DCADealStatusEnum.open) {
+                this.handleLog(
+                  `Deal ${dealId} split order: last slice timed out; executing the rest at market`,
+                )
+                ;(this.splitFinalizing ??= new Set()).add(dealId)
+                void this.closeDealById(
+                  this.botId,
+                  dealId,
+                  CloseDCATypeEnum.closeByMarket,
+                  undefined,
+                  true,
+                  false,
+                  undefined,
+                  undefined,
+                  undefined,
+                  st.stage === 'sl',
+                  st.closeTrigger,
+                ).finally(() => this.splitFinalizing?.delete(dealId))
+              }
+            }, timeoutMs),
+          )
+        }
+        return
+      }
+      if (!market) {
+        ;(this.closeExecutionContext ??= new Map()).set(dealId, {
+          execution: {
+            mode: 'chase',
+            repriceSec: e.repriceSec ?? 10,
+            maxChasePerc: e.maxChasePerc ?? 0,
+            timeoutSec: e.timeoutSec ?? 35,
+          },
+          triggerPrice: st.triggerPrice,
+          startedAt: Date.now(),
+        })
+        ;(this.closeReplacements ??= new Set()).add(dealId)
+      }
+      ;(this.splitFinalizing ??= new Set()).add(dealId)
+      try {
+        await this.closeDealById(
+          this.botId,
+          dealId,
+          market
+            ? CloseDCATypeEnum.closeByMarket
+            : CloseDCATypeEnum.closeByLimit,
+          undefined,
+          market,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          st.stage === 'sl',
+          st.closeTrigger,
+        )
+      } finally {
+        this.splitFinalizing?.delete(dealId)
+      }
+    }
+
     /**
      * Process partially filled order from queue<br />
      *
@@ -26817,19 +28085,62 @@ function createDCABotHelper<
       d.closeBySl = closeBySl
       d.notCheckSl = notCheckSl
       this.saveDeal(d)
-      this.closeDealById(
-        this.botId,
-        dealId,
-        CloseDCATypeEnum.closeByMarket,
-        undefined,
-        undefined,
-        closeByMulti,
-        undefined,
-        undefined,
-        undefined,
-        true,
-        closeTrigger,
+      // A stop loss must always fire: any failure resolving its execution
+      // falls back to the market close it always used.
+      void this.stopLossCloseType(d.deal, closeBySl)
+        .catch((e) => {
+          this.handleWarn(
+            `Deal ${dealId} stop loss execution could not be resolved (${e}); closing at market`,
+          )
+          return CloseDCATypeEnum.closeByMarket
+        })
+        .then((closeType) =>
+        this.closeDealById(
+          this.botId,
+          dealId,
+          closeType,
+          undefined,
+          undefined,
+          closeByMulti,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          closeTrigger,
+        ),
       )
+    }
+
+    /**
+     * Spec 242 §4.4 — how a price-watched stop loss closes. `chase` closes by
+     * limit (re-priced, with its timeout); everything else, including a
+     * trailing take profit routed through `triggerStopLoss` and a stored
+     * `split` before phase 3, closes at market as before.
+     */
+    async stopLossCloseType(
+      deal: ExcludeDoc<Deal>,
+      closeBySl: boolean,
+    ): Promise<CloseDCATypeEnum> {
+      if (!closeBySl || this.combo) {
+        return CloseDCATypeEnum.closeByMarket
+      }
+      const settings = await this.getAggregatedSettings(deal)
+      const condition = settings.dealCloseConditionSL
+      const trigger: ExecutionTrigger =
+        condition === CloseConditionEnum.techInd
+          ? 'indicator'
+          : condition === CloseConditionEnum.webhook
+            ? 'webhook'
+            : 'level'
+      const execution = resolveExecution('sl', settings, trigger)
+      const closeType =
+        execution.mode === 'chase'
+          ? CloseDCATypeEnum.closeByLimit
+          : CloseDCATypeEnum.closeByMarket
+      this.handleLog(
+        `Deal ${deal._id} stop loss closes ${closeType === CloseDCATypeEnum.closeByLimit ? 'by chasing limit' : execution.mode === 'split' ? 'as a split order' : 'at market'} (execution ${execution.mode})`,
+      )
+      return closeType
     }
 
     async checkDealsForStopLoss() {
@@ -26909,9 +28220,33 @@ function createDCABotHelper<
     }
     async isDealForTPLevelCheck(d: FullDeal<ExcludeDoc<Deal>>) {
       const settings = await this.getAggregatedSettings(d.deal)
+      if (d.deal.action === ActionsEnum.useOppositeBalance) {
+        return false
+      }
+      if (settings.closeOrderType === OrderTypeEnum.market) {
+        return true
+      }
+      // Spec 242 §4.5 — a split take profit at a known price rests nothing in
+      // advance (a partial order next to the position would read as missing
+      // take-profit coverage): the price is watched like a market take
+      // profit, and the split starts at the level.
+      return this.isSplitLevelTp(settings)
+    }
+
+    private isSplitLevelTp(
+      settings: ExecutionSettings & {
+        useMultiTp?: boolean | null
+        useTp?: boolean | null
+        dealCloseCondition?: string | null
+      },
+    ) {
+      if (this.combo || settings.useMultiTp || !settings.useTp) {
+        return false
+      }
+      const trigger = triggerFromCloseCondition(settings.dealCloseCondition)
       return (
-        settings.closeOrderType === OrderTypeEnum.market &&
-        d.deal.action !== ActionsEnum.useOppositeBalance
+        trigger === 'level' &&
+        resolveExecution('tp', settings, trigger).mode === 'split'
       )
     }
     async checkDealsForTPLevelCheck() {
@@ -27912,6 +29247,9 @@ function createDCABotHelper<
           this.emit('bot settings update', data)
         }
         await this.restoreWork()
+        // Spec 242 — after restoreWork re-placed resting orders: resume any
+        // split order or limit close a previous run left in progress.
+        await this.resumeExecutionState()
         this.startPriceTimer()
         this.startConsumerHeartbeat()
         this.finishLoad = true
@@ -29879,6 +31217,25 @@ function createDCABotHelper<
     }
 
     clearClassProperties(clearRedis = false, start = false) {
+      // Spec 242 — no split, resting-take-profit or close timer outlives the
+      // bot's runtime state.
+      // Keep the persisted state: a restart resumes from it.
+      for (const dealId of [...(this.splitCloses?.keys() ?? [])]) {
+        this.clearSplitClose(dealId, false)
+      }
+      for (const dealId of [...(this.entrySplits?.keys() ?? [])]) {
+        this.clearEntrySplit(dealId, false)
+      }
+      this.lastAddOrderId?.clear()
+      for (const t of this.restingTpTimers?.values() ?? []) {
+        clearTimeout(t)
+      }
+      this.restingTpTimers?.clear()
+      this.splitFinalizing?.clear()
+      this.closeExecutionContext?.clear()
+      this.closeReplacements?.clear()
+      this.entryTriggerPrice?.clear()
+      this.lastReduceOrderId?.clear()
       mutex.clear(this.botId)
       mutexConcurrently.clear(this.botId)
       mutexPriceConcurrently.clear(this.botId)
@@ -33026,6 +34383,7 @@ function createDCABotHelper<
         ...(settings.positionEntry ? { positionEntry: true } : {}),
       }
       this.handleDebug(`Add funds | create order ${order.clientOrderId}`)
+      ;(this.lastAddOrderId ??= new Map()).set(dealId, order.clientOrderId)
       if (settings.positionEntry) {
         this.notePositionEntrySent(dealId, order.clientOrderId)
       }
@@ -33300,6 +34658,7 @@ function createDCABotHelper<
         reduceFundsId,
       }
       this.handleDebug(`Reduce funds | create order ${order.clientOrderId}`)
+      ;(this.lastReduceOrderId ??= new Map()).set(dealId, order.clientOrderId)
       const result = await this.sendOrderToExchange(order)
       if (result && result.status === 'FILLED') {
         this.processFilledOrder(result)

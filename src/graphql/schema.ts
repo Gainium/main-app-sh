@@ -3823,6 +3823,10 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    entryExecution: OrderExecution
+    dcaExecution: OrderExecution
+    tpExecution: OrderExecution
+    slExecution: OrderExecution
     allowRaiseToExchangeMin: Boolean
     reduceToAvailableBalance: Boolean
     reduceToAvailableMinSize: String
@@ -4009,6 +4013,10 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    entryExecution: OrderExecution
+    dcaExecution: OrderExecution
+    tpExecution: OrderExecution
+    slExecution: OrderExecution
     dcaByMarket: Boolean
     terminalDealType: TerminalDealTypeEnum
     useMultiTp: Boolean
@@ -4527,6 +4535,9 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: String
     closeOrderType: OrderTypeEnum
+    dcaExecution: OrderExecutionInput
+    tpExecution: OrderExecutionInput
+    slExecution: OrderExecutionInput
     dcaByMarket: Boolean
     orderSizeType: String
     useMultiSl: Boolean
@@ -4594,6 +4605,9 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: String
     closeOrderType: OrderTypeEnum
+    dcaExecution: OrderExecutionInput
+    tpExecution: OrderExecutionInput
+    slExecution: OrderExecutionInput
     dcaByMarket: Boolean
     orderSizeType: String
     useMultiSl: Boolean
@@ -4671,6 +4685,9 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: String
     closeOrderType: OrderTypeEnum
+    dcaExecution: OrderExecution
+    tpExecution: OrderExecution
+    slExecution: OrderExecution
     dcaByMarket: Boolean
     orderSizeType: String
     useMultiSl: Boolean
@@ -4745,6 +4762,9 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: String
     closeOrderType: OrderTypeEnum
+    dcaExecution: OrderExecution
+    tpExecution: OrderExecution
+    slExecution: OrderExecution
     dcaByMarket: Boolean
     orderSizeType: String
     useMultiSl: Boolean
@@ -5291,6 +5311,51 @@ export const BotSchema = /* GraphQL */ `
     LIMIT
     MARKET
   }
+
+  enum OrderExecutionMode {
+    market
+    limit
+    chase
+    split
+  }
+  enum OrderExecutionPace {
+    iceberg
+    twap
+  }
+  enum OrderExecutionSliceMode {
+    market
+    chase
+    limit
+  }
+  enum OrderExecutionFloorAction {
+    pause
+    market
+  }
+  "How an order is executed (base order, DCA orders, take profit, stop loss)."
+  type OrderExecution {
+    mode: OrderExecutionMode
+    repriceSec: Float
+    maxChasePerc: Float
+    timeoutSec: Float
+    slices: Int
+    pace: OrderExecutionPace
+    sliceIntervalSec: Float
+    sliceMode: OrderExecutionSliceMode
+    floorPerc: Float
+    onFloor: OrderExecutionFloorAction
+  }
+  input OrderExecutionInput {
+    mode: OrderExecutionMode!
+    repriceSec: Float
+    maxChasePerc: Float
+    timeoutSec: Float
+    slices: Int
+    pace: OrderExecutionPace
+    sliceIntervalSec: Float
+    sliceMode: OrderExecutionSliceMode
+    floorPerc: Float
+    onFloor: OrderExecutionFloorAction
+  }
   enum StartConditionEnum {
     ASAP
     Manual
@@ -5695,6 +5760,10 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    entryExecution: OrderExecutionInput
+    dcaExecution: OrderExecutionInput
+    tpExecution: OrderExecutionInput
+    slExecution: OrderExecutionInput
     allowRaiseToExchangeMin: Boolean
     reduceToAvailableBalance: Boolean
     reduceToAvailableMinSize: String
@@ -5923,6 +5992,10 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    entryExecution: OrderExecutionInput
+    dcaExecution: OrderExecutionInput
+    tpExecution: OrderExecutionInput
+    slExecution: OrderExecutionInput
     dcaByMarket: Boolean
     """
     Raise a Base/DCA order below the exchange minimum instead of refusing the
@@ -6131,6 +6204,10 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    entryExecution: OrderExecutionInput
+    dcaExecution: OrderExecutionInput
+    tpExecution: OrderExecutionInput
+    slExecution: OrderExecutionInput
     allowRaiseToExchangeMin: Boolean
     reduceToAvailableBalance: Boolean
     reduceToAvailableMinSize: String
@@ -6318,6 +6395,10 @@ export const BotSchema = /* GraphQL */ `
     minTp: String
     closeDealType: CloseDCATypeEnum
     closeOrderType: OrderTypeEnum
+    entryExecution: OrderExecutionInput
+    dcaExecution: OrderExecutionInput
+    tpExecution: OrderExecutionInput
+    slExecution: OrderExecutionInput
     dcaByMarket: Boolean
     """
     Raise a Base/DCA order below the exchange minimum instead of refusing the

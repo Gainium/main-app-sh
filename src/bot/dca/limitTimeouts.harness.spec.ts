@@ -132,3 +132,57 @@ describe('Enter Market Timeout is opt-in (spec 100)', () => {
     })
   })
 })
+
+describe('spec 242 phase 2 — resolveLimitTimeouts reads entryExecution', () => {
+  it('chase: reposition interval and market timeout come from the execution', () => {
+    expect(
+      resolveLimitTimeouts({
+        entryExecution: { mode: 'chase', repriceSec: 20, timeoutSec: 60 },
+      }),
+    ).to.deep.equal({
+      orderLimitRepositionTimeout: 20_000,
+      enterMarketTimeout: 60_000,
+      limitFallbackTimeout: 35_000,
+    })
+  })
+  it('limit: no repositioning, market after the timeout', () => {
+    expect(
+      resolveLimitTimeouts({
+        entryExecution: { mode: 'limit', timeoutSec: 45 },
+      }),
+    ).to.deep.include({
+      orderLimitRepositionTimeout: 0,
+      enterMarketTimeout: 45_000,
+    })
+  })
+  it('chase with no timeout keeps repositioning forever (spec 100 opt-in)', () => {
+    expect(
+      resolveLimitTimeouts({
+        entryExecution: { mode: 'chase', repriceSec: 15 },
+      }),
+    ).to.deep.include({
+      orderLimitRepositionTimeout: 15_000,
+      enterMarketTimeout: 0,
+    })
+  })
+  it('the close fallback stays on the legacy switch', () => {
+    expect(
+      resolveLimitTimeouts({
+        useLimitTimeout: true,
+        limitTimeout: '50',
+        entryExecution: { mode: 'chase', repriceSec: 10, timeoutSec: 20 },
+      }).limitFallbackTimeout,
+    ).to.equal(50_000)
+  })
+  it('market or no stored execution: unchanged legacy derivation', () => {
+    expect(
+      resolveLimitTimeouts({ useLimitTimeout: true, limitTimeout: '20' }),
+    ).to.deep.equal(
+      resolveLimitTimeouts({
+        useLimitTimeout: true,
+        limitTimeout: '20',
+        entryExecution: { mode: 'market' },
+      }),
+    )
+  })
+})

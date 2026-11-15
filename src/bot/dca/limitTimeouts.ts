@@ -1,3 +1,4 @@
+import type { OrderExecution } from '../../../types'
 /** How often an unfilled LIMIT order is repositioned to the market. */
 export const limitRepositionIntervalMs = 10_000
 
@@ -12,6 +13,8 @@ export const defaultLimitFallbackMs = 35_000
 export type LimitTimeoutSettings = {
   useLimitTimeout?: boolean | null
   limitTimeout?: string | null
+  /** Spec 242 — when stored, the base order's timing comes from it. */
+  entryExecution?: OrderExecution | null
 }
 
 export type LimitTimeouts = {
@@ -46,12 +49,36 @@ export function resolveLimitTimeouts(
     const ms = parseFloat(settings.limitTimeout) * 1000
     userMs = isNaN(ms) ? 0 : ms
   }
+  const limitFallbackTimeout = userMs ?? defaultLimitFallbackMs
+  // Spec 242 §6.2 — a stored base-order execution sets the base order's
+  // re-price interval and market timeout. The close fallback stays on the
+  // legacy switch (closes have their own stage execution).
+  const stored = settings.entryExecution
+  // A split's first slice is the base order: a chasing slice uses the split's
+  // re-price and timeout, a market slice needs none.
+  const e =
+    stored?.mode === 'split' && stored.sliceMode !== 'market'
+      ? { ...stored, mode: 'chase' as const }
+      : stored
+  if (e && (e.mode === 'chase' || e.mode === 'limit')) {
+    const timeoutMs = Math.max(0, e.timeoutSec ?? 0) * 1000
+    const repriceMs =
+      e.mode === 'chase'
+        ? Math.max(0, e.repriceSec ?? limitRepositionIntervalMs / 1000) * 1000
+        : 0
+    return {
+      orderLimitRepositionTimeout:
+        repriceMs && timeoutMs && timeoutMs < repriceMs ? 0 : repriceMs,
+      enterMarketTimeout: timeoutMs,
+      limitFallbackTimeout,
+    }
+  }
   return {
     orderLimitRepositionTimeout:
       userMs && userMs < limitRepositionIntervalMs
         ? 0
         : limitRepositionIntervalMs,
     enterMarketTimeout: userMs ?? 0,
-    limitFallbackTimeout: userMs ?? defaultLimitFallbackMs,
+    limitFallbackTimeout,
   }
 }

@@ -483,6 +483,37 @@ export enum OrderTypeEnum {
   market = 'MARKET',
 }
 
+/**
+ * How an order is executed — one shape for the base order, DCA orders and every
+ * exit (take profit, stop loss). Mirrors `OrderExecution` in the dashboard's
+ * `core/src/types/orderExecution.ts`; keep the two identical.
+ *
+ * Absent on a bot means "derive from the legacy fields" (startOrderType,
+ * notUseLimitReposition, useLimitTimeout/limitTimeout, dcaByMarket,
+ * closeOrderType, closeDealType, comboTpLimit, comboSlLimit).
+ */
+export type OrderExecutionMode = 'market' | 'limit' | 'chase' | 'split'
+export interface OrderExecution {
+  mode: OrderExecutionMode
+  /** chase: seconds between re-prices. */
+  repriceSec?: number
+  /** chase: never re-price further than this % from the trigger price. 0 = no cap. */
+  maxChasePerc?: number
+  /** limit / chase ("Enter market timeout"): seconds unfilled before the rest is executed at market. 0 = never. */
+  timeoutSec?: number
+  /** split: number of slices. */
+  slices?: number
+  /** split: iceberg = next slice after the previous fills; twap = on a timer. */
+  pace?: 'iceberg' | 'twap'
+  /** split: seconds between slices. */
+  sliceIntervalSec?: number
+  /** split: limit = rests at the trigger price (price-level triggers only). */
+  sliceMode?: 'market' | 'chase' | 'limit'
+  /** split: stop placing slices when price moves this % against the trigger. 0 = no floor. */
+  floorPerc?: number
+  onFloor?: 'pause' | 'market'
+}
+
 export enum StartConditionEnum {
   asap = 'ASAP',
   manual = 'Manual',
@@ -1205,6 +1236,14 @@ export interface DCABotSettings extends BaseSettings {
   minTp?: string
   closeDealType?: CloseDCATypeEnum
   closeOrderType?: OrderTypeEnum
+  /** How the base order executes. Absent = derived from the legacy fields. */
+  entryExecution?: OrderExecution | null
+  /** How DCA orders execute. Absent = derived from the legacy fields. */
+  dcaExecution?: OrderExecution | null
+  /** How the take profit executes. Absent = derived from the legacy fields. */
+  tpExecution?: OrderExecution | null
+  /** How the stop loss executes. Absent = derived from the legacy fields. */
+  slExecution?: OrderExecution | null
   terminalDealType?: TerminalDealTypeEnum
   useMultiTp?: boolean
   multiTp?: MultiTP[]
@@ -1605,6 +1644,9 @@ export type DCADealsSettings = Pick<
   | 'dcaVolumeRequiredChange'
   | 'closeOrderType'
   | 'dcaByMarket'
+  | 'dcaExecution'
+  | 'tpExecution'
+  | 'slExecution'
 > & {
   avgPrice: number
   changed: boolean
@@ -1847,6 +1889,33 @@ export interface DCADealsSchema extends SchemaI {
    * (`executeNextDcaLevel` with `missedLevel`). Absent or empty = none.
    */
   missedLevels?: { level: number; price: number; qty: number }[]
+  /**
+   * Spec 242 §4.5/§6.5: a split order in progress on this deal — the base
+   * order (`entry`) or a take-profit / stop-loss close (`tp` / `sl`). Lets a
+   * restarted bot resume it and lets the invariant sentinel see a stalled one.
+   * Null or absent = none.
+   */
+  executionSplit?: {
+    stage: 'entry' | 'tp' | 'sl'
+    execution: OrderExecution
+    sizes: number[]
+    index: number
+    triggerPrice: number
+    startedAt: number
+    updatedAt: number
+  } | null
+  /**
+   * Spec 242 §4.3: a bot-driven limit / chasing close in progress — when it was
+   * first placed and its timeout. Null or absent = none.
+   */
+  closeExecution?: {
+    mode: 'limit' | 'chase'
+    triggerPrice: number
+    startedAt: number
+    timeoutSec: number
+    repriceSec: number
+    maxChasePerc?: number
+  } | null
   isDeleted?: boolean
   feeBalance?: number
   moveSlActivated?: boolean
