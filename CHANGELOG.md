@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.127.1] - 2026-11-15
+
+### Fixed
+
+- A limit order that fills the moment it is placed is now stored as a limit order, still priced at its real fill and charged as taker in fee estimates
+
 ## [1.127.0] - 2026-11-15
 
 ### Added
