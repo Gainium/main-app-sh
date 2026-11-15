@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.126.19] - 2026-11-15
+
+### Fixed
+
+- Paper trading: an order a bot restart cut off before it reached the paper exchange is now retired and its grid level placed again, instead of the bot waiting on it indefinitely
+
 ## [1.126.18] - 2026-11-13
 
 ### Fixed
