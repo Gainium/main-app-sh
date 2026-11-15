@@ -1624,7 +1624,9 @@ function createBotHelper<
               })
               if (isReconcileDeferred(exchangeData)) {
                 // Left for a later pass; counted in the probe summary.
-              } else if (isDefinitiveOrderNotFound(exchangeData)) {
+              } else if (
+                isDefinitiveOrderNotFound(exchangeData, this.data?.exchange)
+              ) {
                 this.handleWarn(
                   `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
                 )

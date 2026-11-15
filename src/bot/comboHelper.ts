@@ -9046,7 +9046,7 @@ function createComboBotHelper<
           defaultStatuses: true,
         }).filter((o) => `${o.orderId ?? ''}` === '-1')) {
           const venue = await this.getOrderForReconcile(o)
-          if (isDefinitiveOrderNotFound(venue)) {
+          if (isDefinitiveOrderNotFound(venue, this.data?.exchange)) {
             await this.retireUnsentOrder(o, `${venue?.reason}`)
           }
         }

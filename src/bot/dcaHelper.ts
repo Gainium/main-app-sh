@@ -14720,7 +14720,9 @@ function createDCABotHelper<
               // `data`, so testing `!data` first made this branch unreachable
               // and discarded the venue's reason — the one thing that separates
               // "this order does not exist" from "the call failed".
-              if (isDefinitiveOrderNotFound(tpslOrderData)) {
+              if (
+                isDefinitiveOrderNotFound(tpslOrderData, this.data?.exchange)
+              ) {
                 this.handleWarn(
                   `Order ${activeTPSLOrder.clientOrderId} not found on exchange: ${tpslOrderData?.reason}`,
                 )
@@ -14923,7 +14925,9 @@ function createDCABotHelper<
                 })
                 if (isReconcileDeferred(exchangeData)) {
                   // Left for a later pass; counted in the probe summary.
-                } else if (isDefinitiveOrderNotFound(exchangeData)) {
+                } else if (
+                  isDefinitiveOrderNotFound(exchangeData, this.data?.exchange)
+                ) {
                   this.handleWarn(
                     `Order ${o.clientOrderId} not found on exchange: ${exchangeData?.reason}`,
                   )
@@ -15558,7 +15562,7 @@ function createDCABotHelper<
           defaultStatuses: true,
         }).filter((o) => `${o.orderId ?? ''}` === '-1')) {
           const venue = await this.getOrderForReconcile(o)
-          if (isDefinitiveOrderNotFound(venue)) {
+          if (isDefinitiveOrderNotFound(venue, this.data?.exchange)) {
             await this.retireUnsentOrder(o, `${venue?.reason}`)
           }
         }
@@ -15733,7 +15737,7 @@ function createDCABotHelper<
                   `${o.orderId ?? ''}` === '-1',
               )) {
                 const venue = await this.getOrderForReconcile(o)
-                if (isDefinitiveOrderNotFound(venue)) {
+                if (isDefinitiveOrderNotFound(venue, this.data?.exchange)) {
                   await this.retireUnsentOrder(o, `${venue?.reason}`)
                 }
               }

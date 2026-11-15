@@ -650,6 +650,9 @@ const reconcileRateLimitBackoffMs = Number(
   process.env.BOT_RECONCILE_RATE_LIMIT_BACKOFF_MS ?? 1500,
 )
 
+/** paper-trading's reason for a lookup of an order it does not hold. Spec 241. */
+const paperUnknownOrderReason = 'Unknown order'
+
 /**
  * Does this failed lookup mean "the venue says this order does not exist", as
  * opposed to "the call did not succeed"?
@@ -668,12 +671,24 @@ const reconcileRateLimitBackoffMs = Number(
  * those would be exactly the "transient failure rendered as a definitive
  * negative" mistake, with money attached.
  */
-export function isDefinitiveOrderNotFound(res?: {
-  status: StatusEnum
-  reason?: string | null
-  data?: unknown
-}) {
+export function isDefinitiveOrderNotFound(
+  res?: {
+    status: StatusEnum
+    reason?: string | null
+    data?: unknown
+  },
+  exchange?: ExchangeEnum,
+) {
   if (!res || res.status !== StatusEnum.notok) return false
+  // Paper-trading answers a lookup of an order it does not hold with exactly
+  // `Unknown order`, and writes every order before it answers the placement,
+  // so for an order minutes old that is an answer, not propagation lag.
+  // Without it a paper `'-1'` order cut off by a restart was never retired.
+  // Paper venues only, exact match only: Kraken spot's `EOrder:Unknown order`
+  // and every live venue keep the handling below. Spec 241.
+  if (exchange && isPaper(exchange) && res.reason === paperUnknownOrderReason) {
+    return true
+  }
   const reason = `${res.reason ?? ''}`.toLowerCase()
   if (!reason) return false
   // Coinbase: "Coinbase order not found after execution."
