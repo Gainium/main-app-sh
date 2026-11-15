@@ -1,4 +1,5 @@
 import Big from 'big.js'
+import { estimatedFeeRate } from './placedOrderType'
 import { withExchangeCaller } from '../exchange/requestContext'
 import type {
   ComboBotSchema,
@@ -449,10 +450,7 @@ function createComboBotHelper<
         this.endMethod(_id)
         return
       }
-      const fee =
-        order.type === OrderTypeEnum.market
-          ? ((await this.getUserFee(pair))?.taker ?? 0)
-          : ((await this.getUserFee(pair))?.maker ?? 0)
+      const fee = estimatedFeeRate(order, await this.getUserFee(pair))
       const sellDisplacement = fee * 2
       const profitCurrency = settings.futures
         ? 'quote'

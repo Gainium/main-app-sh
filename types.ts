@@ -4309,6 +4309,12 @@ export type Order = CommonOrder & {
   refPriceAt?: number
   /** ms epoch on our clock immediately before the placement request left this process. */
   sentAt?: number
+  /**
+   * Sent as LIMIT and traded at once on placement, because the book had
+   * already crossed its price: it took liquidity (taker) and is priced from
+   * its fills. `type` stays LIMIT, the type we sent. Spec 243.
+   */
+  filledOnArrival?: boolean
   /** ms epoch on our clock when the placement answer came back to this process. */
   ackAt?: number
   tpSlTarget?: string

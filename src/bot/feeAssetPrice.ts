@@ -26,6 +26,7 @@
  */
 import type { Order } from '../../types'
 import { observedFeeLegs } from './feeLedger'
+import { tradedAsTaker } from './placedOrderType'
 
 export const FEE_PRICE_INTERVAL = '1m'
 export const MINUTE_MS = 60_000
@@ -58,6 +59,7 @@ export type FeeLeg = { asset: string; amount: number }
 export type FeeOrder = Partial<
   Pick<
     Order,
+    | 'filledOnArrival'
     | 'feePaid'
     | 'feeSide'
     | 'feeAsset'
@@ -96,15 +98,15 @@ export const hasOffPairFee = (
 ): boolean => feeLegsByPair(order, baseAsset, quoteAsset).offPair.length > 0
 
 /**
- * When the order was charged. A MARKET order's `transactTime` is its fill; a
- * LIMIT order can rest after placement, so its last update (the fill, for a
+ * When the order was charged. A MARKET order's `transactTime` is its fill, and
+ * so is a LIMIT's that filled on arrival (spec 243); any other LIMIT order can rest after placement, so its last update (the fill, for a
  * filled order) is used instead. Null when neither is a usable time.
  */
 export function feeTimeOf(order: FeeOrder): number | null {
   const tx = Number(order?.transactTime)
   const up = Number(order?.updateTime)
   const ok = (v: number) => Number.isFinite(v) && v > 0
-  const first = order?.type === 'MARKET' ? [tx, up] : [up, tx]
+  const first = tradedAsTaker(order) ? [tx, up] : [up, tx]
   return first.find(ok) ?? null
 }
 

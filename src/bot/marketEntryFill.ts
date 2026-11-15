@@ -5,10 +5,12 @@
  * directly is lexicographic (`'99' > '310'`), so both are coerced to numbers
  * and anything non-numeric answers `false`.
  */
+import { tradedAsTaker } from './placedOrderType'
 
 /** The fields of an order these predicates read. */
 export type MarketFillOrder = {
   type?: string | null
+  filledOnArrival?: boolean | null
   status?: string | null
   executedQty?: string | number | null
   origQty?: string | number | null
@@ -25,9 +27,12 @@ export type MarketFillOrder = {
  * Callers run it on figures in the row's own unit (base). Coin-margined
  * figures are converted through a price and are approximate, so callers skip
  * those accounts.
+ *
+ * A LIMIT order that filled on arrival (spec 243) is judged the same way:
+ * until spec 243 it was stored as MARKET.
  */
 export function isFullyExecutedMarketPartial(order: MarketFillOrder): boolean {
-  if (order.type !== 'MARKET' || order.status !== 'PARTIALLY_FILLED') {
+  if (!tradedAsTaker(order) || order.status !== 'PARTIALLY_FILLED') {
     return false
   }
   const executed = Number(order.executedQty)

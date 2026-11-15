@@ -7,6 +7,7 @@ import {
   planShortSpotDealFunding,
   ShortSpotFundingDecision,
 } from './baseFunding'
+import { estimatedFeeRate } from './placedOrderType'
 import { FundingReservation } from './fundingReservation'
 import { BaseFundingGate } from './baseFundingGate'
 import {
@@ -3806,11 +3807,10 @@ function createDCABotHelper<
         return (
           acc +
           (profitBase
-            ? parseFloat(v.executedQty) *
-              (v.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0))
+            ? parseFloat(v.executedQty) * estimatedFeeRate(v, fee)
             : parseFloat(v.executedQty) *
               parseFloat(v.price) *
-              (v.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0)))
+              estimatedFeeRate(v, fee))
         )
       }, 0)
     }
@@ -4385,14 +4385,10 @@ function createDCABotHelper<
               continue
             }
             if (o.side === OrderSideEnum.buy) {
-              feeBaseFull +=
-                +o.executedQty *
-                (o.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0))
+              feeBaseFull += +o.executedQty * estimatedFeeRate(o, fee)
             } else {
               feeQuoteFull +=
-                +o.executedQty *
-                +o.price *
-                (o.type === 'MARKET' ? (fee?.taker ?? 0) : (fee?.maker ?? 0))
+                +o.executedQty * +o.price * estimatedFeeRate(o, fee)
             }
           }
 

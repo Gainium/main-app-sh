@@ -902,6 +902,8 @@ const orderSchema: Schema<OrderSchema> = new Schema({
   refPriceAt: Number,
   sentAt: Number,
   ackAt: Number,
+  // A LIMIT order that traded on placement (spec 243). No default.
+  filledOnArrival: Boolean,
   origQty: RequiredString,
   executedQty: RequiredString,
   cummulativeQuoteQty: String,

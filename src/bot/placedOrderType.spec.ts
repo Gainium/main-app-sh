@@ -12,7 +12,14 @@ process.env.NODE_ENV = 'testing'
  */
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
-import { placedOrderType } from './placedOrderType'
+import {
+  estimatedFeeRate,
+  placedOrderRecord,
+  placedOrderType,
+  tradedAsTaker,
+} from './placedOrderType'
+import { feeTimeOf } from './feeAssetPrice'
+import { isFullyExecutedMarketPartial } from './marketEntryFill'
 import { OrderTypeEnum } from '../../types'
 
 const round = (v: number) => Math.round(v * 100) / 100
@@ -95,5 +102,113 @@ describe('placedOrderType (spec 181)', () => {
         round,
       ),
     ).to.equal(OrderTypeEnum.limit)
+  })
+})
+
+/**
+ * Spec 243: an order sent as LIMIT is stored as LIMIT. Trading on arrival
+ * still prices it from its fills and marks it `filledOnArrival`.
+ *
+ * Shape from a split take profit on Binance spot: a slice sent as
+ * LIMIT SELL 0.0049 @ 1829.65 that traded at once at 1830.38.
+ */
+describe('placedOrderRecord (spec 243)', () => {
+  const sent = { type: 'LIMIT', origPrice: '1829.65' }
+  const crossed = {
+    type: 'LIMIT',
+    price: '1829.65',
+    executedQty: '0.00490000',
+    cummulativeQuoteQty: '8.96886200',
+    fills: [{ price: '1830.38000000', qty: '0.00490000' }],
+  }
+
+  it('§1.1 a LIMIT that filled on arrival is stored LIMIT, priced from fills', () => {
+    expect(placedOrderRecord(crossed, sent, round)).to.deep.equal({
+      type: OrderTypeEnum.limit,
+      pricedFromFills: true,
+      filledOnArrival: true,
+    })
+  })
+
+  it('§1.1 also when the answer carries only an average fill price', () => {
+    const { fills: _fills, ...noFills } = crossed
+    expect(placedOrderRecord(noFills, sent, round)).to.deep.equal({
+      type: OrderTypeEnum.limit,
+      pricedFromFills: true,
+      filledOnArrival: true,
+    })
+  })
+
+  it('§1.3 a LIMIT that rests is LIMIT, at its requested price, not flagged', () => {
+    expect(
+      placedOrderRecord(
+        { type: 'LIMIT', price: '1829.65', executedQty: '0', fills: [] },
+        sent,
+        round,
+      ),
+    ).to.deep.equal({
+      type: OrderTypeEnum.limit,
+      pricedFromFills: false,
+      filledOnArrival: false,
+    })
+  })
+
+  it('§1.3 a MARKET order is classified exactly as before', () => {
+    const m = { type: 'MARKET', origPrice: '1829.65' }
+    expect(placedOrderRecord(crossed, m, round)).to.deep.equal({
+      type: OrderTypeEnum.market,
+      pricedFromFills: true,
+      filledOnArrival: false,
+    })
+    const quiet = { type: 'LIMIT', price: '1829.65', executedQty: '0' }
+    expect(placedOrderRecord(quiet, m, round).type).to.equal(
+      placedOrderType(quiet, m, round),
+    )
+  })
+})
+
+describe('tradedAsTaker (spec 243 §1.3)', () => {
+  it('a MARKET order, or a LIMIT that filled on arrival, took liquidity', () => {
+    expect(tradedAsTaker({ type: 'MARKET' })).to.equal(true)
+    expect(tradedAsTaker({ type: 'LIMIT', filledOnArrival: true })).to.equal(
+      true,
+    )
+    expect(tradedAsTaker({ type: 'LIMIT' })).to.equal(false)
+    expect(tradedAsTaker({ type: 'LIMIT', filledOnArrival: false })).to.equal(
+      false,
+    )
+  })
+
+  it('the estimated fee rate is taker for a LIMIT that filled on arrival', () => {
+    const fee = { maker: 0.0002, taker: 0.0005 }
+    expect(
+      estimatedFeeRate({ type: 'LIMIT', filledOnArrival: true }, fee),
+    ).to.equal(0.0005)
+    expect(estimatedFeeRate({ type: 'MARKET' }, fee)).to.equal(0.0005)
+    expect(estimatedFeeRate({ type: 'LIMIT' }, fee)).to.equal(0.0002)
+    expect(estimatedFeeRate({ type: 'LIMIT' }, undefined)).to.equal(0)
+  })
+
+  it('feeTimeOf values a LIMIT that filled on arrival at its transact time', () => {
+    const o = {
+      type: 'LIMIT' as const,
+      filledOnArrival: true,
+      transactTime: 1000,
+      updateTime: 2000,
+    }
+    expect(feeTimeOf(o)).to.equal(1000)
+    expect(feeTimeOf({ ...o, filledOnArrival: false })).to.equal(2000)
+  })
+
+  it('a full-size PARTIALLY_FILLED answer for a LIMIT that filled on arrival is filled', () => {
+    expect(
+      isFullyExecutedMarketPartial({
+        type: 'LIMIT',
+        filledOnArrival: true,
+        status: 'PARTIALLY_FILLED',
+        executedQty: '0.0049',
+        origQty: '0.0049',
+      }),
+    ).to.equal(true)
   })
 })

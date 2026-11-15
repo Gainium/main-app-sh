@@ -84,7 +84,7 @@ import ExchangeChooser from '../exchange/exchangeChooser'
 import { withExchangeCaller } from '../exchange/requestContext'
 import Exchange from '../exchange'
 import { MathHelper } from '../utils/math'
-import { placedOrderType } from './placedOrderType'
+import { placedOrderRecord, tradedAsTaker } from './placedOrderType'
 import utils, { isPaper } from '../utils'
 import { resolveConnection } from '../utils/credentials'
 import {
@@ -6988,7 +6988,7 @@ class MainBot<T extends IMainBot> {
         ExchangeEnum.binanceCoinm,
         ExchangeEnum.binanceUS,
       ].includes(find.exchange) &&
-        find.type === 'MARKET') ||
+        tradedAsTaker(find)) ||
         [
           ExchangeEnum.bitget,
           ExchangeEnum.bitgetCoinm,
@@ -10582,13 +10582,15 @@ class MainBot<T extends IMainBot> {
           processedOrder.executedQty =
             await this.convertOrderExecutedQty(processedOrder)
         }
-        const orderType = placedOrderType(
+        // How it traded decides the price; the type we sent is what we store.
+        // Spec 243.
+        const placed = placedOrderRecord(
           processedOrder,
           { type: requestData.type, origPrice: order.origPrice },
           (value) => this.math.round(value, ed?.priceAssetPrecision),
         )
         let price =
-          orderType === OrderTypeEnum.limit
+          placed.pricedFromFills === false
             ? ord.price
             : processedOrder.cummulativeQuoteQty &&
                 processedOrder.cummulativeQuoteQty !== '0' &&
@@ -10633,7 +10635,7 @@ class MainBot<T extends IMainBot> {
         // volunteer before inventing one.
         if (
           (isNaN(parseFloat(price)) || price === '0') &&
-          orderType === OrderTypeEnum.market &&
+          placed.pricedFromFills &&
           +processedOrder.executedQty > 0
         ) {
           const fetched = await this.getOrder(
@@ -10724,7 +10726,8 @@ class MainBot<T extends IMainBot> {
               new Date().getTime(),
           ),
           transactTime: processedOrder.transactTime || ord.transactTime,
-          type: orderType,
+          type: placed.type,
+          ...(placed.filledOnArrival && { filledOnArrival: true }),
           price,
           origQty: order.origQty,
         }
