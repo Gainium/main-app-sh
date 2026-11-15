@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.127.0] - 2026-11-15
+
+### Added
+
+- Order execution setting for the base order, DCA orders, take profit and stop loss: Market, Limit, Chasing limit and Split order
+
+### Fixed
+
+- Close by limit at a signal now re-prices and reaches market on its own timer instead of after about 10 seconds
+
 ## [1.126.19] - 2026-11-15
 
 ### Fixed
