@@ -1915,6 +1915,8 @@ export interface DCADealsSchema extends SchemaI {
     timeoutSec: number
     repriceSec: number
     maxChasePerc?: number
+    /** Spec 242 §4.3.1 — re-placements price from the top of the book. */
+    book?: boolean
   } | null
   isDeleted?: boolean
   feeBalance?: number

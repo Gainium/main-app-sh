@@ -262,6 +262,7 @@ import {
   defaultLimitFallbackMs,
 } from './dca/limitTimeouts'
 import {
+  bookChasePrice,
   clampChasePrice,
   closeTimerPlan,
   closeTypeForStage,
@@ -273,11 +274,13 @@ import {
   restingTpTimeoutMs,
   splitFloorBreached,
   stageForClose,
+  storedChase,
   triggerFromCloseCondition,
   type ExecutionSettings,
   type ExecutionTrigger,
 } from './dca/orderExecution'
 import type { OrderExecution } from '../../types'
+import type { BookTicker } from '../exchange'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import { BotServiceType } from '../config'
 import {
@@ -1006,8 +1009,16 @@ function createDCABotHelper<
      */
     closeExecutionContext?: Map<
       string,
-      { execution: OrderExecution; triggerPrice: number; startedAt: number }
+      {
+        execution: OrderExecution
+        triggerPrice: number
+        startedAt: number
+        /** Spec 242 §4.3.1 — price from the top of the book (stored chase). */
+        book?: boolean
+      }
     >
+    /** Spec 242 §4.3.1 — last book read per symbol, reused for 1 s. */
+    bookCache?: Map<string, { at: number; book: BookTicker | null }>
     /** Deals whose next `closeDealById` is a re-placement by `checkTPOrder`. */
     closeReplacements?: Set<string>
     /** Spec 242 — first placement price of a chasing base order, per deal. */
@@ -8306,9 +8317,23 @@ function createDCABotHelper<
                         }),
                   triggerPrice: tpOrder.price,
                   startedAt: Date.now(),
+                  book:
+                    stage !== 'close' &&
+                    storedChase(stage, closeSettings, trigger),
                 }
                 this.closeExecutionContext.set(dealId, ctx)
                 this.persistExecutionState(dealId)
+              }
+              if (ctx.book && ctx.execution.mode === 'chase') {
+                const fromBook = await this.chasePrice(
+                  findDeal.deal.symbol.symbol,
+                  tpOrder.side === 'BUY' ? 'BUY' : 'SELL',
+                  tpOrder.price,
+                )
+                tpOrder.price = this.math.round(
+                  fromBook,
+                  symbol.priceAssetPrecision,
+                )
               }
               if (
                 ctx.execution.mode === 'chase' &&
@@ -12298,6 +12323,21 @@ function createDCABotHelper<
             (type === OrderTypeEnum.market ? slippage : 0) *
               (this.isLong ? 1 : -1) *
               (this.useCompountReduce ? -1 : 1))
+        // Spec 242 §4.3.1 — a chasing base order waits at the top of the
+        // book instead of crossing at the last trade. Legacy limits unchanged.
+        // Only a real placement (it has a deal) reads the book; usage,
+        // balance and sizing estimates keep the last trade.
+        if (
+          dealId &&
+          type === OrderTypeEnum.limit &&
+          storedChase('entry', settings, 'start')
+        ) {
+          price = await this.chasePrice(
+            symbol,
+            this.isLong ? 'BUY' : 'SELL',
+            price,
+          )
+        }
         // Spec 242 §4.3 — a chasing base order is never re-placed further
         // than its cap from the price of its first placement.
         const entryCap = entryChaseCapPerc(settings)
@@ -25273,7 +25313,7 @@ function createDCABotHelper<
       const chase = e.sliceMode !== 'market'
       const limitPrice = chase
         ? clampChasePrice({
-            price: last,
+            price: await this.chasePrice(deal.deal.symbol.symbol, st.side, last),
             triggerPrice: st.triggerPrice,
             maxChasePerc: e.maxChasePerc ?? 0,
             side: st.side,
@@ -25729,6 +25769,7 @@ function createDCABotHelper<
           },
           triggerPrice: close.triggerPrice,
           startedAt: close.startedAt,
+          book: !!close.book,
         })
         ;(this.closeReplacements ??= new Set()).add(dealId)
       }
@@ -25739,6 +25780,49 @@ function createDCABotHelper<
         undefined,
         overdue,
       )
+    }
+
+    /**
+     * Spec 242 §4.3.1 — price a chasing limit from the top of the book (a buy
+     * at the best bid, a sell at the best ask). The venue is asked at call
+     * time; no answer within 3 s, or no usable book, means the last trade.
+     */
+    private async chasePrice(
+      symbol: string,
+      side: 'BUY' | 'SELL',
+      last: number,
+    ): Promise<number> {
+      let book: BookTicker | null = null
+      let timer: NodeJS.Timeout | undefined
+      // One placement prices the order several times (sizing, balance check,
+      // send): reuse a book read within the last second.
+      const cached = this.bookCache?.get(symbol)
+      if (cached && Date.now() - cached.at < 1_000) {
+        return bookChasePrice({ side, last, book: cached.book })
+      }
+      try {
+        const res = await Promise.race([
+          this.exchange?.bookTicker(symbol),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), 3_000)
+          }),
+        ])
+        if (res?.status === StatusEnum.ok && res.data) {
+          book = res.data
+        }
+        ;(this.bookCache ??= new Map()).set(symbol, { at: Date.now(), book })
+      } catch {
+        book = null
+      } finally {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      }
+      const price = bookChasePrice({ side, last, book })
+      this.handleLog(
+        `Chase price ${symbol} ${side}: ${book ? `bid ${book.bid} ask ${book.ask}` : 'no book'}, last ${last} -> ${price}`,
+      )
+      return price
     }
 
     /**
@@ -25776,6 +25860,7 @@ function createDCABotHelper<
               timeoutSec: ctx.execution.timeoutSec ?? 0,
               repriceSec: ctx.execution.repriceSec ?? 10,
               maxChasePerc: ctx.execution.maxChasePerc ?? 0,
+              book: !!ctx.book,
             }
           : null
       if (
@@ -25845,7 +25930,11 @@ function createDCABotHelper<
         limitPrice = st.triggerPrice
       } else if (chase) {
         limitPrice = clampChasePrice({
-          price: last,
+          price: await this.chasePrice(
+            deal.deal.symbol.symbol,
+            st.side,
+            last,
+          ),
           triggerPrice: st.triggerPrice,
           maxChasePerc: e.maxChasePerc ?? 0,
           side: st.side,
@@ -26093,6 +26182,7 @@ function createDCABotHelper<
           },
           triggerPrice: st.triggerPrice,
           startedAt: Date.now(),
+          book: e.sliceMode === 'chase',
         })
         ;(this.closeReplacements ??= new Set()).add(dealId)
       }

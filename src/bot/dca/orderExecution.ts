@@ -273,6 +273,48 @@ export const clampChasePrice = (p: {
   return Math.min(p.price, p.triggerPrice * (1 + ratio))
 }
 
+/**
+ * A chasing limit's price from the top of the book: a buy at the best bid, a
+ * sell at the best ask, so it waits for a fill instead of crossing the spread.
+ * Without a usable book (unsupported venue, failed call, crossed or empty
+ * book) it falls back to the last trade, as before. Spec §4.3.1.
+ */
+export const bookChasePrice = (p: {
+  side: 'BUY' | 'SELL'
+  last: number
+  book?: { bid: number; ask: number } | null
+}): number => {
+  const b = p.book
+  if (
+    !b ||
+    !Number.isFinite(b.bid) ||
+    !Number.isFinite(b.ask) ||
+    !(b.bid > 0) ||
+    !(b.ask > 0) ||
+    b.bid > b.ask
+  ) {
+    return p.last
+  }
+  return p.side === 'BUY' ? b.bid : b.ask
+}
+
+/**
+ * Whether a stage chases because the stored execution setting says so. A
+ * legacy limit (§3) resolves to `chase` too but keeps its old pricing.
+ */
+export const storedChase = (
+  stage: ExecutionStage,
+  settings: ExecutionSettings,
+  trigger: ExecutionTrigger,
+): boolean => {
+  const key = STORED[stage]
+  const stored = key ? settings[key] : null
+  return (
+    isValidStored(stored) &&
+    fitToModes(stored, availableModes(stage, trigger)).mode === 'chase'
+  )
+}
+
 /** The trigger a take-profit / stop-loss type stands for. Spec §2. */
 export const triggerFromCloseCondition = (
   condition: string | null | undefined,

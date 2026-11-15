@@ -1,4 +1,4 @@
-import AbstractExchange, { Exchange } from '../index'
+import AbstractExchange, { Exchange, type BookTicker } from '../index'
 import {
   AllPricesResponse,
   BaseReturn,
@@ -278,6 +278,18 @@ class PaperExchange extends AbstractExchange implements Exchange {
         }
       })
       .catch(this.handlePaperErrors())
+  }
+
+  /** Best bid / ask of the real venue, through paper-trading (spec 242 §4.3.1). */
+  async bookTicker(symbol: string): Promise<BaseReturn<BookTicker>> {
+    return this.apiCall<BaseReturn<BookTicker>>({
+      endpoint: 'exchange/bookTicker',
+      method: 'get',
+      params: {
+        symbol,
+        exchange: this.exchange,
+      },
+    }).catch(this.handlePaperErrors())
   }
 
   async latestPrice(

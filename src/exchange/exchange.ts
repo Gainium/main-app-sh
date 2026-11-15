@@ -1,4 +1,4 @@
-import AbstractExchange, { OpenOrderRequest } from './index'
+import AbstractExchange, { OpenOrderRequest, type BookTicker } from './index'
 import {
   AccountFill,
   AllPricesResponse,
@@ -624,6 +624,26 @@ class Exchange extends AbstractExchange {
       },
       timeProfile,
     ).catch(this.handleError(this.getUserFees, _symbol, timeProfile))
+    this.saveTimeProfile(result.timeProfile)
+    return result.data
+  }
+
+  /** Best bid / ask from the connector; never cached (spec 242 §4.3.1). */
+  async bookTicker(
+    symbol: string,
+    timeProfile = this.getEmptyTimeProfile('bookTicker'),
+  ): Promise<BaseReturn<BookTicker>> {
+    const result = await this.apiCall<BookTicker>(
+      {
+        endpoint: 'bookTicker',
+        method: 'get',
+        params: {
+          symbol,
+          exchange: this.exchange,
+        },
+      },
+      timeProfile,
+    ).catch(this.handleError(this.bookTicker, symbol, timeProfile))
     this.saveTimeProfile(result.timeProfile)
     return result.data
   }

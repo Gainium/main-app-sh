@@ -12,6 +12,8 @@ process.env.NODE_ENV = 'testing'
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
 import {
+  bookChasePrice,
+  storedChase,
   clampChasePrice,
   closeTypeForStage,
   entryChaseCapPerc,
@@ -677,5 +679,51 @@ describe('spec 242 — base order split (§6.5)', () => {
   })
   it('a stored split base order is kept (not fitted to market)', () => {
     expect(resolveExecution('entry', split, 'start').mode).to.equal('split')
+  })
+})
+
+describe('spec 242 §4.3.1 — chase price from the top of the book', () => {
+  const book = { bid: 1830.37, ask: 1830.38 }
+  it('a buy waits at the best bid, a sell at the best ask', () => {
+    expect(bookChasePrice({ side: 'BUY', last: 1830.38, book })).to.equal(
+      1830.37,
+    )
+    expect(bookChasePrice({ side: 'SELL', last: 1830.37, book })).to.equal(
+      1830.38,
+    )
+  })
+  it('no usable book: the last trade, as before', () => {
+    for (const b of [
+      null,
+      undefined,
+      { bid: 0, ask: 1830.38 },
+      { bid: 1830.37, ask: 0 },
+      { bid: NaN, ask: 1830.38 },
+      { bid: 1830.4, ask: 1830.38 },
+    ]) {
+      expect(bookChasePrice({ side: 'BUY', last: 1830, book: b })).to.equal(
+        1830,
+      )
+    }
+  })
+  it('only a stored chase counts, never a legacy limit (§3)', () => {
+    expect(
+      storedChase('entry', { entryExecution: { mode: 'chase' } }, 'start'),
+    ).to.equal(true)
+    expect(
+      storedChase('entry', { startOrderType: 'LIMIT' } as any, 'start'),
+    ).to.equal(false)
+    expect(
+      storedChase('sl', { slExecution: { mode: 'chase' } }, 'level'),
+    ).to.equal(true)
+    expect(
+      storedChase('tp', { tpExecution: { mode: 'chase' } }, 'indicator'),
+    ).to.equal(true)
+    expect(
+      storedChase('tp', { tpExecution: { mode: 'limit' } }, 'indicator'),
+    ).to.equal(false)
+    expect(
+      storedChase('close', { tpExecution: { mode: 'chase' } }, 'manual'),
+    ).to.equal(false)
   })
 })

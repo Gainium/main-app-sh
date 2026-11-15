@@ -1,4 +1,7 @@
 import { StatusEnum, ExchangeIntervals, MarginType } from '../../types'
+
+/** Top of the order book: best bid and best ask prices. */
+export type BookTicker = { bid: number; ask: number }
 import type {
   AccountFill,
   OrderTypes,
@@ -59,6 +62,7 @@ export interface Exchange {
     newClientOrderId?: string
   }): Promise<BaseReturn<CommonOrder>>
   latestPrice(symbol: string): Promise<BaseReturn<number>>
+  bookTicker(symbol: string): Promise<BaseReturn<BookTicker>>
   getExchangeInfo(symbol: string): Promise<BaseReturn<ExchangeInfo>>
   getAllExchangeInfo(): Promise<BaseReturn<(ExchangeInfo & { pair: string })[]>>
   getAllOpenOrders(
@@ -437,6 +441,11 @@ abstract class AbsctractExchange implements Exchange {
     symbol: string
     newClientOrderId?: string
   }): Promise<BaseReturn<CommonOrder>>
+  /** Best bid and best ask for a pair, read from the venue at call time.
+   * A chasing limit is priced from it (spec 242 §4.3.1). "Method not
+   * supported" (or any failure) means: price from the last trade instead.
+   */
+  abstract bookTicker(symbol: string): Promise<BaseReturn<BookTicker>>
   /** Get latest price for a given pair
    * @param {string} symbol symbol to look for
    * @returns {Promise<BaseReturn<number>>} latest price

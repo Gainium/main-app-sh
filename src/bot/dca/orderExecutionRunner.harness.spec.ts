@@ -554,3 +554,100 @@ describe('spec 242 — persisted state and restart resume', () => {
     )
   })
 })
+
+describe('spec 242 §4.3.1 — chasing slices price from the top of the book', () => {
+  let bots: any[] = []
+  afterEach(() => {
+    bots.forEach(clearTimers)
+    bots = []
+  })
+  const chaseTp = {
+    ...splitTp,
+    tpExecution: { ...splitTp.tpExecution, sliceMode: 'chase', repriceSec: 5 },
+  }
+
+  it('a sell slice waits at the best ask, not the last trade', async () => {
+    const { bot, calls } = make(chaseTp, { last: 100 })
+    bots.push(bot)
+    bot.exchange = {
+      bookTicker: async () => ({
+        status: 'OK',
+        data: { bid: 99.9, ask: 100.1 },
+      }),
+    }
+    await bot.maybeStartSplitClose(
+      'd1',
+      bot.getDeal(),
+      CloseDCATypeEnum.closeByMarket,
+      false,
+      '',
+      false,
+      DCACloseTriggerEnum.indicator,
+    )
+    await new Promise((r) => setImmediate(r))
+    expect(calls.reduce[0].useLimitPrice).to.equal(true)
+    expect(+calls.reduce[0].limitPrice).to.equal(100.1)
+  })
+
+  it('no book (unsupported, failed, crossed): the last trade, as before', async () => {
+    for (const exchange of [
+      {
+        bookTicker: async () => ({
+          status: 'NOTOK',
+          data: null,
+          reason: 'Method not supported',
+        }),
+      },
+      {
+        bookTicker: async () => {
+          throw new Error('down')
+        },
+      },
+      {
+        bookTicker: async () => ({
+          status: 'OK',
+          data: { bid: 101, ask: 100 },
+        }),
+      },
+      undefined,
+    ]) {
+      const { bot, calls } = make(chaseTp, { last: 100 })
+      bots.push(bot)
+      bot.exchange = exchange
+      await bot.maybeStartSplitClose(
+        'd1',
+        bot.getDeal(),
+        CloseDCATypeEnum.closeByMarket,
+        false,
+        '',
+        false,
+        DCACloseTriggerEnum.indicator,
+      )
+      await new Promise((r) => setImmediate(r))
+      expect(+calls.reduce[0].limitPrice).to.equal(100)
+    }
+  })
+
+  it('the book never takes a slice past the max chase', async () => {
+    const { bot, calls } = make(
+      { ...chaseTp, tpExecution: { ...chaseTp.tpExecution, maxChasePerc: 1 } },
+      { last: 100 },
+    )
+    bots.push(bot)
+    // trigger at 100; book has collapsed to 95/95.5 — the floor is 99
+    bot.exchange = {
+      bookTicker: async () => ({ status: 'OK', data: { bid: 95, ask: 95.5 } }),
+    }
+    await bot.maybeStartSplitClose(
+      'd1',
+      bot.getDeal(),
+      CloseDCATypeEnum.closeByMarket,
+      false,
+      '',
+      false,
+      DCACloseTriggerEnum.indicator,
+    )
+    await new Promise((r) => setImmediate(r))
+    expect(+calls.reduce[0].limitPrice).to.equal(99)
+  })
+})
