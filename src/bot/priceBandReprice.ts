@@ -13,8 +13,8 @@
  * deal whose buy-backs sat 10k above a falling market retried the stale
  * prices on every restart for ten days and never covered.
  *
- * The cure is to send the order where the venue will take it: at the band
- * edge the venue names, or at the market when it names none. The grid level
+ * The cure is to send the order where the venue will take it: at the market
+ * price (never past a band edge the venue names). The grid level
  * (`origPrice`) is untouched, so the fill is booked like any other limit that
  * crossed the book on arrival.
  */
@@ -95,8 +95,14 @@ export function priceBandRepriceTarget(input: {
   if (!through) {
     return null
   }
+  // The market, not the band edge: on 2026-11-16 orders re-sent at exactly
+  // the edge a Bybit / OKX refusal named were refused again (the edge had
+  // already moved). The edge only ever tightens the target further.
   const edge = priceBandEdgeFromReason(reason, side)
-  let target = edge ?? market
-  target = side === 'BUY' ? Math.min(target, price) : Math.max(target, price)
+  const bound = edge ?? market
+  const target =
+    side === 'BUY'
+      ? Math.min(market, bound, price)
+      : Math.max(market, bound, price)
   return target !== price ? target : null
 }

@@ -1261,6 +1261,13 @@ class MainBot<T extends IMainBot> {
    * the same order is not retried again: it is raised as an error instead.
    */
   protected priceBandRepriced?: Set<string>
+  /**
+   * Combo grid orders this process could not get onto the book (refused on
+   * price after a re-price, or for balance), keyed by deal, side and grid
+   * level. While any is outstanding on an open deal, the bot's soft `error`
+   * status is not restored: the condition is still live. Spec 246 §4.6.
+   */
+  protected stuckGridOrders?: Map<string, number>
   /** Used pairs */
   pairs: Set<string> = new Set()
   /** Run after loading */
@@ -4361,6 +4368,7 @@ class MainBot<T extends IMainBot> {
       )
     }
     this.updateNotEnoughBalanceErrors(order)
+    this.markGridOrderStuck(order)
     let message = `Not enough balance Order id: ${order.clientOrderId}, side: ${
       order.side === 'BUY' ? 'buy' : 'sell'
     }, price - ${order.price} , order type: ${
@@ -8695,6 +8703,14 @@ class MainBot<T extends IMainBot> {
    */
 
   restoreFromRangeOrError() {
+    // Spec 246 §4.6: `error` is soft and every clean tick restores it, which
+    // hid a deal whose grid orders could not be placed for days (the error
+    // was raised, then cleared seconds later). While such an order is
+    // outstanding on an open deal the condition is live: keep the error. The
+    // bot keeps trading in `error`, as it does for every other soft error.
+    if (this.data?.status === BotStatusEnum.error && this.hasStuckGridOrder()) {
+      return
+    }
     if (this.data && this.data.status !== BotStatusEnum.closed) {
       if (
         this.data.previousStatus &&
@@ -9125,6 +9141,47 @@ class MainBot<T extends IMainBot> {
     batcher.dispose()
   }
 
+  private stuckGridKey(order: Order): string | null {
+    if (order.typeOrder !== TypeOrderEnum.dealGrid || !order.dealId) {
+      return null
+    }
+    return `${order.dealId}|${order.side}|${+(order.origPrice || order.price)}`
+  }
+
+  /** Spec 246 §4.6: record a grid order that could not be placed. */
+  protected markGridOrderStuck(order: Order) {
+    const key = this.stuckGridKey(order)
+    if (key) {
+      ;(this.stuckGridOrders ??= new Map()).set(key, Date.now())
+    }
+  }
+
+  /** Spec 246 §4.6: the grid order made it onto the book. */
+  protected clearGridOrderStuck(order: Order) {
+    const key = this.stuckGridKey(order)
+    if (key) {
+      this.stuckGridOrders?.delete(key)
+    }
+  }
+
+  /** Whether a deal is still open; bot types without deals answer true. */
+  isDealStillOpen(_dealId: string): boolean {
+    return true
+  }
+
+  /** Spec 246 §4.6: an open deal still has a grid order nothing can place. */
+  protected hasStuckGridOrder(): boolean {
+    if (!this.stuckGridOrders?.size) {
+      return false
+    }
+    for (const key of [...this.stuckGridOrders.keys()]) {
+      if (!this.isDealStillOpen(key.split('|')[0])) {
+        this.stuckGridOrders.delete(key)
+      }
+    }
+    return this.stuckGridOrders.size > 0
+  }
+
   /**
    * A combo grid order the venue refused on price even after it was re-sent
    * at the venue's band edge or the market (see `priceBandReprice.ts`). The
@@ -9136,6 +9193,7 @@ class MainBot<T extends IMainBot> {
     order: Order,
     reason: string | null | undefined,
   ) {
+    this.markGridOrderStuck(order)
     const message = `Grid order ${order.clientOrderId} cannot be placed: ${order.side === 'BUY' ? 'buy' : 'sell'} at grid level ${order.origPrice} was refused by the exchange on price even after re-pricing to ${order.price}. Exchange reason: ${reason ?? 'unknown'}`
     this.botEventDb
       .createData({
@@ -10616,6 +10674,7 @@ class MainBot<T extends IMainBot> {
         }
         if (request.status === StatusEnum.ok) {
           this.priceBandRepriced?.delete(order.clientOrderId)
+          this.clearGridOrderStuck(order)
           processedOrder = request.data
           // The answer is about the order this request named, whatever client
           // id it echoes. Kraken spot's placement read-back can fall back to a

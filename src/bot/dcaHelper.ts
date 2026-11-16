@@ -1425,6 +1425,12 @@ function createDCABotHelper<
       return this.deals.get(key)
     }
 
+    /** Spec 246 §4.6: a stuck grid order only holds the error while its deal is open. */
+    override isDealStillOpen(dealId: string): boolean {
+      const d = this.getDeal(dealId)
+      return !!d && d.deal.status !== DCADealStatusEnum.closed
+    }
+
     /**
      * A deferred cancel re-send (spec `178`) goes out only once the order's
      * deal is no longer open: that is the order a close meant to cancel and

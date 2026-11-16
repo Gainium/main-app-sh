@@ -58,7 +58,7 @@ describe('priceBandEdgeFromReason', () => {
 })
 
 describe('priceBandRepriceTarget', () => {
-  it('re-prices a stale buy-back to the band edge the venue names', () => {
+  it('re-prices a stale buy-back to the market, inside the band the venue names', () => {
     expect(
       priceBandRepriceTarget({
         side: 'BUY',
@@ -66,7 +66,18 @@ describe('priceBandRepriceTarget', () => {
         market: MARKET,
         reason: BYBIT_BUY_BAND,
       }),
-    ).to.equal(64651.1)
+    ).to.equal(MARKET)
+  })
+
+  it('never re-prices past a band edge tighter than the market', () => {
+    expect(
+      priceBandRepriceTarget({
+        side: 'BUY',
+        price: 74834.7,
+        market: MARKET,
+        reason: 'Buy order price cannot be higher than 64300USDT.',
+      }),
+    ).to.equal(64300)
   })
 
   it('falls back to the market when no edge is named', () => {
@@ -111,7 +122,8 @@ describe('priceBandRepriceTarget', () => {
   })
 
   it('never moves a buy up or a sell down', () => {
-    // A cap above the order price would make the order worse; keep the price.
+    // A cap above the order price is never used to move the buy up: it goes
+    // down to the market.
     expect(
       priceBandRepriceTarget({
         side: 'BUY',
@@ -119,7 +131,16 @@ describe('priceBandRepriceTarget', () => {
         market: MARKET,
         reason: 'Buy order price cannot be higher than 70000USDT.',
       }),
-    ).to.equal(null)
+    ).to.equal(MARKET)
+    // ...and a sell is never moved down.
+    expect(
+      priceBandRepriceTarget({
+        side: 'SELL',
+        price: 64000,
+        market: MARKET,
+        reason: 'Sell order price cannot be lower than 60000USDT.',
+      }),
+    ).to.equal(MARKET)
   })
 
   it('refuses without a usable market price', () => {
