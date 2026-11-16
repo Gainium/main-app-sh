@@ -8,7 +8,7 @@ const ind = (indicatorAction: IndicatorAction) => ({ indicatorAction })
 const ladder = (n: number) =>
   Array.from({ length: n }, () => ind(IndicatorAction.startDca))
 
-describe('billableIndicators: the DCA-by-indicators ladder counts as one', () => {
+describe('billableIndicators: the DCA-by-indicators ladder counts as its largest level', () => {
   it('a 16-level ladder is one indicator', () => {
     expect(
       billableIndicators({
@@ -29,6 +29,42 @@ describe('billableIndicators: the DCA-by-indicators ladder counts as one', () =>
         ],
       }),
     ).to.equal(3)
+  })
+
+  // Spec 244 §1.12: only the reached level is subscribed, so the ladder
+  // counts as its largest level.
+  it('a ladder with several conditions per level counts its largest level', () => {
+    const lvl = (dcaLevel: string, uuid: string) => ({
+      indicatorAction: IndicatorAction.startDca,
+      dcaLevel,
+      uuid,
+    })
+    expect(
+      billableIndicators({
+        dcaCondition: DCAConditionEnum.indicators,
+        indicators: [
+          lvl('L1', 'L1'),
+          lvl('L2', 'L2'),
+          lvl('L2', 'b'),
+          lvl('L2', 'c'),
+          lvl('L3', 'L3'),
+          lvl('L3', 'd'),
+          ind(IndicatorAction.startDeal),
+        ],
+      }),
+    ).to.equal(4)
+  })
+
+  it('legacy levels (one indicator each, uuid only) still count as one', () => {
+    expect(
+      billableIndicators({
+        dcaCondition: DCAConditionEnum.indicators,
+        indicators: ['a', 'b', 'c'].map((uuid) => ({
+          indicatorAction: IndicatorAction.startDca,
+          uuid,
+        })),
+      }),
+    ).to.equal(1)
   })
 
   it('unchanged when DCA is not by indicators', () => {

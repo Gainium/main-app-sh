@@ -3492,6 +3492,7 @@ export const BotSchema = /* GraphQL */ `
     action: String
     section: String
     join: String
+    dcaLevel: String
   }
   type indicatorSettingsType {
     indicatorLength: Int
@@ -3502,6 +3503,8 @@ export const BotSchema = /* GraphQL */ `
     indicatorInterval: String
     type: IndicatorsEnum
     uuid: String
+    dcaLevel: String
+    hideOnChart: Boolean
     signal: String
     condition: String
     checkLevel: Int
@@ -5426,6 +5429,7 @@ export const BotSchema = /* GraphQL */ `
     action: String
     section: String
     join: String
+    dcaLevel: String
   }
   input indicatorSettings {
     indicatorLength: Int
@@ -5436,6 +5440,8 @@ export const BotSchema = /* GraphQL */ `
     indicatorInterval: String
     type: String
     uuid: String
+    dcaLevel: String
+    hideOnChart: Boolean
     signal: String
     condition: String
     checkLevel: Int

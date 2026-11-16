@@ -311,6 +311,12 @@ import {
   remainingLadderLevels,
 } from './dca/ladderLevels'
 import {
+  dcaLevelTriggered,
+  startDcaLevelAnchors,
+  startDcaLevelGroups,
+  startDcaLevels,
+} from './dca/indicatorLevels'
+import {
   isDisplacementInLadder,
   isLevelFilled,
   percentageLadderEnd,
@@ -3297,9 +3303,7 @@ function createDCABotHelper<
           levels: {
             all: dealSettings.useDca
               ? this.data.settings.dcaCondition === DCAConditionEnum.indicators
-                ? this.data.settings.indicators.filter(
-                    (si) => si.indicatorAction === IndicatorAction.startDca,
-                  ).length + 1
+                ? startDcaLevelAnchors(this.data.settings.indicators).length + 1
                 : this.data.settings.dcaCondition === DCAConditionEnum.custom
                   ? (this.data.settings.dcaCustom ?? []).length + 1
                   : this.data.settings.ordersCount + 1
@@ -6829,22 +6833,42 @@ function createDCABotHelper<
       if (allOpenDCA.length) {
         const key = `${symbol}`
         if ((this.indicatorActions.dcaOrder.get(key) ?? 0) < lastTime) {
-          this.indicatorActions.dcaOrder.set(key, lastTime)
-          for (const i of allOpenDCA) {
-            const ind = this.indicators.get(i.key)
-            if (ind) {
-              this.indicators.set(i.key, {
-                ...ind,
-                status: false,
-              })
+          // Spec 244: a level fires when its conditions hold — its own
+          // `startDca` groups (same AND/OR rules as deal start), or, for a
+          // level without groups, its single indicator.
+          const activeKeys = new Set(allOpenDCA.map((i) => i.key))
+          const fired = startDcaLevels(settings.indicators)
+            .map((level, index) => ({ level, index }))
+            .filter(
+              ({ level }) =>
+                level.indicators.some((i) =>
+                  activeKeys.has(`${i.uuid}@${symbol}`),
+                ) &&
+                dcaLevelTriggered(
+                  level,
+                  startDcaLevelGroups(this.indicatorGroupsToUse, level.key),
+                  (uuid) => activeKeys.has(`${uuid}@${symbol}`),
+                  (uuid) => !!this.indicators.get(`${uuid}@${symbol}`),
+                ),
+            )
+          if (fired.length) {
+            this.indicatorActions.dcaOrder.set(key, lastTime)
+          }
+          for (const { level, index } of fired) {
+            for (const li of level.indicators) {
+              const k = `${li.uuid}@${symbol}`
+              const ind = this.indicators.get(k)
+              if (ind && activeKeys.has(k)) {
+                this.indicators.set(k, {
+                  ...ind,
+                  status: false,
+                })
+              }
             }
-            const index = (settings.indicators ?? [])
-              .filter((ind) => ind.indicatorAction === IndicatorAction.startDca)
-              .findIndex((si) => si.uuid === i.uuid)
             this.addDCAOrderByIndicator(
               this.botId,
               index,
-              i.symbol,
+              symbol,
               lastData.time,
             )
           }
@@ -7152,9 +7176,7 @@ function createDCABotHelper<
           )
           continue
         }
-        const ind = (this.data?.settings?.indicators ?? []).filter(
-          (i) => i.indicatorAction === IndicatorAction.startDca,
-        )[index]
+        const ind = startDcaLevelAnchors(this.data?.settings?.indicators)[index]
         const price = await this.getLatestPrice(symbol)
         if (ind) {
           const minPercFromLast = this.dcaIndicatorLevel(
@@ -16665,16 +16687,15 @@ function createDCABotHelper<
       ) {
         return null
       }
-      const levels = (settings.indicators ?? []).filter(
-        (i) => i.indicatorAction === IndicatorAction.startDca,
-      )
+      // Spec 244: every condition of the level is subscribed together.
+      const levels = startDcaLevels(settings.indicators)
       const due = new Set<string>()
       for (const d of this.getDealsByStatusAndSymbol({
         status: DCADealStatusEnum.open,
       })) {
         const level = levels[nextLadderLevel(d.deal) - 1]
-        if (level) {
-          due.add(`${level.uuid}@${d.deal.symbol.symbol}`)
+        for (const i of level?.indicators ?? []) {
+          due.add(`${i.uuid}@${d.deal.symbol.symbol}`)
         }
       }
       return due
@@ -34042,9 +34063,7 @@ function createDCABotHelper<
     ): DCAIndicatorLevel | undefined {
       return (
         settings.dcaIndicatorLevels?.[index] ??
-        (settings.indicators ?? []).filter(
-          (i) => i.indicatorAction === IndicatorAction.startDca,
-        )[index]
+        startDcaLevelAnchors(settings.indicators)[index]
       )
     }
 
@@ -34076,11 +34095,7 @@ function createDCABotHelper<
           ? Math.min(count, settings.dcaLevelsCap)
           : count
       if (settings.dcaCondition === DCAConditionEnum.indicators) {
-        return cap(
-          (settings.indicators ?? []).filter(
-            (i) => i.indicatorAction === IndicatorAction.startDca,
-          ).length,
-        )
+        return cap(startDcaLevelAnchors(settings.indicators).length)
       }
       if (settings.dcaCondition === DCAConditionEnum.custom) {
         return cap((settings.dcaCustom ?? []).length)

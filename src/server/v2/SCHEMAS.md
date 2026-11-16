@@ -1854,6 +1854,8 @@ SettingsIndicators configuration
 | `stochRange` | enum: `upper|lower|both|none` | No | Zone the condition must be met in: lower (below the band in stochUpper), upper (above the band in stochLower), both (above stochUpper or below stochLower), none (anywhere). |
 | `minPercFromLast` | string | No | Minimum % from last signal |
 | `orderSize` | string | No | Size of each order |
+| `dcaLevel` | string | No | `startDca` only: the DCA level this condition belongs to. Indicators sharing `dcaLevel` form one level (one safety order) triggered by that level's groups; omit it to make the indicator a level of its own. The level's `orderSize`/`minPercFromLast` are read from the indicator whose `uuid` equals `dcaLevel`, else its first indicator. |
+| `hideOnChart` | boolean | No | Keep the indicator off the dashboard chart. Display only. |
 | `keepConditionBars` | string | No | Bars to keep condition |
 | `voShort` | number | No | Volume oscillator short period |
 | `voLong` | number | No | Volume oscillator long period |

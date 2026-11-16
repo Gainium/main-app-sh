@@ -3793,6 +3793,12 @@ components:
           enum:
             - and
             - or
+        dcaLevel:
+          type: string
+          description: >-
+            startDca groups only. The DCA level (by indicators) whose conditions
+            this group holds; equals the dcaLevel of that level's indicators.
+          example: level-1
       description: SettingsIndicatorGroup configuration
     SettingsIndicators:
       type: object
@@ -3888,6 +3894,19 @@ components:
           type: string
           description: Indicator group ID
           example: group-1
+        dcaLevel:
+          type: string
+          description: >-
+            startDca indicators only. The DCA level this condition belongs to.
+            Indicators sharing dcaLevel form one level (one safety order),
+            triggered by that level's indicator groups. Omit it to make the
+            indicator a level of its own. The level's orderSize and
+            minPercFromLast are read from the indicator whose uuid equals
+            dcaLevel, else the level's first indicator.
+          example: level-1
+        hideOnChart:
+          type: boolean
+          description: Keep the indicator off the dashboard chart. Display only.
         uuid:
           type: string
           description: Unique identifier

@@ -1,8 +1,8 @@
+import { startDcaLevelAnchors } from './indicatorLevels'
 import {
   BotType,
   CleanComboDealsSchema,
   CooldownUnits,
-  IndicatorAction,
 } from '../../../types'
 
 import type {
@@ -142,12 +142,12 @@ class DCAUtils {
       gridLevel: settings.gridLevel,
       dcaCondition: settings.dcaCondition,
       dcaCustom: settings.dcaCustom,
-      dcaIndicatorLevels: (settings.indicators ?? [])
-        .filter((i) => i.indicatorAction === IndicatorAction.startDca)
-        .map((i) => ({
+      dcaIndicatorLevels: startDcaLevelAnchors(settings.indicators).map(
+        (i) => ({
           orderSize: i.orderSize,
           minPercFromLast: i.minPercFromLast,
-        })),
+        }),
+      ),
       closeByTimer: settings.closeByTimer,
       closeByTimerUnits: settings.closeByTimerUnits,
       closeByTimerValue: settings.closeByTimerValue,

@@ -1315,6 +1315,7 @@ const indicatorGroup = new Schema(
     action: { type: String, enum: IndicatorAction },
     section: String,
     join: { type: String, enum: IndicatorsLogicEnum },
+    dcaLevel: String,
   },
   { _id: false },
 )
@@ -1337,6 +1338,8 @@ const indicatorsSettings = new Schema({
     enum: ExchangeIntervals,
   },
   uuid: String,
+  dcaLevel: String,
+  hideOnChart: Boolean,
   signal: {
     type: String,
     enum: TradingviewAnalysisSignalEnum,

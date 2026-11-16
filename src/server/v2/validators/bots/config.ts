@@ -224,6 +224,11 @@ export const indicatorGroupConfig: Record<
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(IndicatorsLogicEnum),
   },
+  dcaLevel: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeString],
+    maxLength: 100,
+  },
 }
 
 // Complete field configuration for indicators
@@ -278,6 +283,15 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
   },
 
   // Optional fields
+  dcaLevel: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeString],
+    maxLength: 100,
+  },
+  hideOnChart: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeBoolean],
+  },
   signal: {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],

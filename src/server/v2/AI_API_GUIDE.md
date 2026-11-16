@@ -219,6 +219,23 @@ response = requests.put(
 )
 ```
 
+Several conditions on one DCA level: give the level's indicators the same `dcaLevel` and put them in `startDca` groups carrying that `dcaLevel` (groups combine with `join`, as for deal start). Level 1 below places its safety order on `RSI < 30 OR (MFI < 20 AND CCI < -100)`; the size and distance sit on the indicator whose `uuid` equals `dcaLevel`:
+```python
+"indicators": [
+    {"type": "RSI", "uuid": "lvl1", "dcaLevel": "lvl1", "groupId": "lvl1-a",
+     "indicatorAction": "startDca", "section": "dca", "indicatorValue": "30",
+     "minPercFromLast": "1.5", "orderSize": "20"},
+    {"type": "MFI", "uuid": "lvl1-mfi", "dcaLevel": "lvl1", "groupId": "lvl1-b",
+     "indicatorAction": "startDca", "section": "dca", "indicatorValue": "20"},
+    {"type": "CCI", "uuid": "lvl1-cci", "dcaLevel": "lvl1", "groupId": "lvl1-b",
+     "indicatorAction": "startDca", "section": "dca", "indicatorValue": "-100"},
+],
+"indicatorGroups": [
+    {"id": "lvl1-a", "logic": "and", "action": "startDca", "section": "dca", "dcaLevel": "lvl1"},
+    {"id": "lvl1-b", "logic": "and", "action": "startDca", "section": "dca", "dcaLevel": "lvl1", "join": "or"},
+],
+```
+
 ## API Endpoints
 
 All endpoints support field selection via `?fields=minimal|standard|extended|full` parameter.

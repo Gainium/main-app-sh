@@ -604,6 +604,13 @@ export type SettingsIndicators = {
   indicatorInterval: ExchangeIntervals
   groupId: string
   uuid: string
+  /**
+   * DCA by indicators: the ladder level this `startDca` condition belongs to.
+   * Unset = the indicator is a level of its own (see bot/dca/indicatorLevels).
+   */
+  dcaLevel?: string
+  /** Keep the indicator off the dashboard chart. Display only. */
+  hideOnChart?: boolean
   signal?: TradingviewAnalysisSignalEnum
   condition?: TradingviewAnalysisConditionEnum
   checkLevel?: number
@@ -1095,7 +1102,7 @@ export type DCACustom = {
 
 /**
  * One indicator-DCA ladder level as it stood when the deal opened. Level N is
- * the N-th `startDca` indicator. Frozen per deal so a bot-settings save cannot
+ * the N-th `startDca` level (bot/dca/indicatorLevels). Frozen per deal so a bot-settings save cannot
  * resize or move the safety orders of a deal that is already running.
  */
 export type DCAIndicatorLevel = {
@@ -1139,6 +1146,8 @@ export type SettingsIndicatorGroup = {
    * the bot-level logic (startDealLogic, stopDealLogic, ...).
    */
   join?: IndicatorsLogicEnum
+  /** `startDca` groups only: the DCA ladder level whose conditions it holds. */
+  dcaLevel?: string
 }
 
 export enum RRSlTypeEnum {
