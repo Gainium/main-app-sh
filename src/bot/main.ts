@@ -106,8 +106,11 @@ import {
   futuresPosition,
   getErrorSubType,
   indicatorsError,
+  orderPrice,
+  unplaceableGridOrderSubType,
   webhookSignalIgnored,
 } from './utils'
+import { priceBandRepriceTarget } from './priceBandReprice'
 import { UserNotice, userNoticePayload, userNoticeRow } from './userNotice'
 import {
   getSubTypeBehavior,
@@ -1252,6 +1255,12 @@ class MainBot<T extends IMainBot> {
    * it names and for nothing else. See `openOrderBatcher.ts`.
    */
   protected openBatcher: OpenOrderBatcher | null = null
+  /**
+   * Client ids of combo grid orders this process already re-sent once at a
+   * venue's price band (see `priceBandReprice.ts`). A second price refusal of
+   * the same order is not retried again: it is raised as an error instead.
+   */
+  protected priceBandRepriced?: Set<string>
   /** Used pairs */
   pairs: Set<string> = new Set()
   /** Run after loading */
@@ -9117,6 +9126,51 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * A combo grid order the venue refused on price even after it was re-sent
+   * at the venue's band edge or the market (see `priceBandReprice.ts`). The
+   * engine cannot place it, so the deal's grid is stuck at that level: raise
+   * it as a bot error under its own subType instead of the silent,
+   * non-erroring `Order price` class it would otherwise land in.
+   */
+  protected async reportUnplaceableGridOrder(
+    order: Order,
+    reason: string | null | undefined,
+  ) {
+    const message = `Grid order ${order.clientOrderId} cannot be placed: ${order.side === 'BUY' ? 'buy' : 'sell'} at grid level ${order.origPrice} was refused by the exchange on price even after re-pricing to ${order.price}. Exchange reason: ${reason ?? 'unknown'}`
+    this.botEventDb
+      .createData({
+        userId: this.userId,
+        botId: this.botId,
+        event: 'Order error',
+        botType: this.botType,
+        description: `Error: ${message}`,
+        paperContext: !!this.data?.paperContext,
+        type: MessageTypeEnum.error,
+        deal: order.dealId,
+        symbol: order.symbol,
+      })
+      .then((res) => {
+        if (res.status === StatusEnum.ok) {
+          const update = { showErrorWarning: MessageTypeEnum.error }
+          this.updateData(update)
+          this.emit('bot settings update', update)
+        }
+      })
+    await this.processError(
+      this.botId,
+      unplaceableGridOrderSubType,
+      false,
+      true,
+      true,
+      message,
+      new Date().getTime(),
+      undefined,
+      false,
+      order.symbol,
+    )
+  }
+
+  /**
    * Send order to exchange
    */
 
@@ -10064,6 +10118,48 @@ class MainBot<T extends IMainBot> {
               }
             }
           }
+          // A combo grid order the market has already passed, refused by a
+          // venue limit-price band. Re-send it once where the venue will take
+          // it; the grid level stays on `origPrice`, so the fill books like any
+          // limit that crossed the book on arrival (spec 243). If the re-priced
+          // order is refused on price again, nothing will place it: that is
+          // raised as an error rather than left to the silent, non-erroring
+          // `Order price` class. See `priceBandReprice.ts`.
+          if (
+            order.typeOrder === TypeOrderEnum.dealGrid &&
+            order.type !== 'MARKET' &&
+            this.getErrorSubType(`${request.reason ?? ''}`) === orderPrice
+          ) {
+            if (this.priceBandRepriced?.has(order.clientOrderId)) {
+              this.priceBandRepriced.delete(order.clientOrderId)
+              await this.reportUnplaceableGridOrder(order, request.reason)
+            } else {
+              const market = await this.getLatestPrice(order.symbol)
+              const target = priceBandRepriceTarget({
+                side: order.side === 'BUY' ? 'BUY' : 'SELL',
+                price: +order.price,
+                market,
+                reason: `${request.reason ?? ''}`,
+              })
+              const repriced =
+                target !== null
+                  ? this.math.round(target, ed?.priceAssetPrecision)
+                  : null
+              if (
+                repriced !== null &&
+                repriced > 0 &&
+                `${repriced}` !== order.price
+              ) {
+                this.handleLog(
+                  `Order ${order.clientOrderId} ${order.side} ${order.price} refused on price band, market ${market}. Re-send at ${repriced}, grid level ${order.origPrice} kept`,
+                )
+                ;(this.priceBandRepriced ??= new Set()).add(order.clientOrderId)
+                order.price = `${repriced}`
+                this.endMethod(_id)
+                return this.sendOrderToExchange(order, returnError, count)
+              }
+            }
+          }
           // The QUANTITY twin of the tick-size branch above, and it exists for
           // the same reason with one extra twist: the cached filter is not
           // merely stale, it can be the WRONG VENUE's filter. `pairs` holds one
@@ -10519,6 +10615,7 @@ class MainBot<T extends IMainBot> {
           }
         }
         if (request.status === StatusEnum.ok) {
+          this.priceBandRepriced?.delete(order.clientOrderId)
           processedOrder = request.data
           // The answer is about the order this request named, whatever client
           // id it echoes. Kraken spot's placement read-back can fall back to a

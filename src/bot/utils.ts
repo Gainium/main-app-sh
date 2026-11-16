@@ -582,6 +582,15 @@ export const orderBelowExchangeMinSubType = 'Order below exchange minimum'
 export const refusedBaseEntrySubType = 'Base order cancelled by exchange'
 
 /**
+ * A combo grid order the venue keeps refusing on price after the engine
+ * re-priced it to the venue's band edge or the market, so nothing can place
+ * it (`priceBandReprice.ts`). Raised directly through `processError`, never
+ * matched by text: the venue's own words classify as the non-erroring
+ * `Order price`, which is exactly what hid this condition.
+ */
+export const unplaceableGridOrderSubType = 'Grid order cannot be placed'
+
+/**
  * The venue refused an order because position + resting orders on the contract
  * have reached the account's risk tier. Same name as the builtin boterrorrules
  * subType, so installs without the DB rule classify it identically. Gated per
