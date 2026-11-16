@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.129.2] - 2026-11-16
+
+### Fixed
+
+- Combo bots whose grid orders cannot be placed stay in error until the order is placed or the deal closes, and stale grid orders are re-sent at the market price
+
 ## [1.129.1] - 2026-11-16
 
 ### Fixed
