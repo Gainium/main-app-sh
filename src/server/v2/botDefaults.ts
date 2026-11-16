@@ -746,6 +746,35 @@ export const indicatorConfigDefaults: {
     sqzSignal: SqzSignalEnum.fired,
     sqzMomentum: SqzMomentumEnum.positive,
   },
+  [IndicatorEnum.obv]: {
+    ...base,
+    // indicatorLength / indicatorValue are not read by OBV (it is compared
+    // with its own moving average, never a level), but the engine subscribes
+    // a condition only when the length is set
+    indicatorLength: 20,
+    indicatorValue: '0',
+    indicatorCondition: IndicatorStartConditionEnum.cu,
+    obvMaType: MAEnum.sma,
+    obvMaLength: 20,
+  },
+  [IndicatorEnum.cmf]: {
+    ...base,
+    // indicatorLength is not read by CMF (cmfLength is), but the engine
+    // subscribes a condition only when it is set; the level is −1…+1
+    indicatorLength: 20,
+    indicatorValue: '0',
+    indicatorCondition: IndicatorStartConditionEnum.cu,
+    cmfLength: 20,
+  },
+  [IndicatorEnum.chop]: {
+    ...base,
+    // indicatorLength is not read by Choppiness (chopLength is), but the
+    // engine subscribes a condition only when it is set; the level is 0…100
+    // (above 61.8 = choppy, below 38.2 = trending)
+    indicatorLength: 14,
+    indicatorValue: '61.8',
+    chopLength: 14,
+  },
   [IndicatorEnum.session]: {
     indicatorLength: 20,
     indicatorValue: '0',

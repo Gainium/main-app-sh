@@ -27,6 +27,7 @@ import { findPairBySymbol } from '../../../bot/utils'
 import { singlePositionSettingsError } from '../../../bot/dca/singlePosition'
 import { billableIndicators } from '../../../bot/billableIndicators'
 import { smoothingSettingsGaps } from '../../../indicators/conditions/smoothing'
+import { indicatorValueRangeProblem } from '../../../indicators/conditions/catalog'
 import {
   divergenceRangeInvalid,
   priceChangeRangeProblem,
@@ -241,6 +242,53 @@ const priceChangeRangeErrors = (
   })
 
 /**
+ * Levels a bounded indicator cannot reach: Chaikin Money Flow −1…+1,
+ * Choppiness Index 0…100 (indicatorValue, and indicatorValue2 for `bw`).
+ */
+const indicatorValueRangeErrors = (
+  indicators: DCABotSettings['indicators'],
+): [string, string][] =>
+  indicators.flatMap((i): [string, string][] => {
+    const problem = indicatorValueRangeProblem(i)
+    return problem ? [['indicators', problem]] : []
+  })
+
+/** Types whose result carries no percentile: percentile mode never fires. */
+const NO_PERCENTILE_INDICATORS: IndicatorEnum[] = [
+  IndicatorEnum.obv,
+  IndicatorEnum.cmf,
+  IndicatorEnum.chop,
+]
+
+/**
+ * On-Balance Volume is compared with its own moving average only — its level
+ * depends on the first candle seen, so it takes no value threshold
+ * (indicatorValue must be 0 or empty, the stored default) and no percentile.
+ * CMF / CHOP carry no percentile either.
+ */
+const obvAndPercentileErrors = (
+  indicators: DCABotSettings['indicators'],
+): [string, string][] =>
+  indicators.flatMap((i): [string, string][] => {
+    const errors: [string, string][] = []
+    if (i.type === IndicatorEnum.obv) {
+      const v = i.indicatorValue
+      const blank = v === undefined || v === null || `${v}`.trim() === ''
+      if (!blank && +v !== 0)
+        errors.push([
+          'indicators',
+          'OBV is compared with its own moving average (cu / cd / gt / lt); it takes no value threshold — send indicatorValue "0" or leave it out',
+        ])
+    }
+    if (i.percentile && NO_PERCENTILE_INDICATORS.includes(i.type))
+      errors.push([
+        'indicators',
+        `Percentile mode is not available for indicator "${i.type}"`,
+      ])
+    return errors
+  })
+
+/**
  * Oscillator smoothing: type `none` or an allowed average (case-insensitive),
  * a whole length 1..1000, compare `value` / `line`, no `bw` with `line`, and
  * no smoothing on an indicator that cannot be smoothed.
@@ -281,6 +329,8 @@ export const indicatorConsistencyErrors = (
   errors.push(...smoothingErrors(indicators))
   errors.push(...divergenceRangeErrors(indicators))
   errors.push(...priceChangeRangeErrors(indicators))
+  errors.push(...indicatorValueRangeErrors(indicators))
+  errors.push(...obvAndPercentileErrors(indicators))
 
   if (
     indicatorsCheck.every((check) => !check.condition(input)) &&

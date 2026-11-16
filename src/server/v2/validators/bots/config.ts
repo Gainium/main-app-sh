@@ -76,6 +76,10 @@ import {
   SqzMomentumEnum as IndicatorsSqzMomentumEnum,
   SessionLevelsActiveEnum as IndicatorsSessionLevelsActiveEnum,
   PCCompareEnum as IndicatorsPCCompareEnum,
+  OBV_MA_TYPES,
+  OBV_MAX_MA_LENGTH,
+  CMF_MAX_LENGTH,
+  CHOP_MAX_LENGTH,
 } from '@gainium/indicators'
 import {
   COMBO_FORM_DEFAULTS,
@@ -84,12 +88,18 @@ import {
 } from '../../botDefaults'
 
 /**
- * MA types for the Bollinger, MACD and Keltner averages. McGinley Dynamic is
- * a Moving Average / MA Ratio type only: those indicators' classes would
- * compute it as an EMA.
+ * MA types for the Bollinger, MACD and Keltner averages. McGinley Dynamic,
+ * KAMA, ALMA and LSMA are Moving Average / MA Ratio types only: those
+ * indicators' classes would compute them as an EMA.
  */
+const MA_ONLY_TYPES: string[] = [
+  MAEnum.mcginley,
+  MAEnum.kama,
+  MAEnum.alma,
+  MAEnum.lsma,
+]
 const BASIS_MA_TYPES = Object.values(MAEnum).filter(
-  (t) => t !== MAEnum.mcginley,
+  (t) => !MA_ONLY_TYPES.includes(t),
 )
 
 /** Conditions that compare against one value — `bw` needs two. */
@@ -1146,6 +1156,44 @@ export const indicatorCoreConfig: Record<string, NestedFieldConfig> = {
     required: false,
     validators: [ValidatorsEnum.shouldBeValidEnumValue],
     enum: Object.values(IndicatorsSqzMomentumEnum),
+  },
+  // On-Balance Volume: the average of the OBV line (the indicators package's
+  // OBV_MA_TYPES — no vwma, price or mcginley) and its length
+  obvMaType: {
+    required: false,
+    validators: [ValidatorsEnum.shouldBeValidEnumValue],
+    enum: [...OBV_MA_TYPES],
+  },
+  obvMaLength: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+    min: 1,
+    max: OBV_MAX_MA_LENGTH,
+  },
+  // Chaikin Money Flow length; Choppiness Index length (log10(1) = 0: 2+)
+  cmfLength: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+    min: 1,
+    max: CMF_MAX_LENGTH,
+  },
+  chopLength: {
+    required: false,
+    validators: [
+      ValidatorsEnum.shouldBeNumber,
+      ValidatorsEnum.shouldBePositive,
+      ValidatorsEnum.shouldBeInteger,
+    ],
+    min: 2,
+    max: CHOP_MAX_LENGTH,
   },
   // Divergence pivots / range (missing = 3 / 1 / 1 / 60); the lower range
   // must be below the upper one (checked across fields)

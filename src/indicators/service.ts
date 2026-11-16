@@ -59,6 +59,12 @@ import type {
   Candle,
   OrderBlocks,
   Squeeze,
+  KAMA,
+  ALMA,
+  LSMA,
+  OBV,
+  CMF,
+  CHOP,
 } from '@gainium/indicators'
 import { v4 } from 'uuid'
 import { indicatorHistoryValue } from './historyValue'
@@ -337,6 +343,12 @@ class InternalIndicator {
     | Candle
     | OrderBlocks
     | Squeeze
+    | KAMA
+    | ALMA
+    | LSMA
+    | OBV
+    | CMF
+    | CHOP
   private data: IndicatorHistory[]
   private lastPrice = 0
   private subscribers: IndicatorSubscribers[]

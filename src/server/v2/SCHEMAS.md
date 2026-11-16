@@ -1813,7 +1813,7 @@ SettingsIndicators configuration
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|UO|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE|KDJ|VWAP|CANDLE|OB|SQZ` | No | Bot or indicator type |
+| `type` | enum: `RSI|ADX|BBW|BB|MACD|Stoch|CCI|AO|StochRSI|WR|UO|TV|MA|SR|QFL|MFI|PSAR|VO|MOM|BBWP|ECD|XO|MAR|BBPB|DIV|ST|PC|ATR|PP|ADR|ATH|KC|KCPB|UNPNL|DC|OBFVG|SESSION|LW|OTE|KDJ|VWAP|CANDLE|OB|SQZ|OBV|CMF|CHOP` | No | Bot or indicator type |
 | `indicatorLength` | number | No | Indicator period length |
 | `indicatorValue` | string | No | Indicator value threshold |
 | `indicatorValue2` | string | No | Upper bound for indicatorCondition "bw" (between); indicatorValue is the lower bound. Value-type indicators only (RSI, CCI, MFI, WR, ADX, AO, UO, MOM, VO, BBW, BBWP, BBPB, KCPB, MAR, ATR, ADR, ATH), not with percentile. |
@@ -1824,8 +1824,8 @@ SettingsIndicators configuration
 | `signal` | enum: `strongBuy|strongSell|buy|sell|bothBuy|bothSell` | No | Trading signal type |
 | `condition` | enum: `every|entry` | No | Check condition timing |
 | `checkLevel` | number | No | Level to check indicator |
-| `maType` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | Moving average being compared (left side of an MA rule: <maType> <indicatorCondition> <maCrossingValue>). |
-| `maCrossingValue` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | What the moving average is compared to (right side of an MA rule): price = current price, or another MA. Example, price above EMA 100: maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price. |
+| `maType` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley|kama|alma|lsma` | No | Moving average being compared (left side of an MA rule: <maType> <indicatorCondition> <maCrossingValue>). |
+| `maCrossingValue` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley|kama|alma|lsma` | No | What the moving average is compared to (right side of an MA rule): price = current price, or another MA. Example, price above EMA 100: maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price. |
 | `maCrossingLength` | number | No | Crossing MA length |
 | `maCrossingInterval` | enum: `1m|3m|5m|15m|30m|1h|2h|4h|8h|1d|1w` | No | Crossing MA timeframe |
 | `maUUID` | string | No | MA indicator UUID reference |
@@ -1871,9 +1871,9 @@ SettingsIndicators configuration
 | `xOscillator2voShort` | number | No | Second oscillator short period |
 | `xoUUID` | string | No | Cross oscillator UUID |
 | `mar1length` | number | No | First MA length for ratio |
-| `mar1type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | First MA type |
+| `mar1type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley|kama|alma|lsma` | No | First MA type |
 | `mar2length` | number | No | Second MA length for ratio |
-| `mar2type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley` | No | Second MA type |
+| `mar2type` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma|mcginley|kama|alma|lsma` | No | Second MA type |
 | `bbwMult` | number | No | Bollinger Band width multiplier, in standard deviations (BB, BBW, BB %B; decimals allowed, e.g. 2.5) |
 | `bbwMa` | enum: `ema|sma|wma|price|dema|tema|vwma|hma|rma` | No | BB moving average type |
 | `bbwMaLength` | number | No | BB MA length |
@@ -1960,6 +1960,10 @@ SettingsIndicators configuration
 | `sqzKCMult` | number 0.1–10 | No | Squeeze Momentum — Keltner Channels multiplier of the average true range (decimals allowed). Default 1.5. |
 | `sqzSignal` | enum: `fired|on|off|any` | No | Squeeze Momentum — fired (default) = the squeeze released on this candle, on = in a squeeze, off = out of one, any = no requirement. ANDed with sqzMomentum; both any never fires. |
 | `sqzMomentum` | enum: `positive|negative|rising|falling|crossUp|crossDown|any` | No | Squeeze Momentum — the momentum required; crossUp / crossDown = through zero. Default positive. |
+| `obvMaType` | enum: `sma|ema|wma|dema|tema|hma|rma|kama|alma|lsma` | No | OBV — the moving average the On-Balance Volume line is compared with: cu/cd = OBV crosses above/below it, gt/lt = OBV above/below it. Never a level (OBV's value depends on the first candle seen): indicatorValue must be 0 or empty; no bw, no percentile. Default sma. |
+| `obvMaLength` | integer 1–1000 | No | OBV — length of that moving average. Default 20. |
+| `cmfLength` | integer 1–1000 | No | Chaikin Money Flow — length. Default 20. CMF ranges −1…+1: indicatorValue must be within −1…1 (0 = money flow turning positive / negative); cu/cd/gt/lt, no bw, no percentile. |
+| `chopLength` | integer 2–1000 | No | Choppiness Index — length. Default 14. CHOP ranges 0…100 (above 61.8 = choppy, below 38.2 = trending): indicatorValue must be within 0…100; cu/cd/gt/lt, no bw, no percentile. |
 
 ### Example
 
@@ -2105,7 +2109,11 @@ SettingsIndicators configuration
   "sqzKCLength": 20,
   "sqzKCMult": 1.5,
   "sqzSignal": "fired",
-  "sqzMomentum": "positive"
+  "sqzMomentum": "positive",
+  "obvMaType": "sma",
+  "obvMaLength": 20,
+  "cmfLength": 20,
+  "chopLength": 14
 }
 ```
 

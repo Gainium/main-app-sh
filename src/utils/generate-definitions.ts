@@ -1242,7 +1242,7 @@ const INDICATOR_META: Record<
   MA: {
     name: 'Moving Averages',
     description:
-      'Indicates the average price of a security over a set period, smoothing out price data to identify trends. The rule reads <maType> <indicatorCondition> <maCrossingValue>: the moving average is compared to the reference, so price above EMA 100 is maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price (cu/cd work the same way: EMA crossing down price = price crossing up EMA). maType mcginley is McGinley Dynamic, an average that speeds up when price runs away from it. trendFilter (as on MA Ratio) also requires the average itself to trend: compared with its value trendFilterLookback bars ago it fell (trendFilterType lower), rose (higher) by at least trendFilterValue percent, or moved less than that (between).',
+      'Indicates the average price of a security over a set period, smoothing out price data to identify trends. The rule reads <maType> <indicatorCondition> <maCrossingValue>: the moving average is compared to the reference, so price above EMA 100 is maType ema, indicatorLength 100, indicatorCondition lt, maCrossingValue price (cu/cd work the same way: EMA crossing down price = price crossing up EMA). maType mcginley is McGinley Dynamic, an average that speeds up when price runs away from it; kama is the Kaufman adaptive average (fast 2, slow 30), alma the Arnaud Legoux average (offset 0.85, sigma 6), lsma the least-squares (linear regression) average. trendFilter (as on MA Ratio) also requires the average itself to trend: compared with its value trendFilterLookback bars ago it fell (trendFilterType lower), rose (higher) by at least trendFilterValue percent, or moved less than that (between).',
     typeSpecificFields: [
       'maType',
       'maCrossingValue',
@@ -2095,6 +2095,73 @@ const INDICATOR_META: Record<
       sqzKCMult: 1.5,
       sqzSignal: 'fired',
       sqzMomentum: 'positive',
+      indicatorAction: 'startDeal',
+    },
+  },
+  OBV: {
+    name: 'On-Balance Volume (OBV)',
+    description:
+      "Cumulative volume flow: OBV adds the candle's volume when the close rises and subtracts it when it falls. The condition compares the OBV line with its own moving average (obvMaType, obvMaLength): indicatorCondition cu / cd = OBV crosses above / below its average, gt / lt = OBV above / below it. Never a level: OBV's value depends on the first candle seen, so indicatorValue must be 0 (or left out); bw and percentile are not accepted. obvMaType is sma (default), ema, wma, dema, tema, hma, rma, kama, alma or lsma; obvMaLength 1-1000 (default 20). Also a Divergence oscillator (divOscillators OBV).",
+    typeSpecificFields: ['obvMaType', 'obvMaLength'],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'OBV',
+      indicatorLength: 20,
+      indicatorValue: '0',
+      indicatorCondition: 'cu',
+      indicatorInterval: '1h',
+      obvMaType: 'sma',
+      obvMaLength: 20,
+      indicatorAction: 'startDeal',
+    },
+  },
+  CMF: {
+    name: 'Chaikin Money Flow (CMF)',
+    description:
+      'Volume-weighted money flow over cmfLength candles (1-1000, default 20), from -1 to +1: above 0 = buying pressure, below 0 = selling pressure. Compared by indicatorCondition (cu / cd / gt / lt) with indicatorValue, which must be within -1..1 (0 = money flow turning positive / negative). No bw, no percentile, no smoothing. Also a Divergence oscillator (divOscillators CMF).',
+    typeSpecificFields: ['cmfLength'],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'CMF',
+      indicatorLength: 20,
+      indicatorValue: '0',
+      indicatorCondition: 'cu',
+      indicatorInterval: '1h',
+      cmfLength: 20,
+      indicatorAction: 'startDeal',
+    },
+  },
+  CHOP: {
+    name: 'Choppiness Index (CHOP)',
+    description:
+      'Whether the market is ranging or trending over chopLength candles (2-1000, default 14), from 0 to 100: above 61.8 = choppy (ranging), below 38.2 = trending. Compared by indicatorCondition (cu / cd / gt / lt) with indicatorValue, which must be within 0..100. A regime filter: e.g. let a grid-style DCA start only while CHOP is above 61.8 (gt 61.8). No bw, no percentile, no smoothing.',
+    typeSpecificFields: ['chopLength'],
+    supportedActions: [
+      'startDeal',
+      'closeDeal',
+      'startDca',
+      'stopBot',
+      'startBot',
+    ],
+    example: {
+      type: 'CHOP',
+      indicatorLength: 14,
+      indicatorValue: '61.8',
+      indicatorCondition: 'gt',
+      indicatorInterval: '1h',
+      chopLength: 14,
       indicatorAction: 'startDeal',
     },
   },

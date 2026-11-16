@@ -22,6 +22,7 @@ import {
   CandleResult,
   OrderBlockResult,
   SqueezeResult,
+  OBVResult,
 } from '@gainium/indicators'
 import {
   DCABacktestingInput,
@@ -801,6 +802,18 @@ export type SettingsIndicators = {
   sqzSignal?: SqzSignalEnum
   /** Squeeze Momentum: the momentum required (default positive). */
   sqzMomentum?: SqzMomentumEnum
+  /**
+   * On-Balance Volume: the moving average the OBV line is compared with
+   * (default sma). One of `@gainium/indicators` OBV_MA_TYPES — not vwma,
+   * price or mcginley.
+   */
+  obvMaType?: MAEnum
+  /** On-Balance Volume: length of that moving average, 1…1000 (default 20). */
+  obvMaLength?: number
+  /** Chaikin Money Flow: length, 1…1000 (default 20). */
+  cmfLength?: number
+  /** Choppiness Index: length, 2…1000 (default 14). */
+  chopLength?: number
   /**
    * Divergence: pivot bars left / right and the bars range between two
    * pivots. Missing = the DIV defaults (3 / 1 / 1 / 60) and the room the
@@ -4775,6 +4788,9 @@ export enum IndicatorEnum {
   candle = 'CANDLE',
   ob = 'OB',
   sqz = 'SQZ',
+  obv = 'OBV',
+  cmf = 'CMF',
+  chop = 'CHOP',
 }
 
 /**
@@ -4808,6 +4824,9 @@ export enum MAEnum {
   hma = 'hma',
   rma = 'rma',
   mcginley = 'mcginley',
+  kama = 'kama',
+  alma = 'alma',
+  lsma = 'lsma',
 }
 
 export enum RangeType {
@@ -4848,6 +4867,8 @@ export type IndicatorHistory = { time: number } & (
         | IndicatorEnum.bbpb
         | IndicatorEnum.kcpb
         | IndicatorEnum.unpnl
+        | IndicatorEnum.cmf
+        | IndicatorEnum.chop
       value: PercentileResult
     }
   | {
@@ -4896,6 +4917,7 @@ export type IndicatorHistory = { time: number } & (
   | { type: IndicatorEnum.candle; value: CandleResult }
   | { type: IndicatorEnum.ob; value: OrderBlockResult }
   | { type: IndicatorEnum.sqz; value: SqueezeResult }
+  | { type: IndicatorEnum.obv; value: OBVResult }
   | { type: IndicatorEnum.session; value: boolean }
   | { type: IndicatorEnum.session; value: SessionLevelsResult }
 )
@@ -4933,6 +4955,8 @@ export type DivergenceOscillators =
   | IndicatorEnum.vo
   | IndicatorEnum.bbpb
   | IndicatorEnum.stoch
+  | IndicatorEnum.obv
+  | IndicatorEnum.cmf
 
 /** Smoothing of a smoothable oscillator's config; absent = off. */
 type Smoothing = {
@@ -4942,6 +4966,14 @@ type Smoothing = {
 }
 
 export type IndicatorConfig =
+  | {
+      // the MA of the OBV line; the condition reads only OBV vs that MA
+      type: IndicatorEnum.obv
+      obvMaType: MAEnum | string
+      obvMaLength: number
+    }
+  | { type: IndicatorEnum.cmf; cmfLength: number }
+  | { type: IndicatorEnum.chop; chopLength: number }
   | { type: IndicatorEnum.lw; lwThreshold: number; lwMaxDuration: number }
   | { type: IndicatorEnum.ote; oteLeftBars: number; oteMinLegSize: number }
   | {

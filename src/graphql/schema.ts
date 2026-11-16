@@ -3641,6 +3641,10 @@ export const BotSchema = /* GraphQL */ `
     sqzKCMult: StringOrNumber
     sqzSignal: String
     sqzMomentum: String
+    obvMaType: String
+    obvMaLength: StringOrNumber
+    cmfLength: StringOrNumber
+    chopLength: StringOrNumber
     divPivotLeft: StringOrNumber
     divPivotRight: StringOrNumber
     divRangeLower: StringOrNumber
@@ -3658,6 +3662,9 @@ export const BotSchema = /* GraphQL */ `
     hma
     rma
     mcginley
+    kama
+    alma
+    lsma
   }
   enum OrderSizeTypeEnum {
     base
@@ -5413,6 +5420,9 @@ export const BotSchema = /* GraphQL */ `
     CANDLE
     OB
     SQZ
+    OBV
+    CMF
+    CHOP
   }
   enum BBCrossingEnum {
     middle
@@ -5578,6 +5588,10 @@ export const BotSchema = /* GraphQL */ `
     sqzKCMult: StringOrNumber
     sqzSignal: String
     sqzMomentum: String
+    obvMaType: String
+    obvMaLength: StringOrNumber
+    cmfLength: StringOrNumber
+    chopLength: StringOrNumber
     divPivotLeft: StringOrNumber
     divPivotRight: StringOrNumber
     divRangeLower: StringOrNumber

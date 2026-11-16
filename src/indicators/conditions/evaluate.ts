@@ -24,6 +24,7 @@ import {
   candleCondition,
   dmiCondition,
   kdjCondition,
+  obvCondition,
   orderBlockCondition,
   priceChangeCondition,
   squeezeCondition,
@@ -36,6 +37,7 @@ import type {
   ADXResult,
   CandleResult,
   KDJResult,
+  OBVResult,
   OrderBlockResult,
   SqueezeResult,
   OBFVGResult,
@@ -390,6 +392,14 @@ export function evaluateIndicatorCondition(
       stochUpper,
       stochLower,
     })
+  } else if (type === IndicatorEnum.obv) {
+    // OBV against its own moving average (cu / cd / gt / lt), never a level:
+    // OBV's level depends on the first candle seen. Shared with the
+    // backtester
+    const [ld, pd] = sortedByTime
+    action = obvCondition(ld?.value as OBVResult, pd?.value as OBVResult, {
+      condition: indicatorCondition,
+    })
   } else if (type === IndicatorEnum.candle) {
     // N candles of a colour in a row (regular or Heikin Ashi); the decision
     // lives in @gainium/indicators so the backtester fires on the same bars
@@ -676,6 +686,23 @@ export function evaluateIndicatorCondition(
           (trendFilterType === TrendFilterOperatorEnum.between &&
             lastData.value.trend === 3)
         trendValue = lastData.value.trend
+      }
+    }
+    if (
+      (lastData.type === IndicatorEnum.cmf &&
+        prevData.type === IndicatorEnum.cmf) ||
+      (lastData.type === IndicatorEnum.chop &&
+        prevData.type === IndicatorEnum.chop)
+    ) {
+      // MFI's comparison of the line with indicatorValue, but no percentile,
+      // smoothing or trend filter on these two (stale fields are ignored),
+      // as in the backtester; a missing value (settings the indicators
+      // package refuses build no indicator) never fires
+      last = lastData.value?.value
+      prev = prevData.value?.value
+      if (!Number.isFinite(last) || !Number.isFinite(prev)) {
+        skipAction = true
+        action = false
       }
     }
     if (
@@ -1105,10 +1132,11 @@ export function evaluateIndicatorCondition(
       type === IndicatorEnum.candle ||
       type === IndicatorEnum.ob ||
       type === IndicatorEnum.sqz ||
+      type === IndicatorEnum.obv ||
       isAdxDmi(find))
   ) {
-    // A leftover trendFilter on VWAP, KDJ, DMI, Candle colour, Order Blocks
-    // or Squeeze Momentum keeps the condition false,
+    // A leftover trendFilter on VWAP, KDJ, DMI, Candle colour, Order Blocks,
+    // Squeeze Momentum or OBV keeps the condition false,
     // as the backtester's catch-all trend gate does (these results carry no
     // trend code) and as an ADX with trendFilter already behaves here.
     action = false

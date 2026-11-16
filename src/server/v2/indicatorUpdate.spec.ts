@@ -701,6 +701,159 @@ describe('spec 126 — REST bot update replaces indicators', () => {
     })
   })
 
+  describe('OBV, Chaikin Money Flow, Choppiness Index, KAMA / ALMA / LSMA', () => {
+    const update = (
+      type: IndicatorEnum,
+      fields: Record<string, unknown> = {},
+    ) =>
+      applyIndicatorSettingsUpdate(
+        { ...tiBot(), startCondition: StartConditionEnum.ti },
+        {
+          indicators: [
+            {
+              ...rsi('new'),
+              type,
+              indicatorCondition: 'cu',
+              ...fields,
+            } as unknown as SettingsIndicators,
+          ],
+        },
+      )
+    const accepted = (r: ReturnType<typeof update>) => {
+      expect(errorsOf(r)).to.deep.equal([])
+      expect(r.status).to.equal(StatusEnum.ok)
+    }
+    const refused = (r: ReturnType<typeof update>, re: RegExp) => {
+      expect(r.status).to.equal(StatusEnum.notok)
+      expect(
+        errorsOf(r).some(([f, m]) => re.test(f) || re.test(m)),
+        JSON.stringify(errorsOf(r)),
+      ).to.equal(true)
+    }
+
+    it('accepts each new type with its defaults and with explicit settings', () => {
+      for (const type of [
+        IndicatorEnum.obv,
+        IndicatorEnum.cmf,
+        IndicatorEnum.chop,
+      ])
+        accepted(update(type))
+      accepted(
+        update(IndicatorEnum.obv, { obvMaType: 'kama', obvMaLength: 50 }),
+      )
+      accepted(
+        update(IndicatorEnum.obv, { obvMaLength: '1', indicatorValue: '' }),
+      )
+      accepted(update(IndicatorEnum.obv, { indicatorCondition: 'gt' }))
+      accepted(
+        update(IndicatorEnum.cmf, { cmfLength: 10, indicatorValue: '-1' }),
+      )
+      accepted(update(IndicatorEnum.cmf, { indicatorValue: '0.25' }))
+      accepted(
+        update(IndicatorEnum.chop, { chopLength: 2, indicatorValue: '0' }),
+      )
+      accepted(update(IndicatorEnum.chop, { indicatorValue: '100' }))
+      accepted(
+        update(IndicatorEnum.div, {
+          divOscillators: [IndicatorEnum.obv, IndicatorEnum.cmf],
+          divType: 'Bullish',
+        }),
+      )
+    })
+    it('the defaults are the indicators package defaults', () => {
+      const r = update(IndicatorEnum.obv)
+      if (r.status !== StatusEnum.ok) throw new Error('refused')
+      const [obv] = r.settings.indicators ?? []
+      expect([
+        obv.obvMaType,
+        obv.obvMaLength,
+        obv.indicatorValue,
+      ]).to.deep.equal(['sma', 20, '0'])
+      const c = update(IndicatorEnum.cmf)
+      const h = update(IndicatorEnum.chop)
+      if (c.status !== StatusEnum.ok || h.status !== StatusEnum.ok)
+        throw new Error('refused')
+      expect(c.settings.indicators?.[0].cmfLength).to.equal(20)
+      expect(h.settings.indicators?.[0].chopLength).to.equal(14)
+      expect(h.settings.indicators?.[0].indicatorValue).to.equal('61.8')
+    })
+    it('refuses a CMF level outside −1…+1', () => {
+      refused(
+        update(IndicatorEnum.cmf, { indicatorValue: '1.5' }),
+        /CMF ranges/,
+      )
+      refused(update(IndicatorEnum.cmf, { indicatorValue: '-2' }), /CMF ranges/)
+    })
+    it('refuses a Choppiness level outside 0…100', () => {
+      refused(
+        update(IndicatorEnum.chop, { indicatorValue: '101' }),
+        /CHOP ranges/,
+      )
+      refused(
+        update(IndicatorEnum.chop, { indicatorValue: '-1' }),
+        /CHOP ranges/,
+      )
+    })
+    it('refuses unusable lengths and OBV averages', () => {
+      refused(update(IndicatorEnum.chop, { chopLength: 1 }), /chopLength/)
+      refused(update(IndicatorEnum.chop, { chopLength: 1001 }), /chopLength/)
+      refused(update(IndicatorEnum.cmf, { cmfLength: 0 }), /cmfLength/)
+      refused(update(IndicatorEnum.obv, { obvMaLength: 0 }), /obvMaLength/)
+      refused(update(IndicatorEnum.obv, { obvMaLength: 2.5 }), /obvMaLength/)
+      for (const obvMaType of ['mcginley', 'vwma', 'price', 'SMA', 'x'])
+        refused(update(IndicatorEnum.obv, { obvMaType }), /obvMaType/)
+    })
+    it('refuses a value threshold, between and percentile on OBV', () => {
+      refused(
+        update(IndicatorEnum.obv, { indicatorValue: '50' }),
+        /no value threshold/,
+      )
+      refused(
+        update(IndicatorEnum.obv, {
+          indicatorCondition: 'bw',
+          indicatorValue2: '1',
+        }),
+        /"bw"/,
+      )
+      refused(update(IndicatorEnum.obv, { percentile: true }), /Percentile/)
+      refused(update(IndicatorEnum.cmf, { percentile: true }), /Percentile/)
+      refused(update(IndicatorEnum.chop, { percentile: true }), /Percentile/)
+      refused(
+        update(IndicatorEnum.cmf, {
+          indicatorCondition: 'bw',
+          indicatorValue2: '0.5',
+        }),
+        /"bw"/,
+      )
+    })
+    it('accepts KAMA / ALMA / LSMA where McGinley is accepted, and only there', () => {
+      const maErrors = (r: ReturnType<typeof update>) =>
+        errorsOf(r).filter(([f]) => /ma|Ma/.test(f))
+      for (const t of ['kama', 'alma', 'lsma']) {
+        expect(
+          maErrors(
+            update(IndicatorEnum.ma, { maType: t, maCrossingValue: 'price' }),
+          ),
+        ).to.deep.equal([])
+        expect(
+          maErrors(update(IndicatorEnum.mar, { mar1type: t, mar2type: t })),
+        ).to.deep.equal([])
+        expect(
+          maErrors(update(IndicatorEnum.bb, { bbwMa: t })).length,
+        ).to.equal(1)
+        expect(maErrors(update(IndicatorEnum.kc, { kcMa: t })).length).to.equal(
+          1,
+        )
+        expect(
+          maErrors(update(IndicatorEnum.macd, { macdMaSource: t })).length,
+        ).to.equal(1)
+        expect(
+          errorsOf(update(IndicatorEnum.rsi, { smoothing: t })).length,
+        ).to.be.greaterThan(0)
+      }
+    })
+  })
+
   describe('§2.7 nothing else changes', () => {
     it('returns an update without indicator keys untouched', () => {
       const update = { tpPerc: '2' }

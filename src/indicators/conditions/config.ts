@@ -10,7 +10,10 @@
  */
 import {
   resolveCandleSource,
+  resolveChopLength,
+  resolveCMFLength,
   resolveOBSwingLength,
+  resolveOBVSettings,
   resolveSqueezeSettings,
   resolveVWAPAnchor,
 } from '@gainium/indicators'
@@ -240,6 +243,10 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
     sqzBBMult,
     sqzKCLength,
     sqzKCMult,
+    obvMaType,
+    obvMaLength,
+    cmfLength,
+    chopLength,
     sessionDays,
     sessionStart,
     sessionEnd,
@@ -327,6 +334,26 @@ function unsmoothedIndicatorConfig(i: SettingsIndicators): IndicatorConfig {
       type: IndicatorEnum.sqz,
       ...resolveSqueezeSettings(sqzLength, sqzBBMult, sqzKCLength, sqzKCMult),
     }
+  // On-Balance Volume, Chaikin Money Flow, Choppiness Index: only the math's
+  // settings, with the indicators package's defaults (missing / null / '' =
+  // default), so equivalent settings share one room; the condition and the
+  // level are the decision's. A setting that is present but unusable is passed
+  // on as stored: the package's factory then builds no indicator (the
+  // condition never fires) instead of running a default nobody chose.
+  if (type === IndicatorEnum.obv) {
+    const obv = resolveOBVSettings(obvMaType, obvMaLength)
+    return obv
+      ? { type, obvMaType: obv.maType, obvMaLength: obv.maLength }
+      : {
+          type,
+          obvMaType: `${obvMaType ?? ''}`,
+          obvMaLength: obvMaLength as number,
+        }
+  }
+  if (type === IndicatorEnum.cmf)
+    return { type, cmfLength: resolveCMFLength(cmfLength) ?? cmfLength! }
+  if (type === IndicatorEnum.chop)
+    return { type, chopLength: resolveChopLength(chopLength) ?? chopLength! }
   return type === IndicatorEnum.lw
     ? {
         type: IndicatorEnum.lw,

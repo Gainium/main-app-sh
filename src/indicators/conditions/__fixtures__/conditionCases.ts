@@ -1762,6 +1762,156 @@ export function conditionCases(): ConditionCase[] {
             series(IndicatorEnum.session, ...afterBars(p0, p1, completed)),
           )
 
+  // ── OBV, CMF, Choppiness, MA types KAMA / ALMA / LSMA (appended) ────────
+  // OBV: the line against its own MA (obvCondition), never indicatorValue
+  const obvBar = (obv: number | null, ma: number | null) => ({ obv, ma })
+  for (const cond of CONDS)
+    for (const iv of ['0', '50'])
+      for (const [prev, last] of [
+        [obvBar(900, 1000), obvBar(1100, 1000)],
+        [obvBar(1100, 1000), obvBar(900, 1000)],
+        [obvBar(1000, 1000), obvBar(1000 + 1e-7, 1000)],
+        [obvBar(1000, 1000), obvBar(1001, 1000)],
+        [obvBar(-500, -400), obvBar(-300, -400)],
+        [obvBar(900, null), obvBar(1100, 1000)],
+        [obvBar(900, 1000), obvBar(null, 1000)],
+      ])
+        push(
+          `OBV|${fmt(cond)}|iv=${iv}|${JSON.stringify(prev)}>${JSON.stringify(last)}`,
+          base(IndicatorEnum.obv, {
+            indicatorCondition: cond as C,
+            indicatorValue: iv,
+            obvMaType: MAEnum.sma,
+            obvMaLength: 20,
+          }),
+          series(IndicatorEnum.obv, prev, last),
+        )
+  for (const layout of ['one', 'rev', 'three'] as Layout[])
+    push(
+      `OBV|cu|layout=${layout}`,
+      base(IndicatorEnum.obv, { indicatorCondition: C.cu }),
+      series(IndicatorEnum.obv, obvBar(900, 1000), obvBar(1100, 1000), layout),
+    )
+  // CMF (−1…+1) and Choppiness (0…100): the generic value comparison, as MFI
+  for (const [type, level, pool] of [
+    [IndicatorEnum.cmf, '0', [-0.2, 0, 1e-12, 0.2, NaN, null]],
+    [IndicatorEnum.cmf, '-0.05', [-0.1, -0.05, 0.3]],
+    [IndicatorEnum.chop, '61.8', [40, 61.8, 61.8 + 1e-11, 70, NaN, null]],
+    [IndicatorEnum.chop, '38.2', [30, 38.2, 50]],
+  ] as [IndicatorEnum, string, (number | null)[]][])
+    for (const cond of [C.gt, C.lt, C.cu, C.cd, undefined])
+      for (const a of pool)
+        for (const b of pool)
+          push(
+            `${type}|${fmt(cond)}|v=${level}|${fmt(a)}>${fmt(b)}`,
+            base(type, {
+              indicatorCondition: cond as C,
+              indicatorValue: level,
+            }),
+            series(type, { value: a }, { value: b }),
+          )
+  // MA with the new MA types: the decision reads ma vs price as for any type
+  for (const maType of [MAEnum.kama, MAEnum.alma, MAEnum.lsma])
+    for (const cond of [C.gt, C.lt, C.cu, C.cd])
+      for (const [pm, lm] of [
+        [90, 110],
+        [110, 90],
+        [100, 100],
+      ])
+        push(
+          `MA|${maType}|price|${cond}|${pm}>${lm}`,
+          base(IndicatorEnum.ma, {
+            indicatorCondition: cond,
+            maType,
+            maCrossingValue: MAEnum.price,
+          }),
+          series(
+            IndicatorEnum.ma,
+            maBar(pm, 100, maType),
+            maBar(lm, 100, maType),
+          ),
+        )
+  // Divergence on the OBV / CMF line: the decision reads the counts only
+  for (const divOscillators of [
+    [IndicatorEnum.obv],
+    [IndicatorEnum.cmf],
+    [IndicatorEnum.obv, IndicatorEnum.rsi],
+  ] as SettingsIndicators['divOscillators'][])
+    for (const r of [
+      [1, 0, 0, 0],
+      [0, 1, 0, 0],
+      [0, 0, 0, 0],
+    ])
+      push(
+        `DIV|osc=${divOscillators?.join('+')}|${r.join(',')}`,
+        base(IndicatorEnum.div, {
+          divOscillators,
+          divType: DivTypeEnum.bull,
+          divMinCount: 1,
+        }),
+        series(
+          IndicatorEnum.div,
+          {
+            negdivergence: 0,
+            negdivergencehidden: 0,
+            posdivergence: 0,
+            posdivergencehidden: 0,
+          },
+          {
+            negdivergence: r[0],
+            posdivergence: r[1],
+            negdivergencehidden: r[2],
+            posdivergencehidden: r[3],
+          },
+        ),
+      )
+  // CMF / CHOP ignore stale percentile and smoothing fields (the backtester
+  // compares the plain value): each stale variant must decide as `plain`
+  for (const [type, level, a, b] of [
+    [IndicatorEnum.cmf, '0', -0.2, 0.2],
+    [IndicatorEnum.cmf, '0', 0.2, -0.2],
+    [IndicatorEnum.cmf, '0.1', 0.3, 0.4],
+    [IndicatorEnum.chop, '61.8', 50, 70],
+    [IndicatorEnum.chop, '61.8', 70, 50],
+    [IndicatorEnum.chop, '38.2', 30, 20],
+  ] as [IndicatorEnum, string, number, number][])
+    for (const cond of [C.gt, C.lt, C.cu, C.cd])
+      for (const [label, stale] of [
+        ['plain', {}],
+        ['percentile', { percentile: true, percentileLookback: 50 }],
+        ['smoothing', { smoothing: 'ema', smoothingLength: 5 }],
+        [
+          'smoothingLine',
+          { smoothing: 'sma', smoothingLength: 3, smoothingCompare: 'line' },
+        ],
+        [
+          'both',
+          {
+            percentile: true,
+            percentilePercentage: 90,
+            smoothing: 'rma',
+            smoothingLength: 9,
+          },
+        ],
+      ] as [string, Partial<SettingsIndicators>][])
+        push(
+          `${type}|stale=${label}|${cond}|v=${level}|${a}>${b}`,
+          base(type, {
+            indicatorCondition: cond,
+            indicatorValue: level,
+            ...stale,
+          }),
+          series(type, { value: a }, { value: b }),
+        )
+  // a CMF / CHOP room without values (settings the package refuses): never
+  for (const type of [IndicatorEnum.cmf, IndicatorEnum.chop])
+    for (const cond of [C.gt, C.lt, C.cu, C.cd])
+      push(
+        `${type}|noValue|${cond}`,
+        base(type, { indicatorCondition: cond, indicatorValue: '0' }),
+        series(type, {}, {}),
+      )
+
   return out
 }
 
@@ -1872,6 +2022,12 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
     IndicatorEnum.ob,
     IndicatorEnum.sqz,
   ]
+  // OBV, CMF, Choppiness (indicators 1.15.0), appended after all of the above
+  const APPENDED_TYPES_3: IndicatorEnum[] = [
+    IndicatorEnum.obv,
+    IndicatorEnum.cmf,
+    IndicatorEnum.chop,
+  ]
   const pushTypeConfigs = (type: IndicatorEnum) => {
     const min = {
       type,
@@ -1914,7 +2070,11 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
     })
   }
   for (const type of Object.values(IndicatorEnum))
-    if (!APPENDED_TYPES.includes(type) && !APPENDED_TYPES_2.includes(type))
+    if (
+      !APPENDED_TYPES.includes(type) &&
+      !APPENDED_TYPES_2.includes(type) &&
+      !APPENDED_TYPES_3.includes(type)
+    )
       pushTypeConfigs(type)
   // Session Price levels (appended): only the session window is in the room
   const sessionMin = {
@@ -2217,6 +2377,102 @@ export function configCases(): { id: string; settings: SettingsIndicators }[] {
         sqzSignal: SqzSignalEnum.fired,
         sqzMomentum: SqzMomentumEnum.positive,
       },
+    })
+  // OBV, CMF, Choppiness (appended): the per-type configs every type gets,
+  // then their own math settings — defaults as the indicators package
+  // resolves them, an unusable value passed on as stored (no indicator)
+  for (const type of APPENDED_TYPES_3) pushTypeConfigs(type)
+  for (const [label, extra] of [
+    ['default', {}],
+    ['ema50', { obvMaType: MAEnum.ema, obvMaLength: 50 }],
+    ['strings', { obvMaType: 'KAMA', obvMaLength: '30' }],
+    ['empty', { obvMaType: '', obvMaLength: '' }],
+    ['null', { obvMaType: null, obvMaLength: null }],
+    ['mcginley', { obvMaType: MAEnum.mcginley, obvMaLength: 20 }],
+    ['vwma', { obvMaType: MAEnum.vwma }],
+    ['len0', { obvMaLength: 0 }],
+    ['len1001', { obvMaLength: 1001 }],
+    ['lenFraction', { obvMaLength: 2.5 }],
+  ] as [string, Record<string, unknown>][])
+    out.push({
+      id: `OBV|ma=${label}`,
+      settings: {
+        ...kdjMin,
+        type: IndicatorEnum.obv,
+        indicatorLength: 20,
+        indicatorValue: '0',
+        ...extra,
+      } as SettingsIndicators,
+    })
+  for (const [label, cmfLength] of [
+    ['default', undefined],
+    ['10', 10],
+    ['10string', '10'],
+    ['empty', ''],
+    ['0', 0],
+    ['1001', 1001],
+  ] as [string, unknown][])
+    out.push({
+      id: `CMF|length=${label}`,
+      settings: {
+        ...kdjMin,
+        type: IndicatorEnum.cmf,
+        indicatorLength: 20,
+        indicatorValue: '0',
+        cmfLength: cmfLength as number,
+      },
+    })
+  for (const [label, chopLength] of [
+    ['default', undefined],
+    ['21', 21],
+    ['21string', '21'],
+    ['empty', ''],
+    ['1', 1],
+    ['2', 2],
+  ] as [string, unknown][])
+    out.push({
+      id: `CHOP|length=${label}`,
+      settings: {
+        ...kdjMin,
+        type: IndicatorEnum.chop,
+        indicatorLength: 14,
+        indicatorValue: '61.8',
+        chopLength: chopLength as number,
+      },
+    })
+  // MA types KAMA / ALMA / LSMA: maType reaches the room key, as McGinley's
+  for (const maType of [MAEnum.kama, MAEnum.alma, MAEnum.lsma]) {
+    out.push({ id: `MA|${maType}|price`, settings: { ...maMin, maType } })
+    out.push({
+      id: `MA|${maType}|crossesSame`,
+      settings: {
+        ...maMin,
+        maType: MAEnum.ema,
+        maCrossingValue: maType,
+        maCrossingLength: 50,
+        maCrossingInterval: ExchangeIntervals.oneH,
+        maUUID: 'maref',
+      },
+    })
+    out.push({
+      id: `MAR|${maType}`,
+      settings: {
+        ...maMin,
+        type: IndicatorEnum.mar,
+        mar1type: maType,
+        mar1length: 20,
+        mar2type: MAEnum.sma,
+      },
+    })
+  }
+  // Divergence with the OBV / CMF line as an oscillator
+  for (const divOscillators of [
+    [IndicatorEnum.obv],
+    [IndicatorEnum.cmf, IndicatorEnum.rsi],
+  ] as SettingsIndicators['divOscillators'][])
+    out.push({
+      id: `DIV|osc=${divOscillators?.join('+')}`,
+      settings: { ...divMin, divOscillators },
     })
   return out
 }

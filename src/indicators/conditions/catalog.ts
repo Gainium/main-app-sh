@@ -16,6 +16,11 @@ import {
 } from '../../../types'
 import type { SettingsIndicators } from '../../../types'
 import {
+  resolveChopLength,
+  resolveCMFLength,
+  resolveOBVSettings,
+} from '@gainium/indicators'
+import {
   divergenceRangeInvalid,
   priceChangeRangeProblem,
   indicatorLengthOf,
@@ -91,6 +96,9 @@ export const INDICATOR_CONDITION_KINDS: Record<
   [IndicatorEnum.candle]: { source: 'room', newestBarOnly: true },
   [IndicatorEnum.ob]: { source: 'room' },
   [IndicatorEnum.sqz]: { source: 'room' },
+  [IndicatorEnum.obv]: { source: 'room' },
+  [IndicatorEnum.cmf]: { source: 'room' },
+  [IndicatorEnum.chop]: { source: 'room' },
 }
 
 /**
@@ -146,10 +154,54 @@ const OWN_RULE_TYPES = [
   IndicatorEnum.candle,
   IndicatorEnum.ob,
   IndicatorEnum.sqz,
+  IndicatorEnum.obv,
   IndicatorEnum.st,
   IndicatorEnum.div,
   IndicatorEnum.qfl,
 ]
+
+const isLineCondition = (c: unknown): boolean =>
+  c === IndicatorStartConditionEnum.cd ||
+  c === IndicatorStartConditionEnum.cu ||
+  c === IndicatorStartConditionEnum.gt ||
+  c === IndicatorStartConditionEnum.lt
+
+/**
+ * The range a value-compared indicator's level must stay in, where the
+ * indicator itself cannot leave it: a level outside it makes the condition
+ * always or never true.
+ */
+export const INDICATOR_VALUE_RANGES: Partial<
+  Record<IndicatorEnum, { min: number; max: number }>
+> = {
+  [IndicatorEnum.cmf]: { min: -1, max: 1 },
+  [IndicatorEnum.chop]: { min: 0, max: 100 },
+}
+
+/**
+ * Why the level (indicatorValue, and indicatorValue2 for `bw`) of a type in
+ * `INDICATOR_VALUE_RANGES` is unusable, or null. A missing / non-numeric
+ * level is left to the other checks.
+ */
+export function indicatorValueRangeProblem(
+  i: Pick<
+    SettingsIndicators,
+    'type' | 'indicatorValue' | 'indicatorValue2' | 'indicatorCondition'
+  >,
+): string | null {
+  const range = INDICATOR_VALUE_RANGES[i.type]
+  if (!range) return null
+  const values = [i.indicatorValue]
+  if (i.indicatorCondition === IndicatorStartConditionEnum.bw)
+    values.push(i.indicatorValue2 ?? '')
+  for (const v of values) {
+    if (v === undefined || v === null || `${v}`.trim() === '') continue
+    const n = +v
+    if (Number.isFinite(n) && (n < range.min || n > range.max))
+      return `${i.type} ranges ${range.min} to ${range.max}; the value ${v} is outside it.`
+  }
+  return null
+}
 
 export type ConditionSettingsGap = {
   field: keyof SettingsIndicators
@@ -195,6 +247,28 @@ export function conditionSettingsGaps(
       })
     return gaps
   }
+  if (type === IndicatorEnum.obv) {
+    // obvCondition: OBV against its own average, cu / cd / gt / lt only; an
+    // average the package cannot build means no indicator at all
+    if (!resolveOBVSettings(i.obvMaType, i.obvMaLength))
+      gaps.push({
+        field: 'obvMaLength',
+        message: 'Choose a supported average and a whole length of 1 to 1000.',
+      })
+    if (!isLineCondition(indicatorCondition))
+      gaps.push({ field: 'indicatorCondition', message: 'Choose a condition.' })
+    return gaps
+  }
+  if (type === IndicatorEnum.cmf && resolveCMFLength(i.cmfLength) === null)
+    gaps.push({
+      field: 'cmfLength',
+      message: 'Enter a whole length of 1 to 1000.',
+    })
+  if (type === IndicatorEnum.chop && resolveChopLength(i.chopLength) === null)
+    gaps.push({
+      field: 'chopLength',
+      message: 'Enter a whole length of 2 to 1000.',
+    })
   if (type === IndicatorEnum.ob) {
     // orderBlockCondition: missing condition = cd; only cd/cu/gt/lt fire
     if (
@@ -280,6 +354,8 @@ export function conditionSettingsGaps(
     (i.indicatorValue === undefined || isNaN(+i.indicatorValue))
   )
     gaps.push({ field: 'indicatorValue', message: 'Enter a value.' })
+  const outOfRange = indicatorValueRangeProblem(i)
+  if (outOfRange) gaps.push({ field: 'indicatorValue', message: outOfRange })
   if (indicatorCondition === IndicatorStartConditionEnum.bw && !smoothedLine) {
     const upper =
       i.indicatorValue2 !== undefined && i.indicatorValue2 !== ''

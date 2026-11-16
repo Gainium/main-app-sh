@@ -3851,6 +3851,9 @@ components:
             - CANDLE
             - OB
             - SQZ
+            - OBV
+            - CMF
+            - CHOP
           example: RSI
         indicatorLength:
           type: number
@@ -3947,6 +3950,9 @@ components:
             - hma
             - rma
             - mcginley
+            - kama
+            - alma
+            - lsma
           example: ema
         maCrossingValue:
           type: string
@@ -3962,6 +3968,9 @@ components:
             - hma
             - rma
             - mcginley
+            - kama
+            - alma
+            - lsma
           example: price
         maCrossingLength:
           type: number
@@ -4208,6 +4217,9 @@ components:
             - hma
             - rma
             - mcginley
+            - kama
+            - alma
+            - lsma
           example: ema
         mar2length:
           type: number
@@ -4227,6 +4239,9 @@ components:
             - hma
             - rma
             - mcginley
+            - kama
+            - alma
+            - lsma
           example: sma
         bbwMult:
           type: number
@@ -4795,6 +4810,39 @@ components:
             - crossDown
             - any
           example: positive
+        obvMaType:
+          type: string
+          description: "OBV — the moving average the On-Balance Volume line is compared with: indicatorCondition cu/cd = OBV crosses above/below its average, gt/lt = OBV above/below it. Never a level: OBV's value depends on the first candle seen, so indicatorValue must be 0 or empty, and bw and percentile are not accepted. Default sma."
+          enum:
+            - sma
+            - ema
+            - wma
+            - dema
+            - tema
+            - hma
+            - rma
+            - kama
+            - alma
+            - lsma
+          example: sma
+        obvMaLength:
+          type: integer
+          description: OBV — length of the moving average of the OBV line (1-1000). Default 20.
+          minimum: 1
+          maximum: 1000
+          example: 20
+        cmfLength:
+          type: integer
+          description: "Chaikin Money Flow — length (1-1000). Default 20. CMF ranges -1 to +1: indicatorValue must be within -1..1 (0 = money flow turning positive / negative); conditions cu/cd/gt/lt, no bw, no percentile."
+          minimum: 1
+          maximum: 1000
+          example: 20
+        chopLength:
+          type: integer
+          description: "Choppiness Index — length (2-1000). Default 14. CHOP ranges 0 to 100 (above 61.8 = choppy, below 38.2 = trending): indicatorValue must be within 0..100; conditions cu/cd/gt/lt, no bw, no percentile."
+          minimum: 2
+          maximum: 1000
+          example: 14
       description: SettingsIndicators configuration
     UpdateComboBotInput:
       type: object
