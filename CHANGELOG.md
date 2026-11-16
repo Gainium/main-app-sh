@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.128.0] - 2026-11-16
+
+### Added
+
+- DCA by indicators: a DCA level can hold several indicator conditions in AND/OR groups, like deal start; levels are counted per level, not per indicator
+
 ## [1.127.3] - 2026-11-15
 
 ### Fixed
