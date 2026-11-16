@@ -16730,8 +16730,15 @@ function createDCABotHelper<
       if (!due) {
         return
       }
+      // Session (clock) conditions are not subscriptions: the session timer
+      // keeps them for every pair, whichever level a deal is on.
+      const clockUuids = new Set(
+        (settings.indicators ?? [])
+          .filter((i) => isClockCondition(i))
+          .map((i) => i.uuid),
+      )
       for (const i of [...this.indicators.values()]) {
-        if (i.action !== IndicatorAction.startDca) {
+        if (i.action !== IndicatorAction.startDca || clockUuids.has(i.uuid)) {
           continue
         }
         const levelKey = i.parentIndicator
@@ -17191,52 +17198,60 @@ function createDCABotHelper<
     private startSessionCheckTimer() {
       this.stopSessionCheckTimer()
       // only the in / out rules are a clock filter; a Price levels Session is
-      // subscribed and evaluated from candles like any other indicator
-      const sessionIndicator = this.data?.settings.indicators?.find((i) =>
-        isClockCondition(i),
+      // subscribed and evaluated from candles like any other indicator.
+      // A bot can carry several (e.g. one per DCA level, spec 244): each is
+      // tracked on its own.
+      const sessionIndicators = (this.data?.settings.indicators ?? []).filter(
+        (i) => isClockCondition(i),
       )
-      if (!sessionIndicator) {
+      if (!sessionIndicators.length) {
         return
       }
-      const days = sessionIndicator.sessionDays ?? [1, 2, 3, 4, 5]
-      const rule = sessionIndicator.sessionRule ?? 'in'
-      const hours = {
-        start: sessionIndicator.sessionStart,
-        end: sessionIndicator.sessionEnd,
-        timezone: sessionIndicator.sessionTimezone,
-      }
-      const { uuid, indicatorAction, section, groupId } = sessionIndicator
-      // Register session indicator in the map for the first symbol
-      // Session is time-based, not symbol-specific, so one entry per symbol
-      for (const symbol of this.pairs) {
-        const key = `${uuid}@${symbol}`
-        if (!this.indicators.has(key)) {
-          this.indicators.set(key, {
-            uuid,
-            id: `session-${uuid}`,
-            room: '',
-            status: false,
-            data: true,
-            history: [],
-            symbol,
-            key,
-            action: indicatorAction,
-            maCross: false,
-            section,
-            interval: ExchangeIntervals.oneM,
-            parentIndicator: '',
-            childIndicator: '',
-            groupId: groupId,
-            is1d: false,
-          })
+      // Session is time-based, not symbol-specific: one entry per symbol
+      for (const sessionIndicator of sessionIndicators) {
+        const { uuid, indicatorAction, section, groupId } = sessionIndicator
+        for (const symbol of this.pairs) {
+          const key = `${uuid}@${symbol}`
+          if (!this.indicators.has(key)) {
+            this.indicators.set(key, {
+              uuid,
+              id: `session-${uuid}`,
+              room: '',
+              status: false,
+              data: true,
+              history: [],
+              symbol,
+              key,
+              action: indicatorAction,
+              maCross: false,
+              section,
+              interval: ExchangeIntervals.oneM,
+              parentIndicator: '',
+              childIndicator: '',
+              groupId: groupId,
+              is1d: false,
+            })
+          }
         }
       }
       const check = () => {
         this.handleDebug('Checking session indicator status')
-        const inSession = isInSession(Date.now(), days, rule, hours)
         const toProcess: (() => void)[] = []
-        for (const [key, ind] of this.indicators.entries()) {
-          if (ind.uuid === uuid) {
+        for (const sessionIndicator of sessionIndicators) {
+          const inSession = isInSession(
+            Date.now(),
+            sessionIndicator.sessionDays ?? [1, 2, 3, 4, 5],
+            sessionIndicator.sessionRule ?? 'in',
+            {
+              start: sessionIndicator.sessionStart,
+              end: sessionIndicator.sessionEnd,
+              timezone: sessionIndicator.sessionTimezone,
+            },
+          )
+          for (const [key, ind] of this.indicators.entries()) {
+            if (ind.uuid !== sessionIndicator.uuid) {
+              continue
+            }
             ind.status = inSession
             ind.data = true
             ind.history = ind.history ?? []
@@ -17260,8 +17275,8 @@ function createDCABotHelper<
               )
             }
           }
-          toProcess.forEach((fn) => fn())
         }
+        toProcess.forEach((fn) => fn())
       }
       // Run immediately then every 60s
       check()

@@ -423,6 +423,54 @@ describe('DCA indicator levels in the engine (spec 244)', () => {
     ])
   })
 
+  // §1.4: a Session (clock) condition can sit in any level's group, e.g.
+  // "RSI and Session" on every level to skip weekends. Every one of them must
+  // be tracked, not only the bot's first Session.
+  describe('§1.4 one Session condition per level', () => {
+    const session = (uuid: string, groupId: string, dcaLevel: string) => ({
+      type: 'SESSION',
+      uuid,
+      groupId,
+      dcaLevel,
+      indicatorAction: 'startDca',
+      section: 'dca',
+      indicatorInterval: '1m',
+      sessionRule: 'in',
+      sessionDays: [0, 1, 2, 3, 4, 5, 6],
+    })
+    const WITH_SESSIONS = {
+      ...INDICATORS,
+      indicators: [...indicators, session('s1', 'g1', 'L1'), session('s2', 'g3', 'L2')],
+    }
+
+    it('the session timer tracks every Session condition', () => {
+      const { bot } = buildBot(WITH_SESSIONS, 0)
+      bot.pairs = new Set([SYMBOL])
+      bot.indicators = new Map()
+      bot.checkIndicatorStatus = () => undefined
+      bot.startSessionCheckTimer()
+      bot.stopSessionCheckTimer()
+      expect(bot.indicators.get(`s1@${SYMBOL}`)?.status).to.equal(true)
+      expect(bot.indicators.get(`s2@${SYMBOL}`)?.status).to.equal(true)
+    })
+
+    it('moving deals between levels keeps every Session condition tracked', async () => {
+      const { bot } = buildBot(WITH_SESSIONS, 0)
+      bot.pairs = new Set([SYMBOL])
+      bot.indicators = new Map()
+      bot.checkIndicatorStatus = () => undefined
+      bot.startSessionCheckTimer()
+      bot.stopSessionCheckTimer()
+      bot.redisSubIndicators = {}
+      bot.indicatorsIntervalActionMap = new Map()
+      bot.sendIndicatorUnsubscribeEvent = async () => undefined
+      bot.connectSettingsIndicator = async () => undefined
+      bot.runAfterIndicatorsConnected = () => undefined
+      await bot.syncDcaIndicatorLevels('bot')
+      expect(bot.indicators.has(`s2@${SYMBOL}`)).to.equal(true)
+    })
+  })
+
   it('§1.3 a legacy bot still reads one level per indicator', async () => {
     const legacy = {
       ...INDICATORS,
