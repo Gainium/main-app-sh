@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.129.4] - 2026-11-18
+
+### Fixed
+
+- Futures grid stop-and-sell: a close order that comes back unplaced while the position is open is retried instead of stopping the bot with the position open
+
 ## [1.129.3] - 2026-11-18
 
 ### Fixed
