@@ -27,6 +27,7 @@ import {
   closeTimerPlan,
   resolveExecution,
   stageForClose,
+  fitStopLossSplit,
 } from './orderExecution'
 import {
   CloseDCATypeEnum,
@@ -725,5 +726,55 @@ describe('spec 242 §4.3.1 — chase price from the top of the book', () => {
     expect(
       storedChase('close', { tpExecution: { mode: 'chase' } }, 'manual'),
     ).to.equal(false)
+  })
+})
+
+describe('spec 242 — a stop-loss split never waits (§4.4, §4.5, §5.3)', () => {
+  const slSplit = {
+    mode: 'split' as const,
+    slices: 3,
+    pace: 'iceberg' as const,
+    sliceIntervalSec: 5,
+    sliceMode: 'limit' as const,
+    timeoutSec: 0,
+  }
+  it('the public API refuses limit slices for a stop loss only', () => {
+    expect(validateOrderExecution(slSplit, 'sl')).to.match(/stop loss/)
+    expect(validateOrderExecution(slSplit, 'tp')).to.equal(null)
+    expect(validateOrderExecution(slSplit)).to.equal(null)
+    expect(
+      validateOrderExecution({ ...slSplit, sliceMode: 'chase' }, 'sl'),
+    ).to.equal(null)
+  })
+  it('a stored limit split resolves to chasing slices with the 35 s timeout', () => {
+    const e = resolveExecution('sl', { slExecution: slSplit }, 'level')
+    expect(e.mode).to.equal('split')
+    expect(e.sliceMode).to.equal('chase')
+    expect(e.timeoutSec).to.equal(35)
+  })
+  it('market slices stay market; an explicit timeout is kept', () => {
+    const e = fitStopLossSplit({
+      ...slSplit,
+      sliceMode: 'market',
+      timeoutSec: 90,
+    })
+    expect(e.sliceMode).to.equal('market')
+    expect(e.timeoutSec).to.equal(90)
+  })
+  it('a breached floor executes the rest instead of pausing', () => {
+    expect(
+      fitStopLossSplit({ ...slSplit, floorPerc: 2, onFloor: 'pause' }).onFloor,
+    ).to.equal('market')
+    expect(fitStopLossSplit(slSplit).onFloor).to.equal(undefined)
+  })
+  it('take-profit splits are untouched', () => {
+    const e = resolveExecution(
+      'tp',
+      { tpExecution: { ...slSplit, floorPerc: 2, onFloor: 'pause' } },
+      'level',
+    )
+    expect(e.sliceMode).to.equal('limit')
+    expect(e.timeoutSec).to.equal(0)
+    expect(e.onFloor).to.equal('pause')
   })
 })

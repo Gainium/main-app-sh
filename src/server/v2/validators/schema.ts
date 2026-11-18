@@ -77,6 +77,7 @@ const validateCommonSchema = <
     ) {
       const error = validateOrderExecution(
         (input as unknown as Record<string, unknown>)[key],
+        key === 'slExecution' ? 'sl' : undefined,
       )
       if (error) {
         response.errors.push([key, `Field ${key} ${error}`])

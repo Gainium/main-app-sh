@@ -271,6 +271,7 @@ import {
   entrySplitEligible,
   planSplitSizes,
   resolveExecution,
+  fitStopLossSplit,
   restingTpTimeoutMs,
   splitFloorBreached,
   stageForClose,
@@ -25856,7 +25857,10 @@ function createDCABotHelper<
       })
       ;(this.splitCloses ??= new Map()).set(dealId, {
         stage: split.stage,
-        execution: split.execution,
+        execution:
+          split.stage === 'sl'
+            ? fitStopLossSplit(split.execution)
+            : split.execution,
         side: tpOrder.side === 'BUY' ? 'BUY' : 'SELL',
         triggerPrice: split.triggerPrice,
         sizes,

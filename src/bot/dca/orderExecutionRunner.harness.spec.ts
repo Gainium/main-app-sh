@@ -651,3 +651,47 @@ describe('spec 242 §4.3.1 — chasing slices price from the top of the book', (
     expect(+calls.reduce[0].limitPrice).to.equal(99)
   })
 })
+
+describe('spec 242 §5.3 — a stored limit stop-loss split chases and times out', () => {
+  let bots: any[] = []
+  afterEach(() => {
+    bots.forEach(clearTimers)
+    bots = []
+  })
+  it('the slice chases the market below the stop and has a timer', async () => {
+    const { bot, calls, deal } = make(
+      {
+        slExecution: {
+          mode: 'split',
+          slices: 3,
+          pace: 'iceberg',
+          sliceIntervalSec: 5,
+          sliceMode: 'limit',
+          timeoutSec: 0,
+        },
+      },
+      { last: 90, qty: 3 },
+    )
+    bots.push(bot)
+    bot.prepareTpOrder = async () => ({ qty: 3, price: 95, side: 'SELL' })
+    await bot.maybeStartSplitClose(
+      'd1',
+      deal,
+      CloseDCATypeEnum.closeByMarket,
+      false,
+      '',
+      true,
+      DCACloseTriggerEnum.sl,
+    )
+    await new Promise((r) => setImmediate(r))
+    expect(calls.reduce).to.have.length(1)
+    expect(+calls.reduce[0].qty).to.equal(1)
+    expect(calls.reduce[0].useLimitPrice).to.equal(true)
+    // priced from the market (90), not resting at the stop price (95)
+    expect(+calls.reduce[0].limitPrice).to.equal(90)
+    const st = bot.splitCloses.get('d1')
+    expect(st.execution.sliceMode).to.equal('chase')
+    expect(st.execution.timeoutSec).to.equal(35)
+    expect(st.timer).to.not.equal(undefined)
+  })
+})

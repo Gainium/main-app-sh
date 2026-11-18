@@ -179,6 +179,26 @@ const isValidStored = (v: unknown): v is OrderExecution =>
   !!v && typeof v === 'object' && MODES.includes((v as OrderExecution).mode)
 
 /**
+ * A stop-loss split never waits (§4.4, §4.5, §5.3): its slices chase rather
+ * than rest at the stop price (a limit there sits above a falling market),
+ * each unfilled slice goes to market after the stop-loss timeout, and a
+ * breached floor executes the rest instead of pausing. Applied to stored
+ * settings too, so values saved before validation refused them stay safe.
+ */
+export const fitStopLossSplit = (e: OrderExecution): OrderExecution => {
+  if (e.mode !== 'split') {
+    return e
+  }
+  return {
+    ...e,
+    sliceMode: e.sliceMode === 'market' ? 'market' : 'chase',
+    timeoutSec:
+      (e.timeoutSec ?? 0) > 0 ? e.timeoutSec : DEFAULT_CLOSE_TIMEOUT_SEC,
+    ...((e.floorPerc ?? 0) > 0 ? { onFloor: 'market' as const } : {}),
+  }
+}
+
+/**
  * The execution a stage uses: the stored field when valid (fitted to the
  * trigger), else what the legacy fields describe. A chasing stop loss always
  * ends at market (§4.4).
@@ -196,6 +216,9 @@ export const resolveExecution = (
     : legacyExecution(stage, settings, trigger, !!opts.isCombo, opts.closeType)
   if (stage === 'sl' && base.mode === 'chase' && !(base.timeoutSec ?? 0)) {
     return { ...base, timeoutSec: DEFAULT_CLOSE_TIMEOUT_SEC }
+  }
+  if (stage === 'sl' && base.mode === 'split') {
+    return fitStopLossSplit(base)
   }
   return base
 }
@@ -374,7 +397,10 @@ const ENUMS: Record<string, readonly string[]> = {
  * error message, or null when valid. `null`/`undefined` is valid (derive from
  * the legacy fields).
  */
-export const validateOrderExecution = (value: unknown): string | null => {
+export const validateOrderExecution = (
+  value: unknown,
+  stage?: ExecutionStage,
+): string | null => {
   if (value === null || value === undefined) {
     return null
   }
@@ -406,6 +432,9 @@ export const validateOrderExecution = (value: unknown): string | null => {
     if (key === 'slices' && !Number.isInteger(n)) {
       return 'slices must be an integer'
     }
+  }
+  if (stage === 'sl' && v['mode'] === 'split' && v['sliceMode'] === 'limit') {
+    return 'sliceMode limit is not available for a stop loss; use chase or market'
   }
   return null
 }
