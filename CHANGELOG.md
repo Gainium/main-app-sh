@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.129.3] - 2026-11-18
+
+### Fixed
+
+- A stop-loss split no longer rests limit slices at the stop price: slices chase the market, time out to market, and a breached floor executes the rest
+
 ## [1.129.2] - 2026-11-16
 
 ### Fixed
