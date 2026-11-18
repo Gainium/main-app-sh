@@ -5379,7 +5379,22 @@ function createBotHelper<
               payload.additional,
               ed,
             )
-            if (resultOrder && resultOrder.status !== 'FILLED') {
+            // Spec 240 §4.3, as in `processSellAtStop`: a futures close that came
+            // back with no order leaves the position open, so it is retried like
+            // a resting one instead of stopping the bot over an open position.
+            // The close is reduce-only: if the first one was accepted and its
+            // answer lost, the retry finds the position flat (and stops) or the
+            // venue refuses it — it can never close more than the position.
+            const noOrderBack = !resultOrder && this.futures
+            if (noOrderBack) {
+              this.handleLog(
+                'Close order not placed while the position is open. Retrying',
+              )
+            }
+            if (
+              noOrderBack ||
+              (resultOrder && resultOrder.status !== 'FILLED')
+            ) {
               this.startTimeoutTime = +new Date()
               if (
                 this.enterMarketTimeout === 0 ||

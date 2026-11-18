@@ -240,4 +240,38 @@ describe('grid stop-and-sell stops on a flat futures position (spec 127)', () =>
       expect(bot.stopped).to.equal(1)
     })
   })
+
+  describe('§4.5 no order back while the position is open (spec 240 §4.3)', () => {
+    for (const value of ['tp', 'sl'] as const) {
+      it(`${value}: retries instead of stopping`, async () => {
+        const bot = makeBot({
+          futures: true,
+          position: { side: PositionSide.LONG, qty: 76, price: 0.17839 },
+          answer: undefined,
+        })
+        bot.orderLimitRepositionTimeout = 60_000
+        bot.enterMarketTimeout = 0
+        await fire(bot, value)
+        expect(bot.sent).to.have.length(1)
+        expect(bot.stopped).to.equal(0)
+        expect(!!bot.limitTimer).to.equal(true)
+        clearTimeout(bot.limitTimer)
+      })
+    }
+    it('the retry stops once the position is flat (accepted, answer lost)', async () => {
+      const bot = makeBot({
+        futures: true,
+        position: { side: PositionSide.LONG, qty: 76, price: 0.17839 },
+        answer: undefined,
+      })
+      bot.orderLimitRepositionTimeout = 60_000
+      bot.enterMarketTimeout = 0
+      await fire(bot, 'sl')
+      clearTimeout(bot.limitTimer)
+      bot.data.position = { ...bot.data.position, qty: 0, price: 0 }
+      await fire(bot, 'sl')
+      expect(bot.sent).to.have.length(1)
+      expect(bot.stopped).to.equal(1)
+    })
+  })
 })
