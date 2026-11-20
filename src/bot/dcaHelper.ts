@@ -241,6 +241,7 @@ import {
   isDatedCanceledRegularFill,
   shouldBookCanceledRegularFill,
 } from './dca/canceledRegularFill'
+import { venueCanceledSafetyLevel } from './venueCancelReplace'
 import { closeOrderQuoteMinimum } from './closeOrderMinValue'
 import {
   baseEntryCancelSettleAttempts,
@@ -26671,6 +26672,72 @@ function createDCABotHelper<
       )
       this.ordersInBetweenUpdates.add(clientOrderId)
       await this.updateDeal(this.botId, order)
+    }
+
+    /**
+     * Safety orders are placed back when the venue cancels them after they
+     * rested (DCA and Combo bots alike). Add/reduce-funds orders are not: an
+     * entry the user asked for is theirs to send again. Spec 247.
+     */
+    protected override replacesVenueCancel(order: Order): boolean {
+      return (
+        order.typeOrder === TypeOrderEnum.dealRegular &&
+        !!order.dealId &&
+        !order.addFundsId &&
+        !order.reduceFundsId
+      )
+    }
+
+    /**
+     * Place a venue-cancelled safety order back at its level, if the deal is
+     * open and still wants that level resting. A level the price has already
+     * passed is sent as the same limit order: a buy above the market (a sell
+     * below it) executes at once at the better market price. Spec 247.
+     */
+    protected override async replaceVenueCanceled(
+      order: Order,
+    ): Promise<boolean> {
+      const dealId = `${order.dealId ?? ''}`
+      const findDeal = dealId ? this.getDeal(dealId) : undefined
+      if (
+        !findDeal ||
+        findDeal.deal.status !== DCADealStatusEnum.open ||
+        findDeal.closeBySl ||
+        findDeal.closeByTp
+      ) {
+        return false
+      }
+      if (this.dealBookRebuildInFlight(dealId)) {
+        return false
+      }
+      const level = venueCanceledSafetyLevel({
+        order,
+        currentOrders: findDeal.currentOrders,
+        resting: this.getOrdersByStatusAndDealId({
+          dealId,
+          status: ['NEW', 'PARTIALLY_FILLED'],
+        }),
+        dealRegular: TypeOrderEnum.dealRegular,
+      })
+      if (!level) {
+        this.handleLog(
+          `Deal ${dealId}: ${order.clientOrderId} at ${order.origPrice} is no longer wanted or already resting, not placed again`,
+        )
+        return false
+      }
+      this.handleLog(
+        `Deal ${dealId}: placing DCA level ${level.dcaLevel ?? ''} ${level.side} ${level.price} again after exchange cancel of ${order.clientOrderId}`,
+      )
+      await this.placeOrders(this.botId, findDeal.deal.symbol.symbol, dealId, {
+        new: [
+          {
+            ...level,
+            newClientOrderId: this.getOrderId(this.combo ? 'CMB-RO' : 'D-RO'),
+          },
+        ],
+        cancel: [],
+      })
+      return true
     }
 
     /**

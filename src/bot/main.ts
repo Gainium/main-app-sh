@@ -229,6 +229,10 @@ import {
 } from '../db/dbInit'
 import Rabbit from '../db/rabbit'
 import { RunWithDelay } from '../utils/delay'
+import {
+  VENUE_CANCEL_REPLACE_DELAY_MS,
+  isVenueCancelToReplace,
+} from './venueCancelReplace'
 import BotSharedData, { type StreamData } from './shared'
 import SharedStream from './sharedStream'
 import {
@@ -2076,6 +2080,96 @@ class MainBot<T extends IMainBot> {
   isOwnCancel(clientOrderId: string | undefined) {
     const at = clientOrderId ? this.ownCancels?.get(clientOrderId) : undefined
     return at !== undefined && Date.now() - at <= ownCancelTtlMs
+  }
+
+  /**
+   * Orders the venue cancelled after they rested, waiting for
+   * {@link MainBot#flushVenueCanceled}, by client order id. Spec 247.
+   */
+  protected venueCanceledOrders?: Map<string, Order>
+
+  /**
+   * Does this engine place `order` back when the venue cancels it? Engines
+   * opt in per order type. An order type another handler already places back
+   * (grid levels, spec 201 and 179; take-profits, spec 095) stays out, so
+   * nothing is placed twice. Spec 247.
+   */
+  protected replacesVenueCancel(_order: Order): boolean {
+    return false
+  }
+
+  /**
+   * Place one venue-cancelled order back, if the engine still wants that
+   * level. Returns whether an order was sent. Spec 247.
+   */
+  protected async replaceVenueCanceled(_order: Order): Promise<boolean> {
+    return false
+  }
+
+  /**
+   * Called by `processOrderQueue` for every cancel report, after the engine's
+   * own cancel callback. Queues the ones to place back. Spec 247.
+   */
+  protected noteVenueCancel(order: Order) {
+    if (
+      !isVenueCancelToReplace(order, this.isOwnCancel(order.clientOrderId))
+    ) {
+      return
+    }
+    if (!this.replacesVenueCancel(order)) {
+      return
+    }
+    ;(this.venueCanceledOrders ??= new Map()).set(order.clientOrderId, order)
+    this.handleLog(
+      `Order ${order.clientOrderId} (${order.typeOrder}) was cancelled on the exchange after resting, it will be placed again`,
+    )
+    this.scheduleVenueCanceled(this.botId)
+  }
+
+  /** One pass per burst of venue cancels. Spec 247. */
+  @RunWithDelay(
+    (botId: string) => `flushVenueCanceled-${botId}`,
+    VENUE_CANCEL_REPLACE_DELAY_MS,
+  )
+  scheduleVenueCanceled(_botId: string) {
+    this.flushVenueCanceled().catch((e) =>
+      this.handleWarn(
+        `Cannot place cancelled orders again: ${(e as Error)?.message ?? e}`,
+      ),
+    )
+  }
+
+  /** Hand each queued venue cancel to the engine. Spec 247. */
+  protected async flushVenueCanceled(): Promise<void> {
+    const queued = [...(this.venueCanceledOrders?.values() ?? [])]
+    this.venueCanceledOrders?.clear()
+    if (!queued.length || !this.data) {
+      return
+    }
+    if (
+      this.data.status !== BotStatusEnum.open &&
+      this.data.status !== BotStatusEnum.range
+    ) {
+      return
+    }
+    if (!this.shouldProceed()) {
+      return
+    }
+    let placed = 0
+    for (const o of queued) {
+      try {
+        if (await this.replaceVenueCanceled(o)) {
+          placed++
+        }
+      } catch (e) {
+        this.handleWarn(
+          `Cannot place ${o.clientOrderId} again: ${(e as Error)?.message ?? e}`,
+        )
+      }
+    }
+    this.handleLog(
+      `Placed ${placed}/${queued.length} order(s) again after exchange cancels`,
+    )
   }
 
   /** Record that the venue refused `clientOrderId` and it was written off. Spec 221. */
@@ -7904,6 +7998,9 @@ class MainBot<T extends IMainBot> {
           onCanceled
         ) {
           await onCanceled(order, order.updateTime, order.status === 'EXPIRED')
+        }
+        if (order.status === 'CANCELED') {
+          this.noteVenueCancel(order)
         }
       }
       next()
