@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.129.5] - 2026-11-20
+
+### Fixed
+
+- A DCA or Combo safety order the exchange cancels after it rested is placed back, instead of leaving the deal with no DCA order on the book
+
 ## [1.129.4] - 2026-11-18
 
 ### Fixed
