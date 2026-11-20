@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.129.6] - 2026-11-20
+
+### Changed
+
+- Grid levels and Combo grid levels the exchange cancels after they rested are placed back through the same shared path as safety orders
+
 ## [1.129.5] - 2026-11-20
 
 ### Fixed
