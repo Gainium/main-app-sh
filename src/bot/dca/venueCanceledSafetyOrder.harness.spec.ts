@@ -160,6 +160,7 @@ describe('venue-cancelled safety order is placed back (spec 247)', () => {
         'noteOwnCancel',
         'noteVenueCancel',
         'flushVenueCanceled',
+        'replaceVenueCanceledBatch',
       ]) {
         bot[m] = proto[m].bind(bot)
       }

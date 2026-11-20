@@ -2090,9 +2090,11 @@ class MainBot<T extends IMainBot> {
 
   /**
    * Does this engine place `order` back when the venue cancels it? Engines
-   * opt in per order type. An order type another handler already places back
-   * (grid levels, spec 201 and 179; take-profits, spec 095) stays out, so
-   * nothing is placed twice. Spec 247.
+   * opt in per order type: grid levels (grid bot, spec 201), combo grid
+   * levels (spec 179) and DCA/Combo safety orders. Take-profits stay out:
+   * spec 095 re-plans the deal's take-profit rather than re-sending the
+   * cancelled order, and defers while an orders check holds the book.
+   * Spec 247.
    */
   protected replacesVenueCancel(_order: Order): boolean {
     return false
@@ -2111,9 +2113,7 @@ class MainBot<T extends IMainBot> {
    * own cancel callback. Queues the ones to place back. Spec 247.
    */
   protected noteVenueCancel(order: Order) {
-    if (
-      !isVenueCancelToReplace(order, this.isOwnCancel(order.clientOrderId))
-    ) {
+    if (!isVenueCancelToReplace(order, this.isOwnCancel(order.clientOrderId))) {
       return
     }
     if (!this.replacesVenueCancel(order)) {
@@ -2155,8 +2155,23 @@ class MainBot<T extends IMainBot> {
     if (!this.shouldProceed()) {
       return
     }
+    const placed = await this.replaceVenueCanceledBatch(this.botId, queued)
+    this.handleLog(
+      `Placed ${placed}/${queued.length} order(s) again after exchange cancels`,
+    )
+  }
+
+  /**
+   * Place one burst of venue cancels back; returns how many were sent. One
+   * `replaceVenueCanceled` per order unless the engine places a burst as one
+   * locked pass (the grid bot). Spec 247.
+   */
+  protected async replaceVenueCanceledBatch(
+    _botId: string,
+    orders: Order[],
+  ): Promise<number> {
     let placed = 0
-    for (const o of queued) {
+    for (const o of orders) {
       try {
         if (await this.replaceVenueCanceled(o)) {
           placed++
@@ -2167,9 +2182,7 @@ class MainBot<T extends IMainBot> {
         )
       }
     }
-    this.handleLog(
-      `Placed ${placed}/${queued.length} order(s) again after exchange cancels`,
-    )
+    return placed
   }
 
   /** Record that the venue refused `clientOrderId` and it was written off. Spec 221. */

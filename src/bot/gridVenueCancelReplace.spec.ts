@@ -4,11 +4,14 @@ process.env.NODE_ENV = 'testing'
  * Regression tests for spec
  * `201.a-venue-cancel-all-leaves-a-grid-bot-trading-nothing`.
  *
- * Builds a grid bot on the REAL helper mixin over a stub base and drives its
- * cancel callback the way `processOrderQueue` does. The ladder is a Bybit
+ * Builds a grid bot on the REAL helper mixin over a stub base and drives the
+ * shared venue-cancel path (`MainBot.noteVenueCancel` → `flushVenueCanceled`
+ * → the grid bot's `replaceVenueCanceledBatch`, spec 247) the way
+ * `processOrderQueue` does. The ladder is a Bybit
  * long grid whose 78 resting BUY levels the venue cancelled in one
  * millisecond, hours after they were placed (an account-wide cancel). The
- * bot's own-cancel ledger and `mapOrderToGrid` are borrowed from `MainBot`, so
+ * bot's own-cancel ledger, the venue-cancel queue and `mapOrderToGrid` are
+ * borrowed from `MainBot`, so
  * the decisions under test are the engine's. Placement is recorded at
  * `sendGridToExchange`, never sent.
  *
@@ -75,7 +78,9 @@ const canceled = (price: number, over: Record<string, unknown> = {}) =>
     ...over,
   }) as any
 
-const buildBot = (opts: { status?: BotStatusEnum; realDelay?: boolean } = {}) => {
+const buildBot = (
+  opts: { status?: BotStatusEnum; realDelay?: boolean } = {},
+) => {
   const sent: any[] = []
   const passes: number[] = []
   const filled: any[] = []
@@ -114,6 +119,15 @@ const buildBot = (opts: { status?: BotStatusEnum; realDelay?: boolean } = {}) =>
     mapOrderToGrid(o: any, updateId = true) {
       return (MainBot.prototype as any).mapOrderToGrid.call(this, o, updateId)
     }
+    noteVenueCancel(o: any) {
+      return (MainBot.prototype as any).noteVenueCancel.call(this, o)
+    }
+    flushVenueCanceled() {
+      return (MainBot.prototype as any).flushVenueCanceled.call(this)
+    }
+    scheduleVenueCanceled(id: string) {
+      return (MainBot.prototype as any).scheduleVenueCanceled.call(this, id)
+    }
     // --- I/O, stubbed ---
     getOrderId(prefix: string) {
       return `${prefix}-fresh-${++nextId}`
@@ -141,15 +155,15 @@ const buildBot = (opts: { status?: BotStatusEnum; realDelay?: boolean } = {}) =>
       return '1'
     }
     endMethod() {}
-    async placeCanceledLevels(id: string) {
+    async replaceVenueCanceledBatch(id: string, queued: any[]) {
       passes.push(Date.now())
-      return super.placeCanceledLevels(id)
+      return super.replaceVenueCanceledBatch(id, queued)
     }
   }
   const bot = new (TestBot as any)()
   if (!opts.realDelay) {
     // Run the pass explicitly; the debounce itself is covered by its own test.
-    bot.scheduleCanceledLevels = () => undefined
+    bot.scheduleVenueCanceled = () => undefined
   }
   return { bot, sent, passes, filled, botId }
 }
@@ -166,16 +180,25 @@ describe('a venue cancel-all leaves a grid bot trading nothing (spec 201)', () =
     )
   })
 
-  it('registers a cancel callback (§1.2)', () => {
+  it('opts grid levels into the shared venue-cancel path (§1.2, spec 247)', () => {
     const { bot } = buildBot()
-    expect(bot.cbFunctions.onCanceled).to.be.a('function')
+    expect(bot.replacesVenueCancel(canceled(PRICES[0]))).to.equal(true)
+    for (const typeOrder of [
+      TypeOrderEnum.stop,
+      TypeOrderEnum.swap,
+      TypeOrderEnum.fee,
+    ]) {
+      expect(
+        bot.replacesVenueCancel(canceled(PRICES[0], { typeOrder })),
+      ).to.equal(false)
+    }
   })
 
   it('places a cancel-all back in one pass, every level once (§1.1, §4.1, §4.2)', async function () {
     this.timeout(10000)
     const { bot, sent, passes } = buildBot({ realDelay: true })
     for (const p of PRICES) {
-      await bot.cbFunctions.onCanceled(canceled(p), CANCELED_AT, false)
+      bot.noteVenueCancel(canceled(p))
     }
     expect(sent, 'nothing placed while the burst is arriving').to.have.length(0)
     await new Promise((r) => setTimeout(r, 2600))
@@ -192,90 +215,70 @@ describe('a venue cancel-all leaves a grid bot trading nothing (spec 201)', () =
   })
 
   it("does not re-place the bot's own cancel (§4.3)", async () => {
-    const { bot, sent, botId } = buildBot()
+    const { bot, sent } = buildBot()
     const own = canceled(PRICES[0])
     bot.noteOwnCancel(own.clientOrderId)
-    await bot.cbFunctions.onCanceled(own, CANCELED_AT, false)
-    await bot.placeCanceledLevels(botId)
+    bot.noteVenueCancel(own)
+    await bot.flushVenueCanceled()
     expect(sent).to.have.length(0)
   })
 
   it('does not retry an order refused at placement (§4.3)', async () => {
-    const { bot, sent, botId } = buildBot()
+    const { bot, sent } = buildBot()
     // Acknowledged and cancelled in the same instant.
-    await bot.cbFunctions.onCanceled(
-      canceled(PRICES[0], { updateTime: PLACED_AT }),
-      PLACED_AT,
-      false,
-    )
+    bot.noteVenueCancel(canceled(PRICES[0], { updateTime: PLACED_AT }))
     // No placement time at all: no evidence it ever rested.
-    await bot.cbFunctions.onCanceled(
-      canceled(PRICES[1], { transactTime: undefined }),
-      CANCELED_AT,
-      false,
-    )
-    await bot.placeCanceledLevels(botId)
+    bot.noteVenueCancel(canceled(PRICES[1], { transactTime: undefined }))
+    await bot.flushVenueCanceled()
     expect(sent).to.have.length(0)
   })
 
   it('ignores non-grid orders (§4.3)', async () => {
-    const { bot, sent, botId } = buildBot()
+    const { bot, sent } = buildBot()
     for (const typeOrder of [
       TypeOrderEnum.stop,
       TypeOrderEnum.swap,
       TypeOrderEnum.fee,
     ]) {
-      await bot.cbFunctions.onCanceled(
-        canceled(PRICES[0], { typeOrder }),
-        CANCELED_AT,
-        false,
-      )
+      bot.noteVenueCancel(canceled(PRICES[0], { typeOrder }))
     }
-    await bot.placeCanceledLevels(botId)
+    await bot.flushVenueCanceled()
     expect(sent).to.have.length(0)
   })
 
   it('skips a level the ladder no longer has, and one that already rests (§4.2)', async () => {
-    const { bot, sent, botId } = buildBot()
+    const { bot, sent } = buildBot()
     bot.grids = bot.grids.filter((g: any) => g.price !== PRICES[0])
     bot.resting.add(`${OrderSideEnum.buy}@${PRICES[1]}`)
     for (const p of PRICES.slice(0, 3)) {
-      await bot.cbFunctions.onCanceled(canceled(p), CANCELED_AT, false)
+      bot.noteVenueCancel(canceled(p))
     }
-    await bot.placeCanceledLevels(botId)
+    await bot.flushVenueCanceled()
     expect(sent.map((g) => g.price)).to.deep.equal([PRICES[2]])
   })
 
   it('places nothing on a bot that is not running (§4.2)', async () => {
     const closed = buildBot({ status: BotStatusEnum.closed })
-    await closed.bot.cbFunctions.onCanceled(canceled(PRICES[0]), CANCELED_AT, false)
-    await closed.bot.placeCanceledLevels(closed.botId)
+    closed.bot.noteVenueCancel(canceled(PRICES[0]))
+    await closed.bot.flushVenueCanceled()
     expect(closed.sent).to.have.length(0)
 
     const stopping = buildBot()
-    await stopping.bot.cbFunctions.onCanceled(
-      canceled(PRICES[0]),
-      CANCELED_AT,
-      false,
-    )
+    stopping.bot.noteVenueCancel(canceled(PRICES[0]))
     stopping.bot.blockLimit = true
-    await stopping.bot.placeCanceledLevels(stopping.botId)
+    await stopping.bot.flushVenueCanceled()
     expect(stopping.sent).to.have.length(0)
 
     const range = buildBot({ status: BotStatusEnum.range })
-    await range.bot.cbFunctions.onCanceled(canceled(PRICES[0]), CANCELED_AT, false)
-    await range.bot.placeCanceledLevels(range.botId)
+    range.bot.noteVenueCancel(canceled(PRICES[0]))
+    await range.bot.flushVenueCanceled()
     expect(range.sent).to.have.length(1)
   })
 
   it('leaves a part-filled cancel alone (§4.1)', async () => {
-    const { bot, sent, botId } = buildBot()
-    await bot.cbFunctions.onCanceled(
-      canceled(PRICES[0], { executedQty: '3' }),
-      CANCELED_AT,
-      false,
-    )
-    await bot.placeCanceledLevels(botId)
+    const { bot, sent } = buildBot()
+    bot.noteVenueCancel(canceled(PRICES[0], { executedQty: '3' }))
+    await bot.flushVenueCanceled()
     expect(sent).to.have.length(0)
   })
 })

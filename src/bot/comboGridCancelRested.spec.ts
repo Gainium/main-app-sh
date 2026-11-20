@@ -5,7 +5,9 @@ process.env.NODE_ENV = 'testing'
  * `179.a-venue-cancel-all-empties-a-combo-minigrid-for-good`.
  *
  * Drives the REAL `comboHelper.processCanceledOrder` (and `updateAssets` when
- * it prunes) off the mixin. The ladder is a futures combo minigrid created with
+ * it prunes) off the mixin, then the shared venue-cancel path that places a
+ * rested level back (`MainBot.noteVenueCancel` → `flushVenueCanceled` →
+ * `ComboBot.replaceVenueCanceled`, spec 247), as `processOrderQueue` does. The ladder is a futures combo minigrid created with
  * `lockClose`, whose every resting level the venue cancelled in one burst eight
  * hours after the last of them was placed. The prices and timestamps are the
  * production ones; how the levels split between the deal's two minigrids is
@@ -154,6 +156,7 @@ const buildBot = (opts: { dealStatus?: string } = {}) => {
     botId = BOT_ID
     minigridDealMap = new Map<string, Set<string>>()
     data: any = {
+      status: 'open',
       settings: { name: 'bot', pair: [SYMBOL] },
       flags: [],
       paperContext: false,
@@ -165,6 +168,8 @@ const buildBot = (opts: { dealStatus?: string } = {}) => {
     shouldProceed() {
       return true
     }
+    // The pass is run explicitly by `report`, not after the 2 s debounce.
+    scheduleVenueCanceled() {}
     getDeal(id?: string) {
       return id === DEAL_ID ? deal : undefined
     }
@@ -228,6 +233,8 @@ const buildBot = (opts: { dealStatus?: string } = {}) => {
     )
     if (i !== -1) live.splice(i, 1)
     await bot.processCanceledOrder(order, order.updateTime, false)
+    bot.noteVenueCancel(order)
+    await bot.flushVenueCanceled()
   }
 
   return {

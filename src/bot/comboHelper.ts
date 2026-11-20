@@ -3030,31 +3030,10 @@ function createComboBotHelper<
       // level that rested and was then cancelled on the venue (its cancel-all,
       // or the user on the exchange) is still part of the ladder: pruning it
       // left a minigrid whose levels were all cancelled with none at all,
-      // holding what it bought with nothing to sell it back. Keep it and send
-      // it again, as `checkOrders` does for a cancelled order on a restart.
-      // Spec 179.
+      // holding what it bought with nothing to sell it back. It stays, and
+      // `MainBot.noteVenueCancel` places it again through
+      // {@link ComboBot#replaceVenueCanceled}. Spec 179, spec 247.
       if (wasRestingWhenCanceled(order)) {
-        const level = findMinigrid?.currentOrders.find(isCanceledLevel)
-        const deal = this.getDeal(order.dealId)
-        if (
-          level &&
-          deal &&
-          deal.deal.status === DCADealStatusEnum.open &&
-          findMinigrid?.schema.status !== ComboMinigridStatusEnum.closed
-        ) {
-          this.handleLog(
-            `Grid order ${order.clientOrderId} was cancelled on the exchange after resting, placing ${level.side} ${level.price} again`,
-          )
-          // Not awaited: the order queue is not held while it is placed.
-          this.placeOrders(this.botId, deal.deal.symbol.symbol, deal.deal._id, {
-            new: [{ ...level, newClientOrderId: this.getOrderId('CMB-GR') }],
-            cancel: [],
-          }).catch((e) =>
-            this.handleWarn(
-              `Cannot place grid level again after ${order.clientOrderId}: ${(e as Error)?.message ?? e}`,
-            ),
-          )
-        }
         return
       }
       let pruned = false
@@ -3104,6 +3083,81 @@ function createComboBotHelper<
         // is the expensive part of the method. Spec 077 §4.4.
         await this.updateAssets(order.dealId)
       }
+    }
+
+    /**
+     * Combo grid levels are placed back when the venue cancels them after
+     * they rested, on top of the safety orders the DCA engine opts in.
+     * Spec 179, spec 247.
+     */
+    protected override replacesVenueCancel(order: Order): boolean {
+      return (
+        (order.typeOrder === TypeOrderEnum.dealGrid && !!order.dealId) ||
+        super.replacesVenueCancel(order)
+      )
+    }
+
+    /**
+     * Send a venue-cancelled grid level again when its minigrid still has it,
+     * the deal is open and the minigrid is not closed. Matched by LEVEL
+     * (minigrid, side, price, qty), not client order id: the ladder is
+     * regenerated with fresh ids on every fill. Skipped when an order already
+     * rests at that level. Safety orders go to the DCA engine. Spec 179 §4,
+     * spec 247.
+     */
+    protected override async replaceVenueCanceled(
+      order: Order,
+    ): Promise<boolean> {
+      if (order.typeOrder !== TypeOrderEnum.dealGrid) {
+        return super.replaceVenueCanceled(order)
+      }
+      const price = +order.origPrice
+      const qty = +order.origQty
+      const stillResting = this.getOrdersByStatusAndDealId({
+        dealId: order.dealId,
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      }).some(
+        (o) =>
+          o.typeOrder === TypeOrderEnum.dealGrid &&
+          o.minigridId === order.minigridId &&
+          o.side === order.side &&
+          +o.origPrice === price &&
+          +o.origQty === qty,
+      )
+      if (stillResting) {
+        return false
+      }
+      const findMinigrid = this.getMinigrid(order.minigridId)
+      const level = findMinigrid?.currentOrders.find(
+        (o) =>
+          o.type === TypeOrderEnum.dealGrid &&
+          o.minigridId === order.minigridId &&
+          o.price === price &&
+          o.qty === qty &&
+          o.side === order.side,
+      )
+      const deal = this.getDeal(order.dealId)
+      if (
+        !level ||
+        !deal ||
+        deal.deal.status !== DCADealStatusEnum.open ||
+        findMinigrid?.schema.status === ComboMinigridStatusEnum.closed
+      ) {
+        return false
+      }
+      this.handleLog(
+        `Grid order ${order.clientOrderId} was cancelled on the exchange after resting, placing ${level.side} ${level.price} again`,
+      )
+      await this.placeOrders(
+        this.botId,
+        deal.deal.symbol.symbol,
+        deal.deal._id,
+        {
+          new: [{ ...level, newClientOrderId: this.getOrderId('CMB-GR') }],
+          cancel: [],
+        },
+      )
+      return true
     }
 
     @IdMute(mutex, (order: Order) => `${order.botId}update${order.dealId}`)
