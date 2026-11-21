@@ -149,6 +149,10 @@ import MainBot, {
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
 import { underfilledTpQty } from './dca/partialTp'
+import {
+  looksLikeQtyFromPrice,
+  repairRestoredDcaLadder,
+} from './dca/restoredLadderRepair'
 import { isPositionAlreadyClosedReason } from './positionAlreadyClosed'
 import { isAmbiguousOrderFailure } from '../utils/exchange'
 import {
@@ -3126,14 +3130,41 @@ function createDCABotHelper<
 
     /**
      * The ladder restored from the Redis snapshot, with any level the snapshot
-     * holds at an impossible size re-derived. Combo overrides it; a DCA ladder
-     * is restored as stored. Spec 252.
+     * holds at an impossible size re-derived. Combo overrides it (spec 252).
+     * A DCA level carries no budget, so a level whose quantity is its own
+     * price and whose value is far off what the deal's settings build today
+     * takes the fresh level's quantity and keeps its stored price. A ladder
+     * with no such level is returned as stored, without building anything.
+     * Spec 255.
      */
     protected async repairRestoredLadder(
-      _d: FullDeal<ExcludeDoc<Deal>>,
+      d: FullDeal<ExcludeDoc<Deal>>,
       initialOrders: Grid[],
     ): Promise<Grid[]> {
-      return initialOrders
+      if (!initialOrders.some(looksLikeQtyFromPrice)) {
+        return initialOrders
+      }
+      const fresh = await this.createInitialDealOrders(
+        d.deal.symbol.symbol,
+        d.deal.initialPrice,
+        `${d.deal._id}`,
+        d.deal,
+      )
+      const { ladder, repaired } = repairRestoredDcaLadder(
+        initialOrders,
+        fresh,
+      )
+      if (!repaired.length) {
+        return initialOrders
+      }
+      const message = `Deal ${d.deal._id}: ${repaired.length} safety order(s) restored after a restart had an invalid size (${repaired
+        .map((g) => `${g.qty} @ ${g.price}`)
+        .join(
+          ', ',
+        )}). They were recalculated from the deal settings before being placed.`
+      this.handleWarn(message)
+      await this.postUserNotice(message, d.deal.symbol.symbol)
+      return ladder
     }
 
     override async afterUpdateExchangeInfo(pairs: Set<string>): Promise<void> {
