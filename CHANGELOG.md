@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.130.0] - 2026-11-21
+
+### Changed
+
+- Profit statistics in a non-USD reporting currency show profit made in that currency (e.g. EUR pairs while reporting in EUR) at face value, and convert other profit at the rate of the day it was made instead of today's rate
+
+### Fixed
+
+- The closed-market notice is listed as a market-closed message instead of a refused user action
+
 ## [1.129.7] - 2026-11-21
 
 ### Fixed
