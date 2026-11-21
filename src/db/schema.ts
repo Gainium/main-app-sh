@@ -2160,6 +2160,8 @@ const comboBotSchema: Schema<ComboBotSchema> = new Schema({
   ignoreStats: Boolean,
   useAssets: Boolean,
   flags: [String],
+  // Out-of-band profit corrections already added to `profit` (spec 239).
+  profitCorrections: [String],
   action: {
     type: String,
     enum: ActionsEnum,

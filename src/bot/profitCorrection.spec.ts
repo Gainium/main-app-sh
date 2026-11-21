@@ -22,7 +22,8 @@ import {
   addProfitCorrection,
   invalidProfitCorrection,
 } from './profitCorrection'
-import { convertDCABot, convertDCABotToObject } from './utils'
+import { convertComboBot, convertDCABot, convertDCABotToObject } from './utils'
+import schema from '../db/schema'
 import { poisonedSnapshotProfitField } from './redisSnapshotGuard'
 
 const BOT_ID = '000000000000000000000239'
@@ -185,16 +186,17 @@ describe('spec 239 — profit correction on a running DCA bot', () => {
     expect(bot.data.profitCorrections).to.deep.equal(['c1', 'c2'])
   })
 
-  it('§2.4 refuses while loading, on a combo bot, and on a bad delta — nothing written', async () => {
+  it('§2.4 refuses while loading, on a hedge bot, and on a bad delta — nothing written', async () => {
     const loading = buildBot()
     loading.loadingComplete = false
     expect(await loading.applyProfitCorrection(DELTA, 't', 'c1')).to.match(
       /^refused: bot data not loaded/,
     )
     const combo = buildBot()
+    combo.botType = 'hedgeCombo'
     combo.combo = true
     expect(await combo.applyProfitCorrection(DELTA, 't', 'c1')).to.match(
-      /^refused: only a DCA bot/,
+      /^refused: only a DCA or combo bot/,
     )
     const bad = buildBot()
     expect(
@@ -226,5 +228,60 @@ describe('spec 239 — profit correction on a running DCA bot', () => {
       profitCorrections: ['c1'],
     } as any)
     expect(o.profitCorrections).to.deep.equal(['c1'])
+  })
+})
+
+describe('spec 239 §4 — profit correction on a running combo bot', () => {
+  before(function () {
+    this.timeout(180000)
+    DcaHelper = DcaHelper ?? loadModule('./dcaHelper').default(FakeBase as any)
+  })
+
+  const buildCombo = (data: any = botData()) => {
+    const bot = buildBot(data)
+    // What ComboBot's constructor sets on top of the DCA helper.
+    bot.botType = 'combo'
+    bot.combo = true
+    return bot
+  }
+
+  it('§4.1 applies the delta to the combo worker profit and persists it with the id', async () => {
+    const bot = buildCombo()
+    expect(await bot.applyProfitCorrection(DELTA, 'test', 'c1')).to.equal(
+      'applied',
+    )
+    expect(bot.data.profit).to.include({
+      total: 11.5,
+      totalUsd: 10.25,
+      pureBase: 2,
+      pureQuote: 3.75,
+    })
+    expect(bot.writes).to.have.length(1)
+    expect(bot.writes[0].profit.total).to.equal(11.5)
+    expect(bot.writes[0].profitCorrections).to.deep.equal(['c1'])
+    expect(bot.emitted[0][1].profit.total).to.equal(11.5)
+  })
+
+  it('§4.2 the combo snapshot survives the combo restore path; a repeat is a duplicate', async () => {
+    const bot = buildCombo()
+    await bot.applyProfitCorrection(DELTA, 'test', 'c1')
+    const snap = JSON.parse(bot.redis.get('botData'))
+    expect(poisonedSnapshotProfitField(snap)).to.equal(null)
+    // What loadData() does for a combo bot on a service restart.
+    const restored: any = convertComboBot(snap)
+    expect(restored.profit.total).to.equal(11.5)
+    expect(restored.profitCorrections).to.deep.equal(['c1'])
+    const after = buildCombo(restored)
+    expect(await after.applyProfitCorrection(DELTA, 'test', 'c1')).to.equal(
+      'duplicate',
+    )
+    expect(after.data.profit.total).to.equal(11.5)
+    expect(after.writes).to.have.length(0)
+  })
+
+  it('§4.3 the combo bot schema declares profitCorrections (strict $set keeps the id)', () => {
+    expect(schema.comboBot.path('profitCorrections'), 'combobots field').to
+      .exist
+    expect(schema.dcaBot.path('profitCorrections'), 'dcabots field').to.exist
   })
 })

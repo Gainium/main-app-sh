@@ -201,6 +201,7 @@ import {
   convertDCABot,
   convertDCABotToObject,
   convertComboBot,
+  convertComboBotToObject,
   futuresPosition,
   limitOnlyEntryReplaced,
   orderBelowExchangeMinSubType,
@@ -15978,7 +15979,7 @@ function createDCABotHelper<
     /**
      * Add an out-of-band correction to this bot's realized-profit aggregate
      * (core spec 239). Internal-API method, reached by bot id through
-     * `callBotFunctionFromMeta` on the DCA bot host.
+     * `callBotFunctionFromMeta` on the DCA or combo bot host.
      *
      * The worker owns `data.profit` while it runs (it `$set`s the whole object
      * on every booking and restores it from the Redis snapshot on a service
@@ -16001,8 +16002,10 @@ function createDCABotHelper<
         if (invalid) {
           return `refused: ${invalid}`
         }
-        if (this.botType !== BotType.dca || this.combo) {
-          return 'refused: only a DCA bot keeps profitCorrections'
+        // A combo bot runs this same helper (botType combo, `combo` set) and
+        // books profit the same way; hedge legs and grid bots are not served.
+        if (this.botType !== (this.combo ? BotType.combo : BotType.dca)) {
+          return 'refused: only a DCA or combo bot keeps profitCorrections'
         }
         if (!this.loadingComplete || !this.data?.profit) {
           // loadData() would replace `data` from the snapshot after us.
@@ -16033,8 +16036,11 @@ function createDCABotHelper<
         // the snapshot now.
         await this.setToRedis(
           'botData',
-          //@ts-ignore
-          convertDCABotToObject(this.data),
+          this.combo
+            ? //@ts-ignore
+              convertComboBotToObject(this.data)
+            : //@ts-ignore
+              convertDCABotToObject(this.data),
         )
         this.emit('bot settings update', { profit: this.data.profit })
         return 'applied'
