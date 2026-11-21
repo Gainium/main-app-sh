@@ -19700,6 +19700,12 @@ function createDCABotHelper<
               if (cbIfNotOpened) {
                 cbIfNotOpened()
               }
+              // A terminal deal is a one-shot: refused, it will never open, so
+              // stop the bot as the balance and base-order refusals do —
+              // otherwise it stays `open` with no deal, holding its credits.
+              if (settings.type === DCATypeEnum.terminal) {
+                this.stop()
+              }
               return
             }
             // Last step before the deal exists: every gate above has passed.
