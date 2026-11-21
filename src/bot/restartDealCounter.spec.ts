@@ -52,6 +52,10 @@ const buildBot = (opts: {
   deals: { all: number; active: number }
   snapshot: any[]
   countFails?: boolean
+  /** Spec 253: `data` came from the Redis snapshot; Mongo holds this. */
+  fromRedis?: boolean
+  mongoDeals?: { all: number; active: number }
+  mongoReadFails?: boolean
 }) => {
   const writes: any[] = []
   const logs: string[] = []
@@ -71,6 +75,16 @@ const buildBot = (opts: {
       exchange: 'bybitLinear',
       flags: [],
       deals: { ...opts.deals },
+    }
+    dataFromRedis = !!opts.fromRedis
+    db = {
+      readData: async () =>
+        opts.mongoReadFails
+          ? { status: StatusEnum.notok, reason: 'db down', data: null }
+          : {
+              status: StatusEnum.ok,
+              data: { result: { _id: BOT_ID, deals: opts.mongoDeals } },
+            },
     }
     dealsDb = {
       readData: async (q: any) => {
@@ -191,5 +205,70 @@ describe('restart deal counter (spec 183)', () => {
     })
     await bot.loadOrders()
     expect(bot.data.deals).to.deep.equal({ all: 56, active: 1 })
+  })
+})
+
+/**
+ * Spec 253: the bot loaded from the Redis `botData` snapshot, whose counter
+ * already agrees with the loaded deals, while the Mongo document's counter is
+ * still wrong. The reconcile must compare against Mongo too.
+ */
+describe('deal counter hidden by the Redis snapshot (spec 253)', () => {
+  before(function () {
+    this.timeout(240000)
+    Helper = createRequire(__filename)('./dcaHelper').default()
+  })
+
+  it('§1.1.1 snapshot agrees, Mongo reads {0,0}: writes the loaded counter', async () => {
+    const bot = buildBot({
+      deals: { all: 57, active: 1 },
+      snapshot: SNAPSHOT,
+      fromRedis: true,
+      mongoDeals: { all: 0, active: 0 },
+    })
+    await bot.loadOrders()
+    expect(bot.data.deals).to.deep.equal({ all: 57, active: 1 })
+    expect(bot.writes.filter((w: any) => w.deals)).to.deep.equal([
+      { deals: { all: 57, active: 1 } },
+    ])
+  })
+
+  it('§1.1.2 snapshot and Mongo both agree: no write', async () => {
+    const bot = buildBot({
+      deals: { all: 57, active: 1 },
+      snapshot: SNAPSHOT,
+      fromRedis: true,
+      mongoDeals: { all: 57, active: 1 },
+    })
+    await bot.loadOrders()
+    expect(bot.writes.filter((w: any) => w.deals)).to.deep.equal([])
+  })
+
+  it('§1.1.3 a failed Mongo read writes nothing when the snapshot agrees', async () => {
+    const bot = buildBot({
+      deals: { all: 57, active: 1 },
+      snapshot: SNAPSHOT,
+      fromRedis: true,
+      mongoReadFails: true,
+    })
+    await bot.loadOrders()
+    expect(bot.writes.filter((w: any) => w.deals)).to.deep.equal([])
+  })
+
+  it('§1.1.4 data loaded from Mongo: no extra read, spec 183 behaviour', async () => {
+    let reads = 0
+    const bot = buildBot({
+      deals: { all: 57, active: 1 },
+      snapshot: SNAPSHOT,
+      mongoDeals: { all: 0, active: 0 },
+    })
+    const orig = bot.db.readData
+    bot.db.readData = async (...a: any[]) => {
+      reads++
+      return orig(...a)
+    }
+    await bot.loadOrders()
+    expect(reads).to.equal(0)
+    expect(bot.writes.filter((w: any) => w.deals)).to.deep.equal([])
   })
 })

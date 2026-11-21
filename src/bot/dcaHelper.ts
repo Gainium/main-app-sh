@@ -13919,6 +13919,11 @@ function createDCABotHelper<
      * `start` deals in memory. Writes only when that differs from the stored
      * counter, so a service restart does not write every bot. Shares the
      * `updateBotDeals` mutex. Spec 183.
+     *
+     * When `data` came from the Redis `botData` snapshot, the snapshot's
+     * counter is not what Mongo holds: compare against the Mongo document's
+     * `deals` too, so a database counter the snapshot hides is still
+     * corrected. One `_id` read, only on that path. Spec 253.
      */
     @IdMute(mutex, (botId) => `updateBotDeals${botId}`)
     async reconcileBotDeals(_botId: string, all?: number) {
@@ -13930,11 +13935,25 @@ function createDCABotHelper<
         all: all ?? stored.all,
         active: this.getOpenDeals().length,
       }
-      if (deals.all === stored.all && deals.active === stored.active) {
+      const same = (d?: { all?: number; active?: number } | null) =>
+        !!d && d.all === deals.all && d.active === deals.active
+      let persisted: typeof stored | null | undefined = stored
+      if (this.dataFromRedis) {
+        const read = await this.db?.readData<{
+          deals?: { all: number; active: number }
+        }>({ _id: this.botId }, { deals: 1 })
+        // A failed read is not evidence of drift: keep the snapshot's view.
+        persisted =
+          read?.status === StatusEnum.ok
+            ? (read.data?.result?.deals ?? null)
+            : stored
+      }
+      if (same(stored) && same(persisted)) {
         return
       }
+      const wrong = same(stored) ? persisted : stored
       this.handleLog(
-        `Bot deals counter ${stored.active}/${stored.all} (active/all) does not match the loaded deals, set to ${deals.active}/${deals.all}`,
+        `Bot deals counter ${wrong?.active ?? 0}/${wrong?.all ?? 0} (active/all)${wrong === stored ? '' : ' in the database'} does not match the loaded deals, set to ${deals.active}/${deals.all}`,
       )
       this.data.deals = deals
       await this.updateData({ deals })

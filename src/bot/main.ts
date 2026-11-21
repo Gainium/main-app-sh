@@ -1155,6 +1155,11 @@ class MainBot<T extends IMainBot> {
   /** Service restart flag */
   serviceRestart = false
   /**
+   * The last `loadData` took `data` from the Redis `botData` snapshot, so
+   * `data` can disagree with the bot's Mongo document. Spec 253.
+   */
+  dataFromRedis = false
+  /**
    * What the last {@link MainBot.generateGridsOnPrice} call wanted for one
    * level and the least that level may be. Recorded, never acted on, by the
    * sizing routine — see `./gridBudgetGuard`. `null` when nothing was derived.
@@ -4989,6 +4994,7 @@ class MainBot<T extends IMainBot> {
   ): Promise<void | boolean> {
     const id = this.startMethod('loadData')
     this.handleLog('Load data start')
+    this.dataFromRedis = false
     if (this.serviceRestart && !this.secondRestart && !SKIP_REDIS) {
       const botData = await this.getFromRedis<typeof this.data>('botData')
       const poisoned = poisonedSnapshotProfitField(botData)
@@ -5011,6 +5017,7 @@ class MainBot<T extends IMainBot> {
           )
         } else {
           this.data = botData
+          this.dataFromRedis = true
           this.handleLog('Read bot data from redis')
         }
       }
@@ -5044,6 +5051,7 @@ class MainBot<T extends IMainBot> {
         this.handleLog('Read bot data')
         if (dbData.status === StatusEnum.ok) {
           this.data = dbData.data.result
+          this.dataFromRedis = false
         }
       }
     }
