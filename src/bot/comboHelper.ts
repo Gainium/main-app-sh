@@ -2971,6 +2971,10 @@ function createComboBotHelper<
         }
         return
       }
+      // Spec `249`: a LIMIT remainder sweep of a closed deal, cancelled.
+      if (await this.retryCanceledLimitRemainderSweep(order)) {
+        return
+      }
       if (order.typeOrder !== TypeOrderEnum.dealGrid) {
         return
       }

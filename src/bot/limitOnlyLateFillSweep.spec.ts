@@ -151,6 +151,10 @@ function makeDcaBot(
     shouldProceed() {
       return true
     }
+    ownCancels: string[] = []
+    isOwnCancel(id: string) {
+      return this.ownCancels.includes(id)
+    }
     getDeal() {
       return undefined
     }
@@ -348,5 +352,145 @@ describe('limit-only book refuses the late-fill sweep (spec 225)', () => {
     await bot.updateDeal(BOT_ID, { ...LATE_FILL })
 
     expect(bot.sent.map((g: Row) => g.type)).to.deep.equal(['MARKET'])
+  })
+})
+
+/** The venue's cancel report of a resting LIMIT sweep `g`. */
+const canceledReport = (g: Row, executedQty = '0', price = `${g.price}`) => ({
+  clientOrderId: g.newClientOrderId,
+  dealId: DEAL_ID,
+  botId: BOT_ID,
+  symbol: 'FORTH-USDC',
+  side: 'SELL',
+  type: 'LIMIT',
+  typeOrder: 'dealTP',
+  status: 'CANCELED',
+  price,
+  origQty: `${g.qty}`,
+  executedQty,
+  updateTime: 5,
+})
+
+describe('a venue-cancelled limit remainder sweep is placed again (spec 249)', () => {
+  before(function () {
+    this.timeout(180000)
+    if (!Helper) {
+      const req = createRequire(__filename)
+      Helper = req('./dcaHelper').default(
+        class {
+          math = new MathHelper()
+          constructor(..._a: any[]) {}
+        } as any,
+      )
+      ComboHelper = req('./comboHelper').default(Helper)
+    }
+  })
+
+  const profitWrites = (bot: any) =>
+    bot.dealWrites.filter((w: Row) => w.$set?.profit)
+
+  it('§1.1 a sweep cancelled with nothing filled is re-placed once, by limit, under a new id', async () => {
+    const bot = makeDcaBot(limitOnlyBook)
+    await bot.updateDeal(BOT_ID, { ...LATE_FILL })
+    const limit = bot.sent[1]
+
+    await bot.processCanceledOrder(canceledReport(limit), 5, false)
+
+    expect(
+      bot.sent.map((g: Row) => [g.type, g.side, g.qty, g.price, g.reduceOnly]),
+    ).to.deep.equal([
+      ['MARKET', 'SELL', 103.818, 1.879, true],
+      ['LIMIT', 'SELL', 103.818, 1.879, true],
+      ['LIMIT', 'SELL', 103.818, 1.879, true],
+    ])
+    expect(bot.sent[2].newClientOrderId).to.match(/^D-SR/)
+    expect(bot.sent[2].newClientOrderId).to.not.equal(limit.newClientOrderId)
+    expect(profitWrites(bot)).to.have.length(0)
+  })
+
+  it('§1.2 a cancel after a partial fill re-places only the rest, and the sweep is booked once as the whole sale', async () => {
+    const bot = makeDcaBot(limitOnlyBook)
+    await bot.updateDeal(BOT_ID, { ...LATE_FILL })
+    const limit = bot.sent[1]
+
+    await bot.processCanceledOrder(canceledReport(limit, '40'), 5, false)
+    const rest = bot.sent[2]
+    expect([rest.type, rest.qty]).to.deep.equal(['LIMIT', 63.818])
+
+    await bot.processFilledOrder({
+      ...canceledReport(rest, '63.818', '1.88'),
+      status: 'FILLED',
+    })
+
+    const booked = profitWrites(bot)
+    expect(booked, 'booked exactly once').to.have.length(1)
+    // Same booking as one MARKET sweep of the whole quantity at the average.
+    const avg = (40 * 1.879 + 63.818 * 1.88) / 103.818
+    const market = makeDcaBot((g) => ({
+      clientOrderId: g.newClientOrderId,
+      side: 'SELL',
+      status: 'FILLED',
+      price: `${avg}`,
+      executedQty: `${g.qty}`,
+      updateTime: 2,
+    }))
+    await market.updateDeal(BOT_ID, { ...LATE_FILL })
+    const pick = (w: Row) => ({
+      currentBalances: w.$set.currentBalances,
+      profit: w.$set.profit,
+      commission: w.$set.commission,
+      'levels.complete': w.$set['levels.complete'],
+    })
+    expect(pick(booked[0])).to.deep.equal(pick(profitWrites(market)[0]))
+  })
+
+  it('§1.3 it is placed again at most 3 times, then what sold is booked', async () => {
+    const bot = makeDcaBot(limitOnlyBook)
+    await bot.updateDeal(BOT_ID, { ...LATE_FILL })
+
+    await bot.processCanceledOrder(canceledReport(bot.sent[1], '3'), 5, false)
+    for (let i = 0; i < 4; i++) {
+      await bot.processCanceledOrder(
+        canceledReport(bot.sent[bot.sent.length - 1]),
+        5,
+        false,
+      )
+    }
+
+    expect(bot.sent.map((g: Row) => g.type)).to.deep.equal([
+      'MARKET',
+      'LIMIT',
+      'LIMIT',
+      'LIMIT',
+      'LIMIT',
+    ])
+    // The 3 sold by the first LIMIT are not lost when the retries run out.
+    expect(profitWrites(bot)).to.have.length(1)
+  })
+
+  it('§1.4 a cancel the bot asked for is not placed again', async () => {
+    const bot = makeDcaBot(limitOnlyBook)
+    await bot.updateDeal(BOT_ID, { ...LATE_FILL })
+    const limit = bot.sent[1]
+    bot.ownCancels.push(limit.newClientOrderId)
+
+    await bot.processCanceledOrder(canceledReport(limit), 5, false)
+
+    expect(bot.sent).to.have.length(2)
+  })
+
+  it('§1.1 a combo bot re-places its cancelled limit sweep too', async () => {
+    const bot = makeDcaBot(limitOnlyBook, ComboHelper)
+    await bot.sellRemainder(DEAL_ID, 104.445, 1.9, false, {
+      deal: { ...makeClosedDeal(), sellRemainder: false },
+    })
+
+    await bot.processCanceledOrder(canceledReport(bot.sent[1]), 5, false)
+
+    expect(bot.sent.map((g: Row) => g.type)).to.deep.equal([
+      'MARKET',
+      'LIMIT',
+      'LIMIT',
+    ])
   })
 })

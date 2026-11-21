@@ -699,6 +699,27 @@ const REMAINDER_SWEEP_WAIT_MS = 5 * 1000
 const REMAINDER_SWEEP_POLL_MS = 100
 /** Spec `226`. A tracked sweep nobody reported on for this long is dropped. */
 const REMAINDER_SWEEP_MEMORY_MS = 60 * 60 * 1000
+/**
+ * Spec `249`. How many times a LIMIT remainder sweep (spec `225`) the venue
+ * cancelled is placed again. Bounded: the cancel can be self-trade
+ * prevention against the bot's own next entry, which a re-placement can hit
+ * again.
+ */
+const LIMIT_REMAINDER_SWEEP_RETRIES = 3
+
+/** Spec `225`. What `sellRemainder` needs to book a LIMIT remainder sweep. */
+type LimitRemainderSweep = {
+  dealId: string
+  qty: number
+  price: number
+  sellNotByOrder: boolean
+  updateBalances: boolean
+  /** Spec `249`: re-placements after a venue cancel, so far. */
+  retries?: number
+  /** Spec `249`: sold by earlier, cancelled orders of this sweep, not booked yet. */
+  soldQty?: number
+  soldQuote?: number
+}
 
 /**
  * Spec `226`. A take-profit remainder sweep sent by the close path, and how
@@ -1279,16 +1300,7 @@ function createDCABotHelper<
      * it fills. In memory only: a restart before the fill still sells the
      * coins, it just leaves that fill unbooked on the closed deal.
      */
-    private limitRemainderSweeps: Map<
-      string,
-      {
-        dealId: string
-        qty: number
-        price: number
-        sellNotByOrder: boolean
-        updateBalances: boolean
-      }
-    > = new Map()
+    private limitRemainderSweeps: Map<string, LimitRemainderSweep> = new Map()
     /**
      * Spec `222`. Deal id -> its own buy-back shortfall, written when
      * `getTPOrder` skipped a combo SHORT close (sized by `prepareTpOrder`)
@@ -9553,13 +9565,7 @@ function createDCABotHelper<
       marketGrid: Grid,
       marketAdditional: OrderAdditionalParams,
       ed: ClearPairsSchema,
-      booking: {
-        dealId: string
-        qty: number
-        price: number
-        sellNotByOrder: boolean
-        updateBalances: boolean
-      },
+      booking: LimitRemainderSweep,
     ): Promise<Order | void> {
       this.handleLog(
         `${marketGrid.newClientOrderId} refused, ${ed.pair} book is in limit only mode. Selling the remaining ${marketGrid.qty} of closed deal ${booking.dealId} by limit`,
@@ -9597,19 +9603,132 @@ function createDCABotHelper<
         return false
       }
       this.limitRemainderSweeps.delete(order.clientOrderId)
+      await this.bookLimitSweepSale(limitSweep, order)
+      return true
+    }
+    /**
+     * Book what a LIMIT remainder sweep sold, `order`'s own fill plus what
+     * earlier cancelled orders of the same sweep sold (spec `249`), as ONE
+     * sale at their average price — the booking an accepted MARKET sweep gets.
+     */
+    private async bookLimitSweepSale(sweep: LimitRemainderSweep, order: Order) {
+      const own = +order.executedQty
+      const ownQty = Number.isFinite(own) && own > 0 ? own : 0
+      const qty = (sweep.soldQty ?? 0) + ownQty
+      if (!(qty > 0)) {
+        return
+      }
+      const quote = (sweep.soldQuote ?? 0) + ownQty * +order.price
       await this.sellRemainder(
-        limitSweep.dealId,
-        limitSweep.qty,
-        limitSweep.price,
-        limitSweep.sellNotByOrder,
+        sweep.dealId,
+        sweep.qty,
+        sweep.price,
+        sweep.sellNotByOrder,
         undefined,
-        limitSweep.updateBalances,
+        sweep.updateBalances,
         // The status gate was passed when the sweep was placed.
         true,
         // Bypasses only the deal-level "already sold" flag.
         true,
-        { result: order },
+        {
+          result:
+            qty === ownQty
+              ? order
+              : { ...order, executedQty: `${qty}`, price: `${quote / qty}` },
+        },
       )
+    }
+    /**
+     * Spec `249`. The venue ended a LIMIT remainder sweep (spec `225`) that this
+     * bot did not cancel, with quantity unsold: place the unsold quantity again
+     * by limit at the latest price, at most `LIMIT_REMAINDER_SWEEP_RETRIES`
+     * times. What the cancelled order sold is carried, and booked with the
+     * last order's fill, or now when there is no next order. Returns whether
+     * `order` was such a sweep; the caller then has nothing left to do with it,
+     * because its deal is closed.
+     */
+    protected async retryCanceledLimitRemainderSweep(
+      order: Order,
+    ): Promise<boolean> {
+      const sweep = this.limitRemainderSweeps?.get(order.clientOrderId)
+      if (!sweep) {
+        return false
+      }
+      this.limitRemainderSweeps.delete(order.clientOrderId)
+      const { dealId } = sweep
+      const executed = +order.executedQty
+      // Same distrust as the TP path below: only a dated report's fill is real.
+      const filled =
+        Number.isFinite(executed) && executed > 0 && order.updateTime > 0
+          ? executed
+          : 0
+      const carried: LimitRemainderSweep = {
+        ...sweep,
+        soldQty: (sweep.soldQty ?? 0) + filled,
+        soldQuote: (sweep.soldQuote ?? 0) + filled * +order.price,
+      }
+      const bookSold = () =>
+        this.bookLimitSweepSale(carried, { ...order, executedQty: '0' })
+      const retries = sweep.retries ?? 0
+      const ed = await this.getExchangeInfo(order.symbol)
+      const unsold = ed
+        ? this.math.round(
+            +order.origQty - filled,
+            await this.baseAssetPrecision(order.symbol),
+            true,
+          )
+        : 0
+      const price = ed ? await this.getLatestPrice(order.symbol) : 0
+      const stop = this.isOwnCancel(order.clientOrderId)
+        ? 'canceled by the bot'
+        : !ed
+          ? 'no exchange info'
+          : !(unsold > 0) ||
+              unsold < ed.baseAsset.minAmount ||
+              unsold * price <
+                closeOrderQuoteMinimum(
+                  this.data?.exchange,
+                  this.hedge,
+                  ed.quoteAsset.minAmount,
+                )
+            ? 'below the minimums'
+            : retries >= LIMIT_REMAINDER_SWEEP_RETRIES
+              ? `placed ${retries} more times already`
+              : ''
+      if (stop || !ed) {
+        this.handleLog(
+          `Sell remainder | ${order.clientOrderId} of deal ${dealId} was ${order.status} with ${unsold} unsold, not placed again: ${stop}`,
+        )
+        await bookSold()
+        return true
+      }
+      this.handleLog(
+        `Sell remainder | ${order.clientOrderId} of deal ${dealId} was ${order.status} on the exchange with ${unsold} unsold. Placing it again by limit at ${price}, attempt ${retries + 1} of ${LIMIT_REMAINDER_SWEEP_RETRIES}`,
+      )
+      const { grid, additional } = this.remainderSweepOrder(
+        dealId,
+        unsold,
+        price,
+        ed,
+      )
+      additional.type = OrderTypeEnum.limit
+      this.limitRemainderSweeps.set(grid.newClientOrderId, {
+        ...carried,
+        retries: retries + 1,
+      })
+      const result = await this.sendGridToExchange(grid, additional, ed)
+      // Whoever takes the entry out of the map books the sale.
+      if (
+        this.limitRemainderSweeps.has(grid.newClientOrderId) &&
+        (!result || result.status === 'FILLED')
+      ) {
+        this.limitRemainderSweeps.delete(grid.newClientOrderId)
+        if (result) {
+          await this.bookLimitSweepSale(carried, result)
+        } else {
+          await bookSold()
+        }
+      }
       return true
     }
     /** Sell remainder for deal */
@@ -26792,6 +26911,10 @@ function createDCABotHelper<
         return
       }
       if (order.typeOrder !== TypeOrderEnum.dealTP) {
+        return
+      }
+      // Spec `249`: a LIMIT remainder sweep of a closed deal, cancelled.
+      if (await this.retryCanceledLimitRemainderSweep(order)) {
         return
       }
       // Spec `226` §1.1.2: a remainder sweep of a deal that already closed.
