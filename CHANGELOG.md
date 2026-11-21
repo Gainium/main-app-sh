@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.0] - 2026-11-21
+
+### Added
+
+- Deal settings record `changedKeys`, the settings a deal edit left different from the bot's, compared by value; `changed` now reflects them instead of a by-reference comparison
+
 ## [1.131.1] - 2026-11-21
 
 ### Fixed
