@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.2] - 2026-11-21
+
+### Fixed
+
+- Restoring a canceled deal whose entry order never filled is refused with a message instead of reopening an empty deal
+
 ## [1.132.1] - 2026-11-21
 
 ### Fixed
