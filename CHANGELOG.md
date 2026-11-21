@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.132.9] - 2026-11-21
+
+### Fixed
+
+- The hourly clean-up of stuck DCA deals reads only deals still waiting to start instead of scanning every deal
+- A DCA deal restored after a restart with safety orders whose quantity equals their price now recalculates those orders from the deal settings and tells the user, instead of sending them again
+
 ## [1.132.8] - 2026-11-21
 
 ### Fixed
