@@ -2240,6 +2240,8 @@ class MainBot<T extends IMainBot> {
         marketClosedNotice(order.symbol),
         order.symbol,
         MessageTypeEnum.warning,
+        'Bot warning',
+        marketClosed,
       ).catch(() => undefined)
     } else {
       noticed.set(order.symbol, now)
@@ -4121,6 +4123,7 @@ class MainBot<T extends IMainBot> {
     symbol?: string,
     type: MessageTypeEnum = MessageTypeEnum.warning,
     event = 'Bot warning',
+    subType?: string,
   ): Promise<void> {
     if (this.ignoreErrors) {
       return
@@ -4144,6 +4147,7 @@ class MainBot<T extends IMainBot> {
         paperContext: !!this.data?.paperContext,
         // @ts-ignore grid settings carry no `type`
         terminal: this.data?.settings?.type === DCATypeEnum.terminal,
+        ...(subType ? { subType } : {}),
       }
       this.botEventDb.createData({
         userId: this.userId,
