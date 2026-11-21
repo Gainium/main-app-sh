@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.8] - 2026-11-21
+
+### Fixed
+
+- A Binance DCA or Combo safety order or Combo grid order the price already ran through, refused by Binance's percent-price filter, is now re-sent once at the market price like on other exchanges, and shows an error if it still cannot be placed
+
 ## [1.132.7] - 2026-11-21
 
 ### Added
