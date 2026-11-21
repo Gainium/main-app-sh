@@ -98,6 +98,7 @@ import {
 } from './conditionLatch'
 import { gridBudgetVerdict, gridBudgetRefusalMessage } from './gridBudgetGuard'
 import { capLadderPlacements } from './ladderPlacementCap'
+import { isOutOfLevelBudget, levelBudgetFactor } from './combo/ladderLevelBudget'
 import type { MinOrderFloor, MinOrderViolation } from './minOrderFloor'
 import { v4 } from 'uuid'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
@@ -6846,6 +6847,54 @@ function createComboBotHelper<
       return result
     }
 
+    /**
+     * Spec 252. A level the Redis snapshot holds at a size its own budget
+     * rules out (the old precision-update defect wrote the price into `qty`)
+     * is re-sized from the deal's settings before anything places it: the
+     * stored price is kept, so the level still pairs with what rests on the
+     * venue. A level the settings no longer produce is dropped. The user is
+     * told once — the repaired ladder is what the next snapshot stores.
+     */
+    protected override async repairRestoredLadder(
+      d: FullDeal<CleanComboDealsSchema>,
+      initialOrders: Grid[],
+    ): Promise<Grid[]> {
+      const settings = await this.getAggregatedSettings(d.deal)
+      const factor = levelBudgetFactor(settings.gridLevel)
+      const bad = initialOrders.filter((g) =>
+        isOutOfLevelBudget(g, this.coinm, factor),
+      )
+      if (!bad.length) {
+        return initialOrders
+      }
+      const fresh = await this.createInitialDealOrders(
+        d.deal.symbol.symbol,
+        d.deal.initialPrice,
+        `${d.deal._id}`,
+        d.deal as ExcludeDoc<ComboDealsSchema>,
+      )
+      const repaired = initialOrders.flatMap((g) => {
+        if (!bad.includes(g)) {
+          return [g]
+        }
+        const level = fresh.find(
+          (f) =>
+            f.type === TypeOrderEnum.dealRegular &&
+            f.side === g.side &&
+            f.dcaLevel === g.dcaLevel,
+        )
+        return level
+          ? [{ ...g, qty: level.qty, minigridBudget: level.minigridBudget }]
+          : []
+      })
+      const message = `Deal ${d.deal._id}: ${bad.length} safety order(s) restored after a restart had an invalid size (${bad
+        .map((g) => `${g.qty} @ ${g.price}`)
+        .join(', ')}). They were recalculated from the deal settings before being placed.`
+      this.handleWarn(message)
+      await this.postUserNotice(message, d.deal.symbol.symbol)
+      return repaired
+    }
+
     override async afterUpdateExchangeInfo(pairs: Set<string>): Promise<void> {
       const oldPrecisions = new Map([...this.precisions.entries()])
       await super.afterUpdateExchangeInfo(pairs)
@@ -8773,7 +8822,28 @@ function createComboBotHelper<
             .join(', ')}: they would rest more orders than the ladder holds`,
         )
       }
-      return { ...diff, new: place }
+      // Spec 252: never send a safety order at a size its own level budget
+      // rules out. The venue refuses it anyway (or, without a per-order cap,
+      // fills it), and every reload would send it again.
+      const factor = levelBudgetFactor(
+        (await this.getAggregatedSettings(deal.deal)).gridLevel,
+      )
+      const oversized = place.filter((g) =>
+        isOutOfLevelBudget(g, this.coinm, factor),
+      )
+      if (oversized.length) {
+        const message = `Deal ${deal.deal._id}: refused ${oversized.length} safety order(s) whose size does not match their level budget (${oversized
+          .map((g) => `${g.qty} @ ${g.price}`)
+          .join(', ')}). Restart the bot to recalculate them.`
+        this.handleWarn(message)
+        await this.postUserNotice(message, deal.deal.symbol.symbol)
+      }
+      return {
+        ...diff,
+        new: oversized.length
+          ? place.filter((g) => !oversized.includes(g))
+          : place,
+      }
     }
 
     /** Combo's stats payload (spec 230: shared by the load seed). */

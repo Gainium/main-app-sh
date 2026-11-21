@@ -2960,6 +2960,8 @@ function createDCABotHelper<
                 : this.getOrderId('D-TP'),
           })
         }
+        const repaired = await this.repairRestoredLadder(d, initialOrders)
+        initialOrders.splice(0, initialOrders.length, ...repaired)
         const currentOrders = await this.createCurrentDealOrders(
           d.deal.symbol.symbol,
           d.deal.lastPrice,
@@ -3121,6 +3123,18 @@ function createDCABotHelper<
       this.endMethod(_id)
     }
 
+    /**
+     * The ladder restored from the Redis snapshot, with any level the snapshot
+     * holds at an impossible size re-derived. Combo overrides it; a DCA ladder
+     * is restored as stored. Spec 252.
+     */
+    protected async repairRestoredLadder(
+      _d: FullDeal<ExcludeDoc<Deal>>,
+      initialOrders: Grid[],
+    ): Promise<Grid[]> {
+      return initialOrders
+    }
+
     override async afterUpdateExchangeInfo(pairs: Set<string>): Promise<void> {
       for (const o of pairs) {
         const getOld = this.precisions.get(o)
@@ -3157,12 +3171,16 @@ function createDCABotHelper<
           const deals = this.getDealsByStatusAndSymbol({ symbol: o })
           updateDeals = !!deals.length
           for (const d of deals) {
+            // Re-round the QUANTITY. This used to round the price into `qty`,
+            // so a venue lowering a pair's base precision turned every resting
+            // level into "qty = price" — thousands of coins — and the Redis
+            // snapshot kept it across every restart. Spec 252.
             d.currentOrders = d.currentOrders.map((co) => {
-              co.qty = this.math.round(co.price, newBaseAssetPrecision)
+              co.qty = this.math.round(co.qty, newBaseAssetPrecision)
               return co
             })
             d.initialOrders = d.initialOrders.map((io) => {
-              io.qty = this.math.round(io.price, newBaseAssetPrecision)
+              io.qty = this.math.round(io.qty, newBaseAssetPrecision)
               return io
             })
             this.saveDeal(d)
