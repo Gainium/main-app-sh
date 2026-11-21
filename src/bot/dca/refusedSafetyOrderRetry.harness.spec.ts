@@ -78,15 +78,17 @@ describe('refused safety order: band and closed market (spec 248)', () => {
         repricesOnPriceBand(safety({ typeOrder: TypeOrderEnum.dealGrid })),
       ).to.equal(true)
     })
-    it('not add / reduce funds, a market order, a TP or a base order', () => {
+    it('a deal take profit too (spec 254)', () => {
+      expect(
+        repricesOnPriceBand(safety({ typeOrder: TypeOrderEnum.dealTP })),
+      ).to.equal(true)
+    })
+    it('not add / reduce funds, a market order or a base order', () => {
       expect(repricesOnPriceBand(safety({ addFundsId: 'a' }))).to.equal(false)
       expect(repricesOnPriceBand(safety({ reduceFundsId: 'r' }))).to.equal(
         false,
       )
       expect(repricesOnPriceBand(safety({ type: 'MARKET' }))).to.equal(false)
-      expect(
-        repricesOnPriceBand(safety({ typeOrder: TypeOrderEnum.dealTP })),
-      ).to.equal(false)
       expect(
         repricesOnPriceBand(safety({ typeOrder: TypeOrderEnum.dealStart })),
       ).to.equal(false)

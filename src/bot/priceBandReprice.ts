@@ -23,8 +23,11 @@ export type PriceBandSide = 'BUY' | 'SELL'
 
 /**
  * Which refused orders are re-sent through the market: combo grid levels
- * (spec 246) and DCA / combo safety orders (spec 248), as limit orders.
- * Add / reduce funds orders are the user's own and are left as they are.
+ * (spec 246), DCA / combo safety orders (spec 248) and a deal's take profit
+ * (spec 254), as limit orders. A take profit the market has run through is
+ * a close the deal is owed; sent at the market it closes at least as well as
+ * its target. Add / reduce funds orders are the user's own and are left as
+ * they are.
  */
 export function repricesOnPriceBand(order: {
   typeOrder?: string
@@ -40,7 +43,7 @@ export function repricesOnPriceBand(order: {
     return true
   }
   return (
-    order.typeOrder === 'dealRegular' &&
+    (order.typeOrder === 'dealRegular' || order.typeOrder === 'dealTP') &&
     !!order.dealId &&
     !order.addFundsId &&
     !order.reduceFundsId

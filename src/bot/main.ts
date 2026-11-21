@@ -9452,10 +9452,14 @@ class MainBot<T extends IMainBot> {
     reason: string | null | undefined,
   ) {
     const safety = order.typeOrder === TypeOrderEnum.dealRegular
-    if (!safety) {
+    const takeProfit = order.typeOrder === TypeOrderEnum.dealTP
+    if (!safety && !takeProfit) {
       this.markGridOrderStuck(order)
     }
-    const message = `${safety ? 'DCA order' : 'Grid order'} ${order.clientOrderId} cannot be placed: ${order.side === 'BUY' ? 'buy' : 'sell'} at ${safety ? 'DCA' : 'grid'} level ${order.origPrice} was refused by the exchange on price even after re-pricing to ${order.price}. Exchange reason: ${reason ?? 'unknown'}`
+    const side = order.side === 'BUY' ? 'buy' : 'sell'
+    const message = takeProfit
+      ? `Take profit ${order.clientOrderId} cannot be placed: ${side} at take-profit price ${order.origPrice} was refused by the exchange on price even after re-pricing to the market (${order.price}). The deal has no take profit on the exchange; close it manually if needed. Exchange reason: ${reason ?? 'unknown'}`
+      : `${safety ? 'DCA order' : 'Grid order'} ${order.clientOrderId} cannot be placed: ${side} at ${safety ? 'DCA' : 'grid'} level ${order.origPrice} was refused by the exchange on price even after re-pricing to ${order.price}. Exchange reason: ${reason ?? 'unknown'}`
     this.botEventDb
       .createData({
         userId: this.userId,
@@ -10446,6 +10450,9 @@ class MainBot<T extends IMainBot> {
           // `Order price` class. See `priceBandReprice.ts`. A DCA / combo
           // safety order the price ran through is re-sent the same way: its
           // level stays on `origPrice`, so the ladder still knows it (spec 248).
+          // A deal's take profit the market ran through likewise (spec 254):
+          // `origPrice` keeps the take-profit price, which is what
+          // `isOrderExistInDeal` matches a resting take profit on.
           if (
             repricesOnPriceBand(order) &&
             this.getErrorSubType(`${request.reason ?? ''}`) === orderPrice
@@ -10471,7 +10478,7 @@ class MainBot<T extends IMainBot> {
                 `${repriced}` !== order.price
               ) {
                 this.handleLog(
-                  `Order ${order.clientOrderId} ${order.side} ${order.price} refused on price band, market ${market}. Re-send at ${repriced}, ${order.typeOrder === TypeOrderEnum.dealRegular ? 'DCA' : 'grid'} level ${order.origPrice} kept`,
+                  `Order ${order.clientOrderId} ${order.side} ${order.price} refused on price band, market ${market}. Re-send at ${repriced}, ${order.typeOrder === TypeOrderEnum.dealRegular ? 'DCA' : order.typeOrder === TypeOrderEnum.dealTP ? 'take-profit' : 'grid'} level ${order.origPrice} kept`,
                 )
                 ;(this.priceBandRepriced ??= new Set()).add(order.clientOrderId)
                 order.price = `${repriced}`
