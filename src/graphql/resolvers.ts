@@ -1,4 +1,6 @@
 import { v4 } from 'uuid'
+import { reportingProfitExpr } from '../utils/fiatProfit'
+import { reportingRateSeries } from '../utils/fxHistory'
 import { withExchangeCaller } from '../exchange/requestContext'
 import DB from '../db'
 import type { PipelineStage, ProjectionFields } from 'mongoose'
@@ -3143,6 +3145,10 @@ const resolvers = <
           botType?: BotType
           terminal?: boolean
           exchangeUUIDs?: string[]
+          /** Dashboard reporting currency; the result is then that currency's amount ÷ `reportingRate`. */
+          reportingCurrency?: string
+          /** The dashboard's own units-per-USD for `reportingCurrency`. */
+          reportingRate?: number
         }
       },
       { token, paperContext }: InputRequest,
@@ -3152,6 +3158,28 @@ const resolvers = <
         return user
       }
       const timezone = input?.timezone || user.data.timezone
+      // Realized profit in the reporting currency: the part made in that
+      // currency at face value, the rest at the rate of the day it was made.
+      // Returned ÷ the dashboard's own rate, because the dashboard multiplies
+      // every USD figure by that rate — so it shows exactly this amount.
+      const reportingCode = input?.reportingCurrency?.toUpperCase()
+      const reportingRate = Number(input?.reportingRate)
+      let profitValue: string | Record<string, unknown> = '$profitUsd'
+      if (
+        reportingCode &&
+        reportingCode !== 'USD' &&
+        isReportingCurrency(reportingCode) &&
+        reportingRate > 0 &&
+        Number.isFinite(reportingRate)
+      ) {
+        const series = await reportingRateSeries(reportingCode, reportingRate)
+        profitValue = {
+          $divide: [
+            reportingProfitExpr(reportingCode, series.rates, series.from),
+            reportingRate,
+          ],
+        }
+      }
 
       const timeframe = input?.timeframe || 0
       const botType = input?.botType
@@ -3175,7 +3203,7 @@ const resolvers = <
             {
               $project: {
                 _id: 1,
-                profitUsd: 1,
+                profitUsd: profitValue,
                 updateTime: '$time',
               },
             },
@@ -3212,7 +3240,7 @@ const resolvers = <
             {
               $project: {
                 _id: 1,
-                profitUsd: 1,
+                profitUsd: profitValue,
                 updateTime: '$time',
               },
             },
@@ -3243,7 +3271,7 @@ const resolvers = <
             {
               $project: {
                 _id: 1,
-                profitUsd: 1,
+                profitUsd: profitValue,
                 updated: '$time',
               },
             },
@@ -3274,7 +3302,7 @@ const resolvers = <
             {
               $project: {
                 _id: 1,
-                profitUsd: 1,
+                profitUsd: profitValue,
                 updated: '$time',
               },
             },
@@ -3305,7 +3333,7 @@ const resolvers = <
             {
               $project: {
                 _id: 1,
-                profitUsd: 1,
+                profitUsd: profitValue,
                 updated: '$time',
               },
             },
@@ -3339,7 +3367,7 @@ const resolvers = <
                   $min: '$time',
                 },
                 quote: {
-                  $sum: '$profitUsd',
+                  $sum: profitValue,
                 },
               },
             },
@@ -3507,7 +3535,7 @@ const resolvers = <
           {
             $project: {
               _id: 1,
-              profitUsdt: '$profitUsd',
+              profitUsdt: profitValue,
               date: {
                 $convert: {
                   input: '$time',

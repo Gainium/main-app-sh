@@ -6590,6 +6590,8 @@ export const BotSchema = /* GraphQL */ `
     timeframe: Int
     terminal: Boolean
     exchangeUUIDs: [String]
+    reportingCurrency: String
+    reportingRate: Float
   }
   input getPortfolioByUser {
     timezone: String

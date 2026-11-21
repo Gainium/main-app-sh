@@ -1,4 +1,5 @@
 import { isMainThread, parentPort, threadId } from 'worker_threads'
+import { profitByHourInc, type FiatProfitPart } from '../utils/fiatProfit'
 import { v4 } from 'uuid'
 import type DB from '../db'
 import type {
@@ -2481,7 +2482,13 @@ class MainBot<T extends IMainBot> {
     }
   }
 
-  saveProfitToDb(usd: number, time: number) {
+  /**
+   * Books a realized profit into the account statistics. `fiat` is the same
+   * profit in the currency it was made in; when that is a reporting fiat (EUR
+   * on LINK-EUR) it is kept beside the USD value so the statistics can show it
+   * at face value instead of round-tripping it through USD.
+   */
+  saveProfitToDb(usd: number, time: number, fiat?: FiatProfitPart) {
     const hours = new Date(time)
     hours.setMinutes(0, 0, 0)
     const terminal =
@@ -2501,7 +2508,7 @@ class MainBot<T extends IMainBot> {
           ? { exchangeUUID: this.data.exchangeUUID }
           : {}),
       },
-      { $inc: { profitUsd: usd } },
+      { $inc: profitByHourInc(usd, fiat) },
       undefined,
       true,
       true,

@@ -21,6 +21,7 @@ import { normalizePairLeverage } from '../pairLeverage'
 import { normalizeDeliveryTime } from '../../bot/deliveryCutoff'
 import { Kraken } from 'node-kraken-api'
 import { fetchReferenceRates, mergeFiatRates } from '../fiatRates'
+import { backfillFxHistory, recordFxDay } from '../fxHistory'
 import axios from 'axios'
 
 const providers = [
@@ -718,6 +719,9 @@ export const saveRate = async () => {
         ? logger.error(`Save USD rate reason: ${r.reason}`)
         : null,
     )
+  // Daily history for valuing realized profit at its own day's rate.
+  await recordFxDay(fiatRates)
+  await backfillFxHistory()
 }
 
 const updateBrokerCodes = async () => {

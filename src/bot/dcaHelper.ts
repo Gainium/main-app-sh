@@ -7,6 +7,7 @@ import {
   planShortSpotDealFunding,
   ShortSpotFundingDecision,
 } from './baseFunding'
+import { fiatPartFromUsd } from '../utils/fiatProfit'
 import { estimatedFeeRate } from './placedOrderType'
 import { FundingReservation } from './fundingReservation'
 import { BaseFundingGate } from './baseFundingGate'
@@ -4466,7 +4467,22 @@ function createDCABotHelper<
           const usdUpdate = this.combo
             ? findDeal.deal.profit.totalUsd
             : totalUsd
-          this.saveProfitToDb(usdUpdate, findDeal.deal.closeTime ?? +new Date())
+          this.saveProfitToDb(
+            usdUpdate,
+            findDeal.deal.closeTime ?? +new Date(),
+            // A combo deal's USD total sums round-trips booked at their own
+            // rates, so its native quote total is the exact figure.
+            this.combo && !profitBase
+              ? {
+                  asset: findDeal.deal.symbol.quoteAsset,
+                  amount: findDeal.deal.profit.total,
+                }
+              : fiatPartFromUsd(
+                  findDeal.deal.symbol.quoteAsset,
+                  usdUpdate,
+                  rate,
+                ),
+          )
           this.data.profit = {
             freeTotal: 0,
             freeTotalUsd: 0,
@@ -4659,7 +4675,11 @@ function createDCABotHelper<
             pureBase: (this.data.profit.pureBase ?? 0) + pureBase,
             pureQuote: (this.data.profit.pureQuote ?? 0) + pureQuote,
           }
-          this.saveProfitToDb(totalUsd, findDeal.deal.closeTime ?? +new Date())
+          this.saveProfitToDb(
+            totalUsd,
+            findDeal.deal.closeTime ?? +new Date(),
+            fiatPartFromUsd(findDeal.deal.symbol.quoteAsset, totalUsd, rate),
+          )
           this.saveDeal(findDeal, {
             profit: findDeal.deal.profit,
             updateTime: findDeal.deal.updateTime,
@@ -4694,6 +4714,16 @@ function createDCABotHelper<
           this.saveProfitToDb(
             findDeal.deal.profit.totalUsd,
             findDeal.deal.closeTime ?? +new Date(),
+            !profitBase
+              ? {
+                  asset: findDeal.deal.symbol.quoteAsset,
+                  amount: findDeal.deal.profit.total,
+                }
+              : fiatPartFromUsd(
+                  findDeal.deal.symbol.quoteAsset,
+                  findDeal.deal.profit.totalUsd,
+                  rate,
+                ),
           )
           this.updateData({ profit: this.data.profit })
           this.emit('bot settings update', { profit: this.data.profit })
@@ -8221,6 +8251,16 @@ function createDCABotHelper<
           this.saveProfitToDb(
             realized.totalUsd,
             findDeal.deal.closeTime ?? +new Date(),
+            !profitBase
+              ? {
+                  asset: findDeal.deal.symbol.quoteAsset,
+                  amount: realized.total,
+                }
+              : fiatPartFromUsd(
+                  findDeal.deal.symbol.quoteAsset,
+                  realized.totalUsd,
+                  rate,
+                ),
           )
           this.updateData({ profit: this.data.profit })
           this.emit('bot settings update', { profit: this.data.profit })
@@ -9846,7 +9886,11 @@ function createDCABotHelper<
                 pureBase: (this.data.profit.pureBase ?? 0) + pureBase,
                 pureQuote: (this.data.profit.pureQuote ?? 0) + pureQuote,
               }
-              this.saveProfitToDb(totalUsd, dealData.closeTime ?? +new Date())
+              this.saveProfitToDb(
+                totalUsd,
+                dealData.closeTime ?? +new Date(),
+                fiatPartFromUsd(dealData.symbol?.quoteAsset, totalUsd, rate),
+              )
               this.updateData({ profit: { ...this.data.profit } })
               this.emit('bot settings update', { profit: this.data.profit })
             }
@@ -10054,7 +10098,8 @@ function createDCABotHelper<
       }
       const fee = dQuote * ((await this.getUserFee(symbol))?.taker ?? 0)
       const total = dQuote - dq * avgPrice - fee
-      const totalUsd = total * (await this.getUsdRate(symbol))
+      const sweepRate = await this.getUsdRate(symbol)
+      const totalUsd = total * sweepRate
       this.handleLog(
         `Sell remainder | ${order.clientOrderId} ${order.status}: booking ${dq} more sold for ${dQuote} onto closed deal ${dealId} (${qty} of ${sweep.origQty} sold)`,
       )
@@ -10088,6 +10133,11 @@ function createDCABotHelper<
         this.saveProfitToDb(
           totalUsd,
           read.data?.result?.closeTime ?? +new Date(),
+          fiatPartFromUsd(
+            (await this.getExchangeInfo(symbol))?.quoteAsset?.name,
+            totalUsd,
+            sweepRate,
+          ),
         )
         this.updateData({ profit: { ...this.data.profit } })
         this.emit('bot settings update', { profit: this.data.profit })

@@ -1,4 +1,5 @@
 import type DB from '../db'
+import { fiatPartFromUsd } from '../utils/fiatProfit'
 import {
   closeCancelRefusedMessage,
   exchangeInfoMissingStopMessage,
@@ -3339,7 +3340,8 @@ function createBotHelper<
           ? +result.price * qty - price * qty
           : price * qty - +result.price * qty) *
         (1 - ((await this.getUserFee(result.symbol))?.maker ?? 0))
-      const profitUsd = (await this.getUsdRate(result.symbol)) * profit
+      const closeRate = await this.getUsdRate(result.symbol)
+      const profitUsd = closeRate * profit
       this.data.profit = {
         ...this.data.profit,
         total: this.data.profit.total + profit,
@@ -3355,7 +3357,13 @@ function createBotHelper<
       // `createTransaction` and silently drop the close. Booked once per fill:
       // the `position.qty === 0` guard above plus the `resetPosition()` every
       // caller runs straight after mean a replayed fill returns before here.
-      this.saveProfitToDb(profitUsd, result.updateTime || +new Date())
+      this.saveProfitToDb(
+        profitUsd,
+        result.updateTime || +new Date(),
+        this.coinm
+          ? undefined
+          : fiatPartFromUsd(this.data.symbol.quoteAsset, profitUsd, closeRate),
+      )
     }
     private async processSellAtStop(
       type: CloseGRIDTypeEnum.closeByLimit | CloseGRIDTypeEnum.closeByMarket,
@@ -3516,6 +3524,12 @@ function createBotHelper<
                 this.data.initialBalances.quote)
           const profitUsd =
             (profit - fee) * (await this.getUsdRate(this.data.symbol.symbol))
+          const fiatPart = {
+            asset: this.profitBase
+              ? this.data.symbol.baseAsset
+              : this.data.symbol.quoteAsset,
+            amount: profit - fee,
+          }
           if (!this.shouldProceed()) {
             return
           }
@@ -3583,7 +3597,7 @@ function createBotHelper<
             // fill's clientOrderId under a unique index, so a fill already
             // booked by `closeBotByTp` or by an earlier delivery is refused
             // here and cannot be counted twice.
-            this.saveProfitToDb(profitUsd, res.data.updateTime)
+            this.saveProfitToDb(profitUsd, res.data.updateTime, fiatPart)
             // Carried into memory the way `profitAfterPositionClosed` carries
             // it, under the SAME gate as the ledger write above. `updateData`
             // `$set`s an absolute profit, so a close leg left only in the
@@ -4411,7 +4425,10 @@ function createBotHelper<
           )
         }
         if (res.status === StatusEnum.ok) {
-          this.saveProfitToDb(profitUsdt, res.data.updateTime)
+          this.saveProfitToDb(profitUsdt, res.data.updateTime, {
+            asset: ed.quoteAsset.name,
+            amount: totalQuote,
+          })
           const data: Partial<BotData> = {
             transactionsCount: {
               buy: this.data?.transactionsCount?.buy
@@ -5433,6 +5450,12 @@ function createBotHelper<
               const profitUsd =
                 (profit - fee) *
                 (await this.getUsdRate(this.data.symbol.symbol))
+              const fiatPart = {
+                asset: this.profitBase
+                  ? this.data.symbol.baseAsset
+                  : this.data.symbol.quoteAsset,
+                amount: profit - fee,
+              }
               const res = await this.transactionDb.createData({
                 updateTime: resultOrder.updateTime,
                 side: resultOrder.side,
@@ -5512,7 +5535,7 @@ function createBotHelper<
                 // fill — this one the venue's synchronous answer, that one the
                 // user stream's delivery — and the unique `index` is what
                 // decides which of them books it.
-                this.saveProfitToDb(profitUsd, res.data.updateTime)
+                this.saveProfitToDb(profitUsd, res.data.updateTime, fiatPart)
                 // Same reason, and under the same gate, as in
                 // `processFilledStop` (spec 073).
                 this.data.profit = {

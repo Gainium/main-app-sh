@@ -42,6 +42,7 @@ import type {
   BotProfitChartSchema,
   BotStatsSeries,
   UserProfitByHour,
+  FxRateDaySchema,
   MigrationSchema,
   HedgeBotSchema,
   GlobalVariablesSchema,
@@ -3387,6 +3388,15 @@ const userProfitByHour = new Schema<UserProfitByHour>({
   terminal: Boolean,
   paperContext: Boolean,
   exchangeUUID: String,
+  profitFiat: { type: Map, of: Number },
+  profitFiatUsd: { type: Map, of: Number },
+  ...CreatedUpdated,
+})
+
+const fxRateDaySchema = new Schema<FxRateDaySchema>({
+  day: RequiredNumber,
+  rates: { type: Map, of: Number },
+  source: String,
   ...CreatedUpdated,
 })
 
@@ -3562,6 +3572,8 @@ export const registerIndexes = () => {
   quantRulesEventSchema.index({ created: 1 }, { expireAfterSeconds: 7776000 })
 
   userProfitByHour.index({ userId: 1 })
+
+  fxRateDaySchema.index({ day: 1 }, { unique: true })
 
   backtestRequest.index({ userid: 1 })
 
@@ -4098,6 +4110,7 @@ const schema = {
   gridBacktestRequest: backtestRequest,
   botProfitChart,
   userProfitByHour,
+  fxRateDay: fxRateDaySchema,
   migration: migrationSchema,
   hedgeComboBotSchema,
   hedgeDcaBotSchema,

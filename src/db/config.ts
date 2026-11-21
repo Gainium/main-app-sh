@@ -35,6 +35,7 @@ export const collections = {
   gridBacktestRequest: 'gridBacktestRequest',
   botProfitChart: 'botProfitChart',
   userProfitByHour: 'userProfitByHour',
+  fxRateDay: 'fxRateDays',
   orderStats: 'orderStats',
   migration: 'migration',
   hedgeComboBot: 'hedgeComboBots',

@@ -36,6 +36,7 @@ import {
   BacktestRequestSchema,
   BotProfitChartSchema,
   UserProfitByHour,
+  FxRateDaySchema,
   MigrationSchema,
   HedgeBotSchema,
   GlobalVariablesSchema,
@@ -160,6 +161,10 @@ const models = {
     `${collections.userProfitByHour}`,
     schema.userProfitByHour,
   ),
+  fxRateDay: model<FxRateDaySchema>(
+    `${collections.fxRateDay}`,
+    schema.fxRateDay,
+  ),
   migration: model<MigrationSchema>(
     `${collections.migration}`,
     schema.migration,
@@ -249,6 +254,7 @@ export const syncIndexes = async (user = true) => {
   await models.gridBacktestRequest.syncIndexes()
   await models.botProfitChart.syncIndexes()
   await models.userProfitByHour.syncIndexes()
+  await models.fxRateDay.syncIndexes()
   await models.hedgeComboBot.syncIndexes()
   await models.hedgeDcaBot.syncIndexes()
   await models.brokerCodes.syncIndexes()

@@ -6422,6 +6422,28 @@ export interface UserProfitByHour extends SchemaI {
   paperContext: boolean
   /** Exchange connection the profit was made on. Missing on rows written before 1.101.0. */
   exchangeUUID?: string
+  /**
+   * The part of `profitUsd` that was made in a reporting fiat (EUR on LINK-EUR),
+   * in that fiat, keyed by currency code. A user reporting in that currency is
+   * shown this amount at face value instead of a USD → fiat round trip.
+   * `profitFiatUsd` holds the same part's USD value (already inside
+   * `profitUsd`), so the remainder is `profitUsd - profitFiatUsd[code]`.
+   * Missing on rows written before the field existed.
+   */
+  profitFiat?: Record<string, number>
+  profitFiatUsd?: Record<string, number>
+}
+
+/**
+ * One UTC day's fiat rates (1 unit of currency = `rates[code]` USD), used to
+ * value realized profit at the rate of the day it was made. `day` is the UTC
+ * midnight in ms. Days without a published rate (weekends, holidays) are
+ * stored with the last known one carried forward.
+ */
+export interface FxRateDaySchema extends SchemaI {
+  day: number
+  rates: Record<string, number>
+  source?: string
 }
 
 export const rabbitIndicatorsKey = 'indicatorsActions'
