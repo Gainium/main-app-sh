@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.7] - 2026-11-21
+
+### Added
+
+- A running combo bot can take an out-of-band correction to its realized-profit total, the same way a DCA bot does
+
 ## [1.132.6] - 2026-11-21
 
 ### Fixed
