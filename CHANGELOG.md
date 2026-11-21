@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.6] - 2026-11-21
+
+### Fixed
+
+- A bot restored from its cached snapshot now also corrects a wrong deal counter stored in the database
+
 ## [1.132.5] - 2026-11-21
 
 ### Fixed
