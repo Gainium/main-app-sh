@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.3] - 2026-11-21
+
+### Fixed
+
+- An order lookup during a deal close no longer downgrades an order the user stream already reported filled, so a grid exit filling at the moment of close is counted in the deal's balances and profit
+
 ## [1.132.2] - 2026-11-21
 
 ### Fixed
