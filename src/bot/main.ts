@@ -137,6 +137,7 @@ import {
   mergeOpenOrdersIntoSnapshot,
   unconfirmedOpenSnapshotIds,
 } from './orderSnapshotMerge'
+import { venueAnswerRegressesRow } from './venueAnswerRegression'
 import { isSpentStatus, siblingClientOrderIds } from './clientOrderIdReissue'
 import QtyStepGuard, {
   decimalsToStep,
@@ -6941,6 +6942,29 @@ class MainBot<T extends IMainBot> {
               `Order ${origId} venue reports ${request.data.status} ${venueQty}, keeping merged remainder ${find.executedQty} FILLED`,
             )
             return find
+          }
+        }
+        if (find && find.status !== request.data.status) {
+          // The venue's REST read can lag its own user stream: a grid exit the
+          // stream reported FILLED was answered PARTIALLY_FILLED a moment later
+          // during the deal-close cancel, and copying that over the row took the
+          // fill out of the deal's ledger. Only moves forward are applied.
+          // Spec `250`.
+          const venueRaw = +request.data.executedQty
+          const venueQty =
+            Number.isFinite(venueRaw) && venueRaw > 0
+              ? +(await this.convertOrderExecutedQty(request.data))
+              : 0
+          if (
+            venueAnswerRegressesRow(find, {
+              status: request.data.status,
+              executedQty: venueQty,
+            })
+          ) {
+            this.handleLog(
+              `Order ${origId} venue reports ${request.data.status} ${venueQty}, keeping ${find.status} ${find.executedQty}`,
+            )
+            return find.status === 'FILLED' ? find : null
           }
         }
         if (find) {
