@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.129.7] - 2026-11-21
+
+### Fixed
+
+- A DCA or Combo safety order the price already passed, refused by an exchange price band, is now sent at the market price
+- Orders refused because the exchange market for the pair is closed are placed again automatically when trading reopens, with a notice to the user
+
 ## [1.129.6] - 2026-11-20
 
 ### Changed
