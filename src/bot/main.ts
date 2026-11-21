@@ -113,6 +113,7 @@ import {
   webhookSignalIgnored,
 } from './utils'
 import {
+  isPriceBandRefusal,
   priceBandRepriceTarget,
   repricesOnPriceBand,
 } from './priceBandReprice'
@@ -10463,7 +10464,10 @@ class MainBot<T extends IMainBot> {
           // `isOrderExistInDeal` matches a resting take profit on.
           if (
             repricesOnPriceBand(order) &&
-            this.getErrorSubType(`${request.reason ?? ''}`) === orderPrice
+            isPriceBandRefusal(
+              request.reason,
+              this.getErrorSubType(`${request.reason ?? ''}`) === orderPrice,
+            )
           ) {
             if (this.priceBandRepriced?.has(order.clientOrderId)) {
               this.priceBandRepriced.delete(order.clientOrderId)

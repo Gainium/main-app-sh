@@ -51,6 +51,22 @@ export function repricesOnPriceBand(order: {
 }
 
 /**
+ * Whether a refusal is a venue limit-price band, the condition the re-send
+ * cures. Every venue but Binance words it so that it classifies as
+ * `Order price`, which the caller passes in as `isOrderPriceClass`. Binance
+ * says `Filter failure: PERCENT_PRICE` / `PERCENT_PRICE_BY_SIDE`, which shares
+ * the generic `Filter failure` match with LOT_SIZE, NOTIONAL and the rest and
+ * so classifies as `Order params`. Matched here by the filter's own name, so
+ * only the price band is re-sent and no other Binance filter ever is.
+ */
+export function isPriceBandRefusal(
+  reason: string | null | undefined,
+  isOrderPriceClass: boolean,
+): boolean {
+  return isOrderPriceClass || /PERCENT_PRICE/.test(reason ?? '')
+}
+
+/**
  * The band edge a venue names in its refusal, or null when it names none.
  * Bybit spot: `Buy order price cannot be higher than 64651.1USDT.` /
  * `Sell order price cannot be lower than 1.2345USDT.`; OKX: `The highest

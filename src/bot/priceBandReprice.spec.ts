@@ -1,6 +1,7 @@
 import { describe, it } from 'mocha'
 import { expect } from 'chai'
 import {
+  isPriceBandRefusal,
   priceBandEdgeFromReason,
   priceBandRepriceTarget,
 } from './priceBandReprice'
@@ -154,5 +155,36 @@ describe('priceBandRepriceTarget', () => {
         }),
       ).to.equal(null)
     }
+  })
+})
+
+describe('isPriceBandRefusal (spec 251)', () => {
+  it('§2.1 takes Binance PERCENT_PRICE / PERCENT_PRICE_BY_SIDE whatever their class', () => {
+    expect(
+      isPriceBandRefusal('Filter failure: PERCENT_PRICE_BY_SIDE', false),
+    ).to.equal(true)
+    expect(isPriceBandRefusal('Filter failure: PERCENT_PRICE', false)).to.equal(
+      true,
+    )
+  })
+
+  it('§2.4 never takes another Binance filter', () => {
+    for (const reason of [
+      'Filter failure: LOT_SIZE',
+      'Filter failure: MARKET_LOT_SIZE',
+      'Filter failure: NOTIONAL',
+      'Filter failure: MIN_NOTIONAL',
+      'Filter failure: PRICE_FILTER',
+      'Filter failure: MAX_NUM_ORDERS',
+    ]) {
+      expect(isPriceBandRefusal(reason, false), reason).to.equal(false)
+    }
+  })
+
+  it('keeps every refusal already classified Order price', () => {
+    expect(
+      isPriceBandRefusal('Buy order price cannot be higher than 1USDT.', true),
+    ).to.equal(true)
+    expect(isPriceBandRefusal(null, false)).to.equal(false)
   })
 })
