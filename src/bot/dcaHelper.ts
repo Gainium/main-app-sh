@@ -279,6 +279,8 @@ import {
   stageForClose,
   storedChase,
   triggerFromCloseCondition,
+  validateOrderExecution,
+  DEFAULT_CLOSE_TIMEOUT_SEC,
   type ExecutionSettings,
   type ExecutionTrigger,
 } from './dca/orderExecution'
@@ -1025,6 +1027,8 @@ function createDCABotHelper<
         execution: OrderExecution
         triggerPrice: number
         startedAt: number
+        /** Spec 249 — a manual limit close at the person's own price. */
+        limitPrice?: number
         /** Spec 242 §4.3.1 — price from the top of the book (stored chase). */
         book?: boolean
       }
@@ -1033,6 +1037,11 @@ function createDCABotHelper<
     bookCache?: Map<string, { at: number; book: BookTicker | null }>
     /** Deals whose next `closeDealById` is a re-placement by `checkTPOrder`. */
     closeReplacements?: Set<string>
+    /**
+     * Spec 249 — the execution a person chose for a manual close, per deal.
+     * Read once by the `closeDealById` it is set for, then dropped.
+     */
+    requestedCloseExecution?: Map<string, OrderExecution>
     /** Spec 242 — first placement price of a chasing base order, per deal. */
     entryTriggerPrice?: Map<string, number>
     /** Spec 242 — resting take-profit expiry timers, per deal. */
@@ -3990,6 +3999,7 @@ function createDCABotHelper<
       // Spec 242 — the deal's close is over.
       this.closeExecutionContext?.delete(dealId)
       this.closeReplacements?.delete(dealId)
+      this.requestedCloseExecution?.delete(dealId)
       this.entryTriggerPrice?.delete(dealId)
       this.clearSplitClose(dealId)
       this.lastReduceOrderId?.delete(dealId)
@@ -8400,7 +8410,9 @@ function createDCABotHelper<
             if (
               symbol &&
               closeType === CloseDCATypeEnum.closeByLimit &&
-              !price &&
+              // Spec 249 — a manual limit at the person's own price keeps its
+              // timeout too; any other priced close is unchanged.
+              (!price || !!this.requestedCloseExecution?.has(dealId)) &&
               !forceMarket
             ) {
               // Spec 242 §4.3 — the stage's execution governs timing and the
@@ -8413,6 +8425,27 @@ function createDCABotHelper<
                 this.closeExecutionContext.delete(dealId)
               }
               let ctx = this.closeExecutionContext.get(dealId)
+              // Spec 249 — a manual close with the execution chosen in the
+              // close dialog: that choice, not the legacy close-by-limit
+              // timing, governs this close.
+              const requested = this.takeRequestedCloseExecution(dealId)
+              if (
+                !ctx &&
+                requested &&
+                (requested.mode === 'limit' || requested.mode === 'chase')
+              ) {
+                ctx = {
+                  execution: requested,
+                  triggerPrice: tpOrder.price,
+                  startedAt: Date.now(),
+                  book: requested.mode === 'chase',
+                  ...(price && requested.mode === 'limit'
+                    ? { limitPrice: +price }
+                    : {}),
+                }
+                this.closeExecutionContext.set(dealId, ctx)
+                this.persistExecutionState(dealId)
+              }
               if (!ctx) {
                 const closeSettings = await this.getAggregatedSettings(
                   findDeal.deal,
@@ -8835,7 +8868,13 @@ function createDCABotHelper<
                       closeType === CloseDCATypeEnum.closeByLimit
                     ) {
                       const deal = this.getDeal(dealId)
-                      if (deal && !price && count < this.slippageRetry) {
+                      if (
+                        deal &&
+                        (!price ||
+                          !!this.closeExecutionContext?.get(dealId)
+                            ?.limitPrice) &&
+                        count < this.slippageRetry
+                      ) {
                         const dealTimer = this.dealTimersMap.get(
                           deal.deal._id,
                         ) ?? {
@@ -10919,6 +10958,83 @@ function createDCABotHelper<
       }
       this.endMethod(_id)
     }
+    /** Spec 249 — read and drop the execution chosen for a manual close. */
+    private takeRequestedCloseExecution(
+      dealId: string,
+    ): OrderExecution | undefined {
+      const requested = this.requestedCloseExecution?.get(dealId)
+      this.requestedCloseExecution?.delete(dealId)
+      return requested
+    }
+
+    /**
+     * Spec 249 — close a deal the way the person chose in the close dialog.
+     * Market closes at market; limit, chasing limit and split close by limit
+     * with that execution's own timing, chase cap and timeout.
+     */
+    async closeDealByExecution(
+      _botId: string,
+      dealId: string,
+      execution: OrderExecution,
+      reopen = true,
+      closeTrigger: DCACloseTriggerEnum = DCACloseTriggerEnum.manual,
+      /** A limit at the person's own price (limit mode only). */
+      limitPrice?: number,
+    ) {
+      const error = validateOrderExecution(execution, 'close')
+      if (error) {
+        return this.handleWarn(
+          `Close of deal ${dealId} refused: execution ${error}`,
+        )
+      }
+      if (
+        limitPrice !== undefined &&
+        limitPrice !== null &&
+        (execution.mode !== 'limit' ||
+          !Number.isFinite(+limitPrice) ||
+          +limitPrice <= 0)
+      ) {
+        return this.handleWarn(
+          `Close of deal ${dealId} refused: a limit price needs the limit mode and a positive price`,
+        )
+      }
+      // Combo bots have no partial-close primitive and no fixed-price close.
+      const fitted: OrderExecution =
+        this.combo && execution.mode !== 'market'
+          ? { ...execution, mode: 'chase', slices: undefined }
+          : execution
+      if (fitted.mode === 'market') {
+        this.requestedCloseExecution?.delete(dealId)
+        return this.closeDealById(
+          this.botId,
+          dealId,
+          CloseDCATypeEnum.closeByMarket,
+          reopen,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          closeTrigger,
+        )
+      }
+      ;(this.requestedCloseExecution ??= new Map()).set(dealId, fitted)
+      return this.closeDealById(
+        this.botId,
+        dealId,
+        CloseDCATypeEnum.closeByLimit,
+        reopen,
+        undefined,
+        undefined,
+        undefined,
+        limitPrice ? `${limitPrice}` : undefined,
+        undefined,
+        undefined,
+        closeTrigger,
+      )
+    }
+
     /**
      * Check TP order status after timeout
      * @param {string} id Base order id to check
@@ -25691,6 +25807,34 @@ function createDCABotHelper<
       }
       const stage = stageForClose(closeTrigger, slFlag)
       if (stage === 'close') {
+        // Spec 249 — a manual close the person chose to split. Runs as the
+        // take-profit split (a SELL for a long), with chase or market slices.
+        const requested = this.requestedCloseExecution?.get(dealId)
+        if (requested?.mode !== 'split') {
+          return false
+        }
+        this.requestedCloseExecution?.delete(dealId)
+        const manual = closeTrigger ?? DCACloseTriggerEnum.manual
+        // Recorded now: the split's own final close runs after a restart
+        // reads it back to keep the close a manual one.
+        findDeal.deal.closeTrigger = manual
+        this.saveDeal(findDeal, { closeTrigger: manual })
+        if (
+          await this.startSplitClose(dealId, findDeal, requested, 'tp', manual)
+        ) {
+          return true
+        }
+        // Too small to split: one order, placed the way each slice would
+        // have been — a chasing limit, or market almost at once.
+        ;(this.requestedCloseExecution ??= new Map()).set(dealId, {
+          mode: 'chase',
+          repriceSec: requested.repriceSec ?? 10,
+          maxChasePerc: requested.maxChasePerc ?? 0,
+          timeoutSec:
+            requested.sliceMode === 'market'
+              ? 1
+              : requested.timeoutSec || DEFAULT_CLOSE_TIMEOUT_SEC,
+        })
         return false
       }
       const settings = await this.getAggregatedSettings(findDeal.deal)
@@ -25924,8 +26068,13 @@ function createDCABotHelper<
         index: 0,
         remaining: sizes[0],
         sliceStartedAt: 0,
+        // Spec 249 — a manual split close stays manual across a restart.
         closeTrigger:
-          split.stage === 'sl' ? DCACloseTriggerEnum.sl : DCACloseTriggerEnum.tp,
+          split.stage === 'sl'
+            ? DCACloseTriggerEnum.sl
+            : fresh.deal.closeTrigger === DCACloseTriggerEnum.manual
+              ? DCACloseTriggerEnum.manual
+              : DCACloseTriggerEnum.tp,
       })
       this.handleLog(
         `Deal ${dealId} split order resumed after restart: ${sizes.length} slices [${sizes.join(', ')}] left`,
@@ -25954,6 +26103,7 @@ function createDCABotHelper<
           triggerPrice: close.triggerPrice,
           startedAt: close.startedAt,
           book: !!close.book,
+          ...(close.limitPrice ? { limitPrice: close.limitPrice } : {}),
         })
         ;(this.closeReplacements ??= new Set()).add(dealId)
       }
@@ -25963,6 +26113,10 @@ function createDCABotHelper<
         overdue ? CloseDCATypeEnum.closeByMarket : CloseDCATypeEnum.closeByLimit,
         undefined,
         overdue,
+        undefined,
+        undefined,
+        // Spec 249 — back at the person's own price.
+        !overdue && close.limitPrice ? `${close.limitPrice}` : undefined,
       )
     }
 
@@ -26045,6 +26199,7 @@ function createDCABotHelper<
               repriceSec: ctx.execution.repriceSec ?? 10,
               maxChasePerc: ctx.execution.maxChasePerc ?? 0,
               book: !!ctx.book,
+              ...(ctx.limitPrice ? { limitPrice: ctx.limitPrice } : {}),
             }
           : null
       if (
@@ -31570,6 +31725,7 @@ function createDCABotHelper<
       this.splitFinalizing?.clear()
       this.closeExecutionContext?.clear()
       this.closeReplacements?.clear()
+      this.requestedCloseExecution?.clear()
       this.entryTriggerPrice?.clear()
       this.lastReduceOrderId?.clear()
       mutex.clear(this.botId)

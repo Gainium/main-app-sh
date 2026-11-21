@@ -107,6 +107,7 @@ import {
   DCATypeEnum,
   ExchangeEnum,
   InitialPriceFromEnum,
+  OrderExecution,
   OrderStatusType,
   StatusEnum,
   UserSchema,
@@ -9193,6 +9194,10 @@ class Bot<T extends UserSchema = UserSchema> {
     paperContext?: boolean,
     closeTrigger?: DCACloseTriggerEnum,
     actor?: ChangeTrailActor,
+    /** Spec 249 — how the person chose to close (close dialog). */
+    execution?: OrderExecution,
+    /** Spec 249 — a limit close at the person's own price. */
+    limitPrice?: number,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9207,6 +9212,8 @@ class Bot<T extends UserSchema = UserSchema> {
         paperContext,
         closeTrigger,
         actor,
+        execution,
+        limitPrice,
       )
     }
     const findDeal = await this.dcaDealsDb.readData({
@@ -9276,20 +9283,29 @@ class Bot<T extends UserSchema = UserSchema> {
         do: 'method',
         botType: BotType.dca,
         botId: findLocal.id,
-        method: 'closeDealById',
-        args: [
-          botId,
-          dealId,
-          type,
-          reopen,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          closeTrigger ?? DCACloseTriggerEnum.manual,
-        ],
+        method: execution ? 'closeDealByExecution' : 'closeDealById',
+        args: execution
+          ? [
+              botId,
+              dealId,
+              execution,
+              reopen,
+              closeTrigger ?? DCACloseTriggerEnum.manual,
+              limitPrice,
+            ]
+          : [
+              botId,
+              dealId,
+              type,
+              reopen,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              closeTrigger ?? DCACloseTriggerEnum.manual,
+            ],
       })
 
       // No confirmation event here. At this point the close has only been
@@ -9361,20 +9377,29 @@ class Bot<T extends UserSchema = UserSchema> {
             do: 'method',
             botType: BotType.dca,
             botId,
-            method: 'closeDealById',
-            args: [
-              botId,
-              dealId,
-              type,
-              reopen,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              closeTrigger ?? DCACloseTriggerEnum.manual,
-            ],
+            method: execution ? 'closeDealByExecution' : 'closeDealById',
+            args: execution
+              ? [
+                  botId,
+                  dealId,
+                  execution,
+                  reopen,
+                  closeTrigger ?? DCACloseTriggerEnum.manual,
+                  limitPrice,
+                ]
+              : [
+                  botId,
+                  dealId,
+                  type,
+                  reopen,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  closeTrigger ?? DCACloseTriggerEnum.manual,
+                ],
           })
         },
         !!paperContext,
@@ -9534,6 +9559,10 @@ class Bot<T extends UserSchema = UserSchema> {
     paperContext?: boolean,
     closeTrigger?: DCACloseTriggerEnum,
     actor?: ChangeTrailActor,
+    /** Spec 249 — how the person chose to close (close dialog). */
+    execution?: OrderExecution,
+    /** Spec 249 — a limit close at the person's own price. */
+    limitPrice?: number,
   ) {
     if (!this.useBots) {
       return await this.callExternalBotService<BaseReturn<string>>(
@@ -9548,6 +9577,8 @@ class Bot<T extends UserSchema = UserSchema> {
         paperContext,
         closeTrigger,
         actor,
+        execution,
+        limitPrice,
       )
     }
     const findDeal = await this.comboDealsDb.readData({
@@ -9617,20 +9648,29 @@ class Bot<T extends UserSchema = UserSchema> {
         do: 'method',
         botType: BotType.combo,
         botId,
-        method: 'closeDealById',
-        args: [
-          botId,
-          dealId,
-          type,
-          reopen,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          closeTrigger ?? DCACloseTriggerEnum.manual,
-        ],
+        method: execution ? 'closeDealByExecution' : 'closeDealById',
+        args: execution
+          ? [
+              botId,
+              dealId,
+              execution,
+              reopen,
+              closeTrigger ?? DCACloseTriggerEnum.manual,
+              limitPrice,
+            ]
+          : [
+              botId,
+              dealId,
+              type,
+              reopen,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              closeTrigger ?? DCACloseTriggerEnum.manual,
+            ],
       })
 
       // No confirmation event on dispatch — same defect as `closeDCADeal`: the
@@ -9699,20 +9739,29 @@ class Bot<T extends UserSchema = UserSchema> {
             do: 'method',
             botType: BotType.combo,
             botId,
-            method: 'closeDealById',
-            args: [
-              botId,
-              dealId,
-              type,
-              reopen,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              closeTrigger ?? DCACloseTriggerEnum.manual,
-            ],
+            method: execution ? 'closeDealByExecution' : 'closeDealById',
+            args: execution
+              ? [
+                  botId,
+                  dealId,
+                  execution,
+                  reopen,
+                  closeTrigger ?? DCACloseTriggerEnum.manual,
+                  limitPrice,
+                ]
+              : [
+                  botId,
+                  dealId,
+                  type,
+                  reopen,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  closeTrigger ?? DCACloseTriggerEnum.manual,
+                ],
           })
         },
         !!paperContext,

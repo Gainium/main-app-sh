@@ -58,6 +58,7 @@ import {
   UserSchema,
   HedgeComboBacktestingResult,
   HedgeDCABacktestingResult,
+  OrderExecution,
 } from '../../types'
 import BotInstance from '../bot'
 import {
@@ -135,6 +136,7 @@ import {
   brokerCodesDb,
 } from '../db/dbInit'
 import { withTerminalMoveGuard } from './handlers/terminalMove'
+import { validateOrderExecution } from '../bot/dca/orderExecution'
 import { backtestNotFound, dealNotFound, errorAccess } from './errorResponse'
 import {
   createPaperUser,
@@ -8374,6 +8376,8 @@ const resolvers = <
           botId: string
           dealId: string
           type?: CloseDCATypeEnum
+          execution?: OrderExecution | null
+          limitPrice?: number | null
         }
       },
       { token, req }: InputRequest,
@@ -8385,13 +8389,41 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      // Spec 249 — the close dialog's execution, checked before dispatch so a
+      // bad value is answered here instead of being dropped in the worker.
+      const executionError = validateOrderExecution(input.execution, 'close')
+      if (executionError) {
+        return {
+          status: StatusEnum.notok,
+          reason: `execution ${executionError}`,
+          data: null,
+        }
+      }
+      if (
+        input.limitPrice != null &&
+        (input.execution?.mode !== 'limit' || !(input.limitPrice > 0))
+      ) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'limitPrice needs execution mode limit and a positive price',
+          data: null,
+        }
+      }
       return Bot.closeDCADeal(
         user.data._id.toString(),
         input.botId,
         input.dealId,
-        input.type,
+        input.execution
+          ? input.execution.mode === 'market'
+            ? CloseDCATypeEnum.closeByMarket
+            : CloseDCATypeEnum.closeByLimit
+          : input.type,
         undefined,
         !!user.data.paperContext,
+        undefined,
+        undefined,
+        input.execution ?? undefined,
+        input.limitPrice ?? undefined,
       )
     },
     closeComboDeal: async (
@@ -8403,6 +8435,8 @@ const resolvers = <
           botId: string
           dealId: string
           type?: CloseDCATypeEnum
+          execution?: OrderExecution | null
+          limitPrice?: number | null
         }
       },
       { token, req }: InputRequest,
@@ -8414,13 +8448,41 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
+      // Spec 249 — the close dialog's execution, checked before dispatch so a
+      // bad value is answered here instead of being dropped in the worker.
+      const executionError = validateOrderExecution(input.execution, 'close')
+      if (executionError) {
+        return {
+          status: StatusEnum.notok,
+          reason: `execution ${executionError}`,
+          data: null,
+        }
+      }
+      if (
+        input.limitPrice != null &&
+        (input.execution?.mode !== 'limit' || !(input.limitPrice > 0))
+      ) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'limitPrice needs execution mode limit and a positive price',
+          data: null,
+        }
+      }
       return Bot.closeComboDeal(
         user.data._id.toString(),
         input.botId,
         input.dealId,
-        input.type,
+        input.execution
+          ? input.execution.mode === 'market'
+            ? CloseDCATypeEnum.closeByMarket
+            : CloseDCATypeEnum.closeByLimit
+          : input.type,
         undefined,
         !!user.data.paperContext,
+        undefined,
+        undefined,
+        input.execution ?? undefined,
+        input.limitPrice ?? undefined,
       )
     },
     closeOrderOnExchange: async (

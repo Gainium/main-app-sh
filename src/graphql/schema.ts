@@ -3099,6 +3099,15 @@ export const BotSchema = /* GraphQL */ `
     botId: String!
     dealId: String!
     type: CloseDCATypeEnum
+    """
+    How to close (spec 249). When set, it replaces type's market/limit
+    choice: market, limit, chasing limit or split, with its own timeout.
+    """
+    execution: OrderExecutionInput
+    """
+    A limit close at this price (spec 249). Only with execution mode limit.
+    """
+    limitPrice: Float
   }
   type botSettings {
     pair: String

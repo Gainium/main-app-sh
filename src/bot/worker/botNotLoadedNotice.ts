@@ -25,6 +25,7 @@ import {
 export const userInitiatedBotMethods: ReadonlySet<string> = new Set([
   'setStatus',
   'closeDealById',
+  'closeDealByExecution',
   'closeAllDeals',
   'openNewDealMan',
   'addDealFunds',

@@ -1939,6 +1939,8 @@ export interface DCADealsSchema extends SchemaI {
     maxChasePerc?: number
     /** Spec 242 §4.3.1 — re-placements price from the top of the book. */
     book?: boolean
+    /** Spec 249 — a manual limit close at the person's own price. */
+    limitPrice?: number
   } | null
   isDeleted?: boolean
   feeBalance?: number
