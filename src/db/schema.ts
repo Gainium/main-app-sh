@@ -3949,6 +3949,15 @@ export const registerIndexes = () => {
     { userId: 1, status: 1 },
     { partialFilterExpression: { baseFundingBeta: true } },
   )
+  // Hourly stuck-start sweep (`oldStartDcaDealsFilter`: {status:'start',
+  // createTime:{$lt}, $nor:[…]}) has no userId, so no index above can serve it
+  // and it COLLSCANned the whole collection. Only deals still in `start` are
+  // indexed, so it stays a handful of keys; createTime is write-once and
+  // membership changes once, when a deal leaves `start`.
+  dcaDealSchema.index(
+    { createTime: 1 },
+    { partialFilterExpression: { status: 'start' } },
+  )
 
   favoritePairsSchema.index({ userId: 1 })
 
