@@ -1,4 +1,8 @@
 import { coerceBaseFundingSetting } from './baseFundingGate'
+import {
+  dealHoldsPosition,
+  RESTORE_NEVER_OPENED_REASON,
+} from './dca/restoreDealGuard'
 import DB from '../db'
 import { v4 } from 'uuid'
 import { Worker, isMainThread, threadId } from 'worker_threads'
@@ -9459,6 +9463,32 @@ class Bot<T extends UserSchema = UserSchema> {
       return this.entityNotFound('Deal')
     }
     const botId = findDeal.data.result.botId
+
+    // Spec 248: a deal that never filled its entry (e.g. one spec 241 retired
+    // after the venue refused it) holds no position, so restoring it would
+    // leave an open deal with an empty ledger. Refuse before any write.
+    const dealOrders = await this.orderDb.readData(
+      { dealId } as any,
+      { orderId: 1, status: 1, executedQty: 1, origQty: 1, typeOrder: 1 },
+      {},
+      true,
+    )
+    if (dealOrders.status === StatusEnum.notok) {
+      return dealOrders
+    }
+    if (
+      !dealHoldsPosition({
+        orders: dealOrders.data.result ?? [],
+        avgPrice: findDeal.data.result.avgPrice,
+        levelsComplete: findDeal.data.result.levels?.complete,
+      })
+    ) {
+      return {
+        status: StatusEnum.notok as StatusEnum.notok,
+        reason: RESTORE_NEVER_OPENED_REASON,
+        data: null,
+      }
+    }
 
     // Reactivate the deal as a bare position: no DCA/TP/SL, close markers
     // cleared, status back to open.
