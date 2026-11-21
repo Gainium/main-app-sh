@@ -106,11 +106,21 @@ import {
   futuresPosition,
   getErrorSubType,
   indicatorsError,
+  marketClosed,
   orderPrice,
   unplaceableGridOrderSubType,
   webhookSignalIgnored,
 } from './utils'
-import { priceBandRepriceTarget } from './priceBandReprice'
+import {
+  priceBandRepriceTarget,
+  repricesOnPriceBand,
+} from './priceBandReprice'
+import {
+  MARKET_CLOSED_SPELL_GAP_MS,
+  marketClosedLevelKey,
+  marketClosedNotice,
+  marketClosedRetryDelay,
+} from './marketClosedRetry'
 import { UserNotice, userNoticePayload, userNoticeRow } from './userNotice'
 import {
   getSubTypeBehavior,
@@ -2185,6 +2195,92 @@ class MainBot<T extends IMainBot> {
     return placed
   }
 
+  /** Orders refused on a closed market, by level, waiting for a retry. Spec 248. */
+  protected marketClosedOrders?: Map<string, Order>
+  /** Per level: refusals in the current closed spell and when the last came. */
+  protected marketClosedAttempts?: Map<string, { attempts: number; at: number }>
+  /** Per pair: when the user was last told its market is closed. */
+  protected marketClosedNoticedAt?: Map<string, number>
+
+  /**
+   * The venue refused `order` because its market is closed. Keep it and place
+   * it again later, through the same engine hook that places back a venue
+   * cancel (spec 247), backing off while the market stays closed. The user is
+   * told once per pair per closed spell. Spec 248.
+   */
+  protected noteMarketClosedRefusal(order: Order) {
+    if (!this.replacesVenueCancel(order)) {
+      return
+    }
+    const now = Date.now()
+    const key = marketClosedLevelKey(order)
+    const attempts = (this.marketClosedAttempts ??= new Map())
+    const prev = attempts.get(key)
+    const attempt =
+      prev && now - prev.at < MARKET_CLOSED_SPELL_GAP_MS ? prev.attempts + 1 : 0
+    attempts.delete(key)
+    attempts.set(key, { attempts: attempt, at: now })
+    if (attempts.size > 1000) {
+      const oldest = attempts.keys().next().value
+      if (oldest !== undefined) {
+        attempts.delete(oldest)
+      }
+    }
+    ;(this.marketClosedOrders ??= new Map()).set(key, order)
+    const delay = marketClosedRetryDelay(attempt)
+    this.handleLog(
+      `Order ${order.clientOrderId} (${order.typeOrder}) refused, ${order.symbol} market is closed. Retry in ${Math.round(delay / 60000)} min`,
+    )
+    const noticed = (this.marketClosedNoticedAt ??= new Map())
+    const lastNotice = noticed.get(order.symbol)
+    if (!lastNotice || now - lastNotice >= MARKET_CLOSED_SPELL_GAP_MS) {
+      noticed.set(order.symbol, now)
+      this.postUserNotice(
+        marketClosedNotice(order.symbol),
+        order.symbol,
+        MessageTypeEnum.warning,
+      ).catch(() => undefined)
+    } else {
+      noticed.set(order.symbol, now)
+    }
+    this.scheduleMarketClosedRetry(this.botId, delay)
+  }
+
+  /** One retry pass per bot; the latest refusal sets the wait. Spec 248. */
+  @RunWithDelay(
+    (botId: string) => `retryMarketClosed-${botId}`,
+    (_botId: string, delay: number) => delay,
+  )
+  scheduleMarketClosedRetry(_botId: string, _delay: number) {
+    this.flushMarketClosed().catch((e) =>
+      this.handleWarn(
+        `Cannot retry orders refused on a closed market: ${(e as Error)?.message ?? e}`,
+      ),
+    )
+  }
+
+  /** Place every order held for a closed market again. Spec 248. */
+  protected async flushMarketClosed(): Promise<void> {
+    const queued = [...(this.marketClosedOrders?.values() ?? [])]
+    this.marketClosedOrders?.clear()
+    if (!queued.length || !this.data) {
+      return
+    }
+    if (
+      this.data.status !== BotStatusEnum.open &&
+      this.data.status !== BotStatusEnum.range
+    ) {
+      return
+    }
+    if (!this.shouldProceed()) {
+      return
+    }
+    const placed = await this.replaceVenueCanceledBatch(this.botId, queued)
+    this.handleLog(
+      `Sent ${placed}/${queued.length} order(s) again after a closed-market refusal`,
+    )
+  }
+
   /** Record that the venue refused `clientOrderId` and it was written off. Spec 221. */
   protected noteWrittenOffClientOrderId(clientOrderId: string | undefined) {
     if (!clientOrderId) {
@@ -4005,6 +4101,23 @@ class MainBot<T extends IMainBot> {
       return
     }
     this.handleWarn(`User action refused | ${reason}`)
+    await this.postUserNotice(reason, symbol, type, 'Bot warning')
+  }
+
+  /**
+   * Write one shown bot message and emit it at once (the body of
+   * {@link MainBot#reportUserRefusal}). Callers that are not a click must
+   * rate-limit themselves; this groups nothing. Spec 248.
+   */
+  protected async postUserNotice(
+    reason: string,
+    symbol?: string,
+    type: MessageTypeEnum = MessageTypeEnum.warning,
+    event = 'Bot warning',
+  ): Promise<void> {
+    if (this.ignoreErrors) {
+      return
+    }
     this.pushLogs(reason, 'warning')
     try {
       const time = Date.now()
@@ -4028,7 +4141,7 @@ class MainBot<T extends IMainBot> {
       this.botEventDb.createData({
         userId: this.userId,
         botId: this.botId,
-        event: 'Bot warning',
+        event,
         botType: this.botType,
         description: `Warning: ${reason}`,
         paperContext: !!this.data?.paperContext,
@@ -9303,8 +9416,11 @@ class MainBot<T extends IMainBot> {
     order: Order,
     reason: string | null | undefined,
   ) {
-    this.markGridOrderStuck(order)
-    const message = `Grid order ${order.clientOrderId} cannot be placed: ${order.side === 'BUY' ? 'buy' : 'sell'} at grid level ${order.origPrice} was refused by the exchange on price even after re-pricing to ${order.price}. Exchange reason: ${reason ?? 'unknown'}`
+    const safety = order.typeOrder === TypeOrderEnum.dealRegular
+    if (!safety) {
+      this.markGridOrderStuck(order)
+    }
+    const message = `${safety ? 'DCA order' : 'Grid order'} ${order.clientOrderId} cannot be placed: ${order.side === 'BUY' ? 'buy' : 'sell'} at ${safety ? 'DCA' : 'grid'} level ${order.origPrice} was refused by the exchange on price even after re-pricing to ${order.price}. Exchange reason: ${reason ?? 'unknown'}`
     this.botEventDb
       .createData({
         userId: this.userId,
@@ -10292,10 +10408,11 @@ class MainBot<T extends IMainBot> {
           // limit that crossed the book on arrival (spec 243). If the re-priced
           // order is refused on price again, nothing will place it: that is
           // raised as an error rather than left to the silent, non-erroring
-          // `Order price` class. See `priceBandReprice.ts`.
+          // `Order price` class. See `priceBandReprice.ts`. A DCA / combo
+          // safety order the price ran through is re-sent the same way: its
+          // level stays on `origPrice`, so the ladder still knows it (spec 248).
           if (
-            order.typeOrder === TypeOrderEnum.dealGrid &&
-            order.type !== 'MARKET' &&
+            repricesOnPriceBand(order) &&
             this.getErrorSubType(`${request.reason ?? ''}`) === orderPrice
           ) {
             if (this.priceBandRepriced?.has(order.clientOrderId)) {
@@ -10319,7 +10436,7 @@ class MainBot<T extends IMainBot> {
                 `${repriced}` !== order.price
               ) {
                 this.handleLog(
-                  `Order ${order.clientOrderId} ${order.side} ${order.price} refused on price band, market ${market}. Re-send at ${repriced}, grid level ${order.origPrice} kept`,
+                  `Order ${order.clientOrderId} ${order.side} ${order.price} refused on price band, market ${market}. Re-send at ${repriced}, ${order.typeOrder === TypeOrderEnum.dealRegular ? 'DCA' : 'grid'} level ${order.origPrice} kept`,
                 )
                 ;(this.priceBandRepriced ??= new Set()).add(order.clientOrderId)
                 order.price = `${repriced}`
@@ -10730,6 +10847,9 @@ class MainBot<T extends IMainBot> {
               // under the same id, which would land on this CANCELED row and
               // leave the accepted order untracked. Spec 221.
               this.noteWrittenOffClientOrderId(order.clientOrderId)
+              const refusalSubType = this.getErrorSubType(
+                `${request.reason ?? ''}`,
+              )
               // Record WHY, so a written-off safety order the platform should
               // have retried can be told apart from one the user's balance or
               // keys refused (sentinel `deals.safety-order-written-off`).
@@ -10738,10 +10858,15 @@ class MainBot<T extends IMainBot> {
                 status: 'CANCELED',
                 refusal: {
                   reason: `${request.reason ?? ''}`.slice(0, 300),
-                  subType: this.getErrorSubType(`${request.reason ?? ''}`),
+                  subType: refusalSubType,
                   at: Date.now(),
                 },
               })
+              // The market for the pair is closed: written off under this
+              // id, but kept by level and placed again later. Spec 248.
+              if (refusalSubType === marketClosed) {
+                this.noteMarketClosedRefusal(order)
+              }
             } else {
               await this.deleteOrderFromDb(order.clientOrderId)
             }

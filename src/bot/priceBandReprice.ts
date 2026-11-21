@@ -22,6 +22,32 @@
 export type PriceBandSide = 'BUY' | 'SELL'
 
 /**
+ * Which refused orders are re-sent through the market: combo grid levels
+ * (spec 246) and DCA / combo safety orders (spec 248), as limit orders.
+ * Add / reduce funds orders are the user's own and are left as they are.
+ */
+export function repricesOnPriceBand(order: {
+  typeOrder?: string
+  type?: string
+  dealId?: string | null
+  addFundsId?: string | null
+  reduceFundsId?: string | null
+}): boolean {
+  if (order.type === 'MARKET') {
+    return false
+  }
+  if (order.typeOrder === 'dealGrid') {
+    return true
+  }
+  return (
+    order.typeOrder === 'dealRegular' &&
+    !!order.dealId &&
+    !order.addFundsId &&
+    !order.reduceFundsId
+  )
+}
+
+/**
  * The band edge a venue names in its refusal, or null when it names none.
  * Bybit spot: `Buy order price cannot be higher than 64651.1USDT.` /
  * `Sell order price cannot be lower than 1.2345USDT.`; OKX: `The highest

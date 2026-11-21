@@ -474,6 +474,9 @@ export const exchangeProblems = 'Exchange connection'
 
 export const orderPrice = 'Order price'
 
+/** The venue's market for the pair is closed (Bitget stock tokens off hours). Spec 248. */
+export const marketClosed = 'Market closed'
+
 export const exchangeOrdersLimits = 'Exchange orders limits'
 
 export const apiError = 'API keys error'
@@ -715,6 +718,11 @@ export const errorDict = {
   'Order price is not within the price limit': orderPrice,
   'lowest price limit for sell': orderPrice,
   'highest price limit for buy': orderPrice,
+  // Bitget spot: `rnvda/usdt trading price cannot exceed 10%` /
+  // `the trade price of rmrna/usdt cannot exceed the current price, 20%.`
+  'trading price cannot exceed': orderPrice,
+  'cannot exceed the current price': orderPrice,
+  'market is closed': marketClosed,
   'Cannot start the bot because of hard limits': 'User limit',
   'Reduce order is rejected': futuresPosition,
   'reduce only order would increase position': futuresPosition,
