@@ -4719,6 +4719,7 @@ export const BotSchema = /* GraphQL */ `
     minimumDeviation: String
     avgPrice: Float
     changed: Boolean
+    changedKeys: [String]
     orderSizePercQty: Float
     step: String
     futures: Boolean
@@ -4796,6 +4797,7 @@ export const BotSchema = /* GraphQL */ `
     minimumDeviation: String
     avgPrice: Float
     changed: Boolean
+    changedKeys: [String]
     orderSizePercQty: Float
     step: String
     futures: Boolean

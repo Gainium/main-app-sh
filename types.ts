@@ -1672,6 +1672,8 @@ export type DCADealsSettings = Pick<
 > & {
   avgPrice: number
   changed: boolean
+  /** Spec 250 — settings a person's edit left different from the bot's. */
+  changedKeys?: string[]
   dcaIndicatorLevels?: DCAIndicatorLevel[]
   /**
    * Deal-only limit on an indicator / custom ladder, set by the deal's

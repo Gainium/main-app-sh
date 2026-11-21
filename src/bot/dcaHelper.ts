@@ -284,6 +284,7 @@ import {
   type ExecutionSettings,
   type ExecutionTrigger,
 } from './dca/orderExecution'
+import { dealSettingsDiffFromBot } from './dca/dealSettingsDiff'
 import type { OrderExecution } from '../../types'
 import type { BookTicker } from '../exchange'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
@@ -32739,61 +32740,15 @@ function createDCABotHelper<
                 ? false
                 : true,
           }
-          const keysToCheck = Object.keys(findDeal.deal.settings).map((k) => {
-            if (
-              (!findDeal.deal.settings.useDca &&
-                !this.data?.settings.useDca &&
-                [
-                  'ordersCount',
-                  'orderSize',
-                  'useSmartOrders',
-                  'activeOrdersCount',
-                  'stepScale',
-                  'volumeScale',
-                ].includes(k)) ||
-              k === 'avgPrice' ||
-              k === 'changed' ||
-              (findDeal.deal.settings.useDca &&
-                this.data?.settings.useDca &&
-                !findDeal.deal.settings.useSmartOrders &&
-                !this.data?.settings.useSmartOrders &&
-                ['activeOrdersCount'].includes(k)) ||
-              (!findDeal.deal.settings.useTp &&
-                !this.data?.settings.useTp &&
-                [
-                  'tpPerc',
-                  'trailingTp',
-                  'trailingTpPerc',
-                  'useMinTP',
-                  'minTp',
-                  'multiTp',
-                  'useMultiTp',
-                ].includes(k)) ||
-              (!findDeal.deal.settings.useSl &&
-                !this.data?.settings.useSl &&
-                [
-                  'slPerc',
-                  'trailingSl',
-                  'moveSL',
-                  'moveSLTrigger',
-                  'moveSLValue',
-                  'useMultiSl',
-                  'multiSl',
-                ].includes(k))
-            ) {
-              return true
-            }
-            if (this.data) {
-              if (Object.prototype.hasOwnProperty.call(this.data.settings, k)) {
-                // @ts-ignore
-                return this.data.settings[k] === findDeal.deal.settings[k]
-              }
-            }
-            if (k === 'avgPrice' || k === 'changed') {
-              return true
-            }
-            return false
-          })
+          // Spec 250 — which settings now differ from the bot's, by value.
+          const changedKeys = reset
+            ? []
+            : dealSettingsDiffFromBot(
+                findDeal.deal.settings as unknown as Record<string, unknown>,
+                this.data?.settings as unknown as
+                  | Record<string, unknown>
+                  | undefined,
+              )
           if (findDeal.deal.moveSlActivated && !settings.moveSL) {
             findDeal.deal.moveSlActivated = false
           }
@@ -32808,7 +32763,8 @@ function createDCABotHelper<
           findDeal.deal.settings = {
             ...findDeal.deal.settings,
             ...settings,
-            changed: reset ? false : keysToCheck.filter((k) => !k).length !== 0,
+            changed: changedKeys.length > 0,
+            changedKeys,
             slChangedByUser: reset ? false : currentSlPerc !== settings.slPerc,
           }
           await this.rebuildDealOrders(
