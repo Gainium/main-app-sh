@@ -2531,8 +2531,15 @@ function createComboBotHelper<
         }
         findDeal.previousOrders = findDeal.currentOrders
         const lowestLevel = await this.getDealLowestlevel(dealId)
+        // Never lowered by a fill. When several levels fill in one burst they
+        // are booked out of level order and before their minigrids exist, so a
+        // shallower fill booked after a deeper one would otherwise drop the
+        // deal back below the deeper level and re-place it. Only closeMinigrid
+        // re-opens a level.
+        const filledFloor = findDeal.deal.lastFilledLevel ?? 0
         if (lowestLevel && !isNaN(lowestLevel)) {
           findDeal.deal.lastFilledLevel = Math.max(
+            filledFloor,
             lowestLevel,
             order.dcaLevel ?? findDeal.deal.levels.complete,
           )
@@ -2541,9 +2548,10 @@ function createComboBotHelper<
             findDeal.deal.lastFilledLevel ?? findDeal.deal.levels.complete,
           )
         } else {
-          findDeal.deal.lastFilledLevel = order.dcaLevel
-            ? order.dcaLevel
-            : findDeal.deal.levels.complete
+          findDeal.deal.lastFilledLevel = Math.max(
+            filledFloor,
+            order.dcaLevel ? order.dcaLevel : findDeal.deal.levels.complete,
+          )
         }
         findDeal.currentOrders = await this.createCurrentDealOrders(
           findDeal.deal.symbol.symbol,
