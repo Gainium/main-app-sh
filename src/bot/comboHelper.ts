@@ -124,7 +124,14 @@ import {
 } from './combo/comboDealFunds'
 import type { ComboFundsDirection } from './combo/comboDealFunds'
 
-const mutex = new IdMutex()
+/**
+ * The Combo engine's per-deal locks (`${botId}update${dealId}` and the rest).
+ * Exported so a subclass that overrides a locked method takes the SAME lock:
+ * an override does not inherit its parent's decorator, and a second
+ * `IdMutex` with the same key would not exclude the methods locked here.
+ */
+export const comboMutex = new IdMutex()
+const mutex = comboMutex
 const mutexConcurrently = new IdMutex(300)
 
 export type FullMinigrid = {
@@ -4110,23 +4117,45 @@ function createComboBotHelper<
       }
     }
 
+    override async processFilledOrder(order: Order): Promise<void> {
+      const funds = await this.routeFilledOrder(order)
+      if (funds) {
+        // Awaited so the request that sent a synchronously filled order
+        // returns only once the deal is booked and its book rebuilt. Booked
+        // OUTSIDE the processing lock: the booking takes this deal's update
+        // lock, and a holder of that lock (a regular or grid fill, a funds
+        // rebuild) re-enters processing through its cancel loop
+        // (`placeOrders` → `handleUnknownOrder`) for an order its cancel
+        // finds FILLED. Holding the processing lock while waiting for the
+        // update lock takes the two in opposite orders, and the mutex has no
+        // timeout, so the deal would stop processing for good.
+        await this.bookComboFunds(funds)
+      }
+    }
+
+    /**
+     * The body of `processFilledOrder`, under the per-deal processing lock.
+     * Routes the fill to its handler and returns a funds fill to book, which
+     * the caller books once this lock is released.
+     */
     @IdMute(
       mutex,
       (order: Order) =>
         `${order.botId}process${order.symbol}${order.dealId ?? ''}`,
     )
-    override async processFilledOrder(order: Order): Promise<void> {
+    private async routeFilledOrder(order: Order): Promise<Order | null> {
       if (!this.shouldProceed()) {
         this.handleLog(
           this.notProceedMessage(`processFilledOrder ${order.clientOrderId}`),
         )
-        return
+        return null
       }
       if (!this.loadingComplete) {
         this.runAfterLoadingQueue.push(() =>
           this.processFilledOrder.bind(this)(order),
         )
-        return this.handleLog('Loading not complete yet')
+        this.handleLog('Loading not complete yet')
+        return null
       }
       this.handleLog(
         `Processing ${order.clientOrderId} ${order.typeOrder} ${order.dcaLevel}`,
@@ -4159,16 +4188,9 @@ function createComboBotHelper<
         this.comboFundsSettled.add(
           (funds.addFundsId || funds.reduceFundsId) as string,
         )
-        // Awaited so the request that sent a synchronously filled order
-        // returns only once the deal is booked and its book rebuilt. The
-        // booking takes this deal's update lock while this method holds the
-        // processing lock. A grid rebuild holds the update lock and reaches
-        // here through its cancel loop (`placeOrders` → `handleUnknownOrder`)
-        // for any order its cancel finds FILLED — so a funds order must never
-        // be in a rebuild's cancel set (`findOrderForGrid`), or the two locks
-        // are taken in opposite orders and the deal stops processing.
-        await this.bookComboFunds(funds)
-        return
+        // Booked by `processFilledOrder` once this lock is released. A funds
+        // order is still never in a rebuild's cancel set (`findOrderForGrid`).
+        return funds
       }
       const getSet = dealId
         ? (this.processedFilled.get(dealId) ?? new Set<string>())
@@ -4177,7 +4199,7 @@ function createComboBotHelper<
         this.processedFilled.set(dealId, getSet.add(clientOrderId))
         // Spec `225`: a remainder sweep re-placed as LIMIT on a closed deal.
         if (await this.bookLimitRemainderSweep(order)) {
-          return
+          return null
         }
         if (
           order.typeOrder === TypeOrderEnum.dealTP &&
@@ -4206,6 +4228,7 @@ function createComboBotHelper<
       } else {
         this.handleLog(`Order ${clientOrderId} was already processed`)
       }
+      return null
     }
     /**
      * Main-app spec 047 — add funds to a Combo deal: every rung (base order and
