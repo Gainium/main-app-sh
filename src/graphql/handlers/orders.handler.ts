@@ -60,20 +60,77 @@ const settleWithin = <T>(
   return Promise.race([p, late]).finally(() => clearTimeout(timer))
 }
 
-const lateVenue =
-  (what: string, exchange: ExchangeInUser, ms: number) => () => {
-    logger.warn(
-      `${what} | ${exchange.provider} ${exchange.uuid} did not answer within ${ms}ms, listed without it`,
-    )
-    return []
+/**
+ * What the open-orders / open-positions lists answer. On top of BaseReturn,
+ * an OK answer may carry a `reason`: the list is partial, and `reason` names
+ * the accounts that could not be read. The GraphQL shape is unchanged.
+ */
+export type OpenListReturn<T> =
+  | BaseReturn<T>
+  | { status: StatusEnum.ok; data: T; reason: string }
+
+/**
+ * One account's answer in an open-orders / open-positions list: its rows, or
+ * why it could not be read. A failed read is never an empty list — the caller
+ * would take it as "this account has nothing open".
+ */
+type VenueRead<T> = { rows: T[] } | { failed: string }
+
+const venueFailed = (
+  what: string,
+  exchange: ExchangeInUser,
+  cause: string,
+): VenueRead<never> => {
+  logger.warn(
+    `${what} | ${exchange.provider} ${exchange.uuid} ${cause}, listed without it`,
+  )
+  return { failed: `${exchange.provider} ${exchange.uuid}: ${cause}` }
+}
+
+const venueNotOk = (what: string, exchange: ExchangeInUser, reason: unknown) =>
+  venueFailed(what, exchange, `answered NOTOK: ${reason ?? 'no reason'}`)
+
+const venueThrew = (what: string, exchange: ExchangeInUser, e: unknown) =>
+  venueFailed(
+    what,
+    exchange,
+    `threw: ${e instanceof Error ? e.message : String(e)}`,
+  )
+
+const lateVenue = (what: string, exchange: ExchangeInUser, ms: number) => () =>
+  venueFailed(what, exchange, `did not answer within ${ms}ms`)
+
+/**
+ * Merge the per-account reads: the rows of every account that answered, and
+ * a `reason` naming each account that did not (null when all answered).
+ * `allFailed` is true only when there was at least one account and none
+ * answered — that request has no list to give.
+ */
+const collectVenueReads = <T>(reads: VenueRead<T>[]) => {
+  const rows: T[] = []
+  const failed: string[] = []
+  for (const r of reads) {
+    if ('failed' in r) {
+      failed.push(r.failed)
+    } else {
+      rows.push(...r.rows)
+    }
   }
+  return {
+    rows,
+    reason: failed.length
+      ? `Could not read ${failed.length} of ${reads.length} exchange accounts: ${failed.join('; ')}`
+      : null,
+    allFailed: failed.length > 0 && failed.length === reads.length,
+  }
+}
 
 export const getAllOpenOrders = async (
   exchanges: ExchangeInUser[],
   ec = ExchangeChooser,
   deadlineMs?: number,
-): Promise<BaseReturn<GeneralOpenOrder[]>> => {
-  const queries: Promise<any>[] = []
+): Promise<OpenListReturn<GeneralOpenOrder[]>> => {
+  const queries: Promise<VenueRead<any>>[] = []
   for (const exchange of exchanges) {
     const exchangeFactory = ec.chooseExchangeFactory(exchange.provider)
     const exchangeInstance = exchangeFactory(
@@ -91,35 +148,42 @@ export const getAllOpenOrders = async (
           .getAllOpenOrders(undefined, true)
           .then((orders) => {
             if (orders.status === StatusEnum.ok) {
-              return orders.data.map((order) => ({
-                exchange: exchange.provider,
-                exchangeUUID: exchange.uuid,
-                exchangeName: exchange.name,
-                created: new Date(order.updateTime),
-                symbol: order.symbol,
-                side: order.side,
-                type: order.type,
-                orderId: `${order.orderId}`,
-                status: order.status,
-                price: order.price,
-                quantity: order.origQty,
-                clientOrderId: order.clientOrderId,
-                executedQty: order.executedQty,
-              }))
+              return {
+                rows: orders.data.map((order) => ({
+                  exchange: exchange.provider,
+                  exchangeUUID: exchange.uuid,
+                  exchangeName: exchange.name,
+                  created: new Date(order.updateTime),
+                  symbol: order.symbol,
+                  side: order.side,
+                  type: order.type,
+                  orderId: `${order.orderId}`,
+                  status: order.status,
+                  price: order.price,
+                  quantity: order.origQty,
+                  clientOrderId: order.clientOrderId,
+                  executedQty: order.executedQty,
+                })),
+              }
             }
-            return []
+            return venueNotOk('getAllOpenOrders', exchange, orders.reason)
           })
-          .catch(() => {
-            return []
-          }),
+          .catch((e) => venueThrew('getAllOpenOrders', exchange, e)),
         deadlineMs,
         lateVenue('getAllOpenOrders', exchange, deadlineMs ?? 0),
       ),
     )
   }
-  const ordersFromExchanges = (await Promise.all(queries)).flat()
+  const {
+    rows: ordersFromExchanges,
+    reason,
+    allFailed,
+  } = collectVenueReads(await Promise.all(queries))
+  if (allFailed && reason) {
+    return { status: StatusEnum.notok, reason, data: null }
+  }
   if (ordersFromExchanges.length === 0) {
-    return { status: StatusEnum.ok, reason: null, data: [] }
+    return { status: StatusEnum.ok, reason, data: [] }
   }
   const clientOrderIds = ordersFromExchanges.map(
     ({ clientOrderId }) => clientOrderId,
@@ -173,7 +237,7 @@ export const getAllOpenOrders = async (
     )
   return {
     status: StatusEnum.ok,
-    reason: null,
+    reason,
     data: ordersFromExchanges.map((order) => {
       if (order.exchange === ExchangeEnum.okxLinear) {
         const pair = pairsInfo.data.result.find(
@@ -226,8 +290,8 @@ export const getAllOpenPositions = async (
   userId: string,
   ec = ExchangeChooser,
   deadlineMs?: number,
-): Promise<BaseReturn<GeneralFuture[]>> => {
-  const queries: Promise<any>[] = []
+): Promise<OpenListReturn<GeneralFuture[]>> => {
+  const queries: Promise<VenueRead<any>>[] = []
   for (const exchange of exchanges.filter((e) => isFutures(e.provider))) {
     const exchangeFactory = ec.chooseExchangeFactory(exchange.provider)
     const exchangeInstance = exchangeFactory(
@@ -260,7 +324,7 @@ export const getAllOpenPositions = async (
                     )
                   ).data?.result ?? []
               }
-              return positions.data
+              const rows = positions.data
                 .filter((p) => +p.positionAmt !== 0)
                 .map((position) => ({
                   exchange: exchange.provider,
@@ -295,18 +359,24 @@ export const getAllOpenPositions = async (
                   }
                   return position
                 })
+              return { rows }
             }
-            return []
+            return venueNotOk('getAllOpenPositions', exchange, positions.reason)
           })
-          .catch(() => {
-            return []
-          }),
+          .catch((e) => venueThrew('getAllOpenPositions', exchange, e)),
         deadlineMs,
         lateVenue('getAllOpenPositions', exchange, deadlineMs ?? 0),
       ),
     )
   }
-  const positionsFromExchanges = (await Promise.all(queries)).flat()
+  const {
+    rows: positionsFromExchanges,
+    reason,
+    allFailed,
+  } = collectVenueReads(await Promise.all(queries))
+  if (allFailed && reason) {
+    return { status: StatusEnum.notok, reason, data: null }
+  }
   const positionsBotInfo = await getImportedPositions(
     positionsFromExchanges.map(({ positionId }) => positionId),
     userId,
@@ -345,7 +415,7 @@ export const getAllOpenPositions = async (
 
   return {
     status: StatusEnum.ok,
-    reason: null,
+    reason,
     data: positionsFromExchanges.map((position) => {
       if (position.exchange === ExchangeEnum.okxLinear) {
         const pair = pairsInfo.data.result.find(
