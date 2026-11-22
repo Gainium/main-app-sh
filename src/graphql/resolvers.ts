@@ -211,6 +211,11 @@ import { getInPositions } from './handlers/inPositions.handler'
 import { TradingCostsService } from './handlers/tradingCosts.handler'
 import { DEAL_TOTALS_ARGS } from '../bot/dealListFilter'
 import { redactBotListResult } from '../bot/redactBotCredentials'
+import {
+  botEventAlertsCond,
+  botEventDealsCond,
+  botEventTypesCond,
+} from './botEventTypeFilter'
 
 /**
  * The single reply every failed password login gets, whatever went wrong.
@@ -1559,6 +1564,7 @@ const resolvers = <
           hedge?: boolean
           combo?: boolean
           category?: 'recent' | 'deals' | 'alerts'
+          types?: string[]
         }
       },
       { token, req }: InputRequest,
@@ -1570,7 +1576,14 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { botId: _botId, hedge, combo, category, ...grid } = input
+      const {
+        botId: _botId,
+        hedge,
+        combo,
+        category,
+        types,
+        ...grid
+      } = input
       const userId = user.data._id.toString()
       let botId = [_botId]
       const { filter, ...rest } = mapDataGridOptionsToMongoOptions(grid)
@@ -1594,16 +1607,14 @@ const resolvers = <
       // events, newest first — no filter); "deals" and "alerts" are filtered
       // subsets. Alerts = error/warning type; deals = deal-tied events that
       // aren't alerts.
-      const alertCond = { type: { $in: ['error', 'warning'] } }
-      const dealCond = { deal: { $exists: true, $nin: [null, ''] } }
       const categoryCond = (
         cat?: 'recent' | 'deals' | 'alerts',
       ): object | null => {
         if (cat === 'alerts') {
-          return alertCond
+          return botEventAlertsCond()
         }
         if (cat === 'deals') {
-          return { $and: [dealCond, { $nor: [alertCond] }] }
+          return botEventDealsCond()
         }
         // 'recent' (and no category) → all events, unfiltered.
         return null
@@ -1617,6 +1628,12 @@ const resolvers = <
       }
       if ((filter as { $or?: object[] }).$or) {
         baseConds.push({ $or: (filter as { $or: object[] }).$or })
+      }
+      // A multi-type selection (e.g. Orders + Errors) is a union, AND-ed with
+      // the rest of the filter.
+      const typesCond = botEventTypesCond(types)
+      if (typesCond) {
+        baseConds.push(typesCond)
       }
       const buildQuery = (cat?: 'recent' | 'deals' | 'alerts') => {
         const cond = categoryCond(cat)

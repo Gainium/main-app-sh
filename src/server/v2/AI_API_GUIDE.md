@@ -311,6 +311,7 @@ For detailed schema references, see [SCHEMAS.md](./SCHEMAS.md).
 | GET | `/api/v2/deals/dca` | Query params | [DealListResponse](./SCHEMAS.md#deallistresponse) | Get DCA Deals |
 | POST | `/api/v2/deals/dca/add-funds` | [AddFundsSchema](./SCHEMAS.md#addfundsschema) | Success response | Add Funds to Deal |
 | POST | `/api/v2/deals/dca/reduce-funds` | [AddFundsSchema](./SCHEMAS.md#addfundsschema) | Success response | Reduce Funds from Deal |
+| POST | `/api/v2/deals/dca/merge` | inline (`dealIds`, `targetDealId`, `useTp`, `useSl`, `useDca`, `dcaOrders`) | 202 request sent (async) | Merge DCA Deals |
 | POST | `/api/v2/deals/dca/{botId}/start` | Query params | Success response | Start New DCA Deal |
 | PUT | `/api/v2/deals/dca/{dealId}` | [UpdateDCADealsInput](./SCHEMAS.md#updatedcadealsinput) | Success response | Update DCA Deal |
 | DELETE | `/api/v2/deals/dca/{dealId}` | Query params | Success response | Close DCA Deal |

@@ -82,6 +82,11 @@ import {
   GRID_FORM_DEFAULTS,
 } from './botDefaults'
 import type { ResponseMeta } from './types'
+import {
+  parseMergeDealsBody,
+  checkMergeCandidates,
+  type MergeCandidate,
+} from './mergeDeals'
 import { DCABotSettings } from '../../../types'
 import {
   validateCreateDCABotInput,
@@ -4336,6 +4341,126 @@ const v2API = <R extends UserSchema = UserSchema>(
             error instanceof Error
               ? error.message
               : 'Failed to reduce funds from deal',
+        })
+      }
+    },
+  })
+
+  /**
+   * POST /api/v2/deals/:dealType/merge
+   *
+   * Merge open DCA deals into one, as the dashboard's Merge Deals dialog does
+   * (spec 257). `dealType` must be `dca`: combo deals are not mergeable.
+   *
+   * Body: { dealIds: string[] (>= 2), targetDealId?: string, useTp?: boolean,
+   *   useSl?: boolean, useDca?: boolean, dcaOrders?: number }
+   *
+   * Response:
+   * - 202: Merge sent to the target deal's bot; the result appears as the
+   *   merged deal (sources become child deals with `parentId`) or a bot event
+   * - 400: Validation error, combo, mixed pair/side/account or context
+   * - 404: A deal is not found
+   * - 409: A deal is not open, or was already merged
+   * - 500: Internal server error
+   */
+  post.set('/api/v2/deals/:dealType/merge', {
+    middlewares: [paperContextMiddleware],
+    handler: async (req, res) => {
+      const user = req.userData
+      const { dealType } = req.params
+      if (dealType === 'combo') {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: 'Merging deals is not supported for combo deals',
+          data: null,
+        })
+      }
+      if (dealType !== 'dca') {
+        return res.status(400).json({
+          status: StatusEnum.notok,
+          reason: 'Invalid deal type. Must be: dca',
+          data: null,
+        })
+      }
+      const parsed = parseMergeDealsBody(req.body)
+      if (!parsed.ok) {
+        return res
+          .status(parsed.status)
+          .json({ status: StatusEnum.notok, reason: parsed.reason, data: null })
+      }
+      const { dealIds, targetDealId, options } = parsed.value
+      const paperContext = req.paperContext || false
+      try {
+        const deals = await dcaDealsDb.readData(
+          { _id: { $in: dealIds }, userId: user.id } as any,
+          {
+            status: 1,
+            botId: 1,
+            symbol: 1,
+            strategy: 1,
+            exchangeUUID: 1,
+            paperContext: 1,
+            child: 1,
+            parentId: 1,
+          },
+          {},
+          true,
+        )
+        if (deals.status === StatusEnum.notok) {
+          return res.status(500).json({
+            status: StatusEnum.notok,
+            reason: deals.reason,
+            data: null,
+          })
+        }
+        const checked = checkMergeCandidates(
+          dealIds,
+          targetDealId,
+          deals.data.result as unknown as MergeCandidate[],
+          paperContext,
+        )
+        if (!checked.ok) {
+          return res.status(checked.status).json({
+            status: StatusEnum.notok,
+            reason: checked.reason,
+            data: null,
+          })
+        }
+        const result = await Bot.mergeDeals(
+          user.id,
+          checked.botId,
+          dealIds,
+          paperContext,
+          options,
+        )
+        if (!result) {
+          return res.status(500).json({
+            status: StatusEnum.notok,
+            reason: 'The bot service did not answer the merge request',
+            data: null,
+          })
+        }
+        if (result.status === StatusEnum.notok) {
+          return res.status(400).json({ ...result, data: null })
+        }
+        return res.status(202).json({
+          status: StatusEnum.ok,
+          reason: null,
+          data: {
+            botId: checked.botId,
+            targetDealId,
+            dealIds,
+            message:
+              'Merge request sent. The merged deal appears in GET /api/v2/deals/dca; the merged deals become its child deals. A refusal is reported as a bot event.',
+          },
+        })
+      } catch (error) {
+        console.error('Error merging deals:', error)
+        return res.status(500).json({
+          status: StatusEnum.notok,
+          reason:
+            error instanceof Error ? error.message : 'Failed to merge deals',
+          data: null,
         })
       }
     },

@@ -304,6 +304,10 @@ export async function apiKeyRestrictionsMiddleware(
     dealParamIsBot ? undefined : params.dealId,
     query.dealId,
     body.dealId,
+    // A merge names several deals (spec 257 §1.4). A non-array is left to the
+    // route, which refuses it.
+    ...(Array.isArray(body.dealIds) ? body.dealIds : []),
+    body.targetDealId,
   ]
   const present = [...rawBotIds, ...rawDealIds].filter(
     (v) => v !== undefined && v !== null && v !== '',

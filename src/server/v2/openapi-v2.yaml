@@ -8576,6 +8576,118 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           description: Deal not found
+  /api/v2/deals/dca/merge:
+    post:
+      summary: Merge DCA Deals
+      description: |
+        Merge two or more open DCA deals into one deal, as the dashboard's
+        Merge Deals dialog does. Base amounts are summed and the merged deal's
+        average is the weighted average of the sources, fees included, exactly
+        as in the dashboard. The pending orders of the source deals (take
+        profit, stop loss, safety orders) are cancelled and the sources become
+        child deals of the merged deal (`parentId`).
+
+        All deals must be open, on the same exchange account, pair and side,
+        and in the trading context of the `paper-context` header. Combo deals
+        cannot be merged (`/api/v2/deals/combo/merge` answers 400).
+
+        The merge is asynchronous: a 202 means the request was checked and sent
+        to the bot of `targetDealId`. The result appears as the merged deal in
+        `GET /api/v2/deals/dca`, or, if the bot refuses it (for example while
+        the exchange refuses the account's API key), as a bot event. Calling
+        again with deals that were already merged returns 409.
+
+        Notes:
+        - A bot using ASAP start conditions may open a new deal right after the
+          merge.
+        - Take profit, stop loss and DCA of the merged deal can be changed
+          afterwards with `PUT /api/v2/deals/dca/{dealId}`.
+        - `useDca` only carries a plain percentage ladder; indicator, custom
+          and ATR/ADR ladders cannot be carried to a merged deal.
+
+        Requires write permission of API keys. A key restricted to one bot can
+        merge only that bot's deals.
+      tags:
+        - Deals - DCA
+      operationId: mergeDcaDeals
+      parameters:
+        - $ref: "#/components/parameters/PaperContextHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - dealIds
+              properties:
+                dealIds:
+                  type: array
+                  minItems: 2
+                  description: IDs of the open DCA deals to merge
+                  items:
+                    type: string
+                  example:
+                    - 507f1f77bcf86cd799439012
+                    - 507f1f77bcf86cd799439014
+                targetDealId:
+                  type: string
+                  description: One of `dealIds`. Its bot owns the merged deal. Default is the first ID.
+                  example: 507f1f77bcf86cd799439012
+                useTp:
+                  type: boolean
+                  description: The merged deal takes its bot's take profit. Omitted, only an indicator or webhook close carries over.
+                useSl:
+                  type: boolean
+                  description: The merged deal takes its bot's stop loss. Omitted, only an indicator or webhook close carries over.
+                useDca:
+                  type: boolean
+                  description: The merged deal restarts its bot's DCA ladder from the merged average (percentage ladders only).
+                dcaOrders:
+                  type: integer
+                  minimum: 1
+                  description: Levels of that ladder, capped at the bot's. Omitted, the bot's.
+      responses:
+        "202":
+          description: Merge request sent to the bot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - OK
+                    example: OK
+                  reason:
+                    type: string
+                    nullable: true
+                    example: null
+                  data:
+                    type: object
+                    properties:
+                      botId:
+                        type: string
+                        description: Bot that owns the merged deal
+                      targetDealId:
+                        type: string
+                      dealIds:
+                        type: array
+                        items:
+                          type: string
+                      message:
+                        type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: A deal was not found
+        "409":
+          description: A deal is not open, or was already merged into another deal
   /api/v2/deals/terminal/{dealId}/reduce-funds:
     post:
       summary: Reduce Funds from Terminal Deal

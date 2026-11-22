@@ -2014,6 +2014,7 @@ export const BotSchema = /* GraphQL */ `
     hedge: Boolean
     combo: Boolean
     category: String
+    types: [String]
   }
   type SplitTime {
     d: String
