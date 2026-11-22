@@ -9965,6 +9965,24 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
+        // Core spec 261 §3.3. Funds a sibling deal holds that the venue does
+        // not lock (a spot hedge's long leg's coins): refused here as not
+        // enough balance, before the venue would accept it and spend them.
+        // Unlike the cooldown above this IS a refusal on the merits, so the
+        // not-enough-balance accounting below (size memory, backoff window)
+        // treats it like the venue's; only the row clean-up and the venue
+        // retries know it never left this process.
+        let heldFundsShortCircuit = false
+        if (!request) {
+          const refusal = await this.refuseSpendingHeldFunds(order)
+          if (refusal) {
+            heldFundsShortCircuit = true
+            this.handleLog(
+              `Order ${order.clientOrderId} not sent: ${refusal}`,
+            )
+            request = { status: StatusEnum.notok, reason: refusal, data: null }
+          }
+        }
         // Binance Futures Quantitative Rules (-4400) pre-send gate. Only for
         // real Binance USD-M/COIN-M futures, and only for orders that would
         // OPEN/INCREASE exposure (reduceOnly orders + cancels still work under
@@ -10728,6 +10746,7 @@ class MainBot<T extends IMainBot> {
             // transient balance lag this retry waits out; re-asking would only
             // replay the same cached answer.
             !notEnoughBalanceShortCircuit &&
+            !heldFundsShortCircuit &&
             request.reason.toLowerCase().indexOf('balance') !== -1 &&
             !order.clientOrderId.includes('D-SR')
           ) {
@@ -10854,6 +10873,7 @@ class MainBot<T extends IMainBot> {
           const tracked = this.orders && this.orders.size > 0
           const servedLocally =
             notEnoughBalanceShortCircuit ||
+            heldFundsShortCircuit ||
             complianceShortCircuit ||
             authShortCircuit ||
             riskTierShortCircuit ||
@@ -12177,6 +12197,17 @@ class MainBot<T extends IMainBot> {
       return held
     }
     return { asset, free: pooled, locked: held?.locked ?? 0 }
+  }
+
+  /**
+   * Core spec 261 §3.3: a reason (classified as not enough balance) when this
+   * order would spend funds the venue reports free but another deal of the
+   * same bot holds; `null` sends it. Nothing is held outside DCA hedge legs.
+   */
+  protected async refuseSpendingHeldFunds(
+    _order: Order,
+  ): Promise<string | null> {
+    return null
   }
 
   /**

@@ -32,7 +32,13 @@
  * this cycle), and a `null` is never cached.
  */
 import logger from '../utils/logger'
-import { comboDealsDb, dcaDealsDb, minigridDb, orderDb } from '../db/dbInit'
+import {
+  comboDealsDb,
+  dcaBotDb,
+  dcaDealsDb,
+  minigridDb,
+  orderDb,
+} from '../db/dbInit'
 import { DCADealStatusEnum, StatusEnum, TypeOrderEnum } from '../../types'
 
 const logPrefix = 'FundingReservation'
@@ -86,6 +92,8 @@ export class FundingReservation {
   private cache = new Map<string, { at: number; value: number }>()
 
   private stamped = new Map<string, { at: number; value: boolean }>()
+
+  private heldByLong = new Map<string, { at: number; value: number }>()
 
   /**
    * Whether the account has a stamped deal that could hold funds. Served by
@@ -373,6 +381,92 @@ export class FundingReservation {
     fresh = false,
   ) {
     return this.reserved('base', userId, exchangeUUID, baseAsset, fresh)
+  }
+
+  /**
+   * Core spec 261 §3.2. Base the open deals of a spot hedge's LONG leg hold
+   * (Σ `currentBalances.base`), less what their resting take profits already
+   * lock on the venue: the coins the venue reports free that the SHORT leg of
+   * the same hedge must not sell. Stamped deals (spec 044) are left out —
+   * {@link reservedBase} already holds theirs. Read by `parentBotId` (indexed)
+   * and `botId` (indexed). `null`: could not be read.
+   */
+  async heldByHedgeLongLegs(
+    parentBotId: string | null | undefined,
+    selfBotId: string | null | undefined,
+    baseAsset: string,
+    fresh = false,
+  ): Promise<number | null> {
+    if (!parentBotId || !baseAsset) {
+      return 0
+    }
+    const key = `${parentBotId}@${baseAsset}`
+    const hit = this.heldByLong.get(key)
+    if (!fresh && hit && Date.now() - hit.at < TTL_MS) {
+      return hit.value
+    }
+    const options = { maxTimeMS: MAX_TIME_MS }
+    const legs = await dcaBotDb.readData(
+      {
+        parentBotId: `${parentBotId}`,
+        'settings.strategy': 'LONG',
+        'settings.futures': { $ne: true },
+      } as any,
+      { _id: 1 },
+      options,
+      true,
+    )
+    if (legs.status !== StatusEnum.ok) {
+      logger.error(
+        `${logPrefix} | cannot read hedge legs of ${parentBotId}: ${legs.reason}`,
+      )
+      return null
+    }
+    const botIds = (legs.data.result as { _id: unknown }[])
+      .map((b) => `${b._id}`)
+      .filter((id) => id !== `${selfBotId ?? ''}`)
+    let value = 0
+    if (botIds.length) {
+      const deals = await dcaDealsDb.readData(
+        {
+          botId: { $in: botIds },
+          status: { $in: HOLDING_STATUSES },
+          'symbol.baseAsset': baseAsset,
+          baseFundingBeta: { $ne: true },
+        } as any,
+        { _id: 1, 'currentBalances.base': 1 },
+        options,
+        true,
+      )
+      if (deals.status !== StatusEnum.ok) {
+        logger.error(
+          `${logPrefix} | cannot read hedge long deals of ${parentBotId}: ${deals.reason}`,
+        )
+        return null
+      }
+      const held = new Map<string, number>()
+      for (const d of deals.data.result as {
+        _id: unknown
+        currentBalances?: { base?: number }
+      }[]) {
+        const base = +(d.currentBalances?.base ?? 0)
+        if (Number.isFinite(base) && base > 0) {
+          held.set(`${d._id}`, base)
+        }
+      }
+      const locked = await this.restingLocked('base', [...held.keys()])
+      for (const [id, base] of held) {
+        value += Math.max(0, base - (locked.get(id) ?? 0))
+      }
+    }
+    if (this.heldByLong.size >= 50_000) {
+      const oldest = this.heldByLong.keys().next().value
+      if (oldest !== undefined) {
+        this.heldByLong.delete(oldest)
+      }
+    }
+    this.heldByLong.set(key, { at: Date.now(), value })
+    return value
   }
 
   /**

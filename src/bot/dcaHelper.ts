@@ -1,6 +1,7 @@
 import {
   FundingTrade,
   HEDGE_FUNDING_ACTIONS,
+  hedgeShortSellFits,
   planFunding,
   planHedgeLegDealFunding,
   planHedgeLegFunding,
@@ -18030,6 +18031,28 @@ function createDCABotHelper<
         if (reserved > 0) {
           available = Math.max(0, available - reserved)
         }
+        // Core spec 261 §3.4: a short hedge leg must not open on the coins
+        // the long leg holds for its take profit.
+        if (!this.isLong && (await this.hedgeShortLegReserveApplies())) {
+          const held = await this.heldByHedgeLongLeg(ed.baseAsset.name)
+          if (held === null) {
+            this.handleDebug(
+              'Cannot read what the hedge long leg holds, bypass check balance',
+            )
+            return {
+              status: false,
+              required: 0,
+              available: 0,
+              price: 0,
+              unknown: true,
+            }
+          }
+          available = hedgeShortSellFits({
+            freeBase: available,
+            heldByLong: held,
+            qty: 0,
+          }).spendable
+        }
       }
       if (requiredAmount / leverage > available) {
         available = await this.pooledMarginOrKeep(
@@ -23553,6 +23576,114 @@ function createDCABotHelper<
         baseAsset,
         fresh,
       )
+    }
+
+    /**
+     * Core spec 261. A spot hedge DCA SHORT leg outside the spec 044 beta:
+     * both legs trade one coin from one account, and its sells must leave the
+     * coins the LONG leg holds for its take profit. Futures, combo, long legs,
+     * non-hedge bots and beta users are never in scope — those run as before.
+     */
+    async hedgeShortLegReserveApplies(): Promise<boolean> {
+      return (
+        !this.futures &&
+        !this.combo &&
+        !this.isLong &&
+        !!this.data?.parentBotId &&
+        !(await this.baseFundingAllowed())
+      )
+    }
+
+    /** Core spec 261 §3.2, for this leg's hedge. `null`: unreadable. */
+    async heldByHedgeLongLeg(baseAsset: string, fresh = false) {
+      return FundingReservation.getInstance().heldByHedgeLongLegs(
+        this.data?.parentBotId,
+        this.botId,
+        baseAsset,
+        fresh,
+      )
+    }
+
+    /**
+     * Core spec 261 §3.3. A short leg's base or safety SELL that only the
+     * long leg's coins would cover is refused as not enough balance. Decided
+     * on stored balances, confirmed against a live read before refusing; an
+     * unreadable balance or long-leg read sends the order (the venue decides,
+     * as before). Spec 044 deals (stamped or carrying an action) are skipped.
+     */
+    protected override async refuseSpendingHeldFunds(
+      order: Order,
+    ): Promise<string | null> {
+      if (
+        order.side !== OrderSideEnum.sell ||
+        (order.typeOrder !== TypeOrderEnum.dealStart &&
+          order.typeOrder !== TypeOrderEnum.dealRegular)
+      ) {
+        return null
+      }
+      const deal = this.getDeal(order.dealId)?.deal
+      if (
+        deal &&
+        (this.isBaseFundingDeal(deal) || (deal as { action?: unknown }).action)
+      ) {
+        return null
+      }
+      if (!(await this.hedgeShortLegReserveApplies())) {
+        return null
+      }
+      const ed = await this.getExchangeInfo(order.symbol)
+      if (!ed) {
+        return null
+      }
+      const asset = ed.baseAsset.name
+      const held = await this.heldByHedgeLongLeg(asset, true)
+      if (held === null || held <= 0) {
+        return null
+      }
+      const qty = +order.origQty
+      const stored = await this.checkAssets(true, false, true)
+      const storedFree = stored?.get(asset)?.free
+      if (
+        storedFree === undefined ||
+        hedgeShortSellFits({ freeBase: storedFree, heldByLong: held, qty })
+          .fits
+      ) {
+        return null
+      }
+      const live = await this.checkAssets(true, true)
+      const liveFree = live?.get(asset)?.free
+      if (liveFree === undefined) {
+        return null
+      }
+      const check = hedgeShortSellFits({
+        freeBase: liveFree,
+        heldByLong: held,
+        qty,
+      })
+      if (check.fits) {
+        return null
+      }
+      return `Insufficient balance: ${qty} ${asset} to sell, ${liveFree} ${asset} free of which ${held} ${asset} is held by the long side of this hedge bot for its take profit`
+    }
+
+    /**
+     * Core spec 261 §3.3: the not-enough-balance report and latch read a
+     * short hedge leg's base net of what the long leg holds.
+     */
+    protected override async spendableForNotEnoughBalance(
+      asset: string,
+      cachedFree: number,
+    ): Promise<number> {
+      const free = await super.spendableForNotEnoughBalance(asset, cachedFree)
+      if (!(await this.hedgeShortLegReserveApplies())) {
+        return free
+      }
+      // Keyed by the long deals' base asset: for any other asset it is 0.
+      const held = await this.heldByHedgeLongLeg(asset)
+      return held
+        ? hedgeShortSellFits({ freeBase: free, heldByLong: held, qty: 0 })
+            .spendable
+        : free
     }
 
     /**

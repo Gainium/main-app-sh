@@ -757,3 +757,26 @@ export function planHedgeFundingJointly(
     return pa.input.isLong ? pa : pb
   })
 }
+
+/**
+ * Core spec 261 §3.1. Whether a spot hedge SHORT leg's sell of `qty` base can
+ * be paid without the coins its sibling LONG leg holds for its take profit.
+ * Both legs trade one coin from one account and nothing on the venue locks
+ * the long's coins while its take profit is not resting, so the venue's free
+ * base counts them; `heldByLong` is what has to stay. A tolerance of one part
+ * in 10⁹ absorbs float noise in the stored balances.
+ */
+export function hedgeShortSellFits(input: {
+  freeBase: number
+  heldByLong: number
+  qty: number
+}): { fits: boolean; spendable: number } {
+  const free = Number.isFinite(input.freeBase) ? input.freeBase : 0
+  const held =
+    Number.isFinite(input.heldByLong) && input.heldByLong > 0
+      ? input.heldByLong
+      : 0
+  const spendable = Math.max(0, free - held)
+  const qty = Number.isFinite(input.qty) ? input.qty : 0
+  return { fits: spendable + Math.abs(qty) * 1e-9 >= qty, spendable }
+}
