@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.2] - 2026-11-22
+
+### Fixed
+
+- Spot hedge DCA bots: the short side no longer sells the coins the long side holds for its take profit; a short order those coins would be needed for is refused as not enough balance
+
 ## [1.133.1] - 2026-11-22
 
 ### Fixed
