@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.1] - 2026-11-22
+
+### Fixed
+
+- Open orders and open positions lists report an exchange account that could not be read instead of listing it as having nothing open
+
 ## [1.133.0] - 2026-11-22
 
 ### Added
