@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.11] - 2026-11-22
+
+### Fixed
+
+- Combo: when several safety orders fill at the same moment, a shallower fill booked after a deeper one no longer moves the deal's filled level back down and re-places the levels that already filled
+
 ## [1.132.10] - 2026-11-21
 
 ### Fixed
