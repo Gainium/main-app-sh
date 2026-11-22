@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.132.12] - 2026-11-22
+
+### Fixed
+
+- Combo: an add / reduce funds fill is booked after the per-deal processing lock is released, so a fill handler that re-enters processing through its cancel loop can no longer stop the deal; the per-deal lock is exported for subclasses that override a locked method
+
 ## [1.132.11] - 2026-11-22
 
 ### Fixed
