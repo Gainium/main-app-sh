@@ -1833,6 +1833,49 @@ function createComboBotHelper<
       }
       this.deleteMinigrid(minigrid.schema._id, false)
       await this.setToRedis('minigrids', this.allMinigrids)
+      // Spec 259: the grid's own resting orders go with it, including any the
+      // in-memory grid lost track of while fills raced each other; once more a
+      // moment later for an order still in flight at the close.
+      const closedId = `${minigrid.schema._id}`
+      await this.cancelOrdersOfClosedMinigrid(closedId)
+      this.scheduleClosedMinigridSweep(closedId)
+    }
+    /**
+     * Cancel every grid order still resting for a minigrid that has closed.
+     * Spec 259.
+     */
+    protected async cancelOrdersOfClosedMinigrid(minigridId: string) {
+      const active = this.getMinigrid(minigridId)
+      if (
+        active &&
+        active.schema.status !== ComboMinigridStatusEnum.closed
+      ) {
+        return
+      }
+      const left = this.getOrdersByStatusAndDealId({
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      }).filter(
+        (o) =>
+          o.typeOrder === TypeOrderEnum.dealGrid &&
+          `${o.minigridId}` === minigridId,
+      )
+      for (const o of left) {
+        this.handleLog(
+          `Cancel order ${o.clientOrderId} ${o.side} ${o.price}: its minigrid ${minigridId} closed`,
+        )
+        await this.cancelOrderOnExchange(o)
+      }
+    }
+    @RunWithDelay(
+      (minigridId: string) => `closedMinigridSweep-${minigridId}`,
+      5000,
+    )
+    scheduleClosedMinigridSweep(minigridId: string) {
+      this.cancelOrdersOfClosedMinigrid(minigridId).catch((e) =>
+        this.handleWarn(
+          `Cannot cancel orders of closed minigrid ${minigridId}: ${(e as Error)?.message ?? e}`,
+        ),
+      )
     }
     private async processCloseMinigrid(minigridId: string) {
       this.handleLog(`Close minigrid ${minigridId}`)
