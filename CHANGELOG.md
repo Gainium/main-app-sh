@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.5] - 2026-11-23
+
+### Fixed
+
+- A combo minigrid that closes during a fast move cancels every grid order it still has on the exchange
+
 ## [1.133.4] - 2026-11-23
 
 ### Fixed
