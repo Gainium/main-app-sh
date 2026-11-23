@@ -123,6 +123,11 @@ import {
   marketClosedNotice,
   marketClosedRetryDelay,
 } from './marketClosedRetry'
+import {
+  bandFractionFromReason,
+  isAheadOfMarket,
+  isWithinBand,
+} from './outOfBandRetry'
 import { UserNotice, userNoticePayload, userNoticeRow } from './userNotice'
 import {
   getSubTypeBehavior,
@@ -2288,6 +2293,103 @@ class MainBot<T extends IMainBot> {
     const placed = await this.replaceVenueCanceledBatch(this.botId, queued)
     this.handleLog(
       `Sent ${placed}/${queued.length} order(s) again after a closed-market refusal`,
+    )
+  }
+
+  /**
+   * Orders refused for sitting too far ahead of the price, by level, with the
+   * band the venue named. Spec 250.
+   */
+  protected outOfBandOrders?: Map<string, { order: Order; band: number }>
+  protected outOfBandFlushing = false
+
+  /**
+   * The venue refused `order` because it is more than its band away from the
+   * price, and the price has not reached it. Keep it by level and place it
+   * again once a price tick brings it inside the band
+   * ({@link MainBot#checkOutOfBandOrders}). Spec 250.
+   */
+  protected async noteOutOfBandRefusal(order: Order, reason: string) {
+    if (!this.replacesVenueCancel(order)) {
+      return
+    }
+    const band = bandFractionFromReason(reason)
+    if (!band) {
+      return
+    }
+    const market = await this.getLatestPrice(order.symbol)
+    const price = Number(order.origPrice) || Number(order.price)
+    if (!isAheadOfMarket(order.side, price, market)) {
+      return
+    }
+    const held = (this.outOfBandOrders ??= new Map())
+    const key = marketClosedLevelKey(order)
+    if (!held.has(key)) {
+      this.handleLog(
+        `Order ${order.clientOrderId} (${order.typeOrder}) ${order.side} ${price} refused, more than ${Math.round(band * 100)}% from ${order.symbol} at ${market}. It will be placed when the price is within range`,
+      )
+    }
+    held.delete(key)
+    held.set(key, { order, band })
+    if (held.size > 1000) {
+      const oldest = held.keys().next().value
+      if (oldest !== undefined) {
+        held.delete(oldest)
+      }
+    }
+  }
+
+  /**
+   * On a price for `symbol`, place every held order the price has come within
+   * range of. Spec 250.
+   */
+  protected checkOutOfBandOrders(symbol: string, price: number) {
+    const held = this.outOfBandOrders
+    if (!held?.size || this.outOfBandFlushing || !(price > 0)) {
+      return
+    }
+    const due: Order[] = []
+    for (const [key, { order, band }] of held) {
+      if (order.symbol !== symbol) {
+        continue
+      }
+      const at = Number(order.origPrice) || Number(order.price)
+      if (isWithinBand(at, price, band)) {
+        held.delete(key)
+        due.push(order)
+      }
+    }
+    if (!due.length) {
+      return
+    }
+    this.outOfBandFlushing = true
+    this.flushOutOfBand(due, symbol, price)
+      .catch((e) =>
+        this.handleWarn(
+          `Cannot place orders held out of the price band: ${(e as Error)?.message ?? e}`,
+        ),
+      )
+      .finally(() => {
+        this.outOfBandFlushing = false
+      })
+  }
+
+  protected async flushOutOfBand(
+    due: Order[],
+    symbol: string,
+    price: number,
+  ): Promise<void> {
+    if (
+      !this.data ||
+      (this.data.status !== BotStatusEnum.open &&
+        this.data.status !== BotStatusEnum.range) ||
+      !this.shouldProceed()
+    ) {
+      return
+    }
+    const placed = await this.replaceVenueCanceledBatch(this.botId, due)
+    this.handleLog(
+      `${symbol} at ${price}: sent ${placed}/${due.length} order(s) held out of the price band`,
     )
   }
 
@@ -4953,7 +5055,9 @@ class MainBot<T extends IMainBot> {
 
   redisSubCb(msg: string) {
     try {
-      return this.priceUpdateCallback(this.botId, JSON.parse(msg))
+      const parsed = JSON.parse(msg) as PriceMessage
+      this.checkOutOfBandOrders(parsed?.symbol, +parsed?.price)
+      return this.priceUpdateCallback(this.botId, parsed)
     } catch (e) {
       this.handleErrors(
         `${(e as Error)?.message ?? e}`,
@@ -10940,6 +11044,13 @@ class MainBot<T extends IMainBot> {
               // id, but kept by level and placed again later. Spec 248.
               if (refusalSubType === marketClosed) {
                 this.noteMarketClosedRefusal(order)
+              } else if (refusalSubType === orderPrice) {
+                // Too far ahead of the price: kept and placed once a tick
+                // brings it within range. Spec 250.
+                this.noteOutOfBandRefusal(
+                  order,
+                  `${request.reason ?? ''}`,
+                ).catch(() => undefined)
               }
             } else {
               await this.deleteOrderFromDb(order.clientOrderId)

@@ -30837,6 +30837,7 @@ function createDCABotHelper<
           const prices = allPrices.data.filter((p) => symbols.has(p.pair))
           for (const p of prices) {
             restPrices.set(p.pair, p.price)
+            this.checkOutOfBandOrders(p.pair, p.price)
             this.priceUpdateCallback(this.botId, {
               symbol: p.pair,
               price: p.price,

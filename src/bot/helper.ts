@@ -5181,6 +5181,7 @@ function createBotHelper<
           const prices = allPrices.data.filter((p) => p.pair === symbol)
           for (const p of prices) {
             restPrice = p.price
+            this.checkOutOfBandOrders(p.pair, p.price)
             this.priceUpdateCallback(this.botId, {
               symbol: p.pair,
               price: p.price,
