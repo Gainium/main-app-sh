@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.4] - 2026-11-23
+
+### Fixed
+
+- Orders an exchange refuses for sitting too far from the current price are placed automatically once the price comes within range
+
 ## [1.133.3] - 2026-11-23
 
 ### Security
