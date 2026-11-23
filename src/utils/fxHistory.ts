@@ -1,6 +1,7 @@
 import axios from 'axios'
 import models from '../db/model'
 import logger from './logger'
+import type { FxRateDaySchema } from '../../types'
 import { dailyUnitsPerUsd, utcDay } from './fiatProfit'
 import { usableFiatRates, type FiatRate } from './fiatRates'
 
@@ -154,7 +155,7 @@ export const readFxDays = async (
       },
       { day: 1, [`rates.${code}`]: 1 },
     )
-    .lean()
+    .lean<Pick<FxRateDaySchema, 'day' | 'rates'>[]>()
     .catch((e) => {
       logger.error(`${logPrefix} read ${code}: ${e?.message ?? e}`)
       return []

@@ -97,7 +97,7 @@
     "js-yaml": "^4.1.0",
     "jsonwebtoken": "^9.0.3",
     "moment-timezone": "^0.6.0",
-    "mongoose": "^9.0.2",
+    "mongoose": "^9.11.4",
     "node-cron": "^4.2.1",
     "node-kraken-api": "^2.2.2",
     "redis": "^5.10.0",
