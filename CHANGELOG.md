@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.3] - 2026-11-23
+
+### Security
+
+- Upgraded mongoose to 9.11.4 for upstream query-sanitization and prototype-property hardening fixes
+
 ## [1.133.2] - 2026-11-22
 
 ### Fixed
