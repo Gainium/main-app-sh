@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.8] - 2026-11-25
+
+### Fixed
+
+- Spot hedge DCA bots: the short side's check that keeps the long side's coins for its take profit now runs for every account, not only those outside base funding
+
 ## [1.133.7] - 2026-11-25
 
 ### Fixed
