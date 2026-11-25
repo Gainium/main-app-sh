@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.10] - 2026-11-25
+
+### Fixed
+
+- Futures combo deals whose exchange position is smaller than the deal records now tell the user once, with both quantities, and stop re-sending the closing grid orders the exchange keeps refusing until the deal's position changes
+
 ## [1.133.9] - 2026-11-25
 
 ### Fixed
