@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.12] - 2026-11-25
+
+### Fixed
+
+- A terminal deal importing a position whose size and price give no tradable quantity is refused with a message instead of opening an empty deal that can never be saved; such deals already stored are cancelled on their next restart, and a futures deal's average now ignores entry rows that filled nothing
+
 ## [1.133.11] - 2026-11-25
 
 ### Fixed
