@@ -94,19 +94,31 @@ type Venue = {
   positions: () => any
 }
 
-const buildBot = (venue: Venue, over: { futures?: boolean } = {}) => {
+type BotOver = {
+  futures?: boolean
+  symbol?: string
+  isLong?: boolean
+  hedge?: boolean
+  exchange?: ExchangeEnum
+  /** The classifier the bot runs with — prod's DB rules, see spec 269. */
+  classify?: (e: string) => string
+  tp?: () => ReturnType<typeof plannedTp>
+}
+
+const buildBot = (venue: Venue, over: BotOver = {}) => {
+  const tp = over.tp ?? plannedTp
   const deal: any = {
     deal: {
       _id: DEAL_ID,
       botId: BOT_ID,
       status: DCADealStatusEnum.open,
-      symbol: { symbol: SYMBOL },
+      symbol: { symbol: over.symbol ?? SYMBOL },
       settings: {},
       tpSlTargetFilled: [],
     },
     closeBySl: false,
     closeByTp: false,
-    currentOrders: [plannedTp()],
+    currentOrders: [tp()],
   }
   class TestBot extends Helper {
     math = { round: (v: number) => v }
@@ -121,8 +133,8 @@ const buildBot = (venue: Venue, over: { futures?: boolean } = {}) => {
     allowToPlaceOrders = new Map()
     ordersInBetweenUpdates = new Set<string>()
     futures = over.futures ?? true
-    hedge = false
-    isLong = true
+    hedge = over.hedge ?? false
+    isLong = over.isLong ?? true
     exchange: any = {
       futures_getPositions: async () => {
         this.positionReads += 1
@@ -191,16 +203,26 @@ const buildBot = (venue: Venue, over: { futures?: boolean } = {}) => {
       return '1'
     }
     endMethod() {}
+    getErrorSubType(e: string) {
+      return over.classify ? over.classify(e) : getErrorSubType(e)
+    }
   }
   const bot: any = new TestBot()
   bot.deal = deal
+  if (over.exchange) {
+    bot.data = { ...bot.data, exchange: over.exchange }
+  }
   return bot
 }
 
 /** One `placeOrders` pass over the deal — a worker start, reconnect or check. */
-const pass = (bot: any) =>
-  bot.placeOrdersHoldingDealLock(BOT_ID, SYMBOL, DEAL_ID, {
-    new: [plannedTp()],
+const pass = (
+  bot: any,
+  symbol = SYMBOL,
+  tp: () => ReturnType<typeof plannedTp> = plannedTp,
+) =>
+  bot.placeOrdersHoldingDealLock(BOT_ID, symbol, DEAL_ID, {
+    new: [tp()],
     cancel: [],
   })
 
@@ -346,5 +368,142 @@ describe('a futures resting TP refused for a position the venue does not hold (s
     expect(bot.sent[0].returnError).to.equal(undefined)
     expect(bot.positionReads).to.equal(0)
     expect(bot.events).to.have.length(0)
+  })
+})
+
+/**
+ * Spec `269` — the same refusal from Binance USD-M, classified the way
+ * production classifies it. Production's `boterrorrules` (read from the admin
+ * API on 2026-11-25) carry the builtin substring rules `reduce-only` and
+ * `reduceonly` → `Futures position restriction`, which shadow the static
+ * `errorDict` entry `ReduceOnly Order` → `Futures position`. The spec 143 gate
+ * compared against `Futures position` only, so on Binance the position was
+ * never read and the take-profit was re-sent on every pass.
+ *
+ * The fixture is the production shape: a SHORT SOLUSDT deal of 10.06 on a
+ * hedge-mode Binance USD-M account, its take-profit BUY 10.06 @ 75.46, refused
+ * with Binance's reduce-only message while the venue reports no SOLUSDT
+ * position at all. Ids are synthetic.
+ */
+describe('a Binance reduce-only refusal under the production error rules (spec 269)', () => {
+  const SOL = 'SOLUSDT'
+  const BINANCE_REFUSAL =
+    'ReduceOnly Order Failed. Please check your existing position and open orders.'
+  /** Production's rule set for these messages (priorities 79/80, substring). */
+  const prodClassify = (e: string) => {
+    const m = e.toLowerCase()
+    if (m.includes('reduce-only') || m.includes('reduceonly')) {
+      return 'Futures position restriction'
+    }
+    return getErrorSubType(e)
+  }
+  const solTp = () => ({
+    number: 0,
+    price: 75.46,
+    qty: 10.06,
+    side: OrderSideEnum.buy,
+    newClientOrderId: TP_ID,
+    type: TypeOrderEnum.dealTP,
+    dealId: DEAL_ID,
+  })
+  const shortOnBinance = (venue: Venue) =>
+    buildBot(venue, {
+      symbol: SOL,
+      isLong: false,
+      hedge: true,
+      exchange: ExchangeEnum.binanceUsdm,
+      classify: prodClassify,
+      tp: solTp,
+    })
+  const solPass = (bot: any) => pass(bot, SOL, solTp)
+
+  before(function () {
+    this.timeout(180000)
+    if (!Helper) {
+      Helper = loadModule('../dcaHelper').default(FakeBase as any)
+    }
+    previousGetInstance = (RedisClient as any).getInstance
+    ;(RedisClient as any).getInstance = async () => ({
+      get: async (k: string) => backoffStore.get(k) ?? null,
+      set: async (k: string, v: string) => {
+        backoffStore.set(k, v)
+      },
+      del: async (k: string) => {
+        backoffStore.delete(k)
+      },
+    })
+  })
+  after(() => {
+    ;(RedisClient as any).getInstance = previousGetInstance
+  })
+  beforeEach(() => backoffStore.clear())
+
+  it('§2.2 production labels the refusal `Futures position restriction`', () => {
+    expect(prodClassify(BINANCE_REFUSAL)).to.equal(
+      'Futures position restriction',
+    )
+  })
+
+  it('§4.1 reads the venue position, warns once, holds the take-profit back, never closes', async () => {
+    const bot = shortOnBinance({ answer: () => BINANCE_REFUSAL, positions: flat })
+    await solPass(bot)
+    expect(bot.sent).to.have.length(1)
+    expect(bot.positionReads).to.equal(1)
+    expect(bot.events, bot.logs.join('\n')).to.have.length(1)
+    expect(bot.events[0].description).to.equal(
+      restingTpPositionGoneMessage({
+        dealId: DEAL_ID,
+        symbol: SOL,
+        exchange: ExchangeEnum.binanceUsdm,
+        reason: BINANCE_REFUSAL,
+      }),
+    )
+    // The next worker start inside the window sends nothing.
+    await solPass(bot)
+    await solPass(bot)
+    expect(bot.sent).to.have.length(1)
+    expect(bot.reported).to.have.length(1)
+    expect(bot.closed).to.deep.equal([])
+    expect(bot.deal.deal.status).to.equal(DCADealStatusEnum.open)
+  })
+
+  it('§4.2 a short the venue still holds changes nothing', async () => {
+    const bot = shortOnBinance({
+      answer: () => BINANCE_REFUSAL,
+      positions: () => ({
+        status: StatusEnum.ok,
+        data: [{ symbol: SOL, positionAmt: '-10.06', positionSide: 'SHORT' }],
+      }),
+    })
+    await solPass(bot)
+    await solPass(bot)
+    expect(bot.positionReads).to.equal(2)
+    expect(bot.sent).to.have.length(2)
+    expect(bot.events).to.have.length(0)
+    expect(backoffStore.size).to.equal(0)
+    expect(bot.closed).to.deep.equal([])
+  })
+
+  it('§4.2 only the other hedge side held still reads as no position for this deal', async () => {
+    const bot = shortOnBinance({
+      answer: () => BINANCE_REFUSAL,
+      positions: () => ({
+        status: StatusEnum.ok,
+        data: [{ symbol: SOL, positionAmt: '3', positionSide: 'LONG' }],
+      }),
+    })
+    await solPass(bot)
+    expect(bot.events).to.have.length(1)
+    expect(bot.closed).to.deep.equal([])
+  })
+
+  it('§4.3 the leverage refusal sharing the restriction label is still not probed', async () => {
+    const reason =
+      'Exceeded the maximum allowable position at current leverage.'
+    const bot = shortOnBinance({ answer: () => reason, positions: flat })
+    await solPass(bot)
+    await solPass(bot)
+    expect(bot.positionReads).to.equal(0)
+    expect(bot.sent).to.have.length(2)
   })
 })

@@ -209,6 +209,7 @@ import {
   convertComboBotToObject,
   closeLeftUnsold,
   futuresPosition,
+  futuresPositionRestriction,
   limitOnlyEntryReplaced,
   orderBelowExchangeMinSubType,
   positionLeftOpen,
@@ -31687,8 +31688,14 @@ function createDCABotHelper<
           setError,
         )
       }
+      const subType = this.getErrorSubType(result)
       if (
-        this.getErrorSubType(result) === futuresPosition &&
+        // Spec `269`: production's DB rules label Binance's and Bybit's
+        // reduce-only refusals `Futures position restriction`, not the
+        // `errorDict` subType, so both mean "nothing for this order to reduce"
+        // here. Either way the venue's position decides, not the label.
+        (subType === futuresPosition ||
+          subType === futuresPositionRestriction) &&
         // A leverage misconfiguration shares the subType but is not about the
         // position; `handleErrors` keeps it a visible error on its own.
         result.toLowerCase().indexOf('leverage') === -1

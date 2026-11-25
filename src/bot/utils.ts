@@ -468,6 +468,15 @@ export const getSettingsChangeDescription = (
 
 export const futuresPosition = 'Futures position'
 
+/**
+ * The subType production's builtin `boterrorrules` give every message holding
+ * `reduce-only` / `reduceonly` (Binance's and Bybit's reduce-only refusals
+ * among them). Those rules take precedence over `errorDict`, so on a live
+ * install a refusal the dict files under {@link futuresPosition} arrives
+ * labelled with this one instead. Spec `269`.
+ */
+export const futuresPositionRestriction = 'Futures position restriction'
+
 export const futuresLiquidation = 'Futures liquidation'
 
 export const exchangeProblems = 'Exchange connection'
@@ -617,7 +626,7 @@ export const errorDict = {
   unknownOid: orderProcessing,
   'Indicators error: ': indicatorsError,
   'Exceeded the maximum allowable position at current leverage':
-    'Futures position restriction',
+    futuresPositionRestriction,
   'API key is invalid': apiError,
   'Invalid API-key, IP, or permissions for action': apiError,
   "API key doesn't exist": apiError,
