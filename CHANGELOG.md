@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.14] - 2026-11-25
+
+### Changed
+
+- The reconcile warning for an order that could not be read now includes the exchange's reason
+
 ## [1.133.13] - 2026-11-25
 
 ### Fixed
