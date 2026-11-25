@@ -291,7 +291,13 @@ describe('writes that must survive a saveDeal copy', () => {
     const bot = makeLedgerBot(ledgerDeal())
     bot.toFundingSymbol = async () => 'XRP'
     bot.getSignedFillsFromMemory = () => []
-    bot.dealsDb = { updateData: async () => ({ status: 'OK' }) }
+    // The funding commit asks for the updated document; a match returns it.
+    bot.dealsDb = {
+      updateData: async () => ({
+        status: 'OK',
+        data: { _id: DEAL_ID, funding: { total: -0.5, totalUsd: -0.5 } },
+      }),
+    }
     bot.db = { updateData: async () => ({ status: 'OK' }) }
     bot.computeFundingFor = async () => {
       // A fill lands while funding is being computed.

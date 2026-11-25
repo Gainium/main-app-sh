@@ -3633,7 +3633,7 @@ function createDCABotHelper<
         )
       }
       // Per-deal commit: atomic + CAS on the deal's own offset.
-      await this.dealsDb.updateData(
+      const commit = await this.dealsDb.updateData(
         { _id: dealId, 'funding.offset': offset } as any,
         {
           $inc: {
@@ -3648,10 +3648,44 @@ function createDCABotHelper<
             'funding.history': { $each: result.entries, $slice: -25 },
           },
         } as any,
+        true,
       )
-      // Bot-level aggregate (no offset — each deal owns its own). lastTime via
-      // $max: a bot can hold several symbols whose settlements differ.
-      await this.db?.updateData(
+      if (commit.status === StatusEnum.notok) {
+        // Nothing moved: the cursor stays put and the next notify retries.
+        this.handleWarn(
+          `Funding for deal ${dealId} not saved: ${commit.reason}`,
+        )
+        return
+      }
+      const committed = commit.data?.funding
+      if (!committed) {
+        // The CAS missed: Mongo's cursor is past this process's. These
+        // settlements are already on the deal AND on the bot — a deal
+        // restored from a Redis snapshot older than its last settlement is
+        // the usual way here. Charging the bot again is what inflated bot
+        // funding totals once per worker restart. Adopt Mongo's copy so the
+        // next settlement commits, and leave the bot alone.
+        const fresh = await this.dealsDb.readData(
+          { _id: dealId } as any,
+          { funding: 1 },
+        )
+        const stored =
+          fresh.status === StatusEnum.ok ? fresh.data?.result?.funding : null
+        const live = this.getDeal(dealId)
+        if (stored && live) {
+          live.deal.funding = stored
+          this.setDeal(live)
+          this.emit('bot deal update', live.deal)
+        }
+        this.handleLog(
+          `Funding for deal ${dealId} already settled up to ${stored?.offset ?? '?'} (local cursor ${offset}); not applied again`,
+        )
+        return
+      }
+      // Bot-level aggregate (no offset — each deal owns its own), only for
+      // settlements the deal itself just took. lastTime via $max: a bot can
+      // hold several symbols whose settlements differ.
+      const botCommit = await this.db?.updateData(
         { _id: this.botId } as any,
         {
           $inc: {
@@ -3660,11 +3694,14 @@ function createDCABotHelper<
           },
           $max: { 'funding.lastTime': result.lastTime },
         } as any,
+        true,
       )
       // In-memory mirrors — onto the deal as it is NOW. `saveDeal` replaces
       // the map entry with a copy, so `fd` may be stale after the awaits
       // above; writing it back would undo every save made meanwhile (a fill's
-      // average and balances, a new trailing extreme).
+      // average and balances, a new trailing extreme). Saved to the Redis
+      // snapshot too: a snapshot left on the old cursor replays these
+      // settlements after the next restart.
       const live = this.getDeal(dealId)
       if (live) {
         const f = live.deal.funding ?? {
@@ -3675,13 +3712,14 @@ function createDCABotHelper<
           history: [],
         }
         live.deal.funding = {
-          total: (f.total ?? 0) + result.deltaQuote,
-          totalUsd: (f.totalUsd ?? 0) + result.deltaUsd,
+          total: committed.total ?? (f.total ?? 0) + result.deltaQuote,
+          totalUsd:
+            committed.totalUsd ?? (f.totalUsd ?? 0) + result.deltaUsd,
           offset: result.maxTime,
           lastTime: result.lastTime,
           history: [...(f.history ?? []), ...result.entries].slice(-25),
         }
-        this.setDeal(live, false)
+        this.setDeal(live)
       }
       if (this.data) {
         const bf = this.data.funding ?? {
@@ -3690,9 +3728,15 @@ function createDCABotHelper<
           offset: 0,
           lastTime: 0,
         }
+        // Take the stored total when the write returned it: the worker's copy
+        // can come from a Redis snapshot and drift from Mongo.
+        const stored =
+          botCommit?.status === StatusEnum.ok
+            ? (botCommit.data as any)?.funding
+            : null
         this.data.funding = {
-          total: (bf.total ?? 0) + result.deltaQuote,
-          totalUsd: (bf.totalUsd ?? 0) + result.deltaUsd,
+          total: stored?.total ?? (bf.total ?? 0) + result.deltaQuote,
+          totalUsd: stored?.totalUsd ?? (bf.totalUsd ?? 0) + result.deltaUsd,
           offset: bf.offset ?? 0,
           lastTime: Math.max(bf.lastTime ?? 0, result.lastTime),
         }
