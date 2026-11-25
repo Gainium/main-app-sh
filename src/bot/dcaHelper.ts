@@ -415,10 +415,15 @@ import {
   tpCloseBlockedMessage,
 } from './dca/tpCloseOutcome'
 import {
+  venueCloseEvidence,
+  type VenueCloseEvidence,
+} from './dca/venueCloseEvidence'
+import {
   dealPositionGoneMessage,
   reconcileDealAgainstVenue,
   reconcileSpotDealAgainstVenue,
   restingTpPositionGoneMessage,
+  dealClosedFromVenueFillsMessage,
   type PositionReconcileVerdict,
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
@@ -714,6 +719,19 @@ const positionGoneReadings = new RetryBackoff({
 const POSITION_REPROBE_MARGIN_MS = 5 * 1000
 /** Spec `225` §1.1.5. Unanswered re-probes in a row before giving up. */
 const POSITION_REPROBE_MAX_MISSES = 3
+/**
+ * A liquidation the venue runs in chunks: how long after the latest chunk to
+ * ask again whether the position is gone, and how many answers of "still
+ * held" with no new chunk before treating it as a partial liquidation that
+ * stopped. Kraken's chunks arrive roughly 10-15 s apart.
+ */
+const LIQUIDATION_SETTLE_DELAY_MS = 15 * 1000
+const LIQUIDATION_SETTLE_MAX_CHECKS = 8
+
+/** A reconcile settle that posts its own user-facing event. */
+type SelfDescribingSettle = (() => Promise<unknown>) & {
+  describesItself?: true
+}
 
 /**
  * Spec `226` §3.1. How long a close waits for its remainder sweep to finish on
@@ -1045,6 +1063,19 @@ function createDCABotHelper<
     positionReprobes: Map<
       string,
       { misses: number; timer?: ReturnType<typeof setTimeout> }
+    > = new Map()
+    /**
+     * Venue liquidations still in progress, by symbol: the latest chunk and
+     * how many times the venue has since answered that it still holds the
+     * position. See `processLiquidationOrder`.
+     */
+    liquidationSettles: Map<
+      string,
+      {
+        order: Order
+        checks: number
+        timer?: ReturnType<typeof setTimeout>
+      }
     > = new Map()
     /**
      * Spec `226`. Close-path remainder sweeps still being reported on, by
@@ -27299,6 +27330,7 @@ function createDCABotHelper<
       const { symbol } = order
       const activeDeals = this.getOpenDeals(false, symbol)
       if (activeDeals.length === 0) {
+        this.clearLiquidationSettle(symbol)
         return
       }
       this.handleLog(
@@ -27312,7 +27344,49 @@ function createDCABotHelper<
 
       const price = +order.price
       if (compareSide && !isNaN(price) && isFinite(price)) {
+        // A venue can liquidate in chunks (Kraken: one order per chunk, a few
+        // seconds apart), and each chunk arrives here on its own. Closing the
+        // deal on the first one would book the whole deal at one chunk's price
+        // and, if the venue stopped part way, abandon the rest of the
+        // position with no take profit and no stop loss. So the close waits
+        // until the venue answers that the position is gone. A venue that does
+        // not answer settles nothing either way, and the report itself is then
+        // the best evidence there is: close as before.
+        const held = await this.venueHoldsPosition(symbol)
+        if (held !== undefined) {
+          const prev = this.liquidationSettleMap().get(symbol)
+          // A new chunk restarts the count; a re-check carries it on.
+          const checks = prev?.order === order ? prev.checks + 1 : 0
+          if (checks >= LIQUIDATION_SETTLE_MAX_CHECKS) {
+            this.clearLiquidationSettle(symbol)
+            this.handleErrors(
+              `Part of the ${symbol} position was liquidated by ${this.data?.exchange}; ${held} is still open on the exchange, so the deal stays open on what is left`,
+              'processLiquidationOrder',
+              '',
+              false,
+              true,
+            )
+            return
+          }
+          this.armLiquidationSettle(order, checks)
+          this.handleLog(
+            `Liquidation chunk on ${symbol}: ${this.data?.exchange} still holds ${held} — closing the deal once the position is gone (check ${checks + 1})`,
+          )
+          return
+        }
+        this.clearLiquidationSettle(symbol)
         const openBefore = activeDeals.map((d) => `${d.deal._id}`)
+        // Price the close from the venue's own record of the liquidation when
+        // it has one: every chunk, not just the one that arrived last.
+        const evidence = await this.venueCloseEvidenceFor(activeDeals[0])
+        const closePrice =
+          evidence?.price ??
+          (price > 0 ? price : await this.getLatestPrice(symbol))
+        if (evidence) {
+          this.handleLog(
+            `Liquidation of ${symbol} priced from ${evidence.fills} venue fill(s): ${evidence.qty} at ${evidence.price}`,
+          )
+        }
         await this.closeAllDeals(
           undefined,
           symbol,
@@ -27320,7 +27394,7 @@ function createDCABotHelper<
           undefined,
           true,
           true,
-          price > 0 ? price : await this.getLatestPrice(symbol),
+          closePrice,
           DCACloseTriggerEnum.liquidation,
         )
         await this.linkLiquidationOrderToDeals(order, openBefore)
@@ -27338,6 +27412,98 @@ function createDCABotHelper<
           true,
         )
       }
+    }
+
+    /**
+     * The size of the position the venue holds on `symbol` for this bot's
+     * side, or `undefined` when it holds none or did not answer.
+     */
+    protected async venueHoldsPosition(
+      symbol: string,
+    ): Promise<number | undefined> {
+      if (!this.exchange) {
+        return undefined
+      }
+      const positions = await Promise.resolve()
+        .then(() => this.exchange?.futures_getPositions(symbol))
+        .catch(() => undefined)
+      if (positions?.status !== StatusEnum.ok || !positions.data) {
+        return undefined
+      }
+      return reconcileDealAgainstVenue(
+        { kind: 'positions', positions: positions.data },
+        symbol,
+        this.isLong ? 'LONG' : 'SHORT',
+        !!this.hedge,
+      ).held
+    }
+
+    /**
+     * The venue's own record of what closed `deal`'s position, when the bot
+     * did not close it. `undefined` when the venue publishes no account fills
+     * or they do not account for the deal's size.
+     */
+    protected async venueCloseEvidenceFor(
+      deal: FullDeal<ExcludeDoc<Deal>> | undefined,
+    ): Promise<VenueCloseEvidence | undefined> {
+      if (!deal || !this.exchange || !this.futures) {
+        return undefined
+      }
+      const fills = await Promise.resolve()
+        .then(() => this.exchange?.getAccountFills?.())
+        .catch(() => undefined)
+      if (fills?.status !== StatusEnum.ok || !fills.data?.length) {
+        return undefined
+      }
+      return venueCloseEvidence(fills.data, {
+        symbol: deal.deal.symbol.symbol,
+        closeSide: this.isLong ? 'SELL' : 'BUY',
+        sinceMs: +deal.deal.createTime || 0,
+        dealQty: Math.abs(+(deal.deal.size ?? 0)),
+      })
+    }
+
+    protected armLiquidationSettle(order: Order, checks: number) {
+      const { symbol } = order
+      const prev = this.liquidationSettleMap().get(symbol)
+      if (prev?.timer) {
+        clearTimeout(prev.timer)
+      }
+      const entry: {
+        order: Order
+        checks: number
+        timer?: ReturnType<typeof setTimeout>
+      } = { order, checks }
+      entry.timer = setTimeout(() => {
+        entry.timer = undefined
+        if (!this.shouldProceed()) {
+          this.clearLiquidationSettle(symbol)
+          return
+        }
+        void this.processLiquidationOrder(order).catch((e: unknown) =>
+          this.handleWarn(
+            `Liquidation settle on ${symbol} failed: ${(e as Error)?.message ?? e}`,
+          ),
+        )
+      }, LIQUIDATION_SETTLE_DELAY_MS)
+      entry.timer.unref?.()
+      this.liquidationSettleMap().set(symbol, entry)
+    }
+
+    /** Lazily, so harnesses that skip field initialisers still work. */
+    protected liquidationSettleMap() {
+      if (!this.liquidationSettles) {
+        this.liquidationSettles = new Map()
+      }
+      return this.liquidationSettles
+    }
+
+    protected clearLiquidationSettle(symbol: string) {
+      const entry = this.liquidationSettleMap().get(symbol)
+      if (entry?.timer) {
+        clearTimeout(entry.timer)
+      }
+      this.liquidationSettleMap().delete(symbol)
     }
 
     /**
@@ -31747,6 +31913,24 @@ function createDCABotHelper<
         [this.botId, dealId],
         reason,
       )
+      // The venue's account fills can say what closed the position (its
+      // liquidation engine, or the user by hand) and at what price. With that
+      // record the deal is booked closed at the real price, through the same
+      // two-reading reconciliation a take-profit level uses, instead of being
+      // left open for the user to close by hand at a made-up figure.
+      const evidence = await this.venueCloseEvidenceFor(deal)
+      if (evidence) {
+        this.handleLog(
+          `Deal ${dealId} TP refused (${reason}) and ${verdict.verdict} on ${this.data?.exchange}; venue fills show ${evidence.qty} closed at ${evidence.price}${evidence.liquidation ? ' by liquidation' : ''} — reconciling the deal closed`,
+        )
+        await this.reconcileDealPosition(
+          deal,
+          reason,
+          'had its take profit refused',
+          this.settleFromVenueFills(dealId),
+        )
+        return
+      }
       this.handleLog(
         `Deal ${dealId} TP refused (${reason}) and ${verdict.verdict} on ${this.data?.exchange} — not re-sending the take profit until ${new Date(state.until).toISOString()} (refusal ${state.attempt}); the deal stays open`,
       )
@@ -31768,6 +31952,67 @@ function createDCABotHelper<
           type: MessageTypeEnum.warning,
         })
       }
+    }
+
+    /**
+     * A `reconcileDealPosition` settle that books the deal closed at the price
+     * of the venue fills that closed its position, read again at settle time,
+     * and tells the user so. Marked `describesItself` so the reconciler does
+     * not also post its "closed with the profit it had already realised"
+     * message, which would not be true.
+     */
+    protected settleFromVenueFills(dealId: string): SelfDescribingSettle {
+      const settle = async () => {
+        const live = this.getDeal(dealId)
+        if (!live || live.deal.status !== DCADealStatusEnum.open) {
+          return
+        }
+        const evidence = await this.venueCloseEvidenceFor(live)
+        const symbol = live.deal.symbol.symbol
+        if (!evidence) {
+          // The fills aged out between the readings. Book it the way the
+          // reconciler always has rather than leave a deal with no position.
+          this.handleLog(
+            `Deal ${dealId}: venue fills no longer account for its close; closing with the profit already realised`,
+          )
+          await this.closeDeal(this.botId, dealId)
+          return
+        }
+        if (this.shouldProceed()) {
+          this.botEventDb.createData({
+            userId: this.userId,
+            botId: this.botId,
+            event: 'Deal',
+            botType: this.botType,
+            description: dealClosedFromVenueFillsMessage({
+              dealId,
+              symbol,
+              exchange: `${this.data?.exchange ?? ''}`,
+              evidence,
+            }),
+            paperContext: !!this.data?.paperContext,
+            deal: dealId,
+            symbol,
+            type: MessageTypeEnum.warning,
+          })
+        }
+        await this.closeDealById(
+          this.botId,
+          dealId,
+          CloseDCATypeEnum.leave,
+          true,
+          false,
+          false,
+          false,
+          '',
+          evidence.price,
+          false,
+          evidence.liquidation
+            ? DCACloseTriggerEnum.liquidation
+            : DCACloseTriggerEnum.manual,
+        )
+      }
+      return Object.assign(settle, { describesItself: true as const })
     }
 
     /**
@@ -31921,7 +32166,10 @@ function createDCABotHelper<
       this.handleLog(
         `Deal ${dealId} TP level close ${outcome} and ${verdict.verdict} on ${this.data?.exchange} (${reading.attempt} readings) — closing the deal instead of re-arming against a position that is gone`,
       )
-      if (this.shouldProceed()) {
+      if (
+        this.shouldProceed() &&
+        !(settle as SelfDescribingSettle | undefined)?.describesItself
+      ) {
         this.botEventDb.createData({
           userId: this.userId,
           botId: this.botId,

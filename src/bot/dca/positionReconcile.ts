@@ -221,3 +221,27 @@ export const restingTpPositionGoneMessage = ({
   `${exchange} reports no open position for this deal, so the take profit cannot be placed. ` +
   `The deal has been left open and the bot will only retry the take profit occasionally. ` +
   `Check the position on the exchange - if it is gone, close this deal manually.`
+
+/**
+ * What the user reads when a deal is closed from the venue's own record of the
+ * fills that closed its position — its liquidation engine, or the user by hand
+ * on the exchange. Unlike {@link dealPositionGoneMessage} the profit here is
+ * real: it is booked at the price of those fills.
+ */
+export const dealClosedFromVenueFillsMessage = ({
+  dealId,
+  symbol,
+  exchange,
+  evidence,
+}: {
+  dealId: string
+  symbol: string
+  exchange: string
+  evidence: { price: number; qty: number; liquidation: boolean }
+}): string =>
+  `Deal ${dealId} (${symbol}): ${exchange} no longer holds its position — ` +
+  (evidence.liquidation
+    ? `it was liquidated by the exchange`
+    : `it was closed on the exchange outside the bot`) +
+  ` (${evidence.qty} at an average ${evidence.price}). ` +
+  `The deal has been closed at that price, so its profit includes that close.`
