@@ -1341,6 +1341,10 @@ function createDCABotHelper<
     /** Venue time of each deal's latest processed fill (spec 142). */
     latestDealFillTime: Map<string, number> = new Map()
     dealsForStopLoss: Map<string, number> = new Map()
+    /** Spec 272 §1.6: deals whose stop-loss condition is the default. */
+    defaultedSlDeals: Set<string> = new Set()
+    /** Spec 272 §1.6: deals already logged as held past their level. */
+    defaultedSlHeldLogged: Set<string> = new Set()
     dealsForIndicatorUnpnl: Map<string, DealIndicatorUnpnlVal> = new Map()
     dealsForStopLossCombo: Map<string, DealStopLossCombo> = new Map()
     dealsDCALevelCheck: Map<string, number> = new Map()
@@ -2453,8 +2457,27 @@ function createDCABotHelper<
         // view is overridden here; the bot's DCA settings are kept.
         ...(!deal && this.singlePositionActive ? { useDca: false } : {}),
       }
+      if (deal?._id) {
+        // Spec 272 §1.6: remembered for `checkDealsStopLoss`. Created here
+        // too: a helper built off the prototype has no field initialisers.
+        this.defaultedSlDeals ??= new Set()
+        this.defaultedSlHeldLogged ??= new Set()
+        if (settings.dealCloseConditionSL == null) {
+          this.defaultedSlDeals.add(`${deal._id}`)
+        } else {
+          this.defaultedSlDeals.delete(`${deal._id}`)
+        }
+      }
       return {
         ...settings,
+        // Spec 272: both fields are optional on every create path, and the
+        // dashboard reads a missing one as `tp`. Every engine check compares
+        // `=== tp`, so a missing value placed no take profit and armed no
+        // stop loss. An explicit choice (deal or bot) is kept as it is.
+        dealCloseCondition:
+          settings.dealCloseCondition ?? CloseConditionEnum.tp,
+        dealCloseConditionSL:
+          settings.dealCloseConditionSL ?? CloseConditionEnum.tp,
         useFixedTPPrices:
           (this.botType === BotType.dca &&
             settings.type === DCATypeEnum.terminal &&
@@ -31057,6 +31080,34 @@ function createDCABotHelper<
         if (slMovedIntoProfit && !!d.deal.moveSlArmed === levelHit) {
           d.deal.moveSlArmed = !levelHit
           await this.saveDeal(d, { moveSlArmed: d.deal.moveSlArmed }, false)
+        }
+        // Spec 272 §1.6: a stop loss that exists only because a missing
+        // `dealCloseConditionSL` now reads as `tp` is armed by a live tick on
+        // its safe side, never by the first tick: a deal already past its
+        // level when this default first reaches it is not market-closed at
+        // today's price. The arming is persisted on the deal (the
+        // `moveSlArmed` idiom), so a worker restart cannot disarm it. Only the
+        // plain stop loss is held; an armed trailing level was reached from
+        // the profit side, so a live price has crossed it already.
+        if (useSl && this.defaultedSlDeals?.has(`${dealId}`)) {
+          if (!levelHit) {
+            if (!d.deal.defaultSlArmed) {
+              d.deal.defaultSlArmed = true
+              this.defaultedSlHeldLogged.delete(`${dealId}`)
+              await this.saveDeal(d, { defaultSlArmed: true }, false)
+            }
+          } else if (
+            !d.deal.defaultSlArmed &&
+            !(d.deal.trailingMode && d.deal.trailingLevel)
+          ) {
+            if (!this.defaultedSlHeldLogged.has(`${dealId}`)) {
+              this.defaultedSlHeldLogged.add(`${dealId}`)
+              this.handleLog(
+                `Deal: ${dealId} stop loss not armed: no saved close condition and the price ${last} is already past its level ${priceToClose}; waiting for a price on the safe side`,
+              )
+            }
+            continue
+          }
         }
         let trailing = false
         // Spec 042: this decides the deal's recorded `closeTrigger`, so it has

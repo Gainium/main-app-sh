@@ -1976,6 +1976,8 @@ export interface DCADealsSchema extends SchemaI {
    * profit lock into a market close at an arbitrary price.
    */
   moveSlArmed?: boolean
+  /** Spec 272 §1.6: a stop loss armed only by the missing-condition default has seen a tick on its safe side. */
+  defaultSlArmed?: boolean
   newBalance?: boolean
   sizes?: Sizes
   /** main-app spec 044 — absent unless the bot funded the deal itself. */
