@@ -182,6 +182,8 @@ function createBotHelper<
      * sweep and `checkOrders`, which replay filled orders by design.
      */
     private positionBooked: Set<string> = new Set()
+    /** Close orders whose executed part {@link BotHelper#bookPartialClose} booked (spec 273). */
+    private closeLegBooked: Set<string> = new Set()
     /** See `tpSlEntryPrice()` (spec 117). */
     private tpSlEntry: (ClearBotSchema['position'] & { entry: number }) | null =
       null
@@ -2811,6 +2813,7 @@ function createBotHelper<
       // In lockstep with `orders` above: `loadOrders` refills both, and the
       // position rebuild there re-seeds this one (spec `089` §4.3).
       this.positionBooked = new Set()
+      this.closeLegBooked = new Set()
       this.lockTpSlCheck = false
       this.lockProcessQueueMethod = false
       this.lastFilled = null
@@ -3332,11 +3335,22 @@ function createBotHelper<
       })
       return this.tpSlEntryQueue
     }
-    protected async profitAfterPositionClosed(result: Order) {
+    /**
+     * @param closedQty the part of the position `result` closed, when it
+     *   closed only part of it (spec 273). Defaults to the whole position.
+     */
+    protected async profitAfterPositionClosed(
+      result: Order,
+      closedQty?: number,
+    ) {
       if (!this.data || !this.futures || this.data.position.qty === 0) {
         return
       }
-      const { qty, side } = this.data.position
+      const { side } = this.data.position
+      const qty =
+        closedQty === undefined
+          ? this.data.position.qty
+          : Math.min(closedQty, this.data.position.qty)
       const price = await this.closeEntryPrice(result.clientOrderId)
       if (!this.data || this.data.position.qty === 0) {
         return
@@ -3380,10 +3394,24 @@ function createBotHelper<
         if (!ed) {
           return
         }
+        // Spec 273: a part-filled futures close is not a finished one. It is
+        // settled below, so only a FILLED close ends the work here. Spot keeps
+        // the old guard: its close books balances, not a position.
         const findTP = this.getOrdersByStatusAndDealId({
-          status: ['FILLED', 'PARTIALLY_FILLED'],
+          status: this.futures ? ['FILLED'] : ['FILLED', 'PARTIALLY_FILLED'],
         }).find((o) => o.typeOrder === TypeOrderEnum.stop)
         if (!findTP && !this.stopFilled) {
+          if (this.futures) {
+            const settled = await this.settleRestingCloses()
+            if (settled === 'filled' || settled === 'refused') {
+              this.updateProgress()
+              return
+            }
+            if (settled === 'pending') {
+              this.retrySellAtStop(type)
+              return
+            }
+          }
           const price = await this.getLatestPrice(pair)
           await this.reportCloseCancelRefused(
             await this.cancelAllOrder(true, true, true),
@@ -3468,13 +3496,112 @@ function createBotHelper<
           // Spec 240 §4.3: a refused close (no order back) is retried like a
           // CANCELED one instead of leaving the grid open with nothing resting.
           if (!result || result.status !== 'FILLED') {
-            this.closeOrderTimer = setTimeout(() => {
-              this.handleLog('Reposition limit stop order')
-              this.processSellAtStop(type)
-            }, this.limitRepositionTimeout)
+            this.retrySellAtStop(type)
           }
         }
       }
+    }
+    private retrySellAtStop(
+      type: CloseGRIDTypeEnum.closeByLimit | CloseGRIDTypeEnum.closeByMarket,
+    ) {
+      if (this.closeOrderTimer) {
+        clearTimeout(this.closeOrderTimer)
+      }
+      this.closeOrderTimer = setTimeout(() => {
+        this.handleLog('Reposition limit stop order')
+        this.processSellAtStop(type)
+      }, this.limitRepositionTimeout)
+    }
+    /**
+     * Spec 273. Cancel every close order a futures grid still has resting and
+     * book what each one executed into the position and the profit.
+     *
+     * The cancel never promotes a part-filled close to FILLED: the promoted
+     * row would reach `processFilledStop`, which books the WHOLE position as
+     * closed and stops the bot while the rest of it is still open on the
+     * exchange. A close the venue reports filled in full is handed to the
+     * fill path as before.
+     *
+     * @returns `filled` when a close had filled in full, `pending` when a
+     *   cancel did not go through (nothing new may be placed yet), `refused`
+     *   when the key may not cancel (reported to the user; retrying would
+     *   only extend a venue lockout, spec 232), `settled` when nothing
+     *   closing is left resting.
+     */
+    private async settleRestingCloses(): Promise<
+      'settled' | 'filled' | 'pending' | 'refused'
+    > {
+      if (!this.futures) {
+        return 'settled'
+      }
+      const resting = this.getOrdersByStatusAndDealId({
+        status: this.orderStatuses,
+      }).filter((o) => o.typeOrder === TypeOrderEnum.stop)
+      if (!resting.length) {
+        return 'settled'
+      }
+      let outcome: 'settled' | 'pending' = 'settled'
+      let keyRefusal: string | null = null
+      // Spec 231: a cancel the venue accepted but still answers NEW stays
+      // tracked, so the next pass asks again instead of losing the order.
+      this.closingSweep = true
+      this.sweepKeyRefusal = null
+      try {
+        for (const order of resting) {
+          if (this.sweepKeyRefusal) {
+            break
+          }
+          const answer = await this.cancelOrderOnExchange(
+            order,
+            true,
+            true,
+            false,
+          )
+          // The cancel and the unknown-order lookup both update the held row.
+          const final = answer ?? order
+          if (final.status === 'FILLED') {
+            await this.handleUnknownOrder(final)
+            return 'filled'
+          }
+          if (final.status === 'NEW' || final.status === 'PARTIALLY_FILLED') {
+            outcome = 'pending'
+            continue
+          }
+          await this.bookPartialClose(final)
+        }
+      } finally {
+        this.closingSweep = false
+        keyRefusal = this.sweepKeyRefusal ?? null
+        this.sweepKeyRefusal = null
+      }
+      if (keyRefusal) {
+        await this.reportCloseCancelRefused(keyRefusal)
+        return 'refused'
+      }
+      return outcome
+    }
+    /**
+     * Spec 273. Fold the executed part of a close order that ended without
+     * filling in full into the position, and book its profit the way
+     * `processFilledStop` books a full close. Once per order.
+     */
+    private async bookPartialClose(order: Order) {
+      const executed = +order.executedQty
+      if (
+        !this.data ||
+        !this.futures ||
+        !(executed > 0) ||
+        this.positionBooked.has(order.clientOrderId) ||
+        this.closeLegBooked.has(order.clientOrderId)
+      ) {
+        return
+      }
+      this.closeLegBooked.add(order.clientOrderId)
+      this.handleLog(
+        `Close order ${order.clientOrderId} ended ${order.status} with ${executed} of ${order.origQty} executed. Booking it, then closing the rest of the position`,
+      )
+      await this.profitAfterPositionClosed(order, executed)
+      await this.calculatePosition(order)
     }
     private async processFilledStop(order: Order) {
       // Spec 189: every path that books the closing fill latches the close.
@@ -3668,6 +3795,9 @@ function createBotHelper<
         return await this.processSellAtStop(close)
       }
       this.blockLimit = true
+      // Spec 273: a close left part-filled is cancelled and its executed part
+      // booked. Nothing new is placed — "cancel" leaves the position open.
+      await this.settleRestingCloses()
       await this.reportCloseCancelRefused(
         await this.cancelAllOrder(cancelPartiallyFilled, false, true),
       )
