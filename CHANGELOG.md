@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.18] - 2026-11-25
+
+### Fixed
+
+- A DCA or Combo safety order the exchange refuses for insufficient balance is placed again as a limit at its level's price, backing off from 5 to 60 minutes; after 24 hours of refusals the level is listed under the deal's skipped DCA levels and the user is told why. Previously the level stayed missing until the bot was restarted.
+
 ## [1.133.17] - 2026-11-25
 
 ### Fixed
