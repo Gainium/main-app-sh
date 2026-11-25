@@ -351,6 +351,11 @@ import {
 } from './dca/missedLevels'
 import { isComboFundsOrderRow } from './combo/comboDealFunds'
 import {
+  closeQtyNetOfUnsettled,
+  unsettledClosingRows,
+  unsettledExecutedBase,
+} from './combo/closeSettle'
+import {
   pendingReduceQty,
   type PendingReduceEntry,
 } from './dca/pendingReduceQty'
@@ -8367,6 +8372,88 @@ function createDCABotHelper<
         )
       )
     }
+    /** Spec `268`: longest a combo close waits for its unsettled exits. */
+    protected closingFillSettleMs = 5000
+    /** Spec `268`: how often that wait re-reads the order map. */
+    protected closingFillPollMs = 200
+    protected sleepForClosingFill(ms: number) {
+      return sleep(ms)
+    }
+    /**
+     * Size a combo close only once the deal's own closing-side orders the
+     * sweep left resting have settled. Spec `268`.
+     *
+     * The sweep cancels every order of the deal. On a venue whose order read
+     * lags its user stream (Kraken Futures), a grid SELL that filled a moment
+     * earlier answers the cancel "not found" and the read-back PARTIALLY_FILLED,
+     * so the row stays resting and out of the deal ledger, which counts only
+     * FILLED / CANCELED rows. The close, sized off that ledger, then sold the
+     * grid's base again; on a one-way futures account it came out of the
+     * sibling deals' share of the position.
+     *
+     * Waits (bounded) for the stream to finish those rows, so the ledger books
+     * them before sizing. Whatever is still unsettled after the wait has what
+     * the venue reported executed taken off the close — a cap, so it can only
+     * close less. Coin-margined rows convert through a price and are not
+     * deducted. Triggers, price and order type are untouched; a close with no
+     * unsettled closing row is prepared exactly as before.
+     */
+    protected async prepareComboCloseAfterSweep(
+      findDeal: FullDeal<ExcludeDoc<Deal>>,
+      slSource = false,
+      sl = false,
+    ) {
+      if (!this.combo) {
+        return this.prepareTpOrder(findDeal, slSource, sl)
+      }
+      const dealId = findDeal.deal._id
+      const closingSide = this.isLong ? 'SELL' : 'BUY'
+      const unsettled = () =>
+        unsettledClosingRows(
+          this.getOrdersByStatusAndDealId({
+            dealId,
+            status: ['NEW', 'PARTIALLY_FILLED'],
+          }),
+          dealId,
+          closingSide,
+        )
+      let pending = unsettled()
+      if (pending.length) {
+        this.handleLog(
+          `Deal ${dealId} close waits for ${pending.length} unsettled ${closingSide} order(s) before sizing: ${pending
+            .map((o) => o.clientOrderId)
+            .join(', ')}`,
+        )
+        const until = Date.now() + this.closingFillSettleMs
+        while (pending.length && Date.now() < until) {
+          await this.sleepForClosingFill(this.closingFillPollMs)
+          pending = unsettled()
+        }
+      }
+      const tpOrder = await this.prepareTpOrder(findDeal, slSource, sl)
+      if (!tpOrder || !pending.length || this.coinm) {
+        return tpOrder
+      }
+      const unbooked = unsettledExecutedBase(pending)
+      if (unbooked <= 0) {
+        return tpOrder
+      }
+      const precision = await this.baseAssetPrecision(
+        findDeal.deal.symbol.symbol,
+      )
+      const qty = this.math.round(
+        closeQtyNetOfUnsettled(tpOrder.qty, pending),
+        precision,
+        true,
+      )
+      this.handleWarn(
+        `Deal ${dealId} close sized ${tpOrder.qty}, ${unbooked} already executed on unsettled ${pending
+          .map((o) => o.clientOrderId)
+          .join(', ')}; closing ${qty}`,
+      )
+      tpOrder.qty = qty
+      return tpOrder
+    }
     /**
      * Manualy close deal by id
      *
@@ -8624,7 +8711,11 @@ function createDCABotHelper<
           }
           this.shortCloseBelowMinimum.delete(dealId)
           this.shortCloseCarryInOrder.delete(dealId)
-          const tpOrder = await this.prepareTpOrder(findDeal, slSource, sl)
+          const tpOrder = await this.prepareComboCloseAfterSweep(
+            findDeal,
+            slSource,
+            sl,
+          )
           if (tpOrder) {
             if (tpOrder.qty <= 0) {
               if (fastClose) {
