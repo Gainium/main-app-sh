@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.134.2] - 2026-11-25
+
+### Fixed
+
+- Futures grid close by limit or market no longer stops working when a close order fills only partly; the filled part is booked into the position and profit, and the rest of the position is closed
+
 ## [1.134.1] - 2026-11-25
 
 ### Fixed
