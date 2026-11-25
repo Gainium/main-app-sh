@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.19] - 2026-11-25
+
+### Fixed
+
+- A Kraken Futures order the venue no longer describes is checked against the account's fill history before it is written off, so an order that filled while the order stream was down is booked as filled instead of cancelled with nothing executed
+
 ## [1.133.18] - 2026-11-25
 
 ### Fixed
