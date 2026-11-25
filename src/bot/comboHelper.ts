@@ -123,6 +123,15 @@ import {
   capRefillExitLines,
 } from './combo/comboDealFunds'
 import type { ComboFundsDirection } from './combo/comboDealFunds'
+import {
+  GRID_SHORTFALL_HOLD_MS,
+  dealPositionFingerprint,
+  gridLevelKey,
+  isVenueShortfall,
+  venueShortfallMessage,
+  type GridShortfallHold,
+} from './combo/gridShortfallHold'
+import { RetryBackoff } from './retryBackoff'
 
 /**
  * The Combo engine's per-deal locks (`${botId}update${dealId}` and the rest).
@@ -132,6 +141,19 @@ import type { ComboFundsDirection } from './combo/comboDealFunds'
  */
 export const comboMutex = new IdMutex()
 const mutex = comboMutex
+
+/**
+ * Spec `266` §1.1.2: one shortfall warning per deal per episode. Only `record`
+ * (whose `attempt` says whether the user was told already) and `clear` (a
+ * reading without a shortfall ends the episode) are used. A day of memory,
+ * because the readings come at most every `GRID_SHORTFALL_HOLD_MS`.
+ */
+const gridShortfallNotice = new RetryBackoff({
+  namespace: 'gsn',
+  minMs: GRID_SHORTFALL_HOLD_MS,
+  maxMs: GRID_SHORTFALL_HOLD_MS,
+  memoryMs: 24 * 60 * 60 * 1000,
+})
 const mutexConcurrently = new IdMutex(300)
 
 export type FullMinigrid = {
@@ -195,6 +217,14 @@ function createComboBotHelper<
     private closeRequested: Set<string> = new Set()
     /** Spec `175`: deals whose venue position is being asked about right now. */
     private flatProbeRunning: Set<string> = new Set()
+    /**
+     * Spec `266`: closing grid levels held back per deal, because the venue
+     * holds less than the deal records and refuses them. In memory only: a
+     * reload sends them once more and a refusal re-holds them.
+     */
+    gridShortfallHolds: Map<string, GridShortfallHold> = new Map()
+    /** Spec `266`: levels refused while that deal's probe is running. */
+    private gridShortfallRefused: Map<string, Set<string>> = new Map()
     /**
      * Spec `235`: pending re-checks of a MARKET base entry whose placement
      * answer was not FILLED, one per deal. Cleared by `clearClassProperties`.
@@ -4007,8 +4037,7 @@ function createComboBotHelper<
         !dealId ||
         order.typeOrder !== TypeOrderEnum.dealGrid ||
         order.side !== closingSide ||
-        !this.isPositionAlreadyClosedReason(reason) ||
-        this.flatProbeRunning.has(dealId)
+        !this.isPositionAlreadyClosedReason(reason)
       ) {
         return
       }
@@ -4019,6 +4048,21 @@ function createComboBotHelper<
         deal.closeBySl ||
         this.isDealClosing(dealId)
       ) {
+        return
+      }
+      // Spec `266` §1.1.4: the venue already said it holds less than this
+      // deal records; this level is one more it cannot take.
+      const level = gridLevelKey(order)
+      const hold = this.validGridShortfallHold(deal)
+      if (hold) {
+        hold.levels.add(level)
+        return
+      }
+      const refusedByDeal = (this.gridShortfallRefused ??= new Map())
+      const refused = refusedByDeal.get(dealId) ?? new Set()
+      refused.add(level)
+      refusedByDeal.set(dealId, refused)
+      if (this.flatProbeRunning.has(dealId)) {
         return
       }
       this.flatProbeRunning.add(dealId)
@@ -4055,10 +4099,144 @@ function createComboBotHelper<
               DCACloseTriggerEnum.base,
             )
           },
+          (heldQty) => this.holdShortfallGridLevels(dealId, heldQty),
         )
       } finally {
         this.flatProbeRunning.delete(dealId)
+        this.gridShortfallRefused?.delete(dealId)
       }
+    }
+
+    /**
+     * Spec `266` §1.1.2/§1.1.3. The venue answered that it holds `heldQty` for
+     * the deal. If that is less than the deal records, hold back the closing
+     * levels it refused and tell the user once. The deal's books are not
+     * touched, and a reading without a shortfall ends the episode.
+     */
+    private async holdShortfallGridLevels(dealId: string, heldQty: number) {
+      const deal = this.getDeal(dealId)
+      if (!deal) {
+        return
+      }
+      const dealBase = deal.deal.currentBalances?.base
+      if (!isVenueShortfall(heldQty, dealBase)) {
+        await gridShortfallNotice.clear([this.botId, dealId])
+        return
+      }
+      const levels = this.gridShortfallRefused?.get(dealId) ?? new Set<string>()
+      const until = Date.now() + GRID_SHORTFALL_HOLD_MS
+      ;(this.gridShortfallHolds ??= new Map()).set(dealId, {
+        fingerprint: dealPositionFingerprint(deal.deal),
+        until,
+        levels,
+      })
+      const symbol = deal.deal.symbol.symbol
+      const exchange = `${this.data?.exchange ?? ''}`
+      const dealQty = Math.abs(dealBase ?? 0)
+      this.handleLog(
+        `Deal ${dealId}: ${exchange} holds ${heldQty} ${symbol}, the deal records ${dealQty} — not re-sending ${levels.size} refused grid level(s) until ${new Date(until).toISOString()} or the deal's position changes`,
+      )
+      const notice = await gridShortfallNotice.record(
+        [this.botId, dealId],
+        `${heldQty}/${dealQty}`,
+      )
+      if (notice.attempt === 1 && this.shouldProceed()) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: venueShortfallMessage({
+            dealId,
+            symbol,
+            exchange,
+            venueQty: heldQty,
+            dealQty,
+          }),
+          paperContext: !!this.data?.paperContext,
+          deal: dealId,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
+      }
+    }
+
+    /**
+     * Spec `266` §1.1.5: the deal's hold, or nothing once its position or
+     * completed levels changed or its time ran out.
+     */
+    private validGridShortfallHold(
+      deal: FullDeal<ExcludeDoc<ComboDealsSchema>>,
+    ): GridShortfallHold | undefined {
+      const dealId = `${deal.deal._id}`
+      const hold = (this.gridShortfallHolds ??= new Map()).get(dealId)
+      if (!hold) {
+        return
+      }
+      if (
+        hold.until <= Date.now() ||
+        hold.fingerprint !== dealPositionFingerprint(deal.deal)
+      ) {
+        this.gridShortfallHolds.delete(dealId)
+        return
+      }
+      return hold
+    }
+
+    /**
+     * Spec `266` §1.1.3/§1.1.5. Drops the held closing levels from a placement
+     * pass; everything else goes to the parent unchanged. A pass that cancels
+     * a closing grid order changes the resting reduce-only total, so it ends
+     * the hold instead.
+     */
+    protected override async placeOrdersHoldingDealLock(
+      botId: string,
+      symbol: string,
+      dealId: string,
+      orders: { new: Grid[]; cancel: Grid[] },
+      opts?: { afterTerminalCloseRefusal?: boolean },
+    ): Promise<void | Order> {
+      const deal = this.getDeal(dealId)
+      const hold = deal ? this.validGridShortfallHold(deal) : undefined
+      if (hold) {
+        const closingSide = this.isLong ? OrderSideEnum.sell : OrderSideEnum.buy
+        const isClosingGrid = (g: Grid) =>
+          g.type === TypeOrderEnum.dealGrid && g.side === closingSide
+        if (orders.cancel.some(isClosingGrid)) {
+          this.gridShortfallHolds.delete(dealId)
+        } else {
+          const held = orders.new.filter(
+            (g) => isClosingGrid(g) && hold.levels.has(gridLevelKey(g)),
+          )
+          if (held.length) {
+            const heldIds = new Set(held.map((g) => g.newClientOrderId))
+            for (const g of held) {
+              if (g.minigridId) {
+                this.pendingOrdersList.set(
+                  g.minigridId,
+                  (this.pendingOrdersList.get(g.minigridId) ?? []).filter(
+                    (o) => o.newClientOrderId !== g.newClientOrderId,
+                  ),
+                )
+              }
+            }
+            this.handleDebug(
+              `Deal ${dealId}: ${held.length} grid level(s) not sent, the exchange holds less than the deal records (until ${new Date(hold.until).toISOString()})`,
+            )
+            orders = {
+              ...orders,
+              new: orders.new.filter((g) => !heldIds.has(g.newClientOrderId)),
+            }
+          }
+        }
+      }
+      return super.placeOrdersHoldingDealLock(
+        botId,
+        symbol,
+        dealId,
+        orders,
+        opts,
+      )
     }
     override clearClassProperties(clearRedis = false, start = false) {
       super.clearClassProperties(clearRedis, start)
@@ -4068,6 +4246,8 @@ function createComboBotHelper<
       this.usedOrderId = new Map()
       this.closesRunning = new Map()
       this.closeRequested = new Set()
+      this.gridShortfallHolds = new Map()
+      this.gridShortfallRefused = new Map()
       for (const timer of (this.marketEntryRecheckTimers ?? new Map()).values()) {
         clearTimeout(timer)
       }

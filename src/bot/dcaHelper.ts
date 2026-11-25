@@ -31477,6 +31477,9 @@ function createDCABotHelper<
      * @param settle how to close the deal once the venue has agreed twice that
      *   its position is gone. Defaults to `closeDeal`, which books it closed
      *   with no order. Combo passes its base-trigger close (spec `175`).
+     * @param onHeld called with the size of the position when the venue
+     *   answered that it still holds one. Combo compares it with what the deal
+     *   records (spec `266`).
      * @returns true when the deal was booked closed and the caller must stop
      *   working it.
      */
@@ -31485,6 +31488,7 @@ function createDCABotHelper<
       outcome: string,
       trigger?: string,
       settle?: () => Promise<unknown>,
+      onHeld?: (heldQty: number) => Promise<void>,
     ): Promise<boolean> {
       const dealId = `${deal.deal._id}`
       const symbol = deal.deal.symbol.symbol
@@ -31550,6 +31554,9 @@ function createDCABotHelper<
           await positionProbeBackoff.clear([this.botId, dealId])
           await positionGoneReadings.clear([this.botId, dealId])
           this.clearPositionReprobe(dealId)
+          if (onHeld && verdict.held !== undefined) {
+            await onHeld(verdict.held)
+          }
         } else {
           // Spec `225` §1.1.5: only continues a re-probe chain already armed
           // by a first reading; an unanswered first probe arms nothing.

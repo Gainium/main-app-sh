@@ -42,6 +42,11 @@ export type PositionReconcileVerdict = {
   closeDeal: boolean
   /** Short text for the log line; the venue's answer in one phrase. */
   verdict: string
+  /**
+   * The size of the position the venue holds for the deal, absolute, when it
+   * holds one. Spec `266` compares it with what the deal records.
+   */
+  held?: number
 }
 
 /**
@@ -91,6 +96,7 @@ export const reconcileDealAgainstVenue = (
     ? {
         closeDeal: false,
         verdict: `venue still holds ${held.positionAmt} ${symbol}`,
+        held: Math.abs(+held.positionAmt),
       }
     : {
         closeDeal: true,
