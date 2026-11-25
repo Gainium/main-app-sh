@@ -296,6 +296,11 @@ import { dealSettingsDiffFromBot } from './dca/dealSettingsDiff'
 import type { OrderExecution } from '../../types'
 import type { BookTicker } from '../exchange'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
+import {
+  entryQtyMovesPosition,
+  importEntryRefusalMessage,
+  importEntryUsable,
+} from './dca/importEntry'
 import { BotServiceType } from '../config'
 import {
   repositionKeepsRestingBaseEntry,
@@ -9622,6 +9627,40 @@ function createDCABotHelper<
         findDeal.deal.status === DCADealStatusEnum.start
       ) {
         const settings = await this.getAggregatedSettings(findDeal.deal)
+        // A synthetic import row written before spec 262 with a quantity of
+        // 0/NaN moved nothing. Opening it books an empty position whose save
+        // is refused on every replay; retire the deal instead. §1.3.2.
+        if (
+          settings.terminalDealType === TerminalDealTypeEnum.import &&
+          `${orderBo.orderId}` === '-1' &&
+          !entryQtyMovesPosition(parseFloat(orderBo.executedQty))
+        ) {
+          this.handleLog(
+            `Import deal ${dealId} booked no quantity. Cancelling it rather than opening an empty position`,
+          )
+          await this.reportUserRefusal(
+            importEntryRefusalMessage({
+              symbol: orderBo.symbol,
+              size: settings.baseOrderSize,
+              sizeAsset:
+                settings.orderSizeType === OrderSizeTypeEnum.base ||
+                (settings.futures && settings.coinm)
+                  ? orderBo.baseAsset ?? ''
+                  : orderBo.quoteAsset ?? '',
+              price: settings.baseOrderPrice,
+              qty: parseFloat(orderBo.executedQty),
+            }),
+            orderBo.symbol,
+          )
+          await this.closeDealById(
+            this.botId,
+            dealId,
+            CloseDCATypeEnum.cancel,
+            false,
+          )
+          this.endMethod(_id)
+          return
+        }
         this.handleLog('Base order FILLED')
         // Spec 242 §6.5 — a split base order continues with its next slice.
         this.onEntryBaseFilled(dealId)
@@ -9670,7 +9709,9 @@ function createDCABotHelper<
         findDeal.deal.lastPrice = initialPrice
         const avgs = await this.getAvgPrice(dealId)
         findDeal.deal.avgPrice = avgs.avg || initialPrice
-        findDeal.deal.displayAvg = avgs.display
+        findDeal.deal.displayAvg = Number.isFinite(avgs.display)
+          ? avgs.display
+          : findDeal.deal.avgPrice
         findDeal.deal.settings.avgPrice = avgs.avg || initialPrice
         this.handleDebug(
           `Set deal avg prices ${findDeal.deal.avgPrice}, ${findDeal.deal.settings.avgPrice} (display ${findDeal.deal.displayAvg})`,
@@ -10713,9 +10754,14 @@ function createDCABotHelper<
           qty: 0,
         }
         for (const o of filledDealOrder) {
+          const qty = +(o.executedQty ?? '0') || +o.origQty
+          // A row of 0/NaN moved nothing; folding it divides by 0. Spec 262 §1.3.3.
+          if (!entryQtyMovesPosition(qty)) {
+            continue
+          }
           pos = await this.calculateAbstractPosition(
             {
-              qty: +(o.executedQty ?? '0') || +o.origQty,
+              qty,
               price: +o.price,
               side: o.side,
               symbol: o.symbol,
@@ -10723,7 +10769,8 @@ function createDCABotHelper<
             pos,
           )
         }
-        return { avg: pos.price, display: pos.price }
+        const avg = Number.isFinite(pos.price) ? pos.price : 0
+        return { avg, display: avg }
       }
       const filledDealOrder = entryRows.filter(
         (o) =>
@@ -12880,6 +12927,28 @@ function createDCABotHelper<
               symbol,
               await this.checkAssets(true, true),
             )
+            // A size below one quantity step (0) or an inverse price of 0
+            // (NaN) describes no position: booked, the deal's futures average
+            // is 0/0 and it can never be saved. Spec 262 §1.3.1.
+            if (!importEntryUsable(qty, price)) {
+              if (dealId) {
+                await this.reportUserRefusal(
+                  importEntryRefusalMessage({
+                    symbol,
+                    size: settings.baseOrderSize,
+                    sizeAsset:
+                      settings.orderSizeType === OrderSizeTypeEnum.base ||
+                      (settings.futures && settings.coinm)
+                        ? ed.baseAsset.name
+                        : ed.quoteAsset.name,
+                    price: settings.baseOrderPrice,
+                    qty,
+                  }),
+                  symbol,
+                )
+              }
+              return
+            }
             const order: Order = {
               clientOrderId: this.getOrderId(`D-BO`),
               status: 'FILLED',
@@ -13399,6 +13468,31 @@ function createDCABotHelper<
           this.endMethod(_id)
           return this.startDeal(order)
         }
+        // An import places no order, so falling through would send a real
+        // entry for a position the user said they already hold. Retire the
+        // deal row instead; `getBaseOrder` already told the user why.
+        // Spec 262 §1.3.1, retirement as spec 039.
+        const importDealId = dealId ?? oldDealId
+        if (
+          importDealId &&
+          shouldDiscardUnbuiltBaseEntry({
+            baseOrderBuilt: false,
+            dealStatus: this.getDeal(importDealId)?.deal.status,
+            orderCount: this.getOrdersByStatusAndDealId({
+              dealId: importDealId,
+            }).length,
+          })
+        ) {
+          await this.closeDealById(
+            this.botId,
+            importDealId,
+            CloseDCATypeEnum.cancel,
+            false,
+          )
+        }
+        this.resetPending(this.botId, symbol)
+        this.endMethod(_id)
+        return
       }
       if (oldDealId) {
         dealId = oldDealId
