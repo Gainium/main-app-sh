@@ -4745,6 +4745,10 @@ class MainBot<T extends IMainBot> {
     message = `${message}, balance total - ${
       (balance?.free ?? 0) + (balance?.locked ?? 0)
     } ${asset}, free - ${free} ${asset}, required - ${required} ${asset}`
+    // `errorString` is the venue's own refusal (it matched a venue wording
+    // above). Quote it: the figures before it are our stored balance row,
+    // which can disagree with what the venue counts as spendable.
+    message = `${message}, exchange reply - ${errorString}`
     if (order.typeOrder !== TypeOrderEnum.stab) {
       if (setError || sendError) {
         this.botEventDb
