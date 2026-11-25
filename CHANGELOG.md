@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.9] - 2026-11-25
+
+### Fixed
+
+- "Not enough balance" bot messages now include the exchange's own refusal text, so it is clear the exchange refused the order and why.
+
 ## [1.133.8] - 2026-11-25
 
 ### Fixed
