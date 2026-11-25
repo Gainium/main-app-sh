@@ -160,6 +160,8 @@ describe('refused safety order: band and closed market (spec 248)', () => {
       }
       const proto = MainBot.prototype as any
       for (const m of [
+        'holdRefusedForRetry',
+        'noticeOncePerSpell',
         'noteMarketClosedRefusal',
         'flushMarketClosed',
         'replaceVenueCanceledBatch',

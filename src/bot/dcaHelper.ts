@@ -252,6 +252,7 @@ import {
   shouldBookCanceledRegularFill,
 } from './dca/canceledRegularFill'
 import { venueCanceledSafetyLevel } from './venueCancelReplace'
+import { balanceRefusalGaveUpNotice } from './marketClosedRetry'
 import { closeOrderQuoteMinimum } from './closeOrderMinValue'
 import {
   baseEntryCancelSettleAttempts,
@@ -27844,6 +27845,63 @@ function createDCABotHelper<
         cancel: [],
       })
       return true
+    }
+
+    /**
+     * The bot stopped retrying a safety order the venue refused for balance
+     * for 24 h (spec 271). On a DCA deal whose ladder records skipped levels
+     * (spec 233: not Combo, not indicator-driven DCA) the level goes onto
+     * `deal.missedLevels`, which keeps it off the book until the user executes
+     * it; otherwise the user is told and the level is left to the next ladder
+     * rebuild. A level the ladder no longer wants needs neither.
+     */
+    protected override async giveUpBalanceRefusedLevel(
+      order: Order,
+    ): Promise<void> {
+      const dealId = `${order.dealId ?? ''}`
+      const findDeal = dealId ? this.getDeal(dealId) : undefined
+      if (!findDeal || findDeal.deal.status !== DCADealStatusEnum.open) {
+        return
+      }
+      const level = venueCanceledSafetyLevel({
+        order,
+        currentOrders: findDeal.currentOrders,
+        resting: this.getOrdersByStatusAndDealId({
+          dealId,
+          status: ['NEW', 'PARTIALLY_FILLED'],
+        }),
+        dealRegular: TypeOrderEnum.dealRegular,
+      })
+      if (!level) {
+        return
+      }
+      const levelNumber = level.levelNumber ?? order.ladderLevel
+      const records =
+        !this.combo &&
+        this.data?.settings.dcaCondition !== DCAConditionEnum.indicators &&
+        typeof levelNumber === 'number'
+      if (records) {
+        const missed = [
+          ...(findDeal.deal.missedLevels ?? []).filter(
+            (m) => m.level !== levelNumber,
+          ),
+          { level: levelNumber, price: level.price, qty: level.qty },
+        ].sort((a, b) => a.level - b.level)
+        findDeal.deal.missedLevels = missed
+        this.saveDeal(findDeal, { missedLevels: missed })
+      }
+      await this.postUserNotice(
+        balanceRefusalGaveUpNotice({
+          symbol: order.symbol,
+          price: level.price,
+          level: levelNumber,
+          recorded: records,
+        }),
+        order.symbol,
+        MessageTypeEnum.warning,
+        'Deal',
+        'Not enough balance',
+      )
     }
 
     /**

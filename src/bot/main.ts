@@ -119,6 +119,9 @@ import {
 } from './priceBandReprice'
 import {
   MARKET_CLOSED_SPELL_GAP_MS,
+  balanceRefusalExpired,
+  balanceRefusalGaveUpNotice,
+  balanceRefusalNotice,
   marketClosedLevelKey,
   marketClosedNotice,
   marketClosedRetryDelay,
@@ -2214,12 +2217,80 @@ class MainBot<T extends IMainBot> {
     return placed
   }
 
-  /** Orders refused on a closed market, by level, waiting for a retry. Spec 248. */
+  /**
+   * Orders refused on a closed market (spec 248) or for insufficient balance
+   * (spec 271), by level, waiting for a retry.
+   */
   protected marketClosedOrders?: Map<string, Order>
-  /** Per level: refusals in the current closed spell and when the last came. */
-  protected marketClosedAttempts?: Map<string, { attempts: number; at: number }>
+  /**
+   * Per level: refusals in the current spell, when the last came, and when the
+   * spell's first came (the balance give-up clock, spec 271).
+   */
+  protected marketClosedAttempts?: Map<
+    string,
+    { attempts: number; at: number; firstAt?: number }
+  >
   /** Per pair: when the user was last told its market is closed. */
   protected marketClosedNoticedAt?: Map<string, number>
+
+  /**
+   * Keep a refused `order` by level and schedule the retry pass, backing off
+   * while the refusals continue. Returns the level's spell, or `null` when the
+   * engine does not place this order type back. The caller decides whether to
+   * hold it (`hold: false` only counts the refusal). Spec 248, spec 271.
+   */
+  protected holdRefusedForRetry(
+    order: Order,
+    why: string,
+    hold = true,
+  ): { attempt: number; firstAt: number; delay: number } | null {
+    if (!this.replacesVenueCancel(order)) {
+      return null
+    }
+    const now = Date.now()
+    const key = marketClosedLevelKey(order)
+    const attempts = (this.marketClosedAttempts ??= new Map())
+    const prev = attempts.get(key)
+    const sameSpell = !!prev && now - prev.at < MARKET_CLOSED_SPELL_GAP_MS
+    const attempt = sameSpell && prev ? prev.attempts + 1 : 0
+    const firstAt = sameSpell && prev ? (prev.firstAt ?? prev.at) : now
+    attempts.delete(key)
+    attempts.set(key, { attempts: attempt, at: now, firstAt })
+    if (attempts.size > 1000) {
+      const oldest = attempts.keys().next().value
+      if (oldest !== undefined) {
+        attempts.delete(oldest)
+      }
+    }
+    const delay = marketClosedRetryDelay(attempt)
+    if (!hold) {
+      attempts.delete(key)
+      return { attempt, firstAt, delay }
+    }
+    ;(this.marketClosedOrders ??= new Map()).set(key, order)
+    this.handleLog(
+      `Order ${order.clientOrderId} (${order.typeOrder}) refused, ${why}. Retry in ${Math.round(delay / 60000)} min`,
+    )
+    this.scheduleMarketClosedRetry(this.botId, delay)
+    return { attempt, firstAt, delay }
+  }
+
+  /** Tell the user `message` once per `key` per spell. Spec 248, spec 271. */
+  protected noticeOncePerSpell(key: string, message: string, symbol: string) {
+    const now = Date.now()
+    const noticed = (this.marketClosedNoticedAt ??= new Map())
+    const lastNotice = noticed.get(key)
+    noticed.set(key, now)
+    if (!lastNotice || now - lastNotice >= MARKET_CLOSED_SPELL_GAP_MS) {
+      this.postUserNotice(
+        message,
+        symbol,
+        MessageTypeEnum.warning,
+        'Bot warning',
+        key.startsWith('balance|') ? 'Not enough balance' : marketClosed,
+      ).catch(() => undefined)
+    }
+  }
 
   /**
    * The venue refused `order` because its market is closed. Keep it and place
@@ -2228,43 +2299,88 @@ class MainBot<T extends IMainBot> {
    * told once per pair per closed spell. Spec 248.
    */
   protected noteMarketClosedRefusal(order: Order) {
-    if (!this.replacesVenueCancel(order)) {
+    if (
+      !this.holdRefusedForRetry(order, `${order.symbol} market is closed`)
+    ) {
       return
     }
-    const now = Date.now()
-    const key = marketClosedLevelKey(order)
-    const attempts = (this.marketClosedAttempts ??= new Map())
-    const prev = attempts.get(key)
-    const attempt =
-      prev && now - prev.at < MARKET_CLOSED_SPELL_GAP_MS ? prev.attempts + 1 : 0
-    attempts.delete(key)
-    attempts.set(key, { attempts: attempt, at: now })
-    if (attempts.size > 1000) {
-      const oldest = attempts.keys().next().value
-      if (oldest !== undefined) {
-        attempts.delete(oldest)
-      }
-    }
-    ;(this.marketClosedOrders ??= new Map()).set(key, order)
-    const delay = marketClosedRetryDelay(attempt)
-    this.handleLog(
-      `Order ${order.clientOrderId} (${order.typeOrder}) refused, ${order.symbol} market is closed. Retry in ${Math.round(delay / 60000)} min`,
+    this.noticeOncePerSpell(
+      order.symbol,
+      marketClosedNotice(order.symbol),
+      order.symbol,
     )
-    const noticed = (this.marketClosedNoticedAt ??= new Map())
-    const lastNotice = noticed.get(order.symbol)
-    if (!lastNotice || now - lastNotice >= MARKET_CLOSED_SPELL_GAP_MS) {
-      noticed.set(order.symbol, now)
-      this.postUserNotice(
-        marketClosedNotice(order.symbol),
-        order.symbol,
-        MessageTypeEnum.warning,
-        'Bot warning',
-        marketClosed,
-      ).catch(() => undefined)
-    } else {
-      noticed.set(order.symbol, now)
+  }
+
+  /**
+   * The venue (or the local not-enough-balance cooldown standing in for it)
+   * refused a DCA / Combo safety order for insufficient balance. Keep it by
+   * level and place it again on the closed-market back-off (5 min doubling to
+   * 60 min), as a limit at the level's own price ({@link
+   * MainBot#replaceVenueCanceled}). After {@link BALANCE_REFUSAL_GIVE_UP_MS}
+   * of refusals the bot stops and hands the level to
+   * {@link MainBot#giveUpBalanceRefusedLevel}. Spec 271.
+   */
+  protected noteBalanceRefusal(order: Order) {
+    if (
+      order.typeOrder !== TypeOrderEnum.dealRegular ||
+      order.type === 'MARKET'
+    ) {
+      return
     }
-    this.scheduleMarketClosedRetry(this.botId, delay)
+    const key = marketClosedLevelKey(order)
+    const prev = this.marketClosedAttempts?.get(key)
+    const now = Date.now()
+    const expired =
+      !!prev &&
+      now - prev.at < MARKET_CLOSED_SPELL_GAP_MS &&
+      balanceRefusalExpired(prev.firstAt ?? prev.at, now)
+    const spell = this.holdRefusedForRetry(
+      order,
+      `not enough balance for ${order.symbol}`,
+      !expired,
+    )
+    if (!spell) {
+      return
+    }
+    if (expired) {
+      this.marketClosedOrders?.delete(key)
+      this.handleLog(
+        `Order ${order.clientOrderId} (${order.typeOrder}) refused for balance since ${new Date(spell.firstAt).toISOString()}, giving up on level ${order.ladderLevel ?? order.origPrice}`,
+      )
+      this.giveUpBalanceRefusedLevel(order).catch((e) =>
+        this.handleWarn(
+          `Cannot record level ${order.origPrice} as skipped: ${(e as Error)?.message ?? e}`,
+        ),
+      )
+      return
+    }
+    if (spell.attempt === 0) {
+      this.noticeOncePerSpell(
+        `balance|${order.symbol}`,
+        balanceRefusalNotice(order.symbol),
+        order.symbol,
+      )
+    }
+  }
+
+  /**
+   * The bot stopped retrying a safety order refused for balance (spec 271).
+   * The DCA engine records the level as skipped; this default only tells the
+   * user, and the level is left to the engine's next ladder rebuild.
+   */
+  protected async giveUpBalanceRefusedLevel(order: Order): Promise<void> {
+    await this.postUserNotice(
+      balanceRefusalGaveUpNotice({
+        symbol: order.symbol,
+        price: order.origPrice || order.price,
+        level: order.ladderLevel,
+        recorded: false,
+      }),
+      order.symbol,
+      MessageTypeEnum.warning,
+      'Bot warning',
+      'Not enough balance',
+    )
   }
 
   /** One retry pass per bot; the latest refusal sets the wait. Spec 248. */
@@ -2287,9 +2403,12 @@ class MainBot<T extends IMainBot> {
     if (!queued.length || !this.data) {
       return
     }
+    // `error` is soft: the refusal being retried is what raised it, and the
+    // placement pass clears it once the venue accepts (spec 271).
     if (
       this.data.status !== BotStatusEnum.open &&
-      this.data.status !== BotStatusEnum.range
+      this.data.status !== BotStatusEnum.range &&
+      this.data.status !== BotStatusEnum.error
     ) {
       return
     }
@@ -2298,7 +2417,7 @@ class MainBot<T extends IMainBot> {
     }
     const placed = await this.replaceVenueCanceledBatch(this.botId, queued)
     this.handleLog(
-      `Sent ${placed}/${queued.length} order(s) again after a closed-market refusal`,
+      `Sent ${placed}/${queued.length} order(s) again after a closed-market or balance refusal`,
     )
   }
 
@@ -11064,6 +11183,18 @@ class MainBot<T extends IMainBot> {
               }
             } else {
               await this.deleteOrderFromDb(order.clientOrderId)
+            }
+            // A safety order refused for insufficient balance, by the venue or
+            // by the local cooldown standing in for it: kept by level and
+            // placed again on a back-off, until the venue takes it or 24 h
+            // have passed. Spec 271.
+            if (
+              (!servedLocally ||
+                notEnoughBalanceShortCircuit ||
+                heldFundsShortCircuit) &&
+              this.isErrorNotEnoughBalance(`${request.reason ?? ''}`)
+            ) {
+              this.noteBalanceRefusal(order)
             }
           }
           // Every other venue refusal lands here — min-notional, price band,

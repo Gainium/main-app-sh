@@ -51,6 +51,42 @@ export const marketClosedLevelKey = (order: LevelOrder): string =>
     order.dcaLevel ?? '',
   ].join('|')
 
+/**
+ * A safety order the venue refused for insufficient balance is kept by level
+ * and placed again on the same back-off as a closed market, as a limit at the
+ * level's own price. After this long without the venue accepting it the bot
+ * stops trying and records the level as skipped. Spec 271.
+ */
+export const BALANCE_REFUSAL_GIVE_UP_MS = 24 * 60 * 60_000
+
+/**
+ * Has a level refused for balance since `firstAt` run out of retries at `now`?
+ * Spec 271.
+ */
+export const balanceRefusalExpired = (firstAt: number, now: number): boolean =>
+  now - firstAt >= BALANCE_REFUSAL_GIVE_UP_MS
+
+/** What the user is told, once per pair per refusal spell. Spec 271. */
+export const balanceRefusalNotice = (symbol: string): string =>
+  `The exchange refused a DCA order on ${symbol} for insufficient balance. The bot will place it again at its level's price, retrying for up to 24 hours. Free up or add funds to let it through.`
+
+/**
+ * What the user is told when the bot stops retrying a level refused for
+ * balance. `recorded`: the level is now on the deal's skipped DCA levels and
+ * can be executed from the deal. Spec 271.
+ */
+export const balanceRefusalGaveUpNotice = (input: {
+  symbol: string
+  price: string | number
+  level?: number | null
+  recorded: boolean
+}): string =>
+  `DCA ${input.level ? `level ${input.level}` : 'order'} at ${input.price} on ${input.symbol} was refused by the exchange for insufficient balance for 24 hours, so the bot stopped retrying it. ${
+    input.recorded
+      ? 'It is listed under the deal\'s skipped DCA levels; you can execute it from the deal.'
+      : 'It will be placed again the next time the deal\'s orders are rebuilt.'
+  }`
+
 /** What the user is told, once per pair per closed spell. */
 export const marketClosedNotice = (symbol: string): string =>
   `The exchange's market for ${symbol} is closed right now, so the bot's orders for it could not be placed. The bot will place them automatically when trading reopens; there is nothing you need to do.`
