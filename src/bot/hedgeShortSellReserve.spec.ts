@@ -26,6 +26,7 @@ const load = createRequire(__filename)
 const dbInit = load('../db/dbInit')
 const { FundingReservation } = load('./fundingReservation')
 const { hedgeShortSellFits } = load('./baseFunding')
+const { BaseFundingGate, BASE_FUNDING_RELEASED } = load('./baseFundingGate')
 const Helper: any = createDCABotHelper(MainBot as any)
 
 const PARENT = 'hedge-parent'
@@ -83,7 +84,6 @@ type Opts = {
   isLong?: boolean
   futures?: boolean
   parentBotId?: string | undefined
-  beta?: boolean
   deal?: Record<string, unknown>
 }
 
@@ -140,7 +140,7 @@ function shortLeg(o: Opts = {}) {
       }
     },
   }
-  bot.baseFundingAllowed = async () => !!o.beta
+  // No stub of the spec 044 gate: it runs as in prod, released to everyone.
   bot.checkAssets = async () =>
     new Map([
       ['SOXS', { asset: 'SOXS', free, locked: 0 }],
@@ -222,6 +222,35 @@ describe('spot hedge short leg keeps the long leg coins (core spec 261)', () => 
     dbInit.orderDb.readData = saved.orders
   })
   beforeEach(reset)
+
+  // The first fix skipped every user the spec 044 gate allows, and since the
+  // gate was released that is every user: its check never ran in prod. These
+  // run against the real gate, never a stub.
+  describe('§3.6 with base funding released to everyone, as in prod', () => {
+    it('the gate allows this user (prod state, not stubbed)', async () => {
+      expect(BASE_FUNDING_RELEASED).to.equal(true)
+      expect(await BaseFundingGate.getInstance().isAllowed('user')).to.equal(
+        true,
+      )
+      const { bot } = shortLeg()
+      expect(await bot.baseFundingAllowed()).to.equal(true)
+    })
+
+    it('an unstamped short deal still may not sell the long leg coins', async () => {
+      const { bot, rec } = shortLeg()
+      expect(await bot.hedgeShortLegReserveApplies()).to.equal(true)
+      await bot.sendOrderToExchange(order({ origQty: '0.07' }))
+      // The prod case after deploy: 0.07 SOXS safety sell, 0 SOXS beyond
+      // the long's 1.66 free on the venue.
+      expect(rec.open).to.have.length(1)
+      const r2 = shortLeg({ free: 1.66 })
+      await r2.bot.sendOrderToExchange(order({ origQty: '0.07' }))
+      expect(r2.rec.open, 'nothing reaches the venue').to.deep.equal([])
+      expect(r2.rec.orderErrors[0]).to.contain(
+        'held by the long side of this hedge bot',
+      )
+    })
+  })
 
   describe('§3.1 hedgeShortSellFits', () => {
     it('a sell fits only in what is free beyond the long leg coins', () => {
@@ -367,10 +396,6 @@ describe('spot hedge short leg keeps the long leg coins (core spec 261)', () => 
       expect(r.status).to.equal(false)
       expect(r.unknown).to.equal(true)
     })
-
-    it('beta users are gated as before', async () => {
-      expect((await gate({ free: 2.0, beta: true })).status).to.equal(true)
-    })
   })
 
   describe('§3.5 what does not change', () => {
@@ -387,9 +412,6 @@ describe('spot hedge short leg keeps the long leg coins (core spec 261)', () => 
     })
     it('futures hedge legs', async () => {
       expect(await sent({ futures: true })).to.equal(1)
-    })
-    it('base-funding beta users', async () => {
-      expect(await sent({ beta: true })).to.equal(1)
     })
     it('spec 044 deals (stamped, or with a start action)', async () => {
       expect(await sent({ deal: { baseFundingBeta: true } })).to.equal(1)

@@ -23668,18 +23668,18 @@ function createDCABotHelper<
     }
 
     /**
-     * Core spec 261. A spot hedge DCA SHORT leg outside the spec 044 beta:
-     * both legs trade one coin from one account, and its sells must leave the
-     * coins the LONG leg holds for its take profit. Futures, combo, long legs,
-     * non-hedge bots and beta users are never in scope — those run as before.
+     * Core spec 261. A spot hedge DCA SHORT leg: both legs trade one coin from
+     * one account, and its sells must leave the coins the LONG leg holds for
+     * its take profit. Futures, combo, long legs and non-hedge bots are never
+     * in scope — those run as before. Not keyed on the user's spec 044 gate
+     * (released to everyone, so it would exclude every bot): what spec 044
+     * funds is told apart per deal — stamped or action-bearing deals are
+     * skipped at the order site, stamped long deals are left out of
+     * {@link heldByHedgeLongLeg} because {@link reservedFundingBase} holds them.
      */
     async hedgeShortLegReserveApplies(): Promise<boolean> {
       return (
-        !this.futures &&
-        !this.combo &&
-        !this.isLong &&
-        !!this.data?.parentBotId &&
-        !(await this.baseFundingAllowed())
+        !this.futures && !this.combo && !this.isLong && !!this.data?.parentBotId
       )
     }
 
