@@ -507,6 +507,15 @@ export const complianceRestriction = 'Compliance restriction'
 export const positionLeftOpen = 'Position left open'
 
 /**
+ * Spec `267`. A spot LONG deal's close ran short: the exchange refused the sale
+ * of the rest for insufficient balance. Either the coins are locked by other
+ * orders (the deal stays open) or they are gone (the deal closes with
+ * `unsoldBase` stamped). Either way the user now holds coins the close did not
+ * sell, so it must reach them. A warning, never a bot error.
+ */
+export const closeLeftUnsold = 'Close left coins unsold'
+
+/**
  * A close request was accepted and answered `ok`, but the engine could not act
  * on it and the deal is still live. Not a malfunction of the bot — the request
  * was lost — but the user believes a position is closed when it is not, so it

@@ -207,6 +207,7 @@ import {
   convertDCABotToObject,
   convertComboBot,
   convertComboBotToObject,
+  closeLeftUnsold,
   futuresPosition,
   limitOnlyEntryReplaced,
   orderBelowExchangeMinSubType,
@@ -487,6 +488,11 @@ import {
   minOrderRefusalMessage,
   raisedPastConfigured,
 } from './minOrderFloor'
+import {
+  classifyCloseSweepShortfall,
+  lockedRemainderMessage,
+  unsoldRemainderMessage,
+} from './dca/closeSweepShortfall'
 
 export type PercentileResult = {
   percentile?: number
@@ -4189,6 +4195,8 @@ function createDCABotHelper<
           // open and close the rest by LIMIT through the normal close path.
           let sweep: { result: Order | string | void; qty: number } | void =
             undefined
+          // Spec `267`: base a short close leaves unsold, stamped on the deal.
+          let unsoldBase: number | undefined
           const preLedger = findDeal.deal.currentBalances
           // Spec `238`: the position includes fills still queued for booking.
           const preQueued = this.queuedEntryFills(dealId)
@@ -4251,16 +4259,56 @@ function createDCABotHelper<
                   o.typeOrder === TypeOrderEnum.dealTP &&
                   o.clientOrderId !== tpOrder.clientOrderId,
               )
+            // Spec `267`. Any other balance refusal of a spot LONG sweep: read
+            // the venue's base balance (after the take-profit fill) to tell
+            // coins locked by OTHER orders from coins that are gone. Locked:
+            // keep the deal open like spec 211. Gone: close as spec 157 §1.5
+            // does, but stamp and report what went unsold.
+            const shortfall =
+              sweep &&
+              refusal &&
+              !isLimitOnlyReason(refusal) &&
+              !ownTpHoldsBalance &&
+              this.isErrorNotEnoughBalance(refusal) &&
+              this.isLong &&
+              !this.futures
+                ? classifyCloseSweepShortfall(
+                    sweep.qty,
+                    // Keyed as `checkAssets` keys its map.
+                    await this.closeSweepBaseBalance(sweepEd.baseAsset.name),
+                  )
+                : undefined
+            const lockedByOthers = shortfall?.kind === 'locked'
+            if (sweep && shortfall?.kind === 'unsold') {
+              unsoldBase = sweep.qty
+            }
             if (
               sweep &&
               refusal &&
-              (isLimitOnlyReason(refusal) || ownTpHoldsBalance)
+              (isLimitOnlyReason(refusal) ||
+                ownTpHoldsBalance ||
+                lockedByOthers)
             ) {
               this.handleLog(
                 ownTpHoldsBalance
                   ? `Cannot sell the remaining ${sweep.qty} of deal ${dealId} at market, a resting take-profit of the deal holds the balance. Deal stays open, closing the rest by limit`
-                  : `${tpOrder.symbol} book is in limit only mode, cannot sell the remaining ${sweep.qty} of deal ${dealId} at market. Deal stays open, closing the rest by limit`,
+                  : lockedByOthers
+                    ? `Cannot sell the remaining ${sweep.qty} of deal ${dealId} at market, ${shortfall.locked} ${findDeal.deal.symbol.baseAsset} is locked by other open orders (held ${shortfall.held}). Deal stays open, closing the rest by limit`
+                    : `${tpOrder.symbol} book is in limit only mode, cannot sell the remaining ${sweep.qty} of deal ${dealId} at market. Deal stays open, closing the rest by limit`,
               )
+              if (lockedByOthers) {
+                await this.reportCloseShortfall(
+                  findDeal.deal,
+                  lockedRemainderMessage({
+                    dealId,
+                    symbol: findDeal.deal.symbol.symbol,
+                    baseAsset: findDeal.deal.symbol.baseAsset,
+                    sold: qty,
+                    remainder: sweep.qty,
+                    locked: shortfall.locked,
+                  }),
+                )
+              }
               // This fill is a partial take profit like any other; the next
               // close counts it from here, once.
               findDeal.deal.tpHistory = [
@@ -4670,7 +4718,11 @@ function createDCABotHelper<
           // — this fill plus any earlier partial take-profits — so pin it now
           // and let `updateUsage` preserve it.
           findDeal.deal.size = qty
+          if (unsoldBase !== undefined) {
+            findDeal.deal.unsoldBase = unsoldBase
+          }
           this.saveDeal(findDeal, {
+            ...(unsoldBase !== undefined ? { unsoldBase } : {}),
             commission: findDeal.deal.commission,
             profit: findDeal.deal.profit,
             updateTime: findDeal.deal.updateTime,
@@ -4688,6 +4740,18 @@ function createDCABotHelper<
           this.handleDebug(
             `Deal closed with profit ${total} ${totalUsd} (${findDeal.deal.profit.total} ${findDeal.deal.profit.totalUsd})`,
           )
+          if (unsoldBase !== undefined) {
+            await this.reportCloseShortfall(
+              findDeal.deal,
+              unsoldRemainderMessage({
+                dealId,
+                symbol: findDeal.deal.symbol.symbol,
+                baseAsset: findDeal.deal.symbol.baseAsset,
+                sold: qty,
+                unsold: unsoldBase,
+              }),
+            )
+          }
           const botUpdate = {
             profit: { ...this.data.profit },
             profitByAssets: [
@@ -5490,6 +5554,65 @@ function createDCABotHelper<
         })
       }
       return dealCloseEventDescription(deal)
+    }
+
+    /**
+     * Spec `267`. The account's base balance on the venue, read directly (the
+     * stored row predates the take-profit fill that just landed). `undefined`
+     * when it cannot be read: the caller then cannot show the coins are held.
+     */
+    protected async closeSweepBaseBalance(asset: string) {
+      try {
+        return (await this.checkAssets(true, true))?.get(asset)
+      } catch (e) {
+        this.handleWarn(
+          `closeSweepBaseBalance failed: ${(e as Error)?.message ?? e}`,
+        )
+        return undefined
+      }
+    }
+
+    /**
+     * Spec `267`. Tell the user a close ran short. A warning, never a bot
+     * error; reporting never breaks the close path.
+     */
+    protected async reportCloseShortfall(
+      deal: ExcludeDoc<Deal>,
+      message: string,
+    ) {
+      this.handleWarn(`close shortfall | ${message}`)
+      try {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: message,
+          paperContext: !!this.data?.paperContext,
+          deal: deal._id,
+          symbol: deal.symbol.symbol,
+          type: MessageTypeEnum.warning,
+        })
+        await this.processError(
+          this.botId,
+          closeLeftUnsold,
+          // @ts-ignore
+          this.data?.settings.type === DCATypeEnum.terminal,
+          false,
+          true,
+          message,
+          +new Date(),
+          message,
+          true,
+          deal.symbol.symbol,
+        )
+      } catch (e) {
+        this.handleWarn(
+          `reportCloseShortfall failed for deal ${deal._id}: ${
+            (e as Error)?.message ?? e
+          }`,
+        )
+      }
     }
 
     /**

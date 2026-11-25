@@ -1816,6 +1816,12 @@ export type SignalDealOverrides = {
 export interface DCADealsSchema extends SchemaI {
   action?: ActionsEnum
   closeTrigger?: DCACloseTriggerEnum
+  /**
+   * Spec `267`. Base the close could not sell: the take profit ran short and
+   * the venue refused the sweep of the rest for insufficient balance. Unset on
+   * every close that sold everything.
+   */
+  unsoldBase?: number
   flags?: DCADealFlags[]
   balanceStart?: number
   cost?: number

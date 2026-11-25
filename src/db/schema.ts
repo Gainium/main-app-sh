@@ -2330,6 +2330,8 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
   trailingClose,
   feeSizingFallback,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
+  // Spec 267: base a short close left unsold (see DCADealsSchema.unsoldBase).
+  unsoldBase: Number,
   // Hedge leg start action (spec 044 §8.9): `createDeal` writes it; without
   // it in the schema mongoose dropped it and a hedge DCA leg's deal never
   // reached its funding branch. Same as combo.
@@ -2567,6 +2569,7 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
   trailingClose,
   feeSizingFallback,
   closeTrigger: { type: String, enum: DCACloseTriggerEnum },
+  unsoldBase: Number,
   action: { type: String, enum: ActionsEnum },
   note: String,
   botId: RequiredString,
