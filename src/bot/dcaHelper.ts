@@ -16022,7 +16022,9 @@ function createDCABotHelper<
                   }
                 } else if (!exchangeData || !exchangeData.data) {
                   this.handleWarn(
-                    `Not enough data to get order ${o.clientOrderId}`,
+                    `Not enough data to get order ${o.clientOrderId}${
+                      exchangeData?.reason ? `: ${exchangeData.reason}` : ''
+                    }`,
                   )
                 } else {
                   if (exchangeData.status === StatusEnum.notok) {

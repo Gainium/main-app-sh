@@ -1438,7 +1438,9 @@ function createBotHelper<
             )
             if (!tpslOrderData || !tpslOrderData.data) {
               this.handleWarn(
-                `Not enough data to get order ${activeTPSLOrder.clientOrderId}`,
+                `Not enough data to get order ${activeTPSLOrder.clientOrderId}${
+                  tpslOrderData?.reason ? `: ${tpslOrderData.reason}` : ''
+                }`,
               )
             } else if (tpslOrderData.status === StatusEnum.notok) {
               this.handleWarn(`Cannot get order ${tpslOrderData.reason}`)
@@ -1503,7 +1505,9 @@ function createBotHelper<
             )
             if (!swapData || !swapData.data) {
               this.handleWarn(
-                `Not enough data to get order ${activeSwapOrder.clientOrderId}`,
+                `Not enough data to get order ${activeSwapOrder.clientOrderId}${
+                  swapData?.reason ? `: ${swapData.reason}` : ''
+                }`,
               )
             } else if (swapData.status === StatusEnum.notok) {
               this.handleWarn(`Cannot get order ${swapData.reason}`)
@@ -1618,7 +1622,9 @@ function createBotHelper<
                 this.noteOrderNotFound(o, `${exchangeData?.reason}`)
               } else if (!exchangeData || !exchangeData.data) {
                 this.handleWarn(
-                  `Not enough data to get order ${o.clientOrderId}`,
+                  `Not enough data to get order ${o.clientOrderId}${
+                    exchangeData?.reason ? `: ${exchangeData.reason}` : ''
+                  }`,
                 )
               } else {
                 if (exchangeData.status === StatusEnum.notok) {
