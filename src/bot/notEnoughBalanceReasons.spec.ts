@@ -66,6 +66,10 @@ const OTHER_REJECTIONS: string[] = [
   'Order value exceeded lower limit.',
   'Invalid API-key, IP, or permissions for action.',
   'Your api key has expired.',
+  // Prod 2026-11-25, a Kraken deal-close sell: the balancer's own lockout
+  // reply. "balancer" contains the bare 'balance' pattern.
+  'EGeneral:Temporary lockout (balancer held this key off for another 1181s; requests during a Kraken lockout extend it)',
+  'EGeneral:Temporary lockout',
 ]
 
 describe('notEnoughErrors', () => {

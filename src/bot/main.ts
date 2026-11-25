@@ -524,6 +524,12 @@ export const notEnoughErrors = [
  * `Bot.isErrorNotEnoughBalance` is the in-class caller.
  */
 export const matchesNotEnoughBalance = (errorString: string): boolean =>
+  // A venue lockout is never a funding problem, whatever else its text says.
+  // The balancer answers a held-off Kraken key with "EGeneral:Temporary lockout
+  // (balancer held this key off …)", and the bare 'balance' pattern above
+  // matched inside "balancer": the lockout was reported as "Not enough balance"
+  // and fed into the funds backoff instead of the lockout handling.
+  !isVenueLockout(errorString) &&
   notEnoughErrors.some(
     (e) => errorString.toLowerCase().indexOf(e.toLowerCase()) !== -1,
   )
