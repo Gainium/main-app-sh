@@ -243,6 +243,7 @@ import {
 } from './pairStats'
 import { grossEntryVolume, resolveBaseOrderQty } from './dca/baseOrderQty'
 import { bookReduceFundsFill } from './dca/reduceFundsFill'
+import { sweepBaseFeesPaid } from './dca/sweepBaseFee'
 import { executedFillQty } from './dca/executedFill'
 import {
   isDatedCanceledRegularFill,
@@ -9882,23 +9883,49 @@ function createDCABotHelper<
         let qtyWithoutFee =
           +qty * (1 - (this.futures ? 0 : long ? _fee.taker : 0))
         if (sellNotByOrder) {
+          // Spec `263`. The base fees the deal's rows actually paid, read the
+          // way `closeDeal` books `profit.pureBase` — not `taker` over every
+          // entry, which on a deal charged in quote deducted coins it holds
+          // and, after reduce-funds sells, the whole remainder.
           const allDealOrders = await this.ordersDb.readData(
-            {
-              dealId,
-              status: 'FILLED',
-              side: this.isLong ? 'BUY' : 'SELL',
-              botId: this.botId,
-            },
+            long
+              ? ({
+                  dealId,
+                  status: { $in: ['FILLED', 'CANCELED'] },
+                  botId: this.botId,
+                } as any)
+              : {
+                  dealId,
+                  status: 'FILLED',
+                  side: 'SELL',
+                  botId: this.botId,
+                },
             {},
             {},
             true,
           )
           const totalFee = this.futures
             ? 0
-            : (allDealOrders.data?.result ?? []).reduce(
-                (acc, v) => acc + +v.executedQty * _fee.taker,
-                0,
-              )
+            : long
+              ? sweepBaseFeesPaid(
+                  (allDealOrders.data?.result ?? []).filter(
+                    (o) =>
+                      ![
+                        TypeOrderEnum.br,
+                        TypeOrderEnum.rebalance,
+                        TypeOrderEnum.funding,
+                      ].includes(o.typeOrder),
+                  ),
+                  _fee,
+                  dealData.symbol?.baseAsset,
+                  dealData.symbol?.quoteAsset,
+                  !!dealData.flags?.includes(DCADealFlags.feeByAsset),
+                )
+              : // Unchanged for a short: its FILLED entry SELLs at taker.
+                (allDealOrders.data?.result ?? []).reduce(
+                  (acc, v) => acc + +v.executedQty * _fee.taker,
+                  0,
+                )
           qtyWithoutFee = +qty - totalFee
         }
         const price = await this.getLatestPrice(symbol)
@@ -21591,6 +21618,17 @@ function createDCABotHelper<
           parseFloat(bo?.origQty || '0') ||
           0
         const dealSize = Math.abs(findDeal?.deal.size ?? deal?.size ?? 0)
+        // Spot long only: there `deal.size` is the quote spent divided by
+        // the average (`updateUsage`), while `currentBalances.base` is
+        // booked fill by fill. `-add` is everything already closed or
+        // withdrawn, less the pending reduce-funds still held. Spec `128`
+        // §4.3.
+        const heldEntry =
+          !this.futures && long && findDeal?.deal.currentBalances
+            ? +findDeal.deal.currentBalances.base -
+              add -
+              pendingReduceFunds.base
+            : undefined
         const resolvedBo = resolveBaseOrderQty({
           boFromOrder,
           filledQty,
@@ -21599,18 +21637,25 @@ function createDCABotHelper<
           // bundles are subtracted once below and `deal.size` is already gross
           // of them (spec `026`), and a PENDING reduce-funds is still in the
           // position.
-          grossEntry: grossEntryVolume(dealSize, reduceFundsBase),
-          // Spot long only: there `deal.size` is the quote spent divided by
-          // the average (`updateUsage`), while `currentBalances.base` is
-          // booked fill by fill. `-add` is everything already closed or
-          // withdrawn, less the pending reduce-funds still held. Spec `128`
-          // §4.3.
-          heldEntry:
-            !this.futures && long && findDeal?.deal.currentBalances
-              ? +findDeal.deal.currentBalances.base -
-                add -
-                pendingReduceFunds.base
-              : undefined,
+          //
+          // Spec `263`: except on a spot long that has executed reduce-funds
+          // sells. Each one moves the quote ledger `deal.size` is derived from
+          // by its sale price, not by the coins it sold, so `|size| +
+          // reduceFunds` under-states the entry — by 20-34% on live deals — and
+          // a close sized from it leaves coins behind. The base ledger is
+          // booked by coin; read the entry from it there (non-zero only, so a
+          // lost ledger keeps the old reading). Only when the base-order row
+          // is missing: with the row present the `position` branch already
+          // caps by the ledger (spec `128`), and stays one-way.
+          grossEntry:
+            boFromOrder <= 0 &&
+            reduceFundsBase > 0 &&
+            heldEntry !== undefined &&
+            Number.isFinite(heldEntry) &&
+            +(findDeal?.deal.currentBalances.base ?? 0) > 0
+              ? heldEntry
+              : grossEntryVolume(dealSize, reduceFundsBase),
+          heldEntry,
           floor: (n) => this.math.round(n, precision, !this.futures),
         })
         let boQty = resolvedBo.qty
