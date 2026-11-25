@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.15] - 2026-11-25
+
+### Fixed
+
+- Futures take-profits refused as reduce-only now check the venue position on every exchange, not only where the refusal had the default error label
+
 ## [1.133.14] - 2026-11-25
 
 ### Changed
