@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.17] - 2026-11-25
+
+### Fixed
+
+- A venue lockout relayed by the exchange balancer is no longer reported as "Not enough balance" or routed into the insufficient-funds backoff; it is handled as a lockout.
+
 ## [1.133.16] - 2026-11-25
 
 ### Fixed
