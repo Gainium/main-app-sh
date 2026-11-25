@@ -1,4 +1,8 @@
 import {
+  HeldOutOfBandOrder,
+  sameHeldOrders,
+} from './outOfBandRetry'
+import {
   FundingTrade,
   HEDGE_FUNDING_ACTIONS,
   hedgeShortSellFits,
@@ -27786,6 +27790,25 @@ function createDCABotHelper<
      * rested (DCA and Combo bots alike). Add/reduce-funds orders are not: an
      * entry the user asked for is theirs to send again. Spec 247.
      */
+    /**
+     * Orders held out of the venue's price band (spec 258) go on the deal as
+     * `heldOrders`, so the chart can show them where they will rest once the
+     * price is near. Spec 264.
+     */
+    protected override publishHeldOutOfBand(
+      dealId: string,
+      held: HeldOutOfBandOrder[],
+    ): void {
+      const findDeal = this.getDeal(dealId)
+      if (!findDeal || findDeal.deal.status === DCADealStatusEnum.closed) {
+        return
+      }
+      if (sameHeldOrders(findDeal.deal.heldOrders, held)) {
+        return
+      }
+      this.saveDeal(findDeal, { heldOrders: held })
+    }
+
     protected override replacesVenueCancel(order: Order): boolean {
       return (
         order.typeOrder === TypeOrderEnum.dealRegular &&

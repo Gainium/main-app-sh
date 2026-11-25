@@ -128,7 +128,10 @@ import {
   marketClosedRetryDelay,
 } from './marketClosedRetry'
 import {
+  HeldOutOfBandOrder,
+  VenuePriceBand,
   bandFractionFromReason,
+  holdOutsideKnownBand,
   isAheadOfMarket,
   isWithinBand,
 } from './outOfBandRetry'
@@ -2432,7 +2435,10 @@ class MainBot<T extends IMainBot> {
    * Orders refused for sitting too far ahead of the price, by level, with the
    * band the venue named. Spec 250.
    */
-  protected outOfBandOrders?: Map<string, { order: Order; band: number }>
+  protected outOfBandOrders?: Map<
+    string,
+    { order: Order; band: number; since: number }
+  >
   protected outOfBandFlushing = false
 
   /**
@@ -2449,27 +2455,112 @@ class MainBot<T extends IMainBot> {
     if (!band) {
       return
     }
+    // Remember the venue's band for the pair, so the next attempt at any
+    // order outside it (a reload rebuilding the grid) is held here instead of
+    // being refused again.
+    if (this.data?.exchange) {
+      VenuePriceBand.record(this.data.exchange, order.symbol, band).catch(
+        () => undefined,
+      )
+    }
     const market = await this.getLatestPrice(order.symbol)
+    this.holdOutOfBand(order, band, market)
+  }
+
+  /**
+   * Keep `order` by level until a tick brings it within `band` of the price.
+   * Returns whether it was held (it must be ahead of the market).
+   */
+  protected holdOutOfBand(order: Order, band: number, market: number): boolean {
     const price = Number(order.origPrice) || Number(order.price)
     if (!isAheadOfMarket(order.side, price, market)) {
-      return
+      return false
     }
     const held = (this.outOfBandOrders ??= new Map())
     const key = marketClosedLevelKey(order)
-    if (!held.has(key)) {
+    const prev = held.get(key)
+    if (!prev) {
       this.handleLog(
-        `Order ${order.clientOrderId} (${order.typeOrder}) ${order.side} ${price} refused, more than ${Math.round(band * 100)}% from ${order.symbol} at ${market}. It will be placed when the price is within range`,
+        `Order ${order.clientOrderId} (${order.typeOrder}) ${order.side} ${price} is more than ${Math.round(band * 100)}% from ${order.symbol} at ${market}, which the exchange refuses. It will be placed when the price is within range`,
       )
     }
     held.delete(key)
-    held.set(key, { order, band })
+    held.set(key, { order, band, since: prev?.since ?? Date.now() })
     if (held.size > 1000) {
       const oldest = held.keys().next().value
       if (oldest !== undefined) {
         held.delete(oldest)
       }
     }
+    if (!prev) {
+      this.markHeldOutOfBandDirty(order.dealId)
+    }
+    return true
   }
+
+  protected markHeldOutOfBandDirty(dealId?: string | null) {
+    if (!dealId) {
+      return
+    }
+    ;(this.heldOutOfBandDirty ??= new Set()).add(dealId)
+    this.scheduleHeldOutOfBandPublish(this.botId)
+  }
+
+  /** The orders held out of the price band for one deal, for the chart. */
+  protected heldOutOfBandForDeal(dealId: string): HeldOutOfBandOrder[] {
+    const out: HeldOutOfBandOrder[] = []
+    for (const { order, band, since } of this.outOfBandOrders?.values() ?? []) {
+      if (order.dealId !== dealId) {
+        continue
+      }
+      out.push({
+        side: order.side,
+        price: Number(order.origPrice) || Number(order.price),
+        qty: Number(order.origQty),
+        typeOrder: order.typeOrder,
+        minigridId: order.minigridId ?? null,
+        dcaLevel: order.dcaLevel ?? null,
+        band,
+        since,
+      })
+    }
+    return out.sort((a, b) => b.price - a.price)
+  }
+
+  /** Deals whose held set changed since the last publish. */
+  protected heldOutOfBandDirty?: Set<string>
+
+  /** One publish per burst of holds/releases (a grid rebuild holds many). */
+  @RunWithDelay(
+    (botId: string) => `publishHeldOutOfBand-${botId}`,
+    2000,
+  )
+  scheduleHeldOutOfBandPublish(_botId: string) {
+    this.flushHeldOutOfBandPublish()
+  }
+
+  protected flushHeldOutOfBandPublish() {
+    const dirty = [...(this.heldOutOfBandDirty ?? [])]
+    this.heldOutOfBandDirty?.clear()
+    for (const dealId of dirty) {
+      try {
+        this.publishHeldOutOfBand(dealId, this.heldOutOfBandForDeal(dealId))
+      } catch (e) {
+        this.handleWarn(
+          `Cannot publish held orders of deal ${dealId}: ${(e as Error)?.message ?? e}`,
+        )
+      }
+    }
+  }
+
+  /**
+   * Store a deal's held orders where the dashboard reads them
+   * (`deal.heldOrders`). Engines with deals override it.
+   */
+  protected publishHeldOutOfBand(
+    _dealId: string,
+    _held: HeldOutOfBandOrder[],
+  ): void {}
 
   /**
    * On a price for `symbol`, place every held order the price has come within
@@ -2489,6 +2580,7 @@ class MainBot<T extends IMainBot> {
       if (isWithinBand(at, price, band)) {
         held.delete(key)
         due.push(order)
+        this.markHeldOutOfBandDirty(order.dealId)
       }
     }
     if (!due.length) {
@@ -10458,6 +10550,38 @@ class MainBot<T extends IMainBot> {
             }
           }
         }
+        // Spec 264. The venue's price band for this pair is already known
+        // (learned from its own refusal, spec 258) and this order is still
+        // outside it: hold it by level and do not ask the venue, which would
+        // only refuse it again. A bot reload rebuilds every level that is not
+        // resting, and used to re-send all of them on each one.
+        let outOfBandShortCircuit = false
+        if (
+          !request &&
+          `${requestData.type}`.toUpperCase() === 'LIMIT' &&
+          this.data?.exchange &&
+          this.replacesVenueCancel(order)
+        ) {
+          const band = await VenuePriceBand.get(
+            this.data.exchange,
+            order.symbol,
+          )
+          if (band) {
+            const market = await this.getLatestPrice(order.symbol)
+            const at = Number(order.origPrice) || Number(order.price)
+            if (
+              holdOutsideKnownBand(order.side, at, market, band) &&
+              this.holdOutOfBand(order, band, market)
+            ) {
+              outOfBandShortCircuit = true
+              request = {
+                status: StatusEnum.notok,
+                reason: `Held: ${order.side} ${at} is more than ${Math.round(band * 100)}% from the price ${market}, which ${this.data.exchange} refuses`,
+                data: null,
+              }
+            }
+          }
+        }
         // Hard exchange-auth short-circuit. The #326/#362 cooldown was wired
         // into `checkAssets()` and `getActiveOrders()` — both PER-TICK calls —
         // but order submission is a PER-ORDER loop, so a dead key was still
@@ -10804,6 +10928,7 @@ class MainBot<T extends IMainBot> {
           // `origPrice` keeps the take-profit price, which is what
           // `isOrderExistInDeal` matches a resting take profit on.
           if (
+            !outOfBandShortCircuit &&
             repricesOnPriceBand(order) &&
             isPriceBandRefusal(
               request.reason,
@@ -11162,6 +11287,7 @@ class MainBot<T extends IMainBot> {
             !authShortCircuit &&
             !riskTierShortCircuit &&
             !gridReduceOnlyShortCircuit &&
+            !outOfBandShortCircuit &&
             (isAmbiguousOrderFailure(request.reason) ||
               isPlacementReadBackMiss(request.reason))
           ) {
@@ -11197,6 +11323,7 @@ class MainBot<T extends IMainBot> {
           const servedLocally =
             notEnoughBalanceShortCircuit ||
             heldFundsShortCircuit ||
+            outOfBandShortCircuit ||
             complianceShortCircuit ||
             authShortCircuit ||
             riskTierShortCircuit ||
@@ -11311,7 +11438,8 @@ class MainBot<T extends IMainBot> {
           if (
             !authShortCircuit &&
             !riskTierShortCircuit &&
-            !gridReduceOnlyShortCircuit
+            !gridReduceOnlyShortCircuit &&
+            !outOfBandShortCircuit
           ) {
             this.handleOrderErrors(
               request.reason,

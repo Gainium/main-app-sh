@@ -1920,6 +1920,21 @@ export interface DCADealsSchema extends SchemaI {
    */
   missedLevels?: { level: number; price: number; qty: number }[]
   /**
+   * Spec 264: orders the venue refuses for sitting too far from the price
+   * (its band, spec 258), held by the engine until the price comes within
+   * range. Shown on the chart as where they will rest. Absent or empty = none.
+   */
+  heldOrders?: {
+    side: string
+    price: number
+    qty: number
+    typeOrder: string
+    minigridId?: string | null
+    dcaLevel?: number | null
+    band: number
+    since: number
+  }[]
+  /**
    * Spec 242 §4.5/§6.5: a split order in progress on this deal — the base
    * order (`entry`) or a take-profit / stop-loss close (`tp` / `sl`). Lets a
    * restarted bot resume it and lets the invariant sentinel see a stalled one.

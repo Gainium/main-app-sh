@@ -1,3 +1,5 @@
+import RedisClient from '../db/redis'
+
 /**
  * Orders a venue refused because they sit too far from the current price.
  *
@@ -56,4 +58,99 @@ export function isWithinBand(
     return false
   }
   return Math.abs(price - market) / market <= band * OUT_OF_BAND_MARGIN
+}
+
+/**
+ * The band a venue enforces on a pair, as learned from its own refusal, kept in
+ * Redis so it outlives the worker. A bot reload rebuilds every grid level that
+ * is not resting; without this the rebuild re-sent each held order to the venue
+ * and was refused again (one deal: 410 refused sells in two weeks, a burst on
+ * every reload). With the band known, an order still outside it is held without
+ * asking the venue. Fail-open: a Redis error means "band unknown", and the
+ * order goes to the venue, which is the behaviour before this existed.
+ */
+const BAND_TTL_S = 30 * 24 * 60 * 60
+const BAND_CACHE_MS = 60_000
+const bandCache = new Map<string, { band: number | null; at: number }>()
+const bandKey = (exchange: string, symbol: string) =>
+  `outOfBandBand:${exchange}:${symbol}`
+
+export const VenuePriceBand = {
+  async record(exchange: string, symbol: string, band: number): Promise<void> {
+    const key = bandKey(exchange, symbol)
+    bandCache.set(key, { band, at: Date.now() })
+    try {
+      const redis = await RedisClient.getInstance()
+      await redis.set(key, `${band}`, BAND_TTL_S)
+    } catch {
+      // Fail-open: the in-process copy still spares this worker.
+    }
+  },
+
+  async get(exchange: string, symbol: string): Promise<number | null> {
+    const key = bandKey(exchange, symbol)
+    const cached = bandCache.get(key)
+    if (cached && Date.now() - cached.at < BAND_CACHE_MS) {
+      return cached.band
+    }
+    let band: number | null = null
+    try {
+      const redis = await RedisClient.getInstance()
+      const v = Number(await redis.get(key))
+      band = v > 0 && v < 1 ? v : null
+    } catch {
+      band = cached?.band ?? null
+    }
+    bandCache.set(key, { band, at: Date.now() })
+    return band
+  },
+
+  /** Tests only. */
+  resetCache() {
+    bandCache.clear()
+  },
+}
+
+/**
+ * Should an order be held instead of sent, given the band known for its pair?
+ * Held when it is ahead of the market and outside the band (with the margin
+ * {@link isWithinBand} applies), i.e. exactly when the tick check would not yet
+ * place it.
+ */
+export function holdOutsideKnownBand(
+  side: string,
+  price: number,
+  market: number,
+  band: number | null,
+): boolean {
+  if (!band) {
+    return false
+  }
+  return (
+    isAheadOfMarket(side, price, market) && !isWithinBand(price, market, band)
+  )
+}
+
+/** An order held out of the price band, as shown on the deal. */
+export type HeldOutOfBandOrder = {
+  side: string
+  price: number
+  qty: number
+  typeOrder: string
+  minigridId?: string | null
+  dcaLevel?: number | null
+  band: number
+  since: number
+}
+
+/** Same held set (ignoring `since`)? Spares a deal write per rebuild. */
+export function sameHeldOrders(
+  a: HeldOutOfBandOrder[] | null | undefined,
+  b: HeldOutOfBandOrder[],
+): boolean {
+  const k = (o: HeldOutOfBandOrder) =>
+    `${o.side}|${o.price}|${o.qty}|${o.typeOrder}|${o.minigridId ?? ''}|${o.dcaLevel ?? ''}`
+  const x = (a ?? []).map(k).sort().join(',')
+  const y = b.map(k).sort().join(',')
+  return x === y
 }

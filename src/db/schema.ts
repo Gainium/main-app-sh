@@ -2473,6 +2473,23 @@ const dcaDealSchema: Schema<DCADealsSchema> = new Schema({
       displacedPrice: Number,
     },
   ],
+  // Spec 264: orders held out of the venue's price band (see core/types.ts).
+  heldOrders: {
+    type: [
+      {
+        _id: false,
+        side: String,
+        price: Number,
+        qty: Number,
+        typeOrder: String,
+        minigridId: String,
+        dcaLevel: Number,
+        band: Number,
+        since: Number,
+      },
+    ],
+    default: undefined,
+  },
   // Spec 233: ladder levels the engine will not place (see core/types.ts).
   missedLevels: {
     type: [{ _id: false, level: Number, price: Number, qty: Number }],
@@ -2689,6 +2706,23 @@ const comboDealSchema: Schema<ComboDealsSchema> = new Schema({
     comboActiveMinigrids: String,
     useActiveMinigrids: Boolean,
     dcaByMarket: Boolean,
+  },
+  // Spec 264: orders held out of the venue's price band (see core/types.ts).
+  heldOrders: {
+    type: [
+      {
+        _id: false,
+        side: String,
+        price: Number,
+        qty: Number,
+        typeOrder: String,
+        minigridId: String,
+        dcaLevel: Number,
+        band: Number,
+        since: Number,
+      },
+    ],
+    default: undefined,
   },
   gridBreakpoints: [
     {

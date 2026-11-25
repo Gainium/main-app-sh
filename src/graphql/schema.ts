@@ -4898,6 +4898,8 @@ export const BotSchema = /* GraphQL */ `
     orders: [botOrder]
     assets: botAssets
     dcaBot: [dcaDealBot]
+    "Spec 264: orders the exchange refuses this far from the price, placed once it is near."
+    heldOrders: [dealHeldOrder]
     gridBreakpoints: [gridBreakpoint]
     "Spec 233: ladder levels the bot skipped and will not place by itself."
     missedLevels: [dcaMissedLevel]
@@ -5012,6 +5014,8 @@ export const BotSchema = /* GraphQL */ `
     orders: [botOrder]
     assets: botAssets
     dcaBot: [dcaDealBot]
+    "Spec 264: orders the exchange refuses this far from the price, placed once it is near."
+    heldOrders: [dealHeldOrder]
     gridBreakpoints: [gridBreakpoint]
     strategy: StrategyEnum
     exchange: String
@@ -5044,6 +5048,16 @@ export const BotSchema = /* GraphQL */ `
   type gridBreakpoint {
     price: Float
     displacedPrice: Float
+  }
+  type dealHeldOrder {
+    side: String
+    price: Float
+    qty: Float
+    typeOrder: String
+    minigridId: String
+    dcaLevel: Int
+    band: Float
+    since: Float
   }
   type dcaMissedLevel {
     level: Int

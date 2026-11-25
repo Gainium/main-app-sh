@@ -83,10 +83,13 @@ describe('orders held out of the price band (spec 250)', () => {
           handed.push(o)
           return true
         },
+        scheduleHeldOutOfBandPublish() {},
       }
       const proto = MainBot.prototype as any
       for (const m of [
         'noteOutOfBandRefusal',
+        'holdOutOfBand',
+        'markHeldOutOfBandDirty',
         'checkOutOfBandOrders',
         'flushOutOfBand',
         'replaceVenueCanceledBatch',
