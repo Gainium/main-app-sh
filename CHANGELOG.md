@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.133.13] - 2026-11-25
+
+### Fixed
+
+- A combo close waits for the deal's own grid exits left unsettled by the close sweep (or takes their executed base off the close), so it no longer sells base an exit already sold
+
 ## [1.133.12] - 2026-11-25
 
 ### Fixed
