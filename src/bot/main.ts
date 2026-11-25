@@ -30,6 +30,7 @@ import type {
   BaseReturn,
   PriceMessage,
   BybitHost,
+  AccountFill,
 } from '../../types'
 import {
   PositionSide,
@@ -147,6 +148,12 @@ import {
   unconfirmedOpenSnapshotIds,
 } from './orderSnapshotMerge'
 import { venueAnswerRegressesRow } from './venueAnswerRegression'
+import {
+  fillsAnswerIsPartialCancel,
+  fillsRefusalIsPermanent,
+  settleFromVenueFills,
+  writeOffFillPages,
+} from './venueFillsWriteOff'
 import { isSpentStatus, siblingClientOrderIds } from './clientOrderIdReissue'
 import QtyStepGuard, {
   decimalsToStep,
@@ -6932,6 +6939,76 @@ class MainBot<T extends IMainBot> {
     }
   }
   /**
+   * Set the status an order the venue will no longer describe is written off
+   * with, after asking the venue's own fill history first. Spec 270.
+   *
+   * Kraken Futures forgets an order once it leaves the events page, so a sell
+   * that filled while the user stream was down is answered "not found" and
+   * was written off as CANCELED with nothing executed: the units it sold
+   * stayed in the deal and its proceeds were never booked. The account fills
+   * carry our client order id, so they say exactly what executed. Read back
+   * until the page reaches the order's placement, at most
+   * {@link writeOffFillPages} pages.
+   *
+   * Mutates `order` (status, executed size, quote) and returns true when the
+   * write-off may go ahead. Returns false — keep the row, change nothing —
+   * when the fills could not be read for a reason that may pass; the next
+   * reconcile asks again. Other venues are written off exactly as before.
+   */
+  protected async settleWriteOffFromVenueFills(order: Order): Promise<boolean> {
+    if (this.data?.exchange !== ExchangeEnum.krakenUsdm || !this.exchange) {
+      order.status = writeOffStatus(order)
+      return true
+    }
+    const placedAt = Math.min(
+      ...[order.transactTime, order.updateTime].filter(
+        (t): t is number => !!t && t > 0,
+      ),
+      Number.MAX_SAFE_INTEGER,
+    )
+    const fills: AccountFill[] = []
+    let before: number | undefined
+    for (let page = 0; page < writeOffFillPages; page++) {
+      const res = await this.exchange.getAccountFills(before)
+      if (res.status !== StatusEnum.ok) {
+        if (fillsRefusalIsPermanent(res.reason)) {
+          this.handleWarn(
+            `Order ${order.clientOrderId}: fill history refused (${res.reason}) — writing it off without it`,
+          )
+          break
+        }
+        this.handleWarn(
+          `Order ${order.clientOrderId}: fill history unreadable (${res.reason}) — keeping it for the next check instead of writing it off`,
+        )
+        return false
+      }
+      const pageFills = res.data ?? []
+      if (!pageFills.length) break
+      fills.push(...pageFills)
+      const oldest = Math.min(...pageFills.map((f) => +f.timestamp || 0))
+      if (!(oldest > 0) || oldest <= placedAt || oldest === before) break
+      before = oldest
+    }
+    const settled = settleFromVenueFills(order, fills)
+    if (!settled) {
+      order.status = writeOffStatus(order)
+      return true
+    }
+    this.handleLog(
+      `Order ${order.clientOrderId} is gone from ${this.data.exchange} but its fill history shows ${settled.executedQty} of ${order.origQty} executed — ${settled.status}, not written off as unfilled`,
+    )
+    order.status = settled.status
+    order.executedQty = `${settled.executedQty}`
+    if (settled.quote > 0) {
+      order.cummulativeQuoteQty = `${settled.quote}`
+    }
+    if (settled.lastFillAt > 0) {
+      order.updateTime = settled.lastFillAt
+    }
+    return true
+  }
+
+  /**
    * Update order information previously return as 'unknown order' error <br />
    *
    * Get order by id from exchange using {@link MainBot#exchange}<br />
@@ -7040,7 +7117,7 @@ class MainBot<T extends IMainBot> {
         const get = this.getOrderFromMap(id)
         let find = get && get.status === 'NEW' ? get : undefined
         if (find && this.orders) {
-          find.status = writeOffStatus(find)
+          if (!(await this.settleWriteOffFromVenueFills(find))) return null
           this.handleLog(
             `Order not found after ${lookups} lookup(s), order ${id} status set to ${find.status}`,
           )
@@ -7053,7 +7130,7 @@ class MainBot<T extends IMainBot> {
           find = (await this.ordersDb.readData({ clientOrderId: id })).data
             ?.result
           if (find) {
-            find.status = writeOffStatus(find)
+            if (!(await this.settleWriteOffFromVenueFills(find))) return null
             this.handleLog(
               `Order found in DB in handle unknow order ${id} set to ${find.status}`,
             )
@@ -7185,6 +7262,19 @@ class MainBot<T extends IMainBot> {
             )
             return find
           }
+        }
+        if (
+          find &&
+          this.data.exchange === ExchangeEnum.krakenUsdm &&
+          fillsAnswerIsPartialCancel(request.data, find.origQty)
+        ) {
+          // Answered from the account fills alone (the order aged out of
+          // Kraken's events page): it is gone from the venue having executed
+          // less than its size, so it was cancelled part-filled. Spec 270 §3.3.
+          this.handleLog(
+            `Order ${origId} venue fills show ${request.data.executedQty} of ${find.origQty} executed — part-filled cancel`,
+          )
+          request.data.status = 'CANCELED'
         }
         if (find && find.status !== request.data.status) {
           // The venue's REST read can lag its own user stream: a grid exit the
