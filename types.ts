@@ -2946,6 +2946,9 @@ export type PositionInBot = {
 export interface BotSchema extends MainBot<BotSettings> {
   /** Grid bots have no dcaBot/comboBot-style `flags` field today (spec 014 §3). */
   flags?: string[]
+  /** Ids of the out-of-band profit corrections already added to `profit`
+   * (grid `applyProfitCorrection`, core spec 284); a repeat is a no-op. */
+  profitCorrections?: string[]
   /** Per-asset fee ledger (spec 014 §2.1) — one entry per asset a fee was ever
    *  observed to be paid in, gated behind `BotFlags.feeByAsset`. */
   feeByAsset?: { asset: string; total: number; totalUsd: number }[]

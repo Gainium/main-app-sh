@@ -75,3 +75,85 @@ export const addProfitCorrection = <P extends BotProfit>(
   pureBase: (profit.pureBase ?? 0) + delta.pureBase,
   pureQuote: (profit.pureQuote ?? 0) + delta.pureQuote,
 })
+
+/**
+ * A fill a running GRID bot never booked, carried by its profit correction
+ * (core spec 284). The worker folds it into the counters a booking moves:
+ * `transactionsCount`, the futures `position`, `feePaid`, and the hourly
+ * account profit at `updateTime`.
+ */
+export type GridCorrectionFill = {
+  clientOrderId: string
+  side: 'BUY' | 'SELL'
+  qty: number
+  price: number
+  /** The venue's fill time (ms). */
+  updateTime: number
+  /** The fee the booking would have recorded, per `createTransaction`. */
+  fee: { base: number; quote: number }
+}
+
+/**
+ * Why a GRID correction cannot be applied, or null when it can. A grid bot
+ * writes `pureBase`/`pureQuote` as 0 on every booking, so a non-zero delta
+ * there would be wiped by the next one; it is refused instead.
+ */
+export const invalidGridProfitCorrection = (
+  delta: unknown,
+  correctionId: unknown,
+  fill?: unknown,
+): string | null => {
+  const invalid = invalidProfitCorrection(delta, correctionId)
+  if (invalid) {
+    return invalid
+  }
+  const d = delta as ProfitCorrectionDelta
+  if (d.pureBase !== 0 || d.pureQuote !== 0) {
+    return 'a grid bot keeps no pureBase/pureQuote; both must be 0'
+  }
+  if (fill === undefined) {
+    return null
+  }
+  const f = fill as Partial<GridCorrectionFill>
+  if (!f || typeof f !== 'object') {
+    return 'fill must be an object'
+  }
+  if (typeof f.clientOrderId !== 'string' || !f.clientOrderId) {
+    return 'fill.clientOrderId must be a non-empty string'
+  }
+  if (f.side !== 'BUY' && f.side !== 'SELL') {
+    return 'fill.side must be BUY or SELL'
+  }
+  for (const k of ['qty', 'price', 'updateTime'] as const) {
+    const v = f[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      return `fill.${k} must be a positive number`
+    }
+  }
+  for (const k of ['base', 'quote'] as const) {
+    const v = f.fee?.[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+      return `fill.fee.${k} must be a non-negative number`
+    }
+  }
+  return null
+}
+
+/**
+ * The grid bot profit with `delta` added. A grid booking moves `freeTotal` /
+ * `freeTotalUsd` by the same amount as `total` / `totalUsd` whenever it has no
+ * separate free match (every futures booking), so the correction does too.
+ */
+export const addGridProfitCorrection = <
+  P extends BotProfit & { freeTotal?: number; freeTotalUsd?: number },
+>(
+  profit: P,
+  delta: ProfitCorrectionDelta,
+): P => ({
+  ...profit,
+  total: (profit.total ?? 0) + delta.total,
+  totalUsd: (profit.totalUsd ?? 0) + delta.totalUsd,
+  // `||`, as `createTransaction` falls back: a 0 freeTotal reads total.
+  freeTotal: (profit.freeTotal || profit.total || 0) + delta.total,
+  freeTotalUsd: (profit.freeTotalUsd || profit.totalUsd || 0) + delta.totalUsd,
+})

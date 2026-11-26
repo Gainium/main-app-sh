@@ -54,6 +54,12 @@ import { botDb, transactionDb } from '../db/dbInit'
 import { DealStats } from './worker/statsService'
 import { botMonitor, CalculateGridLiveStatsParams } from './botMonitor'
 import { priceMovedSince } from './priceStreamGap'
+import {
+  addGridProfitCorrection,
+  invalidGridProfitCorrection,
+  type GridCorrectionFill,
+  type ProfitCorrectionDelta,
+} from './profitCorrection'
 
 /**
  * Price in initial grids
@@ -6130,6 +6136,116 @@ function createBotHelper<
           )
           this.avgPrice()
         }
+      }
+    }
+
+    /**
+     * Add an out-of-band correction to this GRID bot's realized profit (core
+     * spec 284), the grid counterpart of the DCA helper's method of the same
+     * name (spec 239). Internal-API method, reached by bot id through
+     * `callBotFunctionFromMeta` on the grid bot host.
+     *
+     * The worker owns `data.profit` while it runs: `createTransaction` adds to
+     * the in-memory copy and `$set`s it whole, so a database write alone is
+     * overwritten at the next booking. This adds the delta to the in-memory
+     * copy and persists it with the id in `profitCorrections`, so a repeat of
+     * the same id is a no-op.
+     *
+     * `fill`, when given, is a fill the bot never booked. Its counters move
+     * the way a booking moves them (`transactionsCount`, the futures position
+     * through `calculatePosition` and its once-per-fill guard, `feePaid` on a
+     * `feeByAsset` bot, the hourly account profit). It places, cancels and
+     * re-prices nothing: the grid's orders are not touched.
+     *
+     * Returns `applied`, `duplicate`, or `refused: <why>`. Never throws.
+     */
+    public async applyProfitCorrection(
+      delta: ProfitCorrectionDelta,
+      reason: string,
+      correctionId: string,
+      fill?: GridCorrectionFill,
+    ): Promise<string> {
+      let added = false
+      try {
+        const invalid = invalidGridProfitCorrection(delta, correctionId, fill)
+        if (invalid) {
+          return `refused: ${invalid}`
+        }
+        if (this.botType !== BotType.grid) {
+          return 'refused: only a grid bot is served here'
+        }
+        if (!this.loadingComplete || !this.data?.profit) {
+          // loadData() would replace `data` from the snapshot after us.
+          return 'refused: bot data not loaded yet'
+        }
+        const applied: string[] = this.data.profitCorrections ?? []
+        if (applied.includes(correctionId)) {
+          this.handleLog(`Profit correction ${correctionId} already applied`)
+          return 'duplicate'
+        }
+        const before = this.data.profit
+        const profitCorrections = [...applied, correctionId]
+        this.data.profit = addGridProfitCorrection(this.data.profit, delta)
+        this.data.profitCorrections = profitCorrections
+        const update: Partial<ClearBotSchema> = {
+          profit: { ...this.data.profit },
+          profitCorrections,
+        }
+        if (fill) {
+          const count = this.data.transactionsCount ?? { buy: 0, sell: 0 }
+          this.data.transactionsCount = {
+            buy: (count.buy ?? 0) + (fill.side === 'BUY' ? 1 : 0),
+            sell: (count.sell ?? 0) + (fill.side === 'SELL' ? 1 : 0),
+          }
+          update.transactionsCount = this.data.transactionsCount
+          if (this.data.flags?.includes(BotFlags.feeByAsset)) {
+            this.data.feePaid = {
+              base: (this.data.feePaid?.base ?? 0) + fill.fee.base,
+              quote: (this.data.feePaid?.quote ?? 0) + fill.fee.quote,
+            }
+            update.feePaid = this.data.feePaid
+          }
+        }
+        added = true
+        this.handleLog(
+          `Profit correction ${correctionId} (${reason}): total ${before.total} -> ${this.data.profit.total}, totalUsd ${before.totalUsd} -> ${this.data.profit.totalUsd}${fill ? `, fill ${fill.clientOrderId} ${fill.side} ${fill.qty} @ ${fill.price}` : ''}`,
+        )
+        if (fill) {
+          // Persists the position itself; refused if this fill is already in.
+          await this.calculatePosition({
+            clientOrderId: fill.clientOrderId,
+            side: fill.side,
+            symbol: this.data.settings.pair,
+            price: `${fill.price}`,
+            origQty: `${fill.qty}`,
+            executedQty: `${fill.qty}`,
+            updateTime: fill.updateTime,
+          } as Order)
+        }
+        await this.updateData(update)
+        // updateData schedules the Redis snapshot with a delay; a restart
+        // inside that window would restore the uncorrected profit.
+        await this.setToRedis('botData', this.data)
+        if (fill) {
+          this.saveProfitToDb(delta.totalUsd, fill.updateTime, {
+            asset: this.data.symbol?.quoteAsset ?? '',
+            amount: delta.total,
+          })
+        }
+        this.emit('bot settings update', {
+          profit: this.data.profit,
+          ...(update.transactionsCount
+            ? { transactionsCount: update.transactionsCount }
+            : {}),
+          ...(update.feePaid ? { feePaid: update.feePaid } : {}),
+        })
+        return 'applied'
+      } catch (e) {
+        const why = (e as Error)?.message ?? `${e}`
+        this.handleWarn(`Profit correction ${correctionId} failed: ${why}`)
+        // Once added in memory the correction stays: the next booking
+        // persists it, and a repeat must still be a no-op.
+        return added ? `applied, persist failed: ${why}` : `refused: ${why}`
       }
     }
     @IdMute(mutex, (botId: string) => `${botId}updateLiveStats`)

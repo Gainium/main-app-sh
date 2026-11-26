@@ -783,6 +783,8 @@ const botSettings = new Schema({
 const botSchema: Schema<BotSchema> = new Schema({
   ...botCommon,
   flags: [String],
+  // Out-of-band profit corrections already added to `profit` (spec 284).
+  profitCorrections: [String],
   feeByAsset: profitByAssets,
   feePaid: {
     base: Number,
