@@ -2076,3 +2076,131 @@ describe('combo add funds: restart in the middle of the book rebuild (spec 047 �
     expect(rebuilt.slice(before)).to.include(later.minigridId)
   })
 })
+
+describe('spec 279: a Kraken Futures partial liquidation booked through the combo funds path', () => {
+  before(async function () {
+    this.timeout(240000)
+    Combo = createRequire(__filename)('../comboHelper').default()
+    MainBot = createRequire(__filename)('../main').default
+  })
+
+  const LIQ_AT = 1_800_000_000_000
+  const venueFills = [
+    {
+      fillId: 'f1',
+      orderId: 'liq-1',
+      clientOrderId: '',
+      symbol: SYMBOL,
+      side: 'SELL',
+      price: '90.1',
+      quantity: '1.5',
+      timestamp: LIQ_AT,
+      fillType: 'partialLiquidation',
+    },
+    {
+      fillId: 'f2',
+      orderId: 'liq-2',
+      clientOrderId: '',
+      symbol: SYMBOL,
+      side: 'SELL',
+      price: '89.9',
+      quantity: '1.5',
+      timestamp: LIQ_AT + 10_000,
+      fillType: 'partialLiquidation',
+    },
+  ]
+
+  const liquidated = async (booked: any[] = []) => {
+    const bot = await setup({ filled: 3, price: 90, futures: true } as any)
+    const deal = bot.theDeal
+    deal.deal.createTime = 1_700_000_000_000
+    bot.data.exchange = ExchangeEnum.krakenUsdm
+    bot.getOpenDeals = () => (deal.deal.status === 'open' ? [deal] : [])
+    bot.exchange = {
+      getAccountFills: async (before?: number) => ({
+        status: 'OK',
+        data: before ? [] : venueFills,
+      }),
+    }
+    bot.ordersDb = {
+      readData: async () => ({ status: 'OK', data: { result: booked } }),
+    }
+    bot.saved = [] as any[]
+    bot.saveOrderToDb = async (o: any) => bot.saved.push({ ...o })
+    bot.setOrder = (o: any) => bot.orders.set(o.clientOrderId, o)
+    // The real routing, not the harness recorder.
+    bot.processFilledOrder = Combo.prototype.processFilledOrder
+    bot.processedFilled = new Map()
+    bot.lastFilledOrderMap = new Map()
+    bot.said = [] as string[]
+    bot.handleErrors = (m: string) => bot.said.push(m)
+    return bot
+  }
+
+  it('the venue keeps 5.359 of 8.359: 3 booked at 90 as a reduce row, loss at the deal average, every exit line ×(1 − 3/8.359), the deal stays open', async () => {
+    const bot = await liquidated()
+    const deal = bot.theDeal.deal
+    const before = sells(bot)
+    const avg = deal.avgPrice
+    const ok = await bot.bookPartialLiquidation(BOT_ID, SYMBOL, 5.359, [])
+    expect(ok).to.equal(true)
+    expect(deal.status).to.equal('open')
+    expect(bot.closes).to.deep.equal([])
+    const [row] = bot.saved
+    expect(row.clientOrderId.startsWith('LIQ-')).to.equal(true)
+    expect(row.typeOrder).to.equal(TypeOrderEnum.dealTP)
+    expect(+row.executedQty).to.equal(3)
+    expect(+row.price).to.be.closeTo(90, 1e-9)
+    expect(deal.reduceFunds).to.deep.equal([{ price: 90, qty: 3 }])
+    expect(deal.fundsScale.map((f: any) => f.id)).to.deep.equal([
+      row.clientOrderId,
+    ])
+    // Realised at the liquidation price against the deal's average: a loss.
+    expect(deal.profit.total).to.be.closeTo(3 * (90 - avg), 1e-9)
+    expect(deal.profit.total).to.be.below(0)
+    const k = 1 - 3 / 8.359
+    sells(bot).forEach((lines: number[], i: number) =>
+      lines.forEach((q: number, j: number) =>
+        expect(q / before[i][j]).to.be.closeTo(k, 0.003),
+      ),
+    )
+    const exits = sum(sells(bot).flat())
+    expect(exits).to.be.at.most(5.359 + 1e-9)
+    expect(bot.rebuilds).to.have.length(1)
+    // A futures average is a position fold: the reduction leaves it as it was.
+    const after = await bot.avgPrice(DEAL_ID, DEAL_ID)
+    expect(after.real).to.be.closeTo(avg, 1e-6)
+    expect(bot.said.some((m: string) => m.includes('was liquidated'))).to.equal(
+      true,
+    )
+  })
+
+  it('the rebuilt ledger counts the row: Σ FILLED rows of the deal hold 5.359', async () => {
+    const bot = await liquidated()
+    await bot.bookPartialLiquidation(BOT_ID, SYMBOL, 5.359, [])
+    const base = bot
+      .getOrdersByStatusAndDealId({ status: 'FILLED', dealId: DEAL_ID })
+      .reduce(
+        (a: number, o: any) => a + +o.executedQty * (o.side === 'BUY' ? 1 : -1),
+        0,
+      )
+    expect(base).to.be.closeTo(5.359, 1e-9)
+    // ...and so does the real rebuild a bot start runs on every open deal.
+    bot.ordersInBetweenUpdates = new Set()
+    await bot.updateDealBalances(bot.theDeal)
+    expect(bot.theDeal.deal.currentBalances.base).to.be.closeTo(5.359, 1e-9)
+  })
+
+  it('reported again (stream and sweep, or after a restart): nothing more is booked', async () => {
+    const first = await liquidated()
+    await first.bookPartialLiquidation(BOT_ID, SYMBOL, 5.359, [])
+    const row = first.saved[0]
+    const bot = await liquidated([
+      { clientOrderId: row.clientOrderId, orderId: row.orderId },
+    ])
+    const ok = await bot.bookPartialLiquidation(BOT_ID, SYMBOL, 5.359, [])
+    expect(ok).to.equal(false)
+    expect(bot.saved).to.have.length(0)
+    expect(bot.theDeal.deal.reduceFunds ?? []).to.have.length(0)
+  })
+})

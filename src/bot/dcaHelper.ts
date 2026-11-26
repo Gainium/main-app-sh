@@ -300,6 +300,7 @@ import {
 } from './dca/orderExecution'
 import { dealSettingsDiffFromBot } from './dca/dealSettingsDiff'
 import type { OrderExecution } from '../../types'
+import type { AccountFill } from '../../types'
 import type { BookTicker } from '../exchange'
 import { shouldDiscardUnbuiltBaseEntry } from './dca/unbuiltBaseEntry'
 import {
@@ -423,6 +424,14 @@ import {
   venueCloseEvidence,
   type VenueCloseEvidence,
 } from './dca/venueCloseEvidence'
+import {
+  LIQUIDATION_ROW_PREFIX,
+  bookedLiquidationChunkIds,
+  liquidationChunksFromFills,
+  partialLiquidationRowId,
+  planPartialLiquidation,
+  type LiquidationChunk,
+} from './dca/partialLiquidation'
 import {
   dealPositionGoneMessage,
   reconcileDealAgainstVenue,
@@ -733,6 +742,11 @@ const POSITION_REPROBE_MAX_MISSES = 3
  */
 const LIQUIDATION_SETTLE_DELAY_MS = 15 * 1000
 const LIQUIDATION_SETTLE_MAX_CHECKS = 8
+/** Spec `279`: pages of account fills read back for a liquidation. */
+const LIQUIDATION_FILL_PAGES = 5
+/** Spec `279` §3: first sweep after a start, then every 30 minutes. */
+const LIQUIDATION_SWEEP_FIRST_MS = 90 * 1000
+const LIQUIDATION_SWEEP_EVERY_MS = 30 * 60 * 1000
 
 /** A reconcile settle that posts its own user-facing event. */
 type SelfDescribingSettle = (() => Promise<unknown>) & {
@@ -1097,6 +1111,10 @@ function createDCABotHelper<
         timer?: ReturnType<typeof setTimeout>
       }
     > = new Map()
+    /** Spec `279`: chunks of a liquidation in progress, by symbol. */
+    liquidationChunks?: Map<string, Map<string, LiquidationChunk>>
+    /** Spec `279` §3: the partial-liquidation fills sweep. */
+    liquidationSweepTimers?: ReturnType<typeof setTimeout>[]
     /**
      * Spec `226`. Close-path remainder sweeps still being reported on, by
      * client order id. See `trackRemainderSweep`.
@@ -27387,7 +27405,11 @@ function createDCABotHelper<
       return
     }
 
-    async processLiquidationOrder(order: Order): Promise<void> {
+    async processLiquidationOrder(
+      order: Order,
+      _updateTime?: number,
+      venueQty?: number,
+    ): Promise<void> {
       if (!this.futures) {
         return
       }
@@ -27397,6 +27419,9 @@ function createDCABotHelper<
         this.clearLiquidationSettle(symbol)
         return
       }
+      // Spec `279`: remember what each chunk executed, in case the venue
+      // stops before the position is gone and the chunks have to be booked.
+      this.recordLiquidationChunk(order, venueQty)
       this.handleLog(
         `Liquidation order ${order.clientOrderId}/${order.orderId} for ${symbol}`,
       )
@@ -27422,7 +27447,23 @@ function createDCABotHelper<
           // A new chunk restarts the count; a re-check carries it on.
           const checks = prev?.order === order ? prev.checks + 1 : 0
           if (checks >= LIQUIDATION_SETTLE_MAX_CHECKS) {
+            const chunks = [
+              ...(this.liquidationChunkMap().get(symbol)?.values() ?? []),
+            ]
             this.clearLiquidationSettle(symbol)
+            // Spec `279`: the venue stopped with part of the position still
+            // open. Book what it liquidated on the deals that held it.
+            if (
+              this.partialLiquidationBookable() &&
+              (await this.bookPartialLiquidation(
+                this.botId,
+                symbol,
+                held,
+                chunks,
+              ))
+            ) {
+              return
+            }
             this.handleErrors(
               `Part of the ${symbol} position was liquidated by ${this.data?.exchange}; ${held} is still open on the exchange, so the deal stays open on what is left`,
               'processLiquidationOrder',
@@ -27568,6 +27609,329 @@ function createDCABotHelper<
         clearTimeout(entry.timer)
       }
       this.liquidationSettleMap().delete(symbol)
+      this.liquidationChunkMap().delete(symbol)
+    }
+
+    /**
+     * Spec `279` §3: arm the partial-liquidation fills sweep with the
+     * reconciliation heartbeat, which every DCA and Combo start path arms
+     * (core `start()` and the app's override alike).
+     */
+    override startConsumerHeartbeat() {
+      super.startConsumerHeartbeat()
+      this.stopLiquidationSweep()
+      if (!this.partialLiquidationBookable()) {
+        return
+      }
+      const run = () => {
+        void this.sweepPartialLiquidations().catch((e: unknown) =>
+          this.handleWarn(
+            `Partial liquidation sweep failed: ${(e as Error)?.message ?? e}`,
+          ),
+        )
+      }
+      this.liquidationSweepTimers = [
+        setTimeout(run, LIQUIDATION_SWEEP_FIRST_MS),
+        setInterval(run, LIQUIDATION_SWEEP_EVERY_MS),
+      ]
+      this.liquidationSweepTimers.forEach((t) => t.unref?.())
+    }
+
+    override stopConsumerHeartbeat() {
+      super.stopConsumerHeartbeat()
+      this.stopLiquidationSweep()
+    }
+
+    protected stopLiquidationSweep() {
+      for (const t of this.liquidationSweepTimers ?? []) {
+        clearTimeout(t)
+        clearInterval(t)
+      }
+      this.liquidationSweepTimers = undefined
+    }
+
+    /**
+     * Spec `279` §3. Book a partial liquidation the user stream never
+     * delivered (a reconnect gap, a worker restart mid-liquidation): for each
+     * symbol with an open deal, if the venue's account fills show liquidation
+     * chunks no row has booked and the venue still holds a position, book
+     * them. Idempotent: booked chunks are skipped by their venue order id, and
+     * the booking is capped at what the books hold above the venue.
+     */
+    async sweepPartialLiquidations() {
+      if (
+        !this.partialLiquidationBookable() ||
+        !this.loadingComplete ||
+        !this.shouldProceed()
+      ) {
+        return
+      }
+      const symbols = new Set(
+        this.getOpenDeals(false).map((d) => d.deal.symbol.symbol),
+      )
+      for (const symbol of symbols) {
+        if (this.liquidationSettleMap().has(symbol)) {
+          // The stream is settling this one; it books when it is done.
+          continue
+        }
+        const held = await this.venueHoldsPosition(symbol)
+        if (held === undefined) {
+          // Flat (spec `277` closes those) or unreadable: nothing to do now.
+          continue
+        }
+        await this.bookPartialLiquidation(this.botId, symbol, held, [])
+      }
+    }
+
+    /** Spec `279`: liquidation chunks seen on the stream, by symbol. */
+    protected liquidationChunkMap() {
+      if (!this.liquidationChunks) {
+        this.liquidationChunks = new Map()
+      }
+      return this.liquidationChunks
+    }
+
+    /**
+     * Spec `279`. Keep the quantity a liquidation chunk executed. The
+     * persisted liquidation row deliberately records `executedQty: '0'`
+     * (spec `040` §4.3), so the stream report is the only place the
+     * engine sees it.
+     */
+    protected recordLiquidationChunk(order: Order, venueQty?: number) {
+      const qty = +(venueQty ?? 0)
+      const price = +order.price
+      const id = `${order.orderId || order.clientOrderId || ''}`
+      if (!(qty > 0) || !(price > 0) || !id) {
+        return
+      }
+      const map = this.liquidationChunkMap()
+      const chunks = map.get(order.symbol) ?? new Map<string, LiquidationChunk>()
+      chunks.set(id, {
+        orderId: id,
+        qty,
+        price,
+        time: +order.updateTime || Date.now(),
+      })
+      map.set(order.symbol, chunks)
+    }
+
+    /**
+     * Spec `279`: a partial liquidation is booked on Kraken Futures one-way
+     * accounts only. Elsewhere the deal is closed or left as before.
+     */
+    protected partialLiquidationBookable(): boolean {
+      return (
+        this.futures &&
+        !this.hedge &&
+        !this.coinm &&
+        this.data?.exchange === ExchangeEnum.krakenUsdm
+      )
+    }
+
+    /** The base a deal's books hold, positive in either direction. */
+    protected liquidationDealPosition(d: FullDeal<ExcludeDoc<Deal>>): number {
+      const current = +(d.deal.currentBalances?.base ?? NaN)
+      const held = this.isLong
+        ? current
+        : +(d.deal.initialBalances?.base ?? NaN) - current
+      // On an open DCA deal a partial take profit is carried in `tpHistory`
+      // only (spec `212`); the combo ledger already counts its row.
+      const partialTp = this.combo
+        ? 0
+        : (d.deal.tpHistory ?? []).reduce((a, h) => a + (+h.qty || 0), 0)
+      const position = held - partialTp
+      return Number.isFinite(position) && position > 0 ? position : 0
+    }
+
+    /**
+     * Spec `279`. The venue's account fills back to `sinceMs` (at most
+     * `LIQUIDATION_FILL_PAGES` pages), or `undefined` when they cannot be read.
+     */
+    protected async readLiquidationFills(
+      sinceMs: number,
+    ): Promise<AccountFill[] | undefined> {
+      if (!this.exchange?.getAccountFills) {
+        return undefined
+      }
+      const fills: AccountFill[] = []
+      let before: number | undefined
+      for (let page = 0; page < LIQUIDATION_FILL_PAGES; page++) {
+        const res = await Promise.resolve()
+          .then(() => this.exchange?.getAccountFills(before))
+          .catch(() => undefined)
+        if (res?.status !== StatusEnum.ok) {
+          return page === 0 ? undefined : fills
+        }
+        const pageFills = res.data ?? []
+        if (!pageFills.length) {
+          break
+        }
+        fills.push(...pageFills)
+        const oldest = Math.min(...pageFills.map((f) => +f.timestamp || 0))
+        if (!(oldest > 0) || oldest <= sinceMs || oldest === before) {
+          break
+        }
+        before = oldest
+      }
+      return fills
+    }
+
+    /**
+     * Spec `279`. The venue order ids of liquidation chunks this bot has
+     * already booked on `symbol`: from the rows in memory and, for deals that
+     * have since closed, from the orders collection.
+     */
+    protected async bookedLiquidationChunks(symbol: string): Promise<Set<string>> {
+      const inMemory = [...(this.orders?.values() ?? [])].filter(
+        (o) => o.symbol === symbol,
+      )
+      const ids = bookedLiquidationChunkIds(inMemory)
+      const read = await Promise.resolve()
+        .then(() =>
+          this.ordersDb.readData(
+            {
+              clientOrderId: { $regex: `^${LIQUIDATION_ROW_PREFIX}` },
+              botId: this.botId,
+              symbol,
+            } as any,
+            { clientOrderId: 1, orderId: 1 },
+            {},
+            true,
+          ),
+        )
+        .catch(() => undefined)
+      if (read?.status === StatusEnum.ok) {
+        for (const id of bookedLiquidationChunkIds(read.data.result ?? [])) {
+          ids.add(id)
+        }
+      }
+      return ids
+    }
+
+    /**
+     * Spec `279`. Book a partial liquidation the venue has finished on the
+     * open deals of `symbol`, newest deal first, and tell the user.
+     *
+     * Each deal's share is booked as a FILLED reduce-funds row (`LIQ-…`,
+     * `typeOrder: dealTP`, `reduceFundsId` = its client order id) through
+     * `processFilledOrder`, the path a filled reduce-funds order takes: the
+     * DCA `updateDeal` reduce branch, or the combo funds booking (spec
+     * `047`) which scales the minigrids and rebuilds the book. The row is
+     * persisted first, so `updateDealBalances` — which rebuilds a deal's
+     * balances from its order rows on every start — keeps counting it.
+     * A deal whose whole position went is closed as liquidated instead
+     * (spec `277`), at the venue's own fill prices.
+     *
+     * Capped by `planPartialLiquidation` at what the books hold above the
+     * venue's position, so nothing is booked twice and the books never end
+     * below the venue. Returns false when nothing was booked.
+     */
+    @IdMute(
+      mutex,
+      (botId: string, symbol: string) => `${botId}partialLiquidation${symbol}`,
+    )
+    async bookPartialLiquidation(
+      _botId: string,
+      symbol: string,
+      held: number,
+      streamChunks: LiquidationChunk[] = [],
+    ): Promise<boolean> {
+      const deals = this.getOpenDeals(false, symbol)
+      if (!deals.length) {
+        return false
+      }
+      const books = deals.reduce(
+        (a, d) => a + this.liquidationDealPosition(d),
+        0,
+      )
+      if (!(books > held)) {
+        // The books already hold no more than the venue: nothing a
+        // liquidation could still owe. Saves the fill read on every sweep.
+        return false
+      }
+      const closeSide = this.isLong ? OrderSideEnum.sell : OrderSideEnum.buy
+      const sinceMs = Math.min(...deals.map((d) => +d.deal.createTime || 0))
+      const fills = await this.readLiquidationFills(sinceMs)
+      const fromVenue = fills
+        ? liquidationChunksFromFills(fills, {
+            symbol,
+            closeSide,
+            sinceMs,
+          })
+        : []
+      // The venue's record is complete and priced per fill; a chunk the
+      // stream reported that the fills do not show yet is kept.
+      const venueIds = new Set(fromVenue.map((c) => c.orderId))
+      const chunks = [
+        ...fromVenue,
+        ...streamChunks.filter(
+          (c) => !venueIds.has(c.orderId) && !(c.time < sinceMs),
+        ),
+      ]
+      const booked = await this.bookedLiquidationChunks(symbol)
+      const fresh = chunks.filter((c) => !booked.has(c.orderId))
+      const ed = await this.getExchangeInfo(symbol)
+      const plan = planPartialLiquidation({
+        chunks: fresh,
+        deals: deals.map((d) => ({
+          dealId: `${d.deal._id}`,
+          createTime: +d.deal.createTime || 0,
+          position: this.liquidationDealPosition(d),
+        })),
+        held,
+        step: ed?.baseAsset.step ?? 0,
+      })
+      if (plan.kind === 'skip') {
+        this.handleLog(`Partial liquidation of ${symbol} not booked: ${plan.reason}`)
+        return false
+      }
+      this.handleLog(
+        `Partial liquidation of ${symbol}: ${plan.qty} at ${plan.price} from ${plan.chunkIds.length} venue order(s), ${held} still held — booking on ${plan.allocations.map((a) => `${a.dealId} ${a.qty}${a.closes ? ' (all)' : ''}`).join(', ')}`,
+      )
+      for (const a of plan.allocations) {
+        if (a.closes) {
+          await this.settleExternallyClosedDeal(a.dealId)
+          continue
+        }
+        const clientOrderId = partialLiquidationRowId(a.dealId, plan.chunkIds)
+        const row: Order = {
+          symbol,
+          orderId: plan.chunkIds.join(','),
+          clientOrderId,
+          reduceFundsId: clientOrderId,
+          dealId: a.dealId,
+          updateTime: plan.time,
+          transactTime: plan.time,
+          price: `${plan.price}`,
+          origPrice: `${plan.price}`,
+          origQty: `${a.qty}`,
+          executedQty: `${a.qty}`,
+          cummulativeQuoteQty: `${a.qty * plan.price}`,
+          status: 'FILLED',
+          type: 'MARKET',
+          side: closeSide,
+          botId: this.botId,
+          exchange: this.data?.exchange ?? ExchangeEnum.krakenUsdm,
+          exchangeUUID: this.data?.exchangeUUID ?? '',
+          typeOrder: TypeOrderEnum.dealTP,
+          userId: this.userId,
+          baseAsset: ed?.baseAsset.name ?? '',
+          quoteAsset: ed?.quoteAsset.name ?? '',
+          reduceOnly: true,
+          positionSide: PositionSide.BOTH,
+        } as Order
+        await this.saveOrderToDb(row)
+        this.setOrder(row)
+        await this.processFilledOrder(row)
+      }
+      this.handleErrors(
+        `Part of the ${symbol} position was liquidated by ${this.data?.exchange}: ${plan.qty} at ${plan.price}. The deal${plan.allocations.length > 1 ? 's were' : ' was'} reduced by that amount and the loss booked; ${held} is still open on the exchange and the bot keeps managing it`,
+        'processLiquidationOrder',
+        '',
+        false,
+        true,
+      )
+      return true
     }
 
     /**

@@ -298,7 +298,11 @@ type AccountCBFunctions = {
     expired: boolean,
   ) => Promise<void>
   onNew?: (order: Order, updateTime: number) => Promise<void>
-  onLiquidation?: (order: Order, updateTime: number) => Promise<void>
+  onLiquidation?: (
+    order: Order,
+    updateTime: number,
+    venueQty?: number,
+  ) => Promise<void>
 }
 
 const { findUSDRate, sleep, id } = utils
@@ -8451,7 +8455,11 @@ class MainBot<T extends IMainBot> {
       expired: boolean,
     ) => Promise<void>,
     onNew?: (order: Order, updateTime: number) => Promise<void>,
-    onLiquidation?: (order: Order, updateTime: number) => Promise<void>,
+    onLiquidation?: (
+    order: Order,
+    updateTime: number,
+    venueQty?: number,
+  ) => Promise<void>,
   ): Promise<void> {
     if (!this.lockProcessQueueMethod && this.orderQueue.length === 0) {
       this.lockProcessQueueMethod = true
@@ -8514,7 +8522,9 @@ class MainBot<T extends IMainBot> {
             ),
           )
           this.lockProcessQueueMethod = false
-          onLiquidation(order, msg.eventTime)
+          // The row keeps `executedQty: '0'` (spec `040` §4.3); what the chunk
+          // executed is passed alongside for spec `279`.
+          onLiquidation(order, msg.eventTime, base)
           return next()
         }
         if (
