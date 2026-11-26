@@ -46,6 +46,11 @@ export type BackoffState = {
   interval: number
   /** How many rejections have been recorded in this run. */
   attempt: number
+  /**
+   * When the first rejection of this run was recorded, ms epoch. Absent on
+   * states written before it existed; such a run counts from its next record.
+   */
+  firstAt?: number
 }
 
 export type BackoffCheck =
@@ -71,11 +76,13 @@ const parse = (raw: string | null | undefined | void): BackoffState | null => {
     if (!Number.isFinite(until) || !Number.isFinite(interval) || !p.reason) {
       return null
     }
+    const firstAt = Number(p.firstAt)
     return {
       until,
       interval,
       reason: p.reason,
       attempt: Number.isFinite(attempt) ? attempt : 1,
+      ...(Number.isFinite(firstAt) ? { firstAt } : {}),
     }
   } catch {
     return null
@@ -127,18 +134,21 @@ export class RetryBackoff {
     const key = this.key(parts)
     let interval = this.opts.minMs
     let attempt = 1
+    let firstAt = now
     try {
       const redis = await RedisClient.getInstance()
       const prev = parse(await redis.get(key))
       if (prev) {
         interval = Math.min(prev.interval * this.factor, this.opts.maxMs)
         attempt = prev.attempt + 1
+        firstAt = prev.firstAt ?? now
       }
       const state: BackoffState = {
         until: now + interval,
         reason,
         interval,
         attempt,
+        firstAt,
       }
       // TTL outlives the window so the next rejection can still see the
       // previous interval and keep escalating instead of resetting to min.
@@ -152,7 +162,7 @@ export class RetryBackoff {
       logger.error(
         `${logPrefix} record ${key} error: ${(e as Error)?.message ?? e}`,
       )
-      return { until: now + interval, reason, interval, attempt }
+      return { until: now + interval, reason, interval, attempt, firstAt }
     }
   }
 

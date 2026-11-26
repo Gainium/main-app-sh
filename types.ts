@@ -1756,6 +1756,18 @@ export enum DCADealFlags {
   externalTp = 'externalTp',
   externalSl = 'externalSl',
   feeByAsset = 'feeByAsset',
+  /**
+   * Spec `277`. The deal's position was closed on the exchange without the bot
+   * (a liquidation, a hand close, another tool); the close was booked from the
+   * venue's own fills when they covered it.
+   */
+  closedExternally = 'closedExternally',
+  /**
+   * Spec `277`. Set with `closedExternally` when the venue's fills could not be
+   * read or did not cover the deal: the deal's booked profit is NOT its real
+   * result, which is unknown.
+   */
+  profitUnknown = 'profitUnknown',
 }
 
 export enum DCACloseTriggerEnum {
@@ -4723,6 +4735,14 @@ export type AccountFill = {
   quantity: string
   timestamp: number
   fillType?: string
+  /**
+   * Who placed the order, where the venue says (Bitget `enterPointSource`:
+   * `API`, `WEB`, `IOS`, `ANDROID`, `SYS`). Bitget fills carry no client order
+   * id, so this is what tells a bot's API order from a hand trade there.
+   */
+  source?: string
+  /** Fee paid on the fill in the quote coin, positive, where the venue says. */
+  fee?: string
 }
 
 export type FundingRateResponse = {

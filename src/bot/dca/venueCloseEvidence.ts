@@ -18,15 +18,31 @@ import type { AccountFill } from '../../../types'
  * the close from them. Pure, so the selection rule is pinned by its spec.
  */
 
-/** A forced close: liquidation in any spelling, or a bankruptcy/ADL unwind. */
+/**
+ * A forced close: liquidation in any spelling, or a bankruptcy/ADL unwind.
+ * Bitget's `tradeSide` spells a liquidation `burst_close_long`,
+ * `burst_sell_single` and the like, and an auto-deleverage `…_adl_close_…`.
+ */
 export const isForcedCloseFillType = (fillType?: string): boolean => {
   const t = `${fillType ?? ''}`.toLowerCase()
   return (
     t.includes('liquidation') ||
     t === 'unwindbankrupt' ||
-    t === 'unwindcounterparty'
+    t === 'unwindcounterparty' ||
+    t.startsWith('burst_') ||
+    t.includes('_adl_')
   )
 }
+
+/**
+ * A fill the bot did not place: no client order id (the venue's own orders and
+ * hand trades carry none; every order the bot sends carries one), unless the
+ * venue says it came in over the API — Bitget fills carry no client order id
+ * at all, and there `source: 'API'` is a bot's order (or another tool's, which
+ * the bot cannot price either).
+ */
+const notPlacedByBot = (f: AccountFill): boolean =>
+  !`${f.clientOrderId ?? ''}` && `${f.source ?? ''}`.toUpperCase() !== 'API'
 
 export type VenueCloseEvidence = {
   /** Volume-weighted price of the closing fills. */
@@ -36,6 +52,11 @@ export type VenueCloseEvidence = {
   /** True when any of them was a venue liquidation / forced close. */
   liquidation: boolean
   fills: number
+  /**
+   * Quote fee of the closing fills, for the part of them counted, when the
+   * venue reported one on every fill used; `undefined` otherwise.
+   */
+  fee?: number
 }
 
 /**
@@ -75,7 +96,7 @@ export const venueCloseEvidence = (
         f.symbol === symbol &&
         f.side === closeSide &&
         +f.timestamp >= sinceMs &&
-        (isForcedCloseFillType(f.fillType) || !`${f.clientOrderId ?? ''}`) &&
+        (isForcedCloseFillType(f.fillType) || notPlacedByBot(f)) &&
         +f.quantity > 0 &&
         +f.price > 0,
     )
@@ -84,6 +105,7 @@ export const venueCloseEvidence = (
   let cost = 0
   let liquidation = false
   let used = 0
+  let fee: number | undefined = 0
   for (const f of candidates) {
     if (qty >= dealQty * 0.999) {
       break
@@ -92,10 +114,21 @@ export const venueCloseEvidence = (
     qty += take
     cost += take * +f.price
     liquidation = liquidation || isForcedCloseFillType(f.fillType)
+    const fillFee = f.fee === undefined ? NaN : +f.fee
+    fee =
+      fee !== undefined && Number.isFinite(fillFee)
+        ? fee + (Math.abs(fillFee) * take) / +f.quantity
+        : undefined
     used++
   }
   if (qty < dealQty * 0.99) {
     return undefined
   }
-  return { price: cost / qty, qty, liquidation, fills: used }
+  return {
+    price: cost / qty,
+    qty,
+    liquidation,
+    fills: used,
+    ...(fee !== undefined ? { fee } : {}),
+  }
 }

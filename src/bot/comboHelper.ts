@@ -4085,6 +4085,10 @@ function createComboBotHelper<
             this.handleLog(
               `Close deal ${dealId}: no venue position left for its grid orders`,
             )
+            // Spec `277` §1.2: the close order this sends is refused for the
+            // same reason, and that refusal must settle the deal as closed
+            // outside the bot, not as a completed base minigrid.
+            this.markPositionClosedOutside(dealId)
             await this.closeDealById(
               this.botId,
               dealId,

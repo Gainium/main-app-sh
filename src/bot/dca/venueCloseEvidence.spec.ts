@@ -12,6 +12,10 @@ process.env.NODE_ENV = 'testing'
  * open until the user stopped the bot, which booked it at roughly zero. The
  * real close is 0.26 at about 879.35, a loss of about 30.9 before fees.
  *
+ * Spec `277` (see `specs/277.futures-deal-closed-outside-the-bot.md`) adds the
+ * Bitget fill shape, the "position already closed" close, the one-hour gate on
+ * the resting take-profit path and the "profit unknown" close.
+ *
  * Run: npx mocha -r ts-node/register src/bot/dca/venueCloseEvidence.spec.ts
  */
 import { describe, it, before, after } from 'mocha'
@@ -21,6 +25,7 @@ import RedisClient from '../../db/redis'
 import { isForcedCloseFillType, venueCloseEvidence } from './venueCloseEvidence'
 import {
   DCACloseTriggerEnum,
+  DCADealFlags,
   DCADealStatusEnum,
   ExchangeEnum,
   OrderSideEnum,
@@ -152,16 +157,56 @@ describe('pricing a deal closed by the venue from its account fills', () => {
     expect(e!.price).to.be.closeTo((0.02 * 882.35 + 0.03 * 883) / 0.05, 1e-6)
   })
 
+  it('spec 277 §1.5: Bitget — API fills are the bot’s, a hand close and a liquidation are not', () => {
+    // Bitget fills carry no client order id; `source` says who placed them.
+    const bitget = (over: Partial<AccountFill>): AccountFill => ({
+      ...LIQUIDATION[0],
+      fillType: 'close',
+      quantity: '0.26',
+      price: '870',
+      ...over,
+    })
+    expect(evidenceFor([bitget({ source: 'API' })]), 'a bot order').to.equal(
+      undefined,
+    )
+    const hand = evidenceFor([bitget({ source: 'WEB', fee: '0.11' })])
+    expect(hand!.liquidation).to.equal(false)
+    expect(hand!.fee).to.be.closeTo(0.11, 1e-12)
+    const liq = evidenceFor([
+      bitget({ source: 'SYS', fillType: 'burst_close_short', fee: '0.2' }),
+    ])
+    expect(liq!.liquidation).to.equal(true)
+    // One fill without a fee: the fee of the close is not known.
+    const mixed = evidenceFor([
+      bitget({ source: 'WEB', quantity: '0.13', fee: '0.1' }),
+      bitget({ source: 'WEB', quantity: '0.13', fillId: 'x' }),
+    ])
+    expect(mixed!.fee).to.equal(undefined)
+  })
+
   it('forced-close fill types', () => {
     for (const t of [
       'liquidation',
       'PartialLiquidation',
       'unwindBankrupt',
       'unwindCounterparty',
+      'burst_close_long',
+      'burst_sell_single',
+      'dte_sys_adl_close_long',
     ]) {
       expect(isForcedCloseFillType(t), t).to.equal(true)
     }
-    for (const t of ['maker', 'taker', 'assignee', 'assignor', '', undefined]) {
+    for (const t of [
+      'maker',
+      'taker',
+      'assignee',
+      'assignor',
+      'close',
+      'close_long',
+      'sell_single',
+      '',
+      undefined,
+    ]) {
       expect(isForcedCloseFillType(t), `${t}`).to.equal(false)
     }
   })
@@ -219,26 +264,42 @@ const chunk = (i: number): Order =>
  * A short bot holding the deal. `venue.held` is what the position read answers
  * (`undefined` = the venue did not answer); `venue.fills` the account fills.
  */
-const buildBot = (venue: { held?: string; fills: AccountFill[] }) => {
+const buildBot = (venue: {
+  held?: string
+  fills: AccountFill[]
+  combo?: boolean
+}) => {
   const calls = {
     closeAll: [] as any[],
     closeById: [] as any[],
     closeDeal: [] as any[],
     events: [] as any[],
     errors: [] as string[],
+    saved: [] as any[],
   }
   let open = true
-  const deal = {
+  const deal: any = {
     deal: {
       _id: DEAL_ID,
       status: DCADealStatusEnum.open,
       symbol: { symbol: SYMBOL, baseAsset: 'ZEC', quoteAsset: 'USD' },
       createTime: DEAL_OPEN,
       size: DEAL_QTY,
+      flags: [DCADealFlags.newMultiTp],
     },
   }
   class TestBot extends Helper {
     calls = calls
+    combo = !!venue.combo
+    saveDeal(_d: any, update: any) {
+      calls.saved.push(update)
+    }
+    async getUserFee() {
+      return { maker: 0.0002, taker: 0.0005 }
+    }
+    async profitBase() {
+      return false
+    }
     // A field on the helper, so it has to be set here, not on the base.
     isLong = false
     exchange = {
@@ -366,9 +427,30 @@ describe('the engine', () => {
   })
 
   describe('a resting take profit refused because the position is gone', () => {
-    const refuse = async (fills: AccountFill[]) => {
+    const refuse = async (fills: AccountFill[], firstSeenAgoMs = 0) => {
       store.clear()
       const bot = buildBot({ held: '0', fills })
+      if (firstSeenAgoMs) {
+        // An episode whose first "no position" reading is that old.
+        await bot.checkRefusedRestingTpPosition(
+          bot.getDeal(DEAL_ID),
+          'wouldNotReducePosition',
+        )
+        for (const [k, v] of store) {
+          const st = JSON.parse(v)
+          if (st.firstAt) {
+            store.set(
+              k,
+              JSON.stringify({
+                ...st,
+                firstAt: st.firstAt - firstSeenAgoMs,
+                until: 0,
+              }),
+            )
+          }
+        }
+        bot.calls.events.length = 0
+      }
       const reconciled: any[] = []
       bot.reconcileDealPosition = async (...args: any[]) => {
         reconciled.push(args)
@@ -381,8 +463,16 @@ describe('the engine', () => {
       return { bot, reconciled }
     }
 
-    it('the reported case: with the venue fills it reconciles the deal closed, no "close manually" warning', async () => {
-      const { bot, reconciled } = await refuse(FILLS_NEWEST_FIRST)
+    it('spec 277 §1.3: the first "no position" reading holds the take profit and closes nothing, even with fills', async () => {
+      const { reconciled } = await refuse(FILLS_NEWEST_FIRST)
+      expect(reconciled).to.have.length(0)
+    })
+
+    it('the reported case: an hour after the first reading, with the venue fills, it reconciles the deal closed, no "close manually" warning', async () => {
+      const { bot, reconciled } = await refuse(
+        FILLS_NEWEST_FIRST,
+        61 * 60 * 1000,
+      )
       expect(reconciled).to.have.length(1)
       expect(reconciled[0][3]?.describesItself, 'its own settle').to.equal(true)
       expect(
@@ -392,38 +482,104 @@ describe('the engine', () => {
       ).to.have.length(0)
     })
 
-    it('without venue fills it keeps the spec 143 warning and leaves the deal open', async () => {
+    it('without venue fills the first reading keeps the spec 143 warning and leaves the deal open', async () => {
       const { bot, reconciled } = await refuse([])
       expect(reconciled).to.have.length(0)
       expect(bot.calls.events).to.have.length(1)
+      // Spec 277 §1.3: no longer asks the user to close it by hand.
       expect(bot.calls.events[0].description).to.contain(
-        'close this deal manually',
+        'closes the deal itself',
       )
     })
 
-    it('the settle books the deal closed at the venue fills, as a liquidation, and says so', async () => {
+    it('spec 277 §1.3: without venue fills, an hour after the first reading it reconciles too (the settle books "profit unknown")', async () => {
+      const { reconciled } = await refuse([], 61 * 60 * 1000)
+      expect(reconciled).to.have.length(1)
+      expect(reconciled[0][3]?.describesItself).to.equal(true)
+    })
+
+    it('spec 277 §1.3: under an hour after the first reading, nothing is reconciled', async () => {
+      const { reconciled } = await refuse([], 30 * 60 * 1000)
+      expect(reconciled).to.have.length(0)
+    })
+
+    it('spec 277 §1.4: the settle CLOSES the deal at the venue fills, as a liquidation, and says so', async () => {
       const bot = buildBot({ held: '0', fills: FILLS_NEWEST_FIRST })
       const settle = bot.settleFromVenueFills(DEAL_ID)
       expect(settle.describesItself).to.equal(true)
       await settle()
-      expect(bot.calls.closeById).to.have.length(1)
-      const args = bot.calls.closeById[0]
+      // `closeDealById(leave, …)` cancelled the orders and returned with the
+      // deal still open; the close goes to `closeDeal` at the fills' price.
+      expect(bot.calls.closeById).to.have.length(0)
+      expect(bot.calls.closeDeal).to.have.length(1)
+      const args = bot.calls.closeDeal[0]
       expect(args[1]).to.equal(DEAL_ID)
-      expect(args[8], 'priced from the fills').to.be.closeTo(
+      expect(args[2]).to.equal(undefined)
+      expect(args[3], 'priced from the fills').to.be.closeTo(
         EXPECTED_PRICE,
         1e-6,
       )
-      expect(args[10]).to.equal(DCACloseTriggerEnum.liquidation)
+      // Kraken fills carry no fee: the close leg is the taker estimate.
+      expect(args[4]).to.be.closeTo(EXPECTED_PRICE * DEAL_QTY * 0.0005, 1e-9)
+      const saved = bot.calls.saved.find((u: any) => u.flags)
+      expect(saved.flags).to.include(DCADealFlags.closedExternally)
+      expect(saved.flags).to.not.include(DCADealFlags.profitUnknown)
+      expect(saved.flags).to.include(DCADealFlags.newMultiTp)
+      expect(saved.closeTrigger).to.equal(DCACloseTriggerEnum.liquidation)
       expect(bot.calls.events).to.have.length(1)
       expect(bot.calls.events[0].description).to.contain('liquidated')
-      expect(bot.calls.closeDeal).to.have.length(0)
     })
 
-    it('fills that aged out between the readings fall back to the reconciler’s close', async () => {
+    it('spec 277 §1.1: no fills that cover the deal: closed as "profit unknown", flagged, and the user is told', async () => {
       const bot = buildBot({ held: '0', fills: [] })
       await bot.settleFromVenueFills(DEAL_ID)()
       expect(bot.calls.closeById).to.have.length(0)
       expect(bot.calls.closeDeal).to.have.length(1)
+      expect(bot.calls.closeDeal[0].slice(1)).to.deep.equal([DEAL_ID])
+      const saved = bot.calls.saved.find((u: any) => u.flags)
+      expect(saved.flags).to.include.members([
+        DCADealFlags.closedExternally,
+        DCADealFlags.profitUnknown,
+      ])
+      expect(bot.calls.events).to.have.length(1)
+      expect(bot.calls.events[0].description).to.contain('profit is unknown')
+    })
+  })
+
+  describe('spec 277 §1.1/§1.2: a closing order refused because the position is already closed', () => {
+    it('a DCA deal is settled as an outside close, from the venue fills', async () => {
+      const bot = buildBot({ held: '0', fills: FILLS_NEWEST_FIRST })
+      await bot.closeDealWhosePositionIsGone(DEAL_ID, DCACloseTriggerEnum.tp)
+      expect(bot.calls.closeDeal).to.have.length(1)
+      expect(bot.calls.closeDeal[0][3]).to.be.closeTo(EXPECTED_PRICE, 1e-6)
+      expect(bot.calls.events[0].description).to.contain('liquidated')
+    })
+
+    it('a combo deal whose base minigrid completed closes exactly as before: no flag, no message', async () => {
+      const bot = buildBot({ held: '0', fills: [], combo: true })
+      await bot.closeDealWhosePositionIsGone(DEAL_ID, DCACloseTriggerEnum.base)
+      expect(bot.calls.closeDeal).to.have.length(1)
+      expect(bot.calls.closeDeal[0].slice(1)).to.deep.equal([DEAL_ID])
+      expect(bot.calls.saved.filter((u: any) => u.flags)).to.have.length(0)
+      expect(bot.calls.events).to.have.length(0)
+    })
+
+    it('the reported combo case: the venue said the deal is flat (spec 175) — "profit unknown" when no fills cover it', async () => {
+      const bot = buildBot({ held: '0', fills: [], combo: true })
+      bot.markPositionClosedOutside(DEAL_ID)
+      await bot.closeDealWhosePositionIsGone(DEAL_ID, DCACloseTriggerEnum.base)
+      expect(bot.calls.closeDeal).to.have.length(1)
+      const saved = bot.calls.saved.find((u: any) => u.flags)
+      expect(saved.flags).to.include(DCADealFlags.profitUnknown)
+      expect(bot.calls.events[0].description).to.contain('profit is unknown')
+    })
+
+    it('a spot deal closes exactly as before', async () => {
+      const bot = buildBot({ held: '0', fills: FILLS_NEWEST_FIRST })
+      Object.defineProperty(bot, 'futures', { get: () => false })
+      await bot.closeDealWhosePositionIsGone(DEAL_ID, DCACloseTriggerEnum.tp)
+      expect(bot.calls.closeDeal[0].slice(1)).to.deep.equal([DEAL_ID])
+      expect(bot.calls.events).to.have.length(0)
     })
   })
 })

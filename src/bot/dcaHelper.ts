@@ -429,6 +429,7 @@ import {
   reconcileSpotDealAgainstVenue,
   restingTpPositionGoneMessage,
   dealClosedFromVenueFillsMessage,
+  dealClosedOutsideProfitUnknownMessage,
   type PositionReconcileVerdict,
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
@@ -877,6 +878,14 @@ const restingTpPositionGoneBackoff = new RetryBackoff({
 })
 
 /**
+ * Spec `277` §1.3. How long the venue must have kept answering "no position"
+ * for a deal whose resting take-profit it refused — first such reading to this
+ * one — before the deal is closed as closed outside the bot. A position read
+ * that comes back empty once, mid-outage, must not close a live deal.
+ */
+export const restingTpPositionGoneCloseAfterMs = 60 * 60 * 1000
+
+/**
  * Exchange rejections that mean "this order's notional is under the venue
  * minimum". They route the order into the slippage-retry ladder, which on a
  * combo bot terminates in the `count === slippageRetry` branch of
@@ -1069,6 +1078,12 @@ function createDCABotHelper<
       string,
       { misses: number; timer?: ReturnType<typeof setTimeout> }
     > = new Map()
+    /**
+     * Spec `277`. Deals the venue confirmed hold no position (combo spec `175`
+     * probe), so their coming close is a close outside the bot. Lazily created
+     * by `positionClosedOutside()`.
+     */
+    positionsClosedOutside?: Set<string>
     /**
      * Venue liquidations still in progress, by symbol: the latest chunk and
      * how many times the venue has since answered that it still holds the
@@ -4180,6 +4195,13 @@ function createDCABotHelper<
       dealId: string,
       tpOrder?: Order,
       liquidationPrice?: number,
+      /**
+       * Spec `277`. Quote fee of the venue fills that closed the position, for
+       * a close priced from them (`liquidationPrice` is then their average).
+       * When given, the deal's own fees and this one are booked like any close;
+       * left out, the liquidation branch books as it always has.
+       */
+      externalCloseFee?: number,
     ) {
       const _id = this.startMethod('closeDeal')
       let stop = false
@@ -4912,20 +4934,28 @@ function createDCABotHelper<
               (findDeal.deal.currentBalances.quote -
                 findDeal.deal.initialBalances.quote) /
                 findDeal.deal.lastPrice
+          let commDeal: number | undefined
+          if (externalCloseFee !== undefined) {
+            commDeal =
+              (await this.getCommDeal(findDeal.deal)) +
+              (!profitBase ? externalCloseFee : externalCloseFee / price)
+            findDeal.deal.commission = commDeal
+          }
+          const net = total - (commDeal ?? 0)
           const rate = await this.getUsdRate(findDeal.deal.symbol.symbol)
           const totalUsd =
-            total * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate
+            net * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate
           findDeal.deal.profit = {
             ...findDeal.deal.profit,
             pureBase: (findDeal.deal.profit.pureBase ?? 0) + pureBase,
             pureQuote: (findDeal.deal.profit.pureQuote ?? 0) + pureQuote,
-            total: findDeal.deal.profit.total + total,
+            total: findDeal.deal.profit.total + net,
             totalUsd: findDeal.deal.profit.totalUsd + totalUsd,
           }
           this.data.profit = {
             freeTotal: 0,
             freeTotalUsd: 0,
-            total: this.data.profit.total + total,
+            total: this.data.profit.total + net,
             totalUsd: this.data.profit.totalUsd + totalUsd,
             pureBase: (this.data.profit.pureBase ?? 0) + pureBase,
             pureQuote: (this.data.profit.pureQuote ?? 0) + pureQuote,
@@ -4941,13 +4971,14 @@ function createDCABotHelper<
             status: findDeal.deal.status,
             lastPrice: findDeal.deal.lastPrice,
             currentBalances: findDeal.deal.currentBalances,
+            ...(commDeal !== undefined ? { commission: commDeal } : {}),
           })
           this.updateData({ profit: { ...this.data.profit } })
           this.emit('bot settings update', { profit: this.data.profit })
           stop = await this.processDealClose(
             this.botId,
             dealId,
-            { total, totalUsd },
+            { total: net, totalUsd },
             undefined,
             undefined,
             tpOrder,
@@ -9151,7 +9182,10 @@ function createDCABotHelper<
                         await closeBuy()
                       }
                       this.endMethod(_id)
-                      return await this.closeDeal(this.botId, dealId)
+                      return await this.closeDealWhosePositionIsGone(
+                        dealId,
+                        closeTrigger,
+                      )
                     } else {
                       this.handleOrderErrors(
                         sharedRefusal ?? result,
@@ -32132,15 +32166,16 @@ function createDCABotHelper<
         [this.botId, dealId],
         reason,
       )
-      // The venue's account fills can say what closed the position (its
-      // liquidation engine, or the user by hand) and at what price. With that
-      // record the deal is booked closed at the real price, through the same
-      // two-reading reconciliation a take-profit level uses, instead of being
-      // left open for the user to close by hand at a made-up figure.
-      const evidence = await this.venueCloseEvidenceFor(deal)
-      if (evidence) {
+      // Spec `277` §1.3. Once the venue has kept saying "no position" for an
+      // hour, the deal is closed as closed outside the bot, through the same
+      // two-reading reconciliation a take-profit level uses: booked at the
+      // price of the venue fills that closed it, or as "profit unknown" when
+      // there are none — instead of being left open for the user to close by
+      // hand at a made-up figure, with its bot unable to open a new deal.
+      const goneForMs = +new Date() - (state.firstAt ?? +new Date())
+      if (goneForMs >= restingTpPositionGoneCloseAfterMs) {
         this.handleLog(
-          `Deal ${dealId} TP refused (${reason}) and ${verdict.verdict} on ${this.data?.exchange}; venue fills show ${evidence.qty} closed at ${evidence.price}${evidence.liquidation ? ' by liquidation' : ''} — reconciling the deal closed`,
+          `Deal ${dealId} TP refused (${reason}) and ${verdict.verdict} on ${this.data?.exchange} since ${new Date(+new Date() - goneForMs).toISOString()} — reconciling the deal closed`,
         )
         await this.reconcileDealPosition(
           deal,
@@ -32181,57 +32216,130 @@ function createDCABotHelper<
      * message, which would not be true.
      */
     protected settleFromVenueFills(dealId: string): SelfDescribingSettle {
-      const settle = async () => {
-        const live = this.getDeal(dealId)
-        if (!live || live.deal.status !== DCADealStatusEnum.open) {
-          return
-        }
-        const evidence = await this.venueCloseEvidenceFor(live)
-        const symbol = live.deal.symbol.symbol
-        if (!evidence) {
-          // The fills aged out between the readings. Book it the way the
-          // reconciler always has rather than leave a deal with no position.
-          this.handleLog(
-            `Deal ${dealId}: venue fills no longer account for its close; closing with the profit already realised`,
-          )
-          await this.closeDeal(this.botId, dealId)
-          return
-        }
-        if (this.shouldProceed()) {
-          this.botEventDb.createData({
-            userId: this.userId,
-            botId: this.botId,
-            event: 'Deal',
-            botType: this.botType,
-            description: dealClosedFromVenueFillsMessage({
-              dealId,
-              symbol,
-              exchange: `${this.data?.exchange ?? ''}`,
-              evidence,
-            }),
-            paperContext: !!this.data?.paperContext,
-            deal: dealId,
-            symbol,
-            type: MessageTypeEnum.warning,
-          })
-        }
-        await this.closeDealById(
-          this.botId,
-          dealId,
-          CloseDCATypeEnum.leave,
-          true,
-          false,
-          false,
-          false,
-          '',
-          evidence.price,
-          false,
-          evidence.liquidation
-            ? DCACloseTriggerEnum.liquidation
-            : DCACloseTriggerEnum.manual,
-        )
-      }
+      const settle = () => this.settleExternallyClosedDeal(dealId)
       return Object.assign(settle, { describesItself: true as const })
+    }
+
+    /** Spec `277`: deals the venue has said hold no position (combo, spec `175`). */
+    protected positionClosedOutside() {
+      if (!this.positionsClosedOutside) {
+        this.positionsClosedOutside = new Set()
+      }
+      return this.positionsClosedOutside
+    }
+
+    /**
+     * Spec `277` §1.2. Record that the venue has confirmed `dealId` holds no
+     * position while the deal still records one, so the close that follows is
+     * settled as a close outside the bot rather than as a completed base
+     * minigrid.
+     */
+    markPositionClosedOutside(dealId: string) {
+      this.positionClosedOutside().add(dealId)
+    }
+
+    /**
+     * Spec `277` §1.1/§1.2. A closing order the venue refused because there is
+     * no position left to reduce. On futures that is a position closed outside
+     * the bot — except on a combo whose base minigrid completed (close trigger
+     * `base`, ec8642b), where the deal's own grid orders flattened it and its
+     * profit is already booked: that close, spot, and nothing-else are booked
+     * exactly as before.
+     */
+    protected async closeDealWhosePositionIsGone(
+      dealId: string,
+      closeTrigger?: DCACloseTriggerEnum,
+    ) {
+      const confirmed = this.positionClosedOutside().delete(dealId)
+      const outside =
+        this.futures &&
+        (!this.combo || closeTrigger !== DCACloseTriggerEnum.base || confirmed)
+      if (!outside) {
+        return await this.closeDeal(this.botId, dealId)
+      }
+      return await this.settleExternallyClosedDeal(dealId)
+    }
+
+    /**
+     * Spec `277`. Close a futures deal whose position was closed on the
+     * exchange without the bot — by its liquidation engine, by hand, by another
+     * tool — and tell the user. Booked at the price and fee of the venue fills
+     * that closed it when they cover the deal; otherwise closed flagged
+     * `profitUnknown`, with a message saying so — never at a made-up price.
+     * Places no order; `closeDeal` cancels what the deal still rests, as for
+     * any close.
+     */
+    protected async settleExternallyClosedDeal(dealId: string) {
+      const live = this.getDeal(dealId)
+      if (!live || live.deal.status !== DCADealStatusEnum.open) {
+        return
+      }
+      const evidence = await this.venueCloseEvidenceFor(live)
+      const symbol = live.deal.symbol.symbol
+      const exchange = `${this.data?.exchange ?? ''}`
+      const flags = [
+        ...new Set([
+          ...(live.deal.flags ?? []),
+          DCADealFlags.closedExternally,
+          ...(evidence ? [] : [DCADealFlags.profitUnknown]),
+        ]),
+      ]
+      live.deal.flags = flags
+      const closeTrigger = evidence
+        ? evidence.liquidation
+          ? DCACloseTriggerEnum.liquidation
+          : DCACloseTriggerEnum.manual
+        : undefined
+      if (closeTrigger) {
+        live.deal.closeTrigger = closeTrigger
+      }
+      this.saveDeal(live, { flags, ...(closeTrigger ? { closeTrigger } : {}) })
+      this.handleLog(
+        evidence
+          ? `Deal ${dealId}: position closed outside the bot; venue fills show ${evidence.qty} closed at ${evidence.price}${evidence.liquidation ? ' by liquidation' : ''} — closing the deal at that price`
+          : `Deal ${dealId}: position closed outside the bot and the venue fills do not account for it — closing the deal, profit unknown`,
+      )
+      if (this.shouldProceed()) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: evidence
+            ? dealClosedFromVenueFillsMessage({
+                dealId,
+                symbol,
+                exchange,
+                evidence,
+              })
+            : dealClosedOutsideProfitUnknownMessage({
+                dealId,
+                symbol,
+                exchange,
+              }),
+          paperContext: !!this.data?.paperContext,
+          deal: dealId,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
+      }
+      if (!evidence) {
+        return await this.closeDeal(this.botId, dealId)
+      }
+      // The venue's own fee when every closing fill carried one; else the
+      // taker rate on the close, the estimate any unreported fee gets.
+      const fee =
+        evidence.fee ??
+        evidence.qty *
+          evidence.price *
+          ((await this.getUserFee(symbol))?.taker ?? 0)
+      return await this.closeDeal(
+        this.botId,
+        dealId,
+        undefined,
+        evidence.price,
+        fee,
+      )
     }
 
     /**

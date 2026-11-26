@@ -201,10 +201,9 @@ export const dealPositionGoneMessage = ({
  * venue holds no position for it. Spec `143`.
  *
  * Not {@link dealPositionGoneMessage}: that one reports a deal the engine has
- * just CLOSED. This path deliberately leaves the deal open — it never reached
- * its take profit, and whether the position was closed by hand, liquidated or
- * moved is something only the user can see on the exchange — so it asks the
- * user to look instead of telling them it acted.
+ * just CLOSED. This path leaves the deal open on the first readings; spec
+ * `277` §1.3 closes it once the venue has said "no position" for an hour, so
+ * the message says that instead of asking the user to close it by hand.
  */
 export const restingTpPositionGoneMessage = ({
   dealId,
@@ -219,8 +218,9 @@ export const restingTpPositionGoneMessage = ({
 }): string =>
   `${exchange} refused the take-profit order for deal ${dealId} (${symbol}): "${reason}". ` +
   `${exchange} reports no open position for this deal, so the take profit cannot be placed. ` +
-  `The deal has been left open and the bot will only retry the take profit occasionally. ` +
-  `Check the position on the exchange - if it is gone, close this deal manually.`
+  `The deal has been left open for now and the bot will only retry the take profit occasionally. ` +
+  `If ${exchange} still reports no position for it an hour from now, the bot closes the deal itself, ` +
+  `at the price of the exchange's own fills that closed the position where the exchange reports them, otherwise with its profit marked unknown.`
 
 /**
  * What the user reads when a deal is closed from the venue's own record of the
@@ -245,3 +245,23 @@ export const dealClosedFromVenueFillsMessage = ({
     : `it was closed on the exchange outside the bot`) +
   ` (${evidence.qty} at an average ${evidence.price}). ` +
   `The deal has been closed at that price, so its profit includes that close.`
+
+/**
+ * Spec `277`. What the user reads when a deal's position was closed on the
+ * exchange without the bot and the venue's fills could not price that close
+ * (not published, not readable, or not covering the deal). Says plainly that
+ * the profit shown is not the deal's real result — never a made-up exit price.
+ */
+export const dealClosedOutsideProfitUnknownMessage = ({
+  dealId,
+  symbol,
+  exchange,
+}: {
+  dealId: string
+  symbol: string
+  exchange: string
+}): string =>
+  `Deal ${dealId} (${symbol}): ${exchange} no longer holds its position — it was closed on the exchange outside Gainium ` +
+  `(for example by hand, by a liquidation or by another tool). ` +
+  `The deal has been closed, but ${exchange} did not report the fills that closed it, so its profit is unknown: ` +
+  `the profit shown for this deal does not include that close. Check the position history on the exchange for the real result.`

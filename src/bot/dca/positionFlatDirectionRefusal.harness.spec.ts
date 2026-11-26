@@ -241,6 +241,10 @@ const buildBot = ({ refusal, isLong = true }: BotOptions) => {
       this.closedDeals.push(dealId)
     }
     saveDeal() {}
+    // Spec 277: the branch now tells the user the position closed outside the
+    // bot (the venue fills here are empty, so as "profit unknown").
+    events: any[] = []
+    botEventDb = { createData: (e: any) => this.events.push(e) }
     async clearDealTimer() {}
     async updateData() {}
     emit() {}
