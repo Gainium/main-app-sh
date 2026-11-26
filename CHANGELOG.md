@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.134.12] - 2026-11-26
+
+### Added
+
+- A running grid bot can take an out-of-band, idempotent correction to its realized profit (with the fill it never booked), so a data repair is not overwritten by the next booking
+
 ## [1.134.11] - 2026-11-26
 
 ### Fixed
