@@ -4549,6 +4549,12 @@ function createBotHelper<
         const totalFreeQuote =
           (profitFreeQuote || profitQuote) -
           (comQuote === 0 ? comBase * price : comQuote)
+        // Spec 275: a futures BUY keeps its fee in `comBase` and leaves
+        // `comQuote` at 0 (the shape orderFee.ts documents), so the quote
+        // running totals below must convert it, as `totalQuote` does for USD.
+        // The row's `feeBase`/`feeQuote` and `feePaid` keep that shape.
+        const feeQuoteInProfit =
+          this.futures && comQuote === 0 ? comBase * price : comQuote
         const usdRate = await this.getUsdRate(pair)
         profitUsdt = totalQuote * usdRate
         freeProfitUsd = (totalFreeQuote || totalQuote) * usdRate
@@ -4591,7 +4597,7 @@ function createBotHelper<
           paperContext: this.data.paperContext,
           cummulativeProfitBase: this.data.profit.total + profitBase - comBase,
           cummulativeProfitQuote:
-            this.data.profit.total + profitQuote - comQuote,
+            this.data.profit.total + profitQuote - feeQuoteInProfit,
           cummulativeProfitUsdt: this.data.profit.totalUsd + profitUsdt,
           index: o.clientOrderId,
         }
@@ -4631,10 +4637,10 @@ function createBotHelper<
                 ? this.data?.profit?.total +
                   (this.data.settings.profitCurrency === 'base'
                     ? profitBase - comBase
-                    : profitQuote - comQuote)
+                    : profitQuote - feeQuoteInProfit)
                 : this.data?.settings.profitCurrency === 'base'
                   ? profitBase - comBase
-                  : profitQuote - comQuote,
+                  : profitQuote - feeQuoteInProfit,
               // Spec 014 §2.2: an off-pair fee's USD value moves totalUsd
               // only — the native-currency `total` above is unaffected,
               // since the fee was never booked to base/quote for that leg.
@@ -4647,10 +4653,10 @@ function createBotHelper<
                   ? (this.data?.profit?.freeTotal || this.data.profit.total) +
                     (this.data.settings.profitCurrency === 'base'
                       ? (profitFreeBase || profitFreeBase) - comBase
-                      : (profitFreeQuote || profitQuote) - comQuote)
+                      : (profitFreeQuote || profitQuote) - feeQuoteInProfit)
                   : this.data?.settings.profitCurrency === 'base'
                     ? (profitFreeBase || profitFreeBase) - comBase
-                    : (profitFreeQuote || profitQuote) - comQuote,
+                    : (profitFreeQuote || profitQuote) - feeQuoteInProfit,
               freeTotalUsd:
                 this.data.profit.freeTotalUsd || this.data?.profit?.totalUsd
                   ? (this.data.profit.freeTotalUsd ||
