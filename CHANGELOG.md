@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.134.14] - 2026-11-26
+
+### Fixed
+
+- A partial liquidation booked after the deal bought again is realised at the deal's average when it happened, not at the average after those buys
+
 ## [1.134.13] - 2026-11-26
 
 ### Fixed
