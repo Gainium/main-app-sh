@@ -95,6 +95,10 @@ const makeBot = (opts: {
     get allOrders() {
       return []
     }
+    // Nothing rests before the close (spec 274's settle finds no close).
+    getOrdersByStatusAndDealId() {
+      return []
+    }
     async stop() {
       this.stopped += 1
     }

@@ -1480,6 +1480,27 @@ function createBotHelper<
                 )
               } else if (
                 updatedOrder.status === 'PARTIALLY_FILLED' &&
+                this.futures
+              ) {
+                // Spec 274: the timers that kept this close going did not
+                // survive the restart. Hand it to the close path, which
+                // cancels it, books its executed part and closes the rest.
+                this.setOrder(updatedOrder)
+                this.handleLog(
+                  `Close order ${updatedOrder.clientOrderId} is PARTIALLY_FILLED after restart. Settling it and closing the rest of the position`,
+                )
+                this.restart = false
+                this.serviceRestart = false
+                this.updateOrderOnDb(updatedOrder)
+                this.blockCheck = false
+                this.endMethod(_id)
+                return this.processSellAtStop(
+                  updatedOrder.type === 'MARKET'
+                    ? CloseGRIDTypeEnum.closeByMarket
+                    : CloseGRIDTypeEnum.closeByLimit,
+                )
+              } else if (
+                updatedOrder.status === 'PARTIALLY_FILLED' &&
                 activeTPSLOrder.status === 'NEW'
               ) {
                 this.setOrder(updatedOrder)
@@ -3512,6 +3533,31 @@ function createBotHelper<
         this.processSellAtStop(type)
       }, this.limitRepositionTimeout)
     }
+    /** Spec 274: re-run a take-profit / stop-loss close whose resting close could not be cancelled yet. */
+    protected retryCloseByTp(
+      msg: PriceMessage,
+      tpSl: ReturnType<typeof this.tpSl>,
+      forceMarket: boolean,
+    ) {
+      if (this.limitTimer) {
+        clearTimeout(this.limitTimer)
+      }
+      this.limitTimer = setTimeout(
+        () => this.closeBotByTp(this.botId, msg, tpSl, forceMarket),
+        this.orderLimitRepositionTimeout,
+      )
+    }
+    /** Spec 274: a key that may not cancel is not asked again (spec 232). */
+    protected clearCloseByTpTimers() {
+      if (this.limitTimer) {
+        clearTimeout(this.limitTimer)
+        this.limitTimer = null
+      }
+      if (this.enterMarketTimer) {
+        clearTimeout(this.enterMarketTimer)
+        this.enterMarketTimer = null
+      }
+    }
     /**
      * Spec 273. Cancel every close order a futures grid still has resting and
      * book what each one executed into the position and the profit.
@@ -3528,7 +3574,7 @@ function createBotHelper<
      *   only extend a venue lockout, spec 232), `settled` when nothing
      *   closing is left resting.
      */
-    private async settleRestingCloses(): Promise<
+    protected async settleRestingCloses(): Promise<
       'settled' | 'filled' | 'pending' | 'refused'
     > {
       if (!this.futures) {
@@ -5362,7 +5408,10 @@ function createBotHelper<
         const find = this.allOrders.find(
           (o) => o.typeOrder === TypeOrderEnum.stop,
         )
-        if (find?.status === 'PARTIALLY_FILLED') {
+        // Spec 274: a part-filled futures close is settled below (cancel,
+        // book the executed part, close the rest). Spot keeps the old guard:
+        // its close books balances, not a position.
+        if (find?.status === 'PARTIALLY_FILLED' && !this.futures) {
           this.handleLog(
             `Found close order with status partially filled ${find.clientOrderId}`,
           )
@@ -5402,6 +5451,22 @@ function createBotHelper<
             result === TpSlReturn.sl)
         ) {
           this.blockLimit = true
+          if (this.futures) {
+            // Spec 274, as `processSellAtStop` does since spec 273: cancel a
+            // resting close without promoting it, book what it executed, and
+            // only then size the next close from what is left.
+            const settled = await this.settleRestingCloses()
+            if (settled === 'filled' || settled === 'refused') {
+              if (settled === 'refused') {
+                this.clearCloseByTpTimers()
+              }
+              return
+            }
+            if (settled === 'pending') {
+              this.retryCloseByTp(msg, { value: result, text }, forceMarket)
+              return
+            }
+          }
           await this.cancelAllOrder(true, true, true)
           const payload: { grid?: Grid; additional?: OrderAdditionalParams } =
             {}
