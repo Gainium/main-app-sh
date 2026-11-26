@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.135.0] - 2026-11-26
+
+### Added
+
+- Add funds on DCA deals can be placed as a chasing limit or a split order, with the same settings as closing a deal
+
+### Fixed
+
+- A split base order slice cancelled to re-price could be placed again after a bot reload, and a slice part-filled at the re-price was taken as complete
+
 ## [1.134.14] - 2026-11-26
 
 ### Fixed
