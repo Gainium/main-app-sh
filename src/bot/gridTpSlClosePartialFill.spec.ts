@@ -276,8 +276,9 @@ const done = (bot: any) => {
   }
 }
 
-/** (close - entry) * qty * (1 - maker), the fold `profitAfterPositionClosed` books. */
-const profitOf = (qty: number) => (CLOSE_PRICE - ENTRY) * qty * (1 - 0.0002)
+/** (close - entry) * qty - the close fill's fee, the fold `profitAfterPositionClosed` books (spec 276). */
+const profitOf = (qty: number) =>
+  (CLOSE_PRICE - ENTRY) * qty - CLOSE_PRICE * qty * 0.0002
 
 describe('a part-filled futures grid TP/SL close keeps closing (spec 274)', () => {
   before(function () {

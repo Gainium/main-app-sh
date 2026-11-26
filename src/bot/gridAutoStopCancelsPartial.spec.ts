@@ -237,6 +237,8 @@ describe('an automatic grid stop cancels part-filled levels (spec 236)', () => {
     bot.data.position = { side: 'LONG', qty: 1, price: 80000 }
     bot.data.profit = { total: 0, totalUsd: 0, freeTotal: 0, freeTotalUsd: 0 }
     bot.closeEntryPrice = async () => 80000
+    // Spec 276: the liquidation books its fee at the stored rate.
+    bot.getUserFee = async () => ({ maker: 0.0002, taker: 0.00055 })
     bot.transactionDb = {
       createData: async (d: any) => ({
         status: StatusEnum.ok,

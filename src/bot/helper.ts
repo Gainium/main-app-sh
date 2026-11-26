@@ -2186,9 +2186,10 @@ function createBotHelper<
           const { qty, side } = this.data.position
           const price = await this.closeEntryPrice(order.clientOrderId)
           const profit =
-            side === PositionSide.LONG
+            (side === PositionSide.LONG
               ? _price * qty - price * qty
-              : price * qty - _price * qty
+              : price * qty - _price * qty) -
+            (await this.closeLegFeeQuote(order, qty))
           const profitUsd =
             (await this.getUsdRate(this.data.symbol.symbol)) * profit
           this.data.profit = {
@@ -3357,6 +3358,37 @@ function createBotHelper<
       return this.tpSlEntryQueue
     }
     /**
+     * Spec 276. The fee of the fill that closed `qty` of a futures position, in
+     * the unit the close leg's PnL is booked in (price × qty). The venue's
+     * observed fee when the bot books observed fees (`BotFlags.feeByAsset`,
+     * the same gate `createTransaction` uses), scaled to `qty` when the order
+     * executed more; otherwise the stored maker-rate estimate on the notional.
+     */
+    private async closeLegFeeQuote(result: Order, qty: number) {
+      const price = +result.price
+      if (!this.data || !(qty > 0) || !(price > 0)) {
+        return 0
+      }
+      if (this.data.flags?.includes(BotFlags.feeByAsset)) {
+        const observed = observedFeeOnSide(
+          observedFeeSplit(
+            result,
+            this.data.symbol.baseAsset,
+            this.data.symbol.quoteAsset,
+          ),
+          'quote',
+          price,
+        )
+        if (observed !== null) {
+          const executed = +result.executedQty
+          return executed > qty ? (observed * qty) / executed : observed
+        }
+      }
+      return (
+        price * qty * ((await this.getUserFee(result.symbol))?.maker ?? 0)
+      )
+    }
+    /**
      * @param closedQty the part of the position `result` closed, when it
      *   closed only part of it (spec 273). Defaults to the whole position.
      */
@@ -3376,11 +3408,13 @@ function createBotHelper<
       if (!this.data || this.data.position.qty === 0) {
         return
       }
+      // Spec 276: the close fill's fee is a fraction of its notional, not of
+      // the PnL, so it is subtracted, not multiplied in.
       const profit =
         (side === PositionSide.LONG
           ? +result.price * qty - price * qty
-          : price * qty - +result.price * qty) *
-        (1 - ((await this.getUserFee(result.symbol))?.maker ?? 0))
+          : price * qty - +result.price * qty) -
+        (await this.closeLegFeeQuote(result, qty))
       const closeRate = await this.getUsdRate(result.symbol)
       const profitUsd = closeRate * profit
       this.data.profit = {

@@ -265,8 +265,9 @@ describe('a part-filled futures grid close keeps closing (spec 273)', () => {
       ])
       expect(bot.data.position.qty).to.equal(200)
       expect(bot.data.position.side).to.equal(PositionSide.LONG)
-      // (0.008881 - 0.009068) * 150 * (1 - maker)
-      const expected = (CLOSE_PRICE - ENTRY) * 150 * (1 - 0.0002)
+      // (0.008881 - 0.009068) * 150 - the close fill's fee (spec 276)
+      const expected =
+        (CLOSE_PRICE - ENTRY) * 150 - CLOSE_PRICE * 150 * 0.0002
       expect(bot.data.profit.total).to.be.closeTo(expected, 1e-12)
       expect(bot.savedProfit).to.have.length(1)
       expect(bot.sweeps).to.have.length(1)
