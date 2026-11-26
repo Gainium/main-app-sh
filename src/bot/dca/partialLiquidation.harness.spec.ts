@@ -17,6 +17,7 @@ import { describe, it } from 'mocha'
 import { expect } from 'chai'
 import MainBot from '../main'
 import createDCABotHelper from '../dcaHelper'
+import { MathHelper } from '../../utils/math'
 import {
   BotStatusEnum,
   ExchangeEnum,
@@ -73,6 +74,9 @@ function makeBot(opts: {
   Object.defineProperty(bot, 'isLong', { value: true })
   bot.hedge = false
   bot.orders = new Map()
+  bot.orderStatusMap = new Map()
+  bot.orderDealMap = new Map()
+  bot.ordersKeys = new Set()
   const deal = {
     deal: {
       _id: DEAL_ID,
@@ -273,6 +277,67 @@ describe('Kraken Futures partial liquidation booked on the deal (spec 279)', () 
     other.startConsumerHeartbeat()
     expect(other.liquidationSweepTimers).to.equal(undefined)
     other.stopConsumerHeartbeat()
+  })
+
+  describe('§1.9 booked late, after the deal bought again (F1488)', () => {
+    // 120 held at 0.36 when the venue liquidated it; 182 more bought after.
+    const row = (id: string, side: string, qty: number, price: number, updateTime: number) => ({
+      clientOrderId: id,
+      symbol: SYMBOL,
+      botId: BOT_ID,
+      dealId: DEAL_ID,
+      typeOrder: id === 'bo' ? TypeOrderEnum.dealStart : TypeOrderEnum.dealRegular,
+      side,
+      status: 'FILLED',
+      price: `${price}`,
+      origPrice: `${price}`,
+      origQty: `${qty}`,
+      executedQty: `${qty}`,
+      updateTime,
+    })
+    // Through the real order map, so the deal and status indexes are set.
+    const index = (bot: any, o: any) => {
+      // What the position fold reads beyond the rows.
+      bot.math = new MathHelper()
+      bot.baseAssetPrecision = async () => 0
+      bot.getExchangeInfo = async () => ({
+        pair: SYMBOL,
+        priceAssetPrecision: 8,
+        baseAsset: { name: 'ONDO', step: 1, minAmount: 1 },
+        quoteAsset: { name: 'USD', minAmount: 5 },
+      })
+      Helper.prototype.setOrder.call(bot, o, false)
+    }
+    const seen = (bot: any, rec: any) => {
+      const avgs: (number | undefined)[] = []
+      bot.processFilledOrder = async (o: any) => {
+        rec.routed.push(o)
+        avgs.push(bot.liquidationRealiseAvg?.get(o.clientOrderId))
+      }
+      return avgs
+    }
+
+    it('the reduce is realised at the fold of the rows up to the liquidation, scoped to the booking', async () => {
+      const { bot, rec } = makeBot({ held: 182 })
+      index(bot, row('bo', 'BUY', 60, 0.38, OPENED + 1))
+      index(bot, row('so1', 'BUY', 60, 0.34, OPENED + 2))
+      index(bot, row('so2', 'BUY', 182, 0.28, LIQ_AT + 3_600_000))
+      const avgs = seen(bot, rec)
+      await bot.sweepPartialLiquidations()
+      expect(+rec.saved[0].executedQty).to.equal(120)
+      expect(avgs).to.have.length(1)
+      expect(avgs[0]).to.be.closeTo(0.36, 1e-12)
+      expect(bot.liquidationRealiseAvg.size).to.equal(0)
+    })
+
+    it('nothing filled since: no override, the deal average is used as before', async () => {
+      const { bot, rec } = makeBot({ held: 182 })
+      index(bot, row('bo', 'BUY', 302, 0.33, OPENED + 1))
+      const avgs = seen(bot, rec)
+      await bot.sweepPartialLiquidations()
+      expect(+rec.saved[0].executedQty).to.equal(120)
+      expect(avgs).to.deep.equal([undefined])
+    })
   })
 
   it('§1.8 the row reaches the DCA reduce-funds branch of the real processFilledOrder', async () => {

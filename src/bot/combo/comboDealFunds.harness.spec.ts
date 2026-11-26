@@ -2191,6 +2191,133 @@ describe('spec 279: a Kraken Futures partial liquidation booked through the comb
     expect(bot.theDeal.deal.currentBalances.base).to.be.closeTo(5.359, 1e-9)
   })
 
+  describe('booked late, after the deal bought again (F1488)', () => {
+    // A Kraken ONDO long as recorded on prod (synthetic ids): 120 held when
+    // the venue liquidated 120 at 0.3254375, then six safety orders (118)
+    // filled before the sweep booked it. The deal's average by then: 0.2913.
+    const T0 = 1_794_640_777_000
+    const T1 = 1_794_640_867_352
+    const BEFORE: [string, string, number, number, number][] = [
+      ['dealStart', 'BUY', 16, 0.3761, 1794416371060],
+      ['dealRegular', 'BUY', 16, 0.3686, 1794423172137],
+      ['dealRegular', 'BUY', 17, 0.3535, 1794438810486],
+      ['dealGrid', 'SELL', 17, 0.3611, 1794443018818],
+      ['dealRegular', 'BUY', 17, 0.3611, 1794443022928],
+      ['dealRegular', 'BUY', 17, 0.3535, 1794465908259],
+      ['dealRegular', 'BUY', 18, 0.346, 1794488988338],
+      ['dealGrid', 'SELL', 18, 0.3536, 1794511126959],
+      ['dealRegular', 'BUY', 18, 0.346, 1794537709297],
+      ['dealRegular', 'BUY', 18, 0.3385, 1794540058000],
+      ['dealGrid', 'SELL', 18, 0.3461, 1794573343000],
+      ['dealGrid', 'SELL', 18, 0.3536, 1794577092191],
+      ['dealRegular', 'BUY', 18, 0.346, 1794581465923],
+      ['dealRegular', 'BUY', 18, 0.3385, 1794583863000],
+      ['dealGrid', 'SELL', 18, 0.3461, 1794597455512],
+      ['dealRegular', 'BUY', 18, 0.3385, 1794606198266],
+      ['dealRegular', 'BUY', 18, 0.331, 1794623299425],
+    ]
+    const AFTER: [string, string, number, number, number][] = [
+      ['dealRegular', 'BUY', 19, 0.3145, 1794671082370],
+      ['dealRegular', 'BUY', 19, 0.3144, 1794671083544],
+      ['dealRegular', 'BUY', 20, 0.3084, 1794672720097],
+      ['dealRegular', 'BUY', 20, 0.3009, 1794687465295],
+      ['dealRegular', 'BUY', 20, 0.2934, 1794689664235],
+      ['dealRegular', 'BUY', 20, 0.2858, 1794691096045],
+    ]
+    const AS_OF_AVG = 0.3446513353576724
+    const PROFIT_BEFORE = 1.4973
+
+    const lateBooking = async (rows: typeof BEFORE) => {
+      const bot = await liquidated()
+      const deal = bot.theDeal.deal
+      deal.createTime = 1_794_416_370_000
+      bot.orders.clear()
+      rows.forEach(([typeOrder, side, qty, price, updateTime], i) =>
+        bot.orders.set(`r${i}`, {
+          clientOrderId: `r${i}`,
+          symbol: SYMBOL,
+          botId: BOT_ID,
+          dealId: DEAL_ID,
+          typeOrder,
+          side,
+          status: 'FILLED',
+          price: `${price}`,
+          origPrice: `${price}`,
+          origQty: `${qty}`,
+          executedQty: `${qty}`,
+          updateTime,
+        }),
+      )
+      const position = rows.reduce(
+        (a, [, side, qty]) => a + (side === 'BUY' ? qty : -qty),
+        0,
+      )
+      deal.currentBalances = { base: position, quote: 0 }
+      // ONDO trades on a whole-unit lot; the fold keeps the price unrounded
+      // enough to compare with the recorded numbers.
+      const ed = await bot.getExchangeInfo()
+      bot.getExchangeInfo = async () => ({
+        ...ed,
+        priceAssetPrecision: 10,
+        baseAsset: { ...ed.baseAsset, step: 1, minAmount: 1, name: 'ONDO' },
+      })
+      bot.baseAssetPrecision = async () => 0
+      deal.avgPrice = rows === BEFORE ? AS_OF_AVG : 0.2913
+      deal.profit = { ...deal.profit, total: PROFIT_BEFORE, totalUsd: PROFIT_BEFORE }
+      bot.exchange = {
+        getAccountFills: async (before?: number) => ({
+          status: 'OK',
+          data: before
+            ? []
+            : [T0, T1].map((timestamp, i) => ({
+                fillId: `ondo-${i}`,
+                orderId: `ondo-liq-${i}`,
+                clientOrderId: '',
+                symbol: SYMBOL,
+                side: 'SELL',
+                price: '0.3254375',
+                quantity: '60',
+                timestamp,
+                fillType: 'partialLiquidation',
+              })),
+        }),
+      }
+      return { bot, deal, position }
+    }
+
+    it('realised at the average when it happened: 120 × (0.3254375 − 0.3446513) = −2.3057, not +4.0965', async () => {
+      const { bot, deal, position } = await lateBooking([...BEFORE, ...AFTER])
+      expect(position).to.equal(238)
+      const ok = await bot.bookPartialLiquidation(BOT_ID, SYMBOL, 118, [])
+      expect(ok).to.equal(true)
+      const [row] = bot.saved
+      expect(+row.executedQty).to.equal(120)
+      expect(+row.price).to.be.closeTo(0.3254375, 1e-9)
+      expect(row.updateTime).to.equal(T1)
+      expect(deal.profit.total - PROFIT_BEFORE).to.be.closeTo(
+        120 * (0.3254375 - AS_OF_AVG),
+        1e-6,
+      )
+      expect(deal.profit.total - PROFIT_BEFORE).to.be.closeTo(-2.3057, 1e-4)
+      // The base it takes off is unchanged: the books end at the venue's 118.
+      expect(deal.reduceFunds).to.deep.equal([{ price: 0.3254375, qty: 120 }])
+      // The override is scoped to the booking.
+      expect(bot.liquidationRealiseAvg?.size ?? 0).to.equal(0)
+    })
+
+    it('nothing filled since (a live booking): realised at the deal average as before', async () => {
+      const { bot, deal } = await lateBooking(BEFORE)
+      deal.avgPrice = 0.35
+      const ok = await bot.bookPartialLiquidation(BOT_ID, SYMBOL, 60, [])
+      expect(ok).to.equal(true)
+      expect(+bot.saved[0].executedQty).to.equal(60)
+      expect(deal.profit.total - PROFIT_BEFORE).to.be.closeTo(
+        60 * (0.3254375 - 0.35),
+        1e-9,
+      )
+    })
+  })
+
   it('reported again (stream and sweep, or after a restart): nothing more is booked', async () => {
     const first = await liquidated()
     await first.bookPartialLiquidation(BOT_ID, SYMBOL, 5.359, [])

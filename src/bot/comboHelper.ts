@@ -1946,10 +1946,15 @@ function createComboBotHelper<
         this.emit('bot settings update', data)
       }
     }
+    /** Spec `279`: the combo cost-basis fold, up to `time`. */
+    protected override async foldedAvgAsOf(dealId: string, time: number) {
+      return (await this.avgPrice(dealId, dealId, undefined, time)).real
+    }
     private async avgPrice(
       dealToSearch: string,
       dealId?: string,
       minigridId?: string,
+      asOf?: number,
     ): Promise<{ real: number; display: number }> {
       if (this.futures) {
         let filledDealOrder = this.getOrdersByStatusAndDealId({
@@ -1958,6 +1963,8 @@ function createComboBotHelper<
         }).filter(
           (o) =>
             (dealId ? true : o.minigridId === minigridId) &&
+            // `asOf`: the position as it stood then (spec `279`).
+            !(asOf !== undefined && +o.updateTime > asOf) &&
             (o.typeOrder === TypeOrderEnum.dealRegular ||
               o.typeOrder === TypeOrderEnum.dealStart ||
               o.typeOrder === TypeOrderEnum.dealGrid ||
@@ -5003,7 +5010,11 @@ function createComboBotHelper<
         // Realized at the deal's average, as a DCA reduce is. Fees are in
         // `fullFee`, recomputed from the fills below.
         const profitBase = await this.profitBase(d.deal)
-        const avg = d.deal.avgPrice
+        // A partial liquidation booked after later entries is realised at
+        // the average held when it happened (spec `279`).
+        const avg =
+          this.liquidationRealiseAvg?.get(order.clientOrderId) ||
+          d.deal.avgPrice
         if (avg > 0 && executed > 0) {
           const total = !profitBase
             ? this.isLong

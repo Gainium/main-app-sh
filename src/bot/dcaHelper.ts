@@ -1135,6 +1135,11 @@ function createDCABotHelper<
     > = new Map()
     /** Spec `279`: chunks of a liquidation in progress, by symbol. */
     liquidationChunks?: Map<string, Map<string, LiquidationChunk>>
+    /**
+     * Spec `279`: the deal average a back-dated partial-liquidation row is
+     * realised at, by the row's client order id, while it is being booked.
+     */
+    liquidationRealiseAvg?: Map<string, number>
     /** Spec `279` §3: the partial-liquidation fills sweep. */
     liquidationSweepTimers?: ReturnType<typeof setTimeout>[]
     /**
@@ -11127,6 +11132,7 @@ function createDCABotHelper<
      */
     private async getAvgPrice(
       dealId: string,
+      asOf?: number,
     ): Promise<{ avg: number; display: number }> {
       // A base order that ended CANCELED with a fill is the deal's entry
       // all the same: `findBaseOrderByDeal`, `updateUsage` and
@@ -11147,8 +11153,11 @@ function createDCABotHelper<
           isDatedCanceledRegularFill(o),
       )
       if (this.futures) {
+        // `asOf`: the position as it stood then (spec `279`).
         let filledDealOrder = entryRows.filter(
-          (o) => o.typeOrder !== TypeOrderEnum.br,
+          (o) =>
+            o.typeOrder !== TypeOrderEnum.br &&
+            !(asOf !== undefined && +o.updateTime > asOf),
         )
         filledDealOrder = [...filledDealOrder].sort(
           (a, b) => a.updateTime - b.updateTime,
@@ -11465,7 +11474,12 @@ function createDCABotHelper<
           }
           const settings = await this.getAggregatedSettings(findDeal.deal)
           const commDeal = await this.getCommDeal(findDeal.deal)
-          const { avgPrice } = findDeal.deal
+          // A partial liquidation booked after later entries is realised at
+          // the average held when it happened (spec `279`).
+          const avgPrice =
+            (isReduce &&
+              this.liquidationRealiseAvg?.get(order.clientOrderId)) ||
+            findDeal.deal.avgPrice
           const total =
             (!(await this.profitBase(findDeal.deal))
               ? this.isLong
@@ -28100,6 +28114,36 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec `279`. The average a partial liquidation at `time` realises
+     * against, when the deal has filled since (a sweep or restart booking it
+     * late): the futures position fold of the deal's rows up to `time`.
+     * `undefined` when nothing has filled since — the deal's own average is
+     * then the same thing, and a live booking keeps using it.
+     */
+    protected async liquidationAsOfAvg(
+      dealId: string,
+      time: number,
+    ): Promise<number | undefined> {
+      if (!this.futures || !(time > 0)) {
+        return undefined
+      }
+      const later = this.getOrdersByStatusAndDealId({
+        status: ['FILLED', 'CANCELED'],
+        dealId,
+      }).some((o) => +o.executedQty > 0 && +o.updateTime > time)
+      if (!later) {
+        return undefined
+      }
+      const avg = await this.foldedAvgAsOf(dealId, time)
+      return Number.isFinite(avg) && avg > 0 ? avg : undefined
+    }
+
+    /** The deal's position average from its rows up to `time`. */
+    protected async foldedAvgAsOf(dealId: string, time: number) {
+      return (await this.getAvgPrice(dealId, time)).avg
+    }
+
+    /**
      * Spec `279`. Book a partial liquidation the venue has finished on the
      * open deals of `symbol`, newest deal first, and tell the user.
      *
@@ -28173,7 +28217,9 @@ function createDCABotHelper<
         step: ed?.baseAsset.step ?? 0,
       })
       if (plan.kind === 'skip') {
-        this.handleLog(`Partial liquidation of ${symbol} not booked: ${plan.reason}`)
+        this.handleDebug(
+          `Partial liquidation of ${symbol} not booked: ${plan.reason}`,
+        )
         return false
       }
       this.handleLog(
@@ -28211,9 +28257,23 @@ function createDCABotHelper<
           reduceOnly: true,
           positionSide: PositionSide.BOTH,
         } as Order
+        // Read before the row joins the fold.
+        const asOfAvg = await this.liquidationAsOfAvg(a.dealId, plan.time)
         await this.saveOrderToDb(row)
         this.setOrder(row)
-        await this.processFilledOrder(row)
+        if (asOfAvg !== undefined) {
+          this.handleLog(
+            `Partial liquidation of ${symbol} on deal ${a.dealId} is older than the deal's later fills: realised at the average then, ${asOfAvg}`,
+          )
+          this.liquidationRealiseAvg = (
+            this.liquidationRealiseAvg ?? new Map()
+          ).set(clientOrderId, asOfAvg)
+        }
+        try {
+          await this.processFilledOrder(row)
+        } finally {
+          this.liquidationRealiseAvg?.delete(clientOrderId)
+        }
       }
       this.handleErrors(
         `Part of the ${symbol} position was liquidated by ${this.data?.exchange}: ${plan.qty} at ${plan.price}. The deal${plan.allocations.length > 1 ? 's were' : ' was'} reduced by that amount and the loss booked; ${held} is still open on the exchange and the bot keeps managing it`,
