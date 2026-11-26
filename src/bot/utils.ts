@@ -612,6 +612,14 @@ export const refusedBaseEntrySubType = 'Base order cancelled by exchange'
 export const unplaceableGridOrderSubType = 'Grid order cannot be placed'
 
 /**
+ * The venue refused a safety or grid order because its price is too far from
+ * the market, and the engine is holding it to place once the price comes
+ * within range (`outOfBandRetry.ts`). A warning, never a bot error, raised once
+ * per held level directly through `processError`, never matched by text.
+ */
+export const orderWaitingForPrice = 'Order waiting for price'
+
+/**
  * The venue refused an order because position + resting orders on the contract
  * have reached the account's risk tier. Same name as the builtin boterrorrules
  * subType, so installs without the DB rule classify it identically. Gated per

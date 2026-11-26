@@ -110,6 +110,8 @@ import {
   indicatorsError,
   marketClosed,
   orderPrice,
+  orderWaitingForPrice,
+  positionLeftOpen,
   unplaceableGridOrderSubType,
   webhookSignalIgnored,
 } from './utils'
@@ -129,7 +131,9 @@ import {
 } from './marketClosedRetry'
 import {
   HeldOutOfBandOrder,
+  OutOfBandNotice,
   VenuePriceBand,
+  bandForUnnamedRefusal,
   bandFractionFromReason,
   holdOutsideKnownBand,
   isAheadOfMarket,
@@ -2452,10 +2456,36 @@ class MainBot<T extends IMainBot> {
    * ({@link MainBot#checkOutOfBandOrders}). Spec 250.
    */
   protected async noteOutOfBandRefusal(order: Order, reason: string) {
-    if (!this.replacesVenueCancel(order)) {
+    if (!this.holdsOutOfBand(order)) {
       return
     }
-    const band = bandFractionFromReason(reason)
+    let band = bandFractionFromReason(reason)
+    let side: string | undefined
+    let market: number | undefined
+    if (!band && isPriceBandRefusal(reason, false)) {
+      // Binance's `Filter failure: PERCENT_PRICE_BY_SIDE` names no limit, and
+      // its band differs by side: take it from the pair's filter, else a
+      // default, capped by the distance just refused.
+      market = await this.getLatestPrice(order.symbol)
+      const ed = await this.getExchangeInfo(order.symbol).catch(() => null)
+      const price = Number(order.origPrice) || Number(order.price)
+      const found = bandForUnnamedRefusal({
+        side: order.side,
+        price,
+        market,
+        priceMultiplier: ed?.priceMultiplier,
+      })
+      if (!found) {
+        return
+      }
+      if (!found.fromFilter) {
+        this.handleWarn(
+          `Order ${order.clientOrderId} refused on the price band (${reason}) and ${order.symbol} has no price band filter in its exchange info: holding it with a ${Math.round(found.band * 100)}% band`,
+        )
+      }
+      band = found.band
+      side = order.side
+    }
     if (!band) {
       return
     }
@@ -2463,12 +2493,72 @@ class MainBot<T extends IMainBot> {
     // order outside it (a reload rebuilding the grid) is held here instead of
     // being refused again.
     if (this.data?.exchange) {
-      VenuePriceBand.record(this.data.exchange, order.symbol, band).catch(
+      VenuePriceBand.record(this.data.exchange, order.symbol, band, side).catch(
         () => undefined,
       )
     }
-    const market = await this.getLatestPrice(order.symbol)
+    market ??= await this.getLatestPrice(order.symbol)
     this.holdOutOfBand(order, band, market)
+  }
+
+  /**
+   * Which refused orders are held out of the price band and placed once the
+   * price comes near: those the engine places back after a venue cancel, and
+   * a deal's take profit where the engine opts it in.
+   */
+  protected holdsOutOfBand(order: Order): boolean {
+    return (
+      this.replacesVenueCancel(order) || this.holdsTakeProfitOutOfBand(order)
+    )
+  }
+
+  /** Engines with deals hold a refused take profit (DCA and Combo). */
+  protected holdsTakeProfitOutOfBand(_order: Order): boolean {
+    return false
+  }
+
+  /**
+   * Tell the user once that `order` waits for the price: once per level, and
+   * for a take profit once per deal, across reloads. A warning, never a bot
+   * error, and nothing for a bot that is not running.
+   */
+  protected async noticeHeldOutOfBand(
+    order: Order,
+    band: number,
+    market: number,
+  ) {
+    if (
+      !this.data ||
+      (this.data.status !== BotStatusEnum.open &&
+        this.data.status !== BotStatusEnum.range)
+    ) {
+      return
+    }
+    const takeProfit = order.typeOrder === TypeOrderEnum.dealTP
+    const key = takeProfit
+      ? `${order.dealId ?? ''}|${TypeOrderEnum.dealTP}`
+      : marketClosedLevelKey(order)
+    if (!(await OutOfBandNotice.claim(this.botId, key))) {
+      return
+    }
+    const price = Number(order.origPrice) || Number(order.price)
+    const side = order.side === 'BUY' ? 'buy' : 'sell'
+    const away = `more than ${Math.round(band * 100)}% from the ${order.symbol} price ${market}, which ${this.data.exchange} refuses`
+    const message = takeProfit
+      ? `Deal ${order.dealId} has no take profit on the exchange: its take profit, a ${side} at ${price}, is ${away}. It will be placed when the price is within range`
+      : `${order.typeOrder === TypeOrderEnum.dealRegular ? 'DCA order' : 'Grid order'} ${side} at ${price} is waiting for the price: it is ${away}. It will be placed when the price is within range`
+    await this.processError(
+      this.botId,
+      takeProfit ? positionLeftOpen : orderWaitingForPrice,
+      false,
+      false,
+      true,
+      message,
+      Date.now(),
+      message,
+      false,
+      order.symbol,
+    )
   }
 
   /**
@@ -2498,8 +2588,33 @@ class MainBot<T extends IMainBot> {
     }
     if (!prev) {
       this.markHeldOutOfBandDirty(order.dealId)
+      this.noticeHeldOutOfBand(order, band, market).catch(() => undefined)
     }
     return true
+  }
+
+  /**
+   * A take profit the venue took: any take profit still held for that deal is
+   * stale (an earlier price of it), and the chart must stop showing it.
+   */
+  protected dropHeldTakeProfits(order: Order) {
+    const held = this.outOfBandOrders
+    if (
+      !held?.size ||
+      order.typeOrder !== TypeOrderEnum.dealTP ||
+      !this.holdsTakeProfitOutOfBand(order)
+    ) {
+      return
+    }
+    for (const [key, h] of held) {
+      if (
+        h.order.dealId === order.dealId &&
+        h.order.typeOrder === TypeOrderEnum.dealTP
+      ) {
+        held.delete(key)
+        this.markHeldOutOfBandDirty(order.dealId)
+      }
+    }
   }
 
   protected markHeldOutOfBandDirty(dealId?: string | null) {
@@ -4576,6 +4691,10 @@ class MainBot<T extends IMainBot> {
     const time = new Date().getTime()
     const subType = this.getErrorSubType(errorString)
 
+    // Binance's price-band refusal is reported where the order is held: one
+    // `Order waiting for price` (a take profit: `Position left open`) notice
+    // per held level (`noticeHeldOutOfBand`). Here, per refusal and under
+    // `Order params`, it would put the bot in error on every retry.
     if (message.indexOf('PERCENT_PRICE') !== -1) {
       return
     }
@@ -10570,11 +10689,12 @@ class MainBot<T extends IMainBot> {
           !request &&
           `${requestData.type}`.toUpperCase() === 'LIMIT' &&
           this.data?.exchange &&
-          this.replacesVenueCancel(order)
+          this.holdsOutOfBand(order)
         ) {
           const band = await VenuePriceBand.get(
             this.data.exchange,
             order.symbol,
+            order.side,
           )
           if (band) {
             const market = await this.getLatestPrice(order.symbol)
@@ -11400,9 +11520,13 @@ class MainBot<T extends IMainBot> {
               // id, but kept by level and placed again later. Spec 248.
               if (refusalSubType === marketClosed) {
                 this.noteMarketClosedRefusal(order)
-              } else if (refusalSubType === orderPrice) {
+              } else if (
+                refusalSubType === orderPrice ||
+                isPriceBandRefusal(request.reason, false)
+              ) {
                 // Too far ahead of the price: kept and placed once a tick
-                // brings it within range. Spec 250.
+                // brings it within range. Spec 250. Binance's band refusal
+                // classifies as `Order params`; matched by its filter name.
                 this.noteOutOfBandRefusal(
                   order,
                   `${request.reason ?? ''}`,
@@ -11464,6 +11588,7 @@ class MainBot<T extends IMainBot> {
         if (request.status === StatusEnum.ok) {
           this.priceBandRepriced?.delete(order.clientOrderId)
           this.clearGridOrderStuck(order)
+          this.dropHeldTakeProfits(order)
           processedOrder = request.data
           // The answer is about the order this request named, whatever client
           // id it echoes. Kraken spot's placement read-back can fall back to a

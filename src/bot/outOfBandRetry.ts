@@ -34,6 +34,41 @@ export function bandFractionFromReason(reason: string): number | null {
 }
 
 /**
+ * Binance spot refuses a limit order outside its `PERCENT_PRICE_BY_SIDE` band
+ * with `Filter failure: PERCENT_PRICE_BY_SIDE`, which names no limit. The band
+ * then comes from the pair's own filter when the connector supplies one
+ * (`priceMultiplier`: a sell ahead of the price is capped at `up`, a buy at
+ * `down`), else this default. Either way it is capped by the distance the
+ * venue just refused: that distance is known to be outside the band, so an
+ * order is never released at it again, and every further refusal moves the
+ * release point closer to the price. Binance's tightest ahead-of-market
+ * multipliers seen on spot are 1.2 / 0.8.
+ */
+export const DEFAULT_UNNAMED_BAND = 0.2
+
+export function bandForUnnamedRefusal(opts: {
+  side: string
+  price: number
+  market: number
+  priceMultiplier?: { up?: number; down?: number } | null
+}): { band: number; fromFilter: boolean } | null {
+  const { side, price, market, priceMultiplier } = opts
+  if (!isAheadOfMarket(side, price, market)) {
+    return null
+  }
+  const refused = Math.abs(price - market) / market
+  const sell = `${side}`.toUpperCase() === 'SELL'
+  const m = sell ? Number(priceMultiplier?.up) : Number(priceMultiplier?.down)
+  const fromPair = sell ? m - 1 : 1 - m
+  const fromFilter = Number.isFinite(fromPair) && fromPair > 0
+  const band = Math.min(
+    fromFilter ? Math.min(fromPair, 0.99) : DEFAULT_UNNAMED_BAND,
+    refused,
+  )
+  return band > 0 ? { band, fromFilter } : null
+}
+
+/**
  * An order refused for its distance from the market that the market has not
  * reached: a sell at or above it, a buy at or below it.
  */
@@ -72,12 +107,21 @@ export function isWithinBand(
 const BAND_TTL_S = 30 * 24 * 60 * 60
 const BAND_CACHE_MS = 60_000
 const bandCache = new Map<string, { band: number | null; at: number }>()
-const bandKey = (exchange: string, symbol: string) =>
-  `outOfBandBand:${exchange}:${symbol}`
+/**
+ * A band that differs by side (Binance's `PERCENT_PRICE_BY_SIDE`) is kept per
+ * side; `get` reads the side's own band first, then a band for both sides.
+ */
+const bandKey = (exchange: string, symbol: string, side?: string) =>
+  `outOfBandBand:${exchange}:${symbol}${side ? `:${`${side}`.toUpperCase()}` : ''}`
 
 export const VenuePriceBand = {
-  async record(exchange: string, symbol: string, band: number): Promise<void> {
-    const key = bandKey(exchange, symbol)
+  async record(
+    exchange: string,
+    symbol: string,
+    band: number,
+    side?: string,
+  ): Promise<void> {
+    const key = bandKey(exchange, symbol, side)
     bandCache.set(key, { band, at: Date.now() })
     try {
       const redis = await RedisClient.getInstance()
@@ -87,7 +131,20 @@ export const VenuePriceBand = {
     }
   },
 
-  async get(exchange: string, symbol: string): Promise<number | null> {
+  async get(
+    exchange: string,
+    symbol: string,
+    side?: string,
+  ): Promise<number | null> {
+    if (side) {
+      const own = await this.get(
+        `${exchange}`,
+        `${symbol}:${`${side}`.toUpperCase()}`,
+      )
+      if (own) {
+        return own
+      }
+    }
     const key = bandKey(exchange, symbol)
     const cached = bandCache.get(key)
     if (cached && Date.now() - cached.at < BAND_CACHE_MS) {
@@ -108,6 +165,29 @@ export const VenuePriceBand = {
   /** Tests only. */
   resetCache() {
     bandCache.clear()
+  },
+}
+
+/**
+ * The user is told once that an order is waiting for the price: once per held
+ * level, and once per deal for a take profit. Kept in Redis, so a bot reload
+ * that holds the same level again says nothing new. Fail-open: a Redis error
+ * tells the user again rather than not at all.
+ */
+const NOTICE_TTL_S = BAND_TTL_S
+export const OutOfBandNotice = {
+  async claim(botId: string, key: string): Promise<boolean> {
+    const k = `outOfBandNotice:${botId}:${key}`
+    try {
+      const redis = await RedisClient.getInstance()
+      if (await redis.get(k)) {
+        return false
+      }
+      await redis.set(k, '1', NOTICE_TTL_S)
+    } catch {
+      // Fail-open.
+    }
+    return true
   },
 }
 

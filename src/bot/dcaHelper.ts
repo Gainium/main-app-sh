@@ -840,6 +840,19 @@ const MISSING_TP_REARM_DELAYS_MS = [
   15 * 60 * 1000,
 ]
 
+/**
+ * A deal whose missing take profit used up its re-sends
+ * (`MISSING_TP_REARM_DELAYS_MS`). Kept for a day so a worker restart does not
+ * start five more re-sends of a take profit the venue keeps refusing; a take
+ * profit that rests, or a held one the price comes near, clears it.
+ */
+const missingTpGiveUpBackoff = new RetryBackoff({
+  namespace: 'mtg',
+  minMs: 60 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+  memoryMs: 24 * 60 * 60 * 1000,
+})
+
 const uncoveredCloseBackoff = new RetryBackoff({
   namespace: 'ucr',
   minMs: 5 * 60 * 1000,
@@ -2163,8 +2176,23 @@ function createDCABotHelper<
         this.clearMissingTpRearm(dealId)
         return
       }
-      const pending = this.missingTpRearm.get(dealId)
+      // Held out of the price band: the price tick places it once it is near
+      // (`checkOutOfBandOrders`); a re-send now would only be held again.
+      if (this.hasHeldTakeProfit(dealId)) {
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      let pending = this.missingTpRearm.get(dealId)
       if (pending?.timer) {
+        return
+      }
+      if (
+        !pending &&
+        (await this.missingTpGiveUpLedger().peek([this.botId, dealId]))
+      ) {
+        // An earlier worker already gave up on this deal's take profit.
+        pending = { attempt: MISSING_TP_REARM_DELAYS_MS.length }
+        this.missingTpRearm.set(dealId, pending)
         return
       }
       const deal = live.deal
@@ -2187,6 +2215,10 @@ function createDCABotHelper<
         // Given up; the entry stays so later passes do not start over.
         if (attempt === MISSING_TP_REARM_DELAYS_MS.length) {
           this.missingTpRearm.set(dealId, { attempt })
+          await this.missingTpGiveUpLedger().record(
+            [this.botId, dealId],
+            'missing take profit',
+          )
           this.handleLog(
             `Missing TP | deal ${dealId} (${live.deal.symbol.symbol}) still has no take profit after ${attempt} re-sends, not re-sending again`,
           )
@@ -2221,7 +2253,71 @@ function createDCABotHelper<
       if (entry?.timer) {
         clearTimeout(entry.timer)
       }
+      if (entry && entry.attempt >= MISSING_TP_REARM_DELAYS_MS.length) {
+        this.missingTpGiveUpLedger()
+          .clear([this.botId, dealId])
+          .catch(() => undefined)
+      }
       this.missingTpRearm.delete(dealId)
+    }
+
+    /** The give-up record of a missing take profit. A method so a harness can replace it. */
+    missingTpGiveUpLedger(): Pick<RetryBackoff, 'record' | 'clear' | 'peek'> {
+      return missingTpGiveUpBackoff
+    }
+
+    /** Is a take profit of this deal held out of the price band? */
+    protected hasHeldTakeProfit(dealId: string): boolean {
+      for (const { order } of this.outOfBandOrders?.values() ?? []) {
+        if (
+          order.dealId === dealId &&
+          order.typeOrder === TypeOrderEnum.dealTP
+        ) {
+          return true
+        }
+      }
+      return false
+    }
+
+    /**
+     * A deal's take profit the venue refused for its distance from the price
+     * is held and placed once the price is near, like a safety order. Spec 283.
+     */
+    protected override holdsTakeProfitOutOfBand(order: Order): boolean {
+      return (
+        order.typeOrder === TypeOrderEnum.dealTP &&
+        !!order.dealId &&
+        !order.addFundsId &&
+        !order.reduceFundsId &&
+        !isComboFundsOrderRow(order)
+      )
+    }
+
+    /**
+     * The price came near a held take profit: plan the deal's take profit
+     * again (it may have moved since) and place it, unless one rests or the
+     * deal is closing. Spec 283.
+     */
+    protected async replaceHeldTakeProfit(order: Order): Promise<boolean> {
+      const dealId = `${order.dealId ?? ''}`
+      const findDeal = dealId ? this.getDeal(dealId) : undefined
+      if (
+        !findDeal ||
+        findDeal.deal.status !== DCADealStatusEnum.open ||
+        findDeal.closeBySl ||
+        findDeal.closeByTp ||
+        this.restingTakeProfits(dealId).length
+      ) {
+        return false
+      }
+      // Its re-sends start over: a give-up recorded by any worker is dropped.
+      this.clearMissingTpRearm(dealId)
+      await this.missingTpGiveUpLedger().clear([this.botId, dealId])
+      this.handleLog(
+        `Deal ${dealId}: the price is near its held take profit ${order.side} ${order.origPrice || order.price}, placing it`,
+      )
+      await this.rearmMissingTp(dealId)
+      return true
     }
 
     /** Re-send a missing take profit; see `noteTpCoverageAfterPlacement`. */
@@ -28260,6 +28356,9 @@ function createDCABotHelper<
     protected override async replaceVenueCanceled(
       order: Order,
     ): Promise<boolean> {
+      if (order.typeOrder === TypeOrderEnum.dealTP) {
+        return this.replaceHeldTakeProfit(order)
+      }
       const dealId = `${order.dealId ?? ''}`
       const findDeal = dealId ? this.getDeal(dealId) : undefined
       if (

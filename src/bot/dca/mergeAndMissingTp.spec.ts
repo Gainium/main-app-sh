@@ -90,6 +90,21 @@ describe('merge on a refused account, and the missing take profit', () => {
     }
     b.isDealForTPLevelCheck = async () => false
     b.missingTpRearm = new Map()
+    // The give-up record (Redis in prod) kept in memory, per fixture.
+    const gaveUp = new Set<string>()
+    b.missingTpGiveUpLedger = () => ({
+      record: async (p: string[]) => {
+        gaveUp.add(p.join(':'))
+        return { until: 0, reason: '', interval: 0, attempt: 1 }
+      },
+      peek: async (p: string[]) =>
+        gaveUp.has(p.join(':'))
+          ? { until: 0, reason: '', interval: 0, attempt: 1 }
+          : null,
+      clear: async (p: string[]) => {
+        gaveUp.delete(p.join(':'))
+      },
+    })
     b.deals = new Map(
       openDeals.map((id) => [
         id,
