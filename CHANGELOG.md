@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.134.13] - 2026-11-26
+
+### Fixed
+
+- A deal limit that does not read as a number no longer lifts the limit: no new deal opens and the bot reports the setting.
+- Bot create via the v2 API now refuses numeric text that is only partly a number (such as "3,5" or "3abc"), matching how the bot reads it.
+
+### Security
+
+- API keys restricted to one bot or to one trading context can no longer create, change or delete global variables, which every bot of the account can read.
+
 ## [1.134.12] - 2026-11-26
 
 ### Added
