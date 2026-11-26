@@ -362,3 +362,22 @@ export function streamFeeFields(msg: ExecutionReport): {
   }
   return out
 }
+
+/**
+ * The fee a FILLED stream report states for an order whose fill was already
+ * booked (spec 286). Kraken Futures answers an order that fills on arrival
+ * with no fee and states it on the user stream a few hundred ms later.
+ *
+ * Returns the `streamFeeFields` of the report when it is FILLED and carries a
+ * fee, else `null`. Pure: the caller decides whether the stored row may take
+ * it (`MainBot.recordLateFillFee` only writes a FILLED row with no fee).
+ */
+export function lateFillFeeFields(
+  msg: ExecutionReport,
+): ReturnType<typeof streamFeeFields> | null {
+  if (msg?.orderStatus !== 'FILLED') {
+    return null
+  }
+  const fields = streamFeeFields(msg)
+  return hasObservedFee(fields) ? fields : null
+}

@@ -6,6 +6,7 @@ import { IdMute, IdMutex } from '../utils/mutex'
 import logger from '../utils/logger'
 
 import type { ExecutionReport } from '../../types'
+import { lateFillFeeFields } from './orderFee'
 
 type CBType = (msg: ExecutionReport) => any
 
@@ -31,6 +32,31 @@ class SharedStream {
   private ordersToBotMap: Map<string, string> = new Map()
 
   private botToOrdersMap: Map<string, Set<string>> = new Map()
+
+  /**
+   * How long a removed route still carries a late fee report (spec 286 §4.1).
+   * The answer books a fill on arrival and the deal can close and drop its
+   * orders before the stream report stating the fee lands (~0.5 s on Kraken
+   * Futures); a minute covers a slow stream without keeping routes around.
+   */
+  static RETIRED_ROUTE_TTL_MS = 60_000
+
+  /**
+   * Routes `removeOrder` ended: clientOrderId → owning bot and when the route
+   * ended. Insertion order is removal order, so expiry prunes from the front.
+   * Only a FILLED report with a fee is delivered through one (spec 286 §4.1).
+   */
+  private retiredRoutes: Map<string, { botId: string; at: number }> =
+    new Map()
+
+  private pruneRetiredRoutes(now = Date.now()) {
+    for (const [id, route] of this.retiredRoutes) {
+      if (now - route.at <= SharedStream.RETIRED_ROUTE_TTL_MS) {
+        break
+      }
+      this.retiredRoutes.delete(id)
+    }
+  }
 
   constructor() {
     this.redisCb = this.redisCb.bind(this)
@@ -90,6 +116,18 @@ class SharedStream {
       const order = this.ordersToBotMap.get(clientOrderId)
       if (order) {
         this.listeners.get(order)?.(parse)
+        return
+      }
+      const retired = this.retiredRoutes.get(clientOrderId)
+      if (!retired) {
+        return
+      }
+      if (Date.now() - retired.at > SharedStream.RETIRED_ROUTE_TTL_MS) {
+        this.pruneRetiredRoutes()
+        return
+      }
+      if (lateFillFeeFields(parse)) {
+        this.listeners.get(retired.botId)?.(parse)
       }
     }
   }
@@ -129,6 +167,11 @@ class SharedStream {
     for (const order of all || []) {
       this.ordersToBotMap.delete(order)
     }
+    for (const [id, route] of this.retiredRoutes) {
+      if (route.botId === botId) {
+        this.retiredRoutes.delete(id)
+      }
+    }
   }
 
   @IdMute(
@@ -137,6 +180,7 @@ class SharedStream {
   )
   public async addOrder(botId: string, clientOrderId: string) {
     this.log(`${loggerPrefix} Adding order ${clientOrderId} to ${botId}`)
+    this.retiredRoutes.delete(clientOrderId)
     this.ordersToBotMap.set(clientOrderId, botId)
     if (!this.botToOrdersMap.has(botId)) {
       this.botToOrdersMap.set(botId, new Set<string>().add(clientOrderId))
@@ -151,6 +195,11 @@ class SharedStream {
   )
   public async removeOrder(botId: string, clientOrderId: string) {
     this.log(`${loggerPrefix} Removing order ${clientOrderId} from ${botId}`)
+    if (this.ordersToBotMap.get(clientOrderId) === botId) {
+      this.pruneRetiredRoutes()
+      this.retiredRoutes.delete(clientOrderId)
+      this.retiredRoutes.set(clientOrderId, { botId, at: Date.now() })
+    }
     this.ordersToBotMap.delete(clientOrderId)
     const get = this.botToOrdersMap.get(botId)
     get?.delete(clientOrderId)

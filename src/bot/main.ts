@@ -60,6 +60,7 @@ import {
   accrueStreamFee,
   feeAfterAnswerFills,
   hasObservedFee,
+  lateFillFeeFields,
   observedFeeOf,
   streamFeeFields,
 } from './orderFee'
@@ -8627,6 +8628,13 @@ class MainBot<T extends IMainBot> {
           status: msg.orderStatus,
           qty: base,
         })
+        // Spec 286 §4.3: the stored row of an order already held FILLED with
+        // no fee takes a late report's fee; read before the merge below.
+        const heldBefore = this.getOrderFromMap(orderId)
+        const lateFee =
+          heldBefore?.status === 'FILLED' && !hasObservedFee(heldBefore)
+            ? lateFillFeeFields(msg)
+            : null
         let order = await this.convertExecutionReportToOrder(msg, true)
         if (!order) {
           this.handleDebug(`${orderId} not found in orders and in DB`)
@@ -8684,6 +8692,9 @@ class MainBot<T extends IMainBot> {
         order = await this.fillPartiallyFilledOrder(order)
         const newExecutedQty = +order.executedQty
         this.updateOrderOnDb(order, origExecutedQty < newExecutedQty)
+        if (lateFee && order.status === 'FILLED') {
+          void this.recordLateFillFee(order.clientOrderId, lateFee)
+        }
         if (this.needToSendOrder(order)) {
           this.emit('bot update', order)
         }
@@ -9175,6 +9186,25 @@ class MainBot<T extends IMainBot> {
         return
       }
       if (!this.ordersKeys.has(clientOrderId) && !msg.liquidation) {
+        // Spec 286 §4.2: a fee-bearing FILLED report for an order this bot
+        // already booked and let go of (a take-profit whose fill closed the
+        // deal; SharedStream's retired route delivers it). The fill is booked,
+        // so only the fee is recorded — no queue, no fill handling, no desync
+        // warning. Any other stored state falls through to today's handling.
+        const lateFee = lateFillFeeFields(msg)
+        if (lateFee) {
+          const stored = await this.ordersDb
+            .readData({ clientOrderId, botId: this.botId, userId: this.userId })
+            .catch(() => null)
+          const row =
+            stored?.status === StatusEnum.ok ? stored.data?.result : null
+          if (row?.status === 'FILLED') {
+            if (!hasObservedFee(row)) {
+              await this.recordLateFillFee(clientOrderId, lateFee)
+            }
+            return
+          }
+        }
         // Reaching here means SharedStream's `ordersToBotMap` says this order is
         // ours while our own book does not — it routed the event to this bot
         // specifically, it is not a broadcast. For NEW/CANCELED that is
@@ -12546,6 +12576,57 @@ class MainBot<T extends IMainBot> {
         )
     } catch (e) {
       this.handleDebug(`Order ${order.clientOrderId} ${field} not saved: ${e}`)
+    }
+  }
+
+  /**
+   * Record the fee a late FILLED stream report states for an order whose fill
+   * is already booked (spec 286 §4.4). One `$set` of the fee fields only,
+   * guarded so it lands only on this bot's FILLED row that holds no fee yet:
+   * idempotent, never overwrites a fee, never touches status, quantities or
+   * `updateTime` (the partial `latestOrders_filled` index entry stays put).
+   * `updateOrderOnDb` cannot carry it — its status guard refuses FILLED rows.
+   * A failure is logged and changes nothing else.
+   */
+  async recordLateFillFee(
+    clientOrderId: string,
+    fields: NonNullable<ReturnType<typeof lateFillFeeFields>>,
+  ): Promise<void> {
+    try {
+      const res = await this.ordersDb.updateData(
+        {
+          clientOrderId,
+          botId: this.botId,
+          status: 'FILLED',
+          feePaid: { $in: [null, ''] },
+          'feeBreakdown.0': { $exists: false },
+        },
+        { $set: { ...fields } },
+        // returnDoc: the matched row (or null when the guard refused it), so
+        // the "saved" line below is only logged for a write that landed.
+        true,
+      )
+      if (res?.status === StatusEnum.notok) {
+        this.handleWarn(
+          `Order ${clientOrderId} late fee not saved: ${res.reason}`,
+        )
+        return
+      }
+      if (res?.data) {
+        this.handleLog(
+          `Order ${clientOrderId} late fee saved: ${
+            fields.feePaid ?? ''
+          } ${fields.feeAsset ?? ''}${
+            fields.feeBreakdown?.length
+              ? ` ${fields.feeBreakdown
+                  .map((f) => `${f.amount} ${f.asset}`)
+                  .join(', ')}`
+              : ''
+          }`,
+        )
+      }
+    } catch (e) {
+      this.handleWarn(`Order ${clientOrderId} late fee not saved: ${e}`)
     }
   }
 
