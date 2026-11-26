@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.135.3] - 2026-11-26
+
+### Fixed
+
+- DCA deals: the average buy/sell price shown in deal lists and safety-order alerts now includes funds added to the deal; deals showing an outdated average are corrected when their bot restarts
+
 ## [1.135.2] - 2026-11-26
 
 ### Fixed
