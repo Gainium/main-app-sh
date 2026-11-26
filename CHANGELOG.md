@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.135.5] - 2026-11-26
+
+### Fixed
+
+- An order the venue filled on placement now keeps the fee reported on the user stream moments later, so deal fees and profit use the real fee instead of an estimate
+
 ## [1.135.4] - 2026-11-26
 
 ### Fixed
