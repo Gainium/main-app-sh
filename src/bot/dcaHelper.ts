@@ -448,6 +448,13 @@ import {
   isPartialCloseOfSharedPosition,
 } from './dca/sharedPositionClose'
 import {
+  closeHeldAgainstMessage,
+  heldAgainst,
+  OPPOSING_POSITION_RETRY_MS,
+  opposingNewDealRefusal,
+  type NetSide,
+} from './dca/opposingNetPosition'
+import {
   maxPositionEntriesOf,
   planPositionsByPair,
   positionEntriesOf,
@@ -505,6 +512,7 @@ import {
   maxDealsReached,
   notEnoughBalanceNewDeal,
   orderBelowExchangeMin,
+  newDealAgainstOpposingPosition,
   newDealNearDelivery,
   refusedBaseEntry,
   standingConditionKey,
@@ -8024,6 +8032,41 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * Spec 262 §4.2. A reduce-only close refused as "no position to reduce"
+     * is booked closed without an order — right when the symbol is flat, wrong
+     * on a one-way account whose net position sits on the OTHER side: there
+     * the refusal only says this deal's direction is not what the account
+     * holds, and booking it closed records a profit no fill produced.
+     *
+     * Asks the venue once, on one-way futures only. Returns the side held
+     * against this deal, or `null` — no answer, flat, or held on this deal's
+     * own side — in which case the caller keeps its behaviour unchanged.
+     */
+    private async netPositionHeldAgainst(
+      symbol: string,
+    ): Promise<NetSide | null> {
+      if (
+        !this.futures ||
+        this.hedge ||
+        typeof this.exchange?.futures_getPositions !== 'function'
+      ) {
+        return null
+      }
+      try {
+        const positions = await this.exchange.futures_getPositions(symbol)
+        return heldAgainst(
+          positions?.status === StatusEnum.ok && positions.data
+            ? { kind: 'positions', positions: positions.data }
+            : { kind: 'unavailable' },
+          symbol,
+          this.isLong ? 'LONG' : 'SHORT',
+        )
+      } catch {
+        return null
+      }
+    }
+
     private isNotionalReason(text: string): boolean {
       for (const r of notionalReasons) {
         if (text.toLowerCase().indexOf(r.toLowerCase()) !== -1) {
@@ -9268,6 +9311,15 @@ function createDCABotHelper<
                       tpOrder.price,
                       symbol,
                     )
+                    // Spec 262 §4.2: "no position to reduce" on a one-way
+                    // account whose net position is on the other side.
+                    const heldAgainstSide = this.isPositionAlreadyClosedReason(
+                      result,
+                    )
+                      ? await this.netPositionHeldAgainst(
+                          findDeal.deal.symbol.symbol,
+                        )
+                      : null
                     if (
                       this.isNotionalReason(result) &&
                       count < this.slippageRetry &&
@@ -9293,7 +9345,10 @@ function createDCABotHelper<
                         closeTrigger,
                         count + 1,
                       )
-                    } else if (this.isPositionAlreadyClosedReason(result)) {
+                    } else if (
+                      this.isPositionAlreadyClosedReason(result) &&
+                      !heldAgainstSide
+                    ) {
                       // The exchange says there is no position left to reduce,
                       // so the closing order can never be placed. Without this
                       // the deal stays open forever with no orders — see the
@@ -9311,8 +9366,21 @@ function createDCABotHelper<
                         closeTrigger,
                       )
                     } else {
+                      if (heldAgainstSide) {
+                        this.handleLog(
+                          `Close order for deal ${dealId} rejected (${result}), but the net ${findDeal.deal.symbol.symbol} position is ${heldAgainstSide}, not flat. Not closing deal without order`,
+                        )
+                      }
                       this.handleOrderErrors(
-                        sharedRefusal ?? result,
+                        heldAgainstSide
+                          ? closeHeldAgainstMessage({
+                              dealId: `${dealId}`,
+                              symbol: findDeal.deal.symbol.symbol,
+                              side: this.isLong ? 'LONG' : 'SHORT',
+                              heldSide: heldAgainstSide,
+                              reason: `${result}`,
+                            })
+                          : (sharedRefusal ?? result),
                         {
                           symbol: symbol.pair,
                           orderId: '0',
@@ -19497,6 +19565,96 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec 262 §4.1. Refuse a new deal on a one-way futures account when the
+     * account already holds the OTHER direction on `symbol` — an open deal of
+     * the opposite strategy on another of this user's bots on the same
+     * account, or, failing that, a net position the venue reports on the
+     * other side.
+     *
+     * The venue keeps one net position per symbol there, so this deal's entry
+     * would only shrink (or flip) that position: its own reduce-only close is
+     * later refused as "no position to reduce", and the other bot's deals no
+     * longer match what the account holds. `MainBot.loadData` refuses the same
+     * thing at bot START ("check positions"); this is the per-deal half, which
+     * nothing did before.
+     *
+     * Hedge accounts and spot are untouched. An unreadable venue answer does
+     * not refuse — a failed read must not stop trading; the deal check above
+     * it still applies. Every trigger is refused, manual included: the
+     * mechanism is the same however the deal was opened. A manual open is
+     * answered; an automatic one is reported once per re-arm window, and an
+     * ASAP bot — which has no other trigger to ask again — retries on a timer.
+     *
+     * @returns {boolean} true when the deal was refused
+     */
+    async refuseNewDealAgainstOpposingPosition(
+      symbol: string,
+      trigger?: NewDealTrigger,
+    ): Promise<boolean> {
+      if (
+        !this.futures ||
+        this.hedge ||
+        (this.botType !== BotType.dca && this.botType !== BotType.combo)
+      ) {
+        return false
+      }
+      const key = standingConditionKey(newDealAgainstOpposingPosition, symbol)
+      const side: NetSide = this.isLong ? 'LONG' : 'SHORT'
+      const holder = await this.findOpposingDealHolder(
+        symbol,
+        this.isLong ? StrategyEnum.short : StrategyEnum.long,
+      )
+      const heldSide: NetSide | null = holder
+        ? side === 'LONG'
+          ? 'SHORT'
+          : 'LONG'
+        : await this.netPositionHeldAgainst(symbol)
+      if (!heldSide) {
+        this.standingConditionLatch.clear(key)
+        return false
+      }
+      const message = opposingNewDealRefusal({ symbol, side, heldSide, holder })
+      this.handleLog(message)
+      if (trigger === 'manual') {
+        await this.reportUserRefusal(
+          manualNewDealNotOpenedMessage(
+            symbol,
+            `the account already holds a ${heldSide} position on ${symbol}, which a ${side} deal would only reduce on a one-way account`,
+          ),
+          symbol,
+        )
+        return true
+      }
+      if (this.standingConditionLatch.shouldReport(key, +new Date())) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Bot warning',
+          botType: this.botType,
+          description: `Warning: ${message}`,
+          paperContext: !!this.data?.paperContext,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
+      }
+      const settings = await this.getAggregatedSettings()
+      if (settings.startCondition === StartConditionEnum.asap) {
+        const prev = this.openNewDealTimer.get(symbol)
+        if (prev) {
+          clearTimeout(prev)
+        }
+        this.openNewDealTimer.set(
+          symbol,
+          setTimeout(() => {
+            this.openNewDealTimer.delete(symbol)
+            void this.openDealAfterTimer()
+          }, OPPOSING_POSITION_RETRY_MS),
+        )
+      }
+      return true
+    }
+
+    /**
      * Refuse an automatic new deal on a dated futures contract that delivers
      * within `DELIVERY_NEW_DEAL_CUTOFF_MS` (`deliveryCutoff.ts`): a
      * deal still open at delivery is settled by the exchange. Perpetuals and
@@ -20386,7 +20544,8 @@ function createDCABotHelper<
           skip,
           dynamic,
           trigger,
-        ))
+        )) ||
+        (await this.refuseNewDealAgainstOpposingPosition(symbol, trigger))
       ) {
         this.endMethod(_id)
         if (cbIfNotOpened) {

@@ -6428,8 +6428,13 @@ class MainBot<T extends IMainBot> {
    * field, and a deal that predates it must not be read as "no holder" and
    * reported to the user as a leftover.
    */
-  private async findOpposingDealHolder(
+  protected async findOpposingDealHolder(
     symbol: string,
+    /**
+     * Spec 262: count only deals of this strategy. Omitted at bot start,
+     * where `loadData` has already read the position's side from the venue.
+     */
+    strategy?: StrategyEnum,
   ): Promise<OpposingHolder> {
     try {
       if (!this.userId || !this.botId) {
@@ -6454,6 +6459,7 @@ class MainBot<T extends IMainBot> {
           isDeleted: { $ne: true },
           botId: { $ne: `${this.botId}` },
           paperContext: paperContext ? { $eq: true } : { $ne: true },
+          ...(strategy ? { strategy } : {}),
         },
         fields,
         options,
@@ -6472,6 +6478,7 @@ class MainBot<T extends IMainBot> {
             isDeleted: { $ne: true },
             botId: { $ne: `${this.botId}` },
             paperContext: paperContext ? { $eq: true } : { $ne: true },
+            ...(strategy ? { strategy } : {}),
           },
           fields,
           options,

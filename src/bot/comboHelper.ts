@@ -8308,7 +8308,8 @@ function createComboBotHelper<
           skip,
           dynamic,
           trigger,
-        ))
+        )) ||
+        (await this.refuseNewDealAgainstOpposingPosition(symbol, trigger))
       ) {
         this.endMethod(_id)
         if (cbIfNotOpened) {
