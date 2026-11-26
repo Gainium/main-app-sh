@@ -72,7 +72,11 @@ import {
   type FieldSelection,
 } from './fieldUtils'
 import { endpointForBotType } from './fieldConfig'
-import { fieldSelectionMiddlewares, paperContextMiddleware } from './middleware'
+import {
+  fieldSelectionMiddlewares,
+  paperContextMiddleware,
+  refuseRestrictedApiKeyMiddleware,
+} from './middleware'
 import { isFutures, isCoinm, isPaper, isServiceUnreachable } from '../../utils'
 import { priceBalancesUsd } from '../../utils/user'
 import { walletUuidOf } from '../../utils/sharedWallet'
@@ -2153,7 +2157,9 @@ const v2API = <R extends UserSchema = UserSchema>(
    * - 500: Internal server error
    */
   post.set('/api/v2/user/global-vars', {
-    middlewares: [],
+    // A global variable can feed every bot of the account, real and paper,
+    // so a key restricted to one bot or one trading context cannot write it.
+    middlewares: [refuseRestrictedApiKeyMiddleware],
     handler: async (req, res) => {
       const user = req.userData
       const { name, type, value } = req.body as {
@@ -5422,7 +5428,9 @@ const v2API = <R extends UserSchema = UserSchema>(
    * - 500: Internal server error
    */
   put.set('/api/v2/user/global-vars/:id', {
-    middlewares: [],
+    // A global variable can feed every bot of the account, real and paper,
+    // so a key restricted to one bot or one trading context cannot write it.
+    middlewares: [refuseRestrictedApiKeyMiddleware],
     handler: async (req, res) => {
       const user = req.userData
       const { id } = req.params
@@ -5551,7 +5559,9 @@ const v2API = <R extends UserSchema = UserSchema>(
    * - 500: Internal server error
    */
   deleteMap.set('/api/v2/user/global-vars/:id', {
-    middlewares: [],
+    // A global variable can feed every bot of the account, real and paper,
+    // so a key restricted to one bot or one trading context cannot write it.
+    middlewares: [refuseRestrictedApiKeyMiddleware],
     handler: async (req, res) => {
       const user = req.userData
       const { id } = req.params
