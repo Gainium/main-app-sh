@@ -28,6 +28,7 @@ import {
   FieldConfig,
   validators,
   ValidatorsEnum,
+  readNumericText,
   validateNestedObjects,
   indicatorCoreConfig,
   indicatorGroupConfig,
@@ -127,7 +128,7 @@ const validateCommonSchema = <
     // Additional constraints based on type
     const isArray = Array.isArray(value)
     const isString = typeof value === 'string'
-    const num = isString ? parseFloat(value) : value
+    const num = isString ? readNumericText(value) : value
 
     if (isArray) {
       // Array length validation (min/max apply to array size)
@@ -188,7 +189,7 @@ const validateCommonSchema = <
       }
 
       // Precision validation for numeric strings with fallback to global maxPrecision
-      if (value !== '' && !isNaN(parseFloat(value))) {
+      if (value !== '' && !isNaN(readNumericText(value))) {
         const maxPrec = config.maxPrecision ?? maxPrecision
         const parts = value.split('.')
         if (parts[1] && parts[1].length > maxPrec) {

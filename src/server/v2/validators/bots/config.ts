@@ -1347,7 +1347,7 @@ export const validateNestedObjects = (
 
       // Additional constraints
       const isString = typeof value === 'string'
-      const num = isString ? parseFloat(value) : value
+      const num = isString ? readNumericText(value) : value
 
       // Numeric min/max validation
       if (
@@ -1381,7 +1381,7 @@ export const validateNestedObjects = (
         fieldConfig.maxPrecision !== undefined &&
         isString &&
         value !== '' &&
-        !isNaN(parseFloat(value))
+        !isNaN(readNumericText(value))
       ) {
         const maxPrec = fieldConfig.maxPrecision
         const parts = value.split('.')
@@ -1414,6 +1414,14 @@ export const validateNestedObjects = (
   return errors
 }
 
+/**
+ * Reads numeric text the way the bot engine does (`+value`): the whole text
+ * must be a number. `parseFloat` reads only a leading number, so "3,5" or
+ * "3abc" passed validation as 3 while the engine read NaN.
+ */
+export const readNumericText = (value: string): number =>
+  value.trim() === '' ? NaN : +value
+
 // Validator functions
 export const validators = {
   [ValidatorsEnum.shouldBeString]: (
@@ -1435,7 +1443,7 @@ export const validators = {
     if (typeof value === 'number') {
       num = value
     } else if (typeof value === 'string') {
-      num = parseFloat(value)
+      num = readNumericText(value)
       if (isNaN(num)) {
         return `Field ${fieldName} must be a valid number`
       }
@@ -1487,7 +1495,7 @@ export const validators = {
     value: any,
     fieldName: string,
   ): string | null => {
-    const num = typeof value === 'string' ? parseFloat(value) : value
+    const num = typeof value === 'string' ? readNumericText(value) : value
     if (typeof num !== 'number' || isNaN(num)) {
       return `Field ${fieldName} must be a valid number`
     }
@@ -1501,7 +1509,7 @@ export const validators = {
     value: any,
     fieldName: string,
   ): string | null => {
-    const num = typeof value === 'string' ? parseFloat(value) : value
+    const num = typeof value === 'string' ? readNumericText(value) : value
     if (typeof num !== 'number' || isNaN(num)) {
       return `Field ${fieldName} must be a valid number`
     }
@@ -1515,7 +1523,7 @@ export const validators = {
     value: any,
     fieldName: string,
   ): string | null => {
-    const num = typeof value === 'string' ? parseFloat(value) : value
+    const num = typeof value === 'string' ? readNumericText(value) : value
     if (typeof num !== 'number' || isNaN(num)) {
       return `Field ${fieldName} must be a valid number`
     }
@@ -1529,7 +1537,7 @@ export const validators = {
     value: any,
     fieldName: string,
   ): string | null => {
-    const num = typeof value === 'string' ? parseFloat(value) : value
+    const num = typeof value === 'string' ? readNumericText(value) : value
     if (typeof num !== 'number' || isNaN(num)) {
       return `Field ${fieldName} must be a valid number`
     }
@@ -1561,7 +1569,7 @@ export const validators = {
     // For string numbers, try to parse them
     if (typeof value === 'string') {
       if (value === '') return null // Empty string is handled by canBeEmptyString
-      const num = parseFloat(value)
+      const num = readNumericText(value)
       if (isNaN(num) || !isFinite(num)) {
         return `Field ${fieldName} must be a valid numeric string`
       }

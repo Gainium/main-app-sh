@@ -7866,7 +7866,20 @@ function createDCABotHelper<
         settings.maxDealsPerPair !== ''
       ) {
         const max = +settings.maxDealsPerPair
-        if (!isNaN(max) && max >= 0) {
+        // A cap that does not read as a number must not lift the cap: no new
+        // deal until the setting is corrected.
+        if (isNaN(max)) {
+          this.handleErrors(
+            `maxDealsPerPair "${settings.maxDealsPerPair}" is not a number. No new deal opens until it is corrected`,
+            'checkMaxDealsPerPair()',
+            'Read deal limit',
+            false,
+            false,
+            false,
+          )
+          return false
+        }
+        if (max >= 0) {
           const deals = this.getOpenDeals(false, symbol)
           const symbolDealsLength = deals.length
           const pendingDeals = this.pendingDealsPerPair.get(symbol) ?? 0
@@ -8006,7 +8019,20 @@ function createDCABotHelper<
         settings.maxNumberOfOpenDeals !== ''
       ) {
         const max = +settings.maxNumberOfOpenDeals
-        if (!isNaN(max) && max >= 0) {
+        // A cap that does not read as a number must not lift the cap: no new
+        // deal until the setting is corrected.
+        if (isNaN(max)) {
+          this.handleErrors(
+            `maxNumberOfOpenDeals "${settings.maxNumberOfOpenDeals}" is not a number. No new deal opens until it is corrected`,
+            'checkMaxDeals()',
+            'Read deal limit',
+            false,
+            false,
+            false,
+          )
+          return false
+        }
+        if (max >= 0) {
           const deals = this.getOpenDeals(settings.ignoreStartDeals)
           const dealsLength = deals.length
           if (dealsLength + this.pendingDeals < max) {

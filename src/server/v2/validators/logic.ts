@@ -19,7 +19,7 @@ import {
   StrategyEnum,
   TerminalDealTypeEnum,
 } from '../../../../types'
-import { ValidationResult } from './bots/config'
+import { readNumericText, ValidationResult } from './bots/config'
 import { CreateDCABotInputRaw } from '../api'
 import { DCA_FORM_DEFAULTS } from '../botDefaults'
 import { Types } from 'mongoose'
@@ -205,8 +205,8 @@ const betweenConditionErrors = (
         ]
       }
       if (
-        isNaN(parseFloat(i.indicatorValue)) ||
-        isNaN(parseFloat(i.indicatorValue2 ?? ''))
+        isNaN(readNumericText(`${i.indicatorValue ?? ''}`)) ||
+        isNaN(readNumericText(`${i.indicatorValue2 ?? ''}`))
       ) {
         return [
           [
