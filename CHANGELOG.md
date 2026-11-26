@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.134.3] - 2026-11-26
+
+### Fixed
+
+- Futures grid take profit and stop loss ("stop and sell") no longer stop working when the close order fills only partly; the filled part is booked into the position and profit, and the rest of the position is closed, also after a restart
+
 ## [1.134.2] - 2026-11-25
 
 ### Fixed
