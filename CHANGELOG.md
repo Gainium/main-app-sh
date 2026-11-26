@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.134.5] - 2026-11-26
+
+### Fixed
+
+- Futures grid bots' quote profit now subtracts the trading fee of buy fills as well as sell fills
+
 ## [1.134.4] - 2026-11-26
 
 ### Fixed
