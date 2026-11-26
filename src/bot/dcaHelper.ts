@@ -442,6 +442,7 @@ import {
   dealClosedFromVenueFillsMessage,
   dealClosedOutsideProfitUnknownMessage,
   type PositionReconcileVerdict,
+  type VenuePositionProbe,
 } from './dca/positionReconcile'
 import { shouldRearmTpTargets } from './dca/multiTpCompletion'
 import {
@@ -452,7 +453,10 @@ import {
   closeHeldAgainstMessage,
   heldAgainst,
   OPPOSING_POSITION_RETRY_MS,
+  opposingHold,
   opposingNewDealRefusal,
+  opposingUnreadableRefusal,
+  safetyOrderHeldMessage,
   type NetSide,
 } from './dca/opposingNetPosition'
 import {
@@ -481,6 +485,7 @@ import { removePaperFormExchangeName } from '../exchange/helpers'
 import logger from '../utils/logger'
 import {
   botProfitChartDb,
+  comboBotDb,
   dcaBotDb,
   dcaDealsDb,
   fundingLotDb,
@@ -514,6 +519,7 @@ import {
   notEnoughBalanceNewDeal,
   orderBelowExchangeMin,
   newDealAgainstOpposingPosition,
+  safetyOrderAgainstOpposingPosition,
   newDealNearDelivery,
   refusedBaseEntry,
   standingConditionKey,
@@ -1418,6 +1424,13 @@ function createDCABotHelper<
     dealsDCALevelCheck: Map<string, number> = new Map()
     dealsDCAByMarket: Map<string, number> = new Map()
     dealsByMarketProcessing: Set<string> = new Set()
+    /** Spec 285 §4.1.1: symbol → until when a safety-order hold stands. */
+    opposingSafetyHoldUntil: Map<string, number> = new Map()
+    /** Spec 285 §4.2: dealId → the held safety levels and their retry timer. */
+    opposingSafetyHeld: Map<
+      string,
+      { levels: Grid[]; timer: ReturnType<typeof setTimeout> }
+    > = new Map()
     dealsForTPLevelCheck: Map<string, number> = new Map()
     startSent = false
     stopSent = false
@@ -8083,6 +8096,20 @@ function createDCABotHelper<
     private async netPositionHeldAgainst(
       symbol: string,
     ): Promise<NetSide | null> {
+      const probe = await this.readVenuePositionProbe(symbol)
+      return probe
+        ? heldAgainst(probe, symbol, this.isLong ? 'LONG' : 'SHORT')
+        : null
+    }
+
+    /**
+     * One venue position read on one-way futures, as a probe: `null` when
+     * the question does not apply (spot, hedge, no position endpoint); a
+     * failed or throwing read is `{ kind: 'unavailable' }`. Spec 262 / 285.
+     */
+    private async readVenuePositionProbe(
+      symbol: string,
+    ): Promise<VenuePositionProbe | null> {
       if (
         !this.futures ||
         this.hedge ||
@@ -8092,16 +8119,201 @@ function createDCABotHelper<
       }
       try {
         const positions = await this.exchange.futures_getPositions(symbol)
-        return heldAgainst(
-          positions?.status === StatusEnum.ok && positions.data
-            ? { kind: 'positions', positions: positions.data }
-            : { kind: 'unavailable' },
-          symbol,
-          this.isLong ? 'LONG' : 'SHORT',
-        )
+        return positions?.status === StatusEnum.ok && positions.data
+          ? { kind: 'positions', positions: positions.data }
+          : { kind: 'unavailable' }
       } catch {
-        return null
+        return { kind: 'unavailable' }
       }
+    }
+
+    /**
+     * Spec 285 §4.1. Does another DCA or combo bot of this user trade the
+     * OPPOSITE direction on `symbol` on this account? Only then can this
+     * bot's entries net against another bot's position, so only then is an
+     * unreadable venue answer a reason to hold. Not deleted, not closed.
+     * A failed read answers `false`: the behaviour before spec 285.
+     */
+    protected async hasOpposingBotOnSymbol(symbol: string): Promise<boolean> {
+      if (!this.userId || !this.botId) {
+        return false
+      }
+      const filter = {
+        userId: this.userId,
+        _id: { $ne: this.botId },
+        exchangeUUID: this.data?.exchangeUUID,
+        'settings.pair': symbol,
+        'settings.strategy': this.isLong
+          ? StrategyEnum.short
+          : StrategyEnum.long,
+        status: {
+          $in: [BotStatusEnum.open, BotStatusEnum.range, BotStatusEnum.error],
+        },
+        isDeleted: { $ne: true },
+        paperContext: this.data?.paperContext ? { $eq: true } : { $ne: true },
+      }
+      try {
+        for (const db of [dcaBotDb, comboBotDb] as const) {
+          const res = await (db as typeof dcaBotDb).readData(
+            filter as never,
+            { _id: 1 },
+            { limit: 1 },
+            true,
+          )
+          if (res.status === StatusEnum.ok && res.data?.result?.length) {
+            return true
+          }
+        }
+      } catch {
+        return false
+      }
+      return false
+    }
+
+    /**
+     * Spec 285 §4.1. Hold a safety order that would add to this deal's side
+     * on a one-way futures account when the account holds — or, unreadable,
+     * may hold — the other direction on `symbol`. DCA and combo only.
+     *
+     * A bot with neither an open opposite deal nor an opposite-direction bot
+     * on the symbol is answered at once, with no venue read: it places
+     * safety orders exactly as before. A hold is cached per symbol for the
+     * retry window and reported once per re-arm window.
+     *
+     * @returns {boolean} true when the safety order must not be sent now
+     */
+    async holdSafetyOrderAgainstOpposingPosition(
+      symbol: string,
+    ): Promise<boolean> {
+      if (
+        !this.futures ||
+        this.hedge ||
+        (this.botType !== BotType.dca && this.botType !== BotType.combo)
+      ) {
+        return false
+      }
+      const now = +new Date()
+      if ((this.opposingSafetyHoldUntil.get(symbol) ?? 0) > now) {
+        return true
+      }
+      const key = standingConditionKey(
+        safetyOrderAgainstOpposingPosition,
+        symbol,
+      )
+      const side: NetSide = this.isLong ? 'LONG' : 'SHORT'
+      const holder = await this.findOpposingDealHolder(
+        symbol,
+        this.isLong ? StrategyEnum.short : StrategyEnum.long,
+      )
+      const oppositeBot = holder
+        ? true
+        : await this.hasOpposingBotOnSymbol(symbol)
+      if (!holder && !oppositeBot) {
+        this.opposingSafetyHoldUntil.delete(symbol)
+        this.standingConditionLatch.clear(key)
+        return false
+      }
+      const verdict = opposingHold({
+        symbol,
+        side,
+        dealHolder: !!holder,
+        oppositeBot,
+        probe: holder ? null : await this.readVenuePositionProbe(symbol),
+      })
+      if (!verdict.hold) {
+        this.opposingSafetyHoldUntil.delete(symbol)
+        this.standingConditionLatch.clear(key)
+        return false
+      }
+      this.opposingSafetyHoldUntil.set(symbol, now + OPPOSING_POSITION_RETRY_MS)
+      const message = safetyOrderHeldMessage({
+        symbol,
+        side,
+        hold: verdict,
+        holder,
+      })
+      this.handleLog(message)
+      if (this.standingConditionLatch.shouldReport(key, now)) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Bot warning',
+          botType: this.botType,
+          description: `Warning: ${message}`,
+          paperContext: !!this.data?.paperContext,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
+      }
+      return true
+    }
+
+    /**
+     * Spec 285 §4.2. Place the safety levels held for `dealId` again, once
+     * the retry window has passed: only those the deal's ladder still wants
+     * and that are not resting (spec 247's check). `placeOrders` asks
+     * {@link holdSafetyOrderAgainstOpposingPosition} again, so a hold that
+     * still stands holds them again and re-arms this.
+     */
+    protected armOpposingSafetyRetry(dealId: string, levels: Grid[]) {
+      const prev = this.opposingSafetyHeld.get(dealId)
+      if (prev) {
+        clearTimeout(prev.timer)
+      }
+      const byId = new Map<string, Grid>()
+      for (const g of [...(prev?.levels ?? []), ...levels]) {
+        byId.set(`${g.side}@${g.price}@${g.dcaLevel ?? ''}`, g)
+      }
+      const timer = setTimeout(() => {
+        void this.retryOpposingSafetyLevels(dealId)
+      }, OPPOSING_POSITION_RETRY_MS)
+      ;(timer as { unref?: () => void }).unref?.()
+      this.opposingSafetyHeld.set(dealId, { levels: [...byId.values()], timer })
+    }
+
+    protected async retryOpposingSafetyLevels(dealId: string) {
+      const held = this.opposingSafetyHeld.get(dealId)
+      this.opposingSafetyHeld.delete(dealId)
+      const findDeal = this.getDeal(dealId)
+      if (
+        !held ||
+        !findDeal ||
+        findDeal.deal.status !== DCADealStatusEnum.open ||
+        this.dealReleased(dealId)
+      ) {
+        return
+      }
+      const resting = this.getOrdersByStatusAndDealId({
+        dealId,
+        status: ['NEW', 'PARTIALLY_FILLED'],
+      })
+      const wanted: Grid[] = []
+      for (const g of held.levels) {
+        const level = venueCanceledSafetyLevel({
+          order: { side: g.side, price: g.price, dcaLevel: g.dcaLevel },
+          currentOrders: findDeal.currentOrders,
+          resting,
+          dealRegular: TypeOrderEnum.dealRegular,
+        })
+        if (level) {
+          wanted.push({
+            ...level,
+            newClientOrderId: this.getOrderId(this.combo ? 'CMB-RO' : 'D-RO'),
+          })
+        }
+      }
+      if (!wanted.length) {
+        return
+      }
+      this.handleLog(
+        `Deal ${dealId}: trying ${wanted.length} held safety order(s) again`,
+      )
+      await this.placeOrders(this.botId, findDeal.deal.symbol.symbol, dealId, {
+        new: wanted,
+        cancel: [],
+      }).catch((e: unknown) =>
+        this.handleWarn(`Cannot place held safety orders of ${dealId}: ${e}`),
+      )
     }
 
     private isNotionalReason(text: string): boolean {
@@ -19650,22 +19862,35 @@ function createDCABotHelper<
         symbol,
         this.isLong ? StrategyEnum.short : StrategyEnum.long,
       )
+      const probe = holder ? null : await this.readVenuePositionProbe(symbol)
       const heldSide: NetSide | null = holder
         ? side === 'LONG'
           ? 'SHORT'
           : 'LONG'
-        : await this.netPositionHeldAgainst(symbol)
-      if (!heldSide) {
+        : probe
+          ? heldAgainst(probe, symbol, side)
+          : null
+      // Spec 285 §4.4: an unreadable venue refuses only when an opposite-
+      // direction bot of this user trades the symbol on this account.
+      const unreadable =
+        !heldSide &&
+        probe?.kind === 'unavailable' &&
+        (await this.hasOpposingBotOnSymbol(symbol))
+      if (!heldSide && !unreadable) {
         this.standingConditionLatch.clear(key)
         return false
       }
-      const message = opposingNewDealRefusal({ symbol, side, heldSide, holder })
+      const message = heldSide
+        ? opposingNewDealRefusal({ symbol, side, heldSide, holder })
+        : opposingUnreadableRefusal({ symbol, side })
       this.handleLog(message)
       if (trigger === 'manual') {
         await this.reportUserRefusal(
           manualNewDealNotOpenedMessage(
             symbol,
-            `the account already holds a ${heldSide} position on ${symbol}, which a ${side} deal would only reduce on a one-way account`,
+            heldSide
+              ? `the account already holds a ${heldSide} position on ${symbol}, which a ${side} deal would only reduce on a one-way account`
+              : `the exchange position on ${symbol} could not be read, and this one-way account also runs an opposite-direction bot on it`,
           ),
           symbol,
         )
@@ -21533,6 +21758,26 @@ function createDCABotHelper<
         }
         this.endMethod(_id)
         return
+      }
+      // Spec 285 §4.2: a safety order that adds to this deal's side is held
+      // while the one-way account holds the other direction on the symbol.
+      const addingSide = this.isLong ? OrderSideEnum.buy : OrderSideEnum.sell
+      const adds = orders.new.filter(
+        (g) => g.type === TypeOrderEnum.dealRegular && g.side === addingSide,
+      )
+      if (
+        adds.length &&
+        (await this.holdSafetyOrderAgainstOpposingPosition(pair))
+      ) {
+        const heldIds = new Set(adds.map((g) => g.newClientOrderId))
+        this.handleLog(
+          `Deal ${dealId}: ${adds.length} safety order(s) held, the account holds the opposite direction on ${pair}`,
+        )
+        this.armOpposingSafetyRetry(dealId, adds)
+        orders = {
+          ...orders,
+          new: orders.new.filter((g) => !heldIds.has(g.newClientOrderId)),
+        }
       }
       if (this.data?.status === BotStatusEnum.error) {
         await this.restoreFromErrorUnlessAuthDead()
@@ -32754,6 +32999,15 @@ function createDCABotHelper<
                 false,
                 false,
               )
+              continue
+            }
+            // Spec 285 §4.3: held, not marked processing — the next tick past
+            // the level asks again (cached for the retry window).
+            if (
+              await this.holdSafetyOrderAgainstOpposingPosition(
+                deal.deal.symbol.symbol,
+              )
+            ) {
               continue
             }
             const ed = await this.getExchangeInfo(deal.deal.symbol.symbol)

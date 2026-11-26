@@ -126,6 +126,14 @@ export const newDealNearDelivery = 'newDealNearDelivery'
 export const newDealAgainstOpposingPosition = 'newDealAgainstOpposingPosition'
 
 /**
+ * Spec 285: a safety order held because this one-way futures account holds
+ * (or may hold) the opposite direction on the pair. Standing until that
+ * position or deal closes. Keyed by PAIR.
+ */
+export const safetyOrderAgainstOpposingPosition =
+  'safetyOrderAgainstOpposingPosition'
+
+/**
  * A deal's resting take-profit no longer covers the position it tracks
  * (issue #696, spec `013.tp-coverage-drift-after-partial-tp`).
  *

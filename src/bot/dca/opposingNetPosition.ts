@@ -88,3 +88,78 @@ export const closeHeldAgainstMessage = (params: {
   const { dealId, symbol, side, heldSide, reason } = params
   return `Close of ${side} deal ${dealId} refused by the exchange (${reason}): the account's net position on ${symbol} is ${heldSide}, not flat, so the deal was not booked closed. On a one-way account opposite-direction bots share one net position; close the ${heldSide} side or settle this deal manually.`
 }
+
+/**
+ * Spec 285 §4.0 — whether an order that ADDS to `side` on `symbol` must be
+ * held on a one-way account, and why.
+ *
+ * In order: an open deal of the opposite strategy holds (even on a flat
+ * venue — the deal still records a position the entry would trade against);
+ * a venue net position on the other side holds; an unreadable venue holds only
+ * when the user runs an opposite-direction bot there, because only then is an
+ * unknown answer a risk worth stopping for. Anything else allows.
+ *
+ * `probe: null` means the venue was not asked.
+ */
+export type OpposingHold =
+  | { hold: false }
+  | {
+      hold: true
+      why: 'deal' | 'venue' | 'unreadable'
+      heldSide: NetSide | null
+    }
+
+export const opposingHold = (input: {
+  symbol: string
+  side: NetSide
+  dealHolder: boolean
+  oppositeBot: boolean
+  probe: VenuePositionProbe | null
+}): OpposingHold => {
+  const { symbol, side, dealHolder, oppositeBot, probe } = input
+  if (dealHolder) {
+    return {
+      hold: true,
+      why: 'deal',
+      heldSide: side === 'LONG' ? 'SHORT' : 'LONG',
+    }
+  }
+  if (probe) {
+    const held = heldAgainst(probe, symbol, side)
+    if (held) {
+      return { hold: true, why: 'venue', heldSide: held }
+    }
+    if (probe.kind === 'unavailable' && oppositeBot) {
+      return { hold: true, why: 'unreadable', heldSide: null }
+    }
+  }
+  return { hold: false }
+}
+
+/** Spec 285 §4.4: a new deal refused because the venue could not be read. */
+export const opposingUnreadableRefusal = (params: {
+  symbol: string
+  side: NetSide
+}): string => {
+  const { symbol, side } = params
+  const other = side === 'LONG' ? 'SHORT' : 'LONG'
+  return `Not opening a ${side} deal on ${symbol} yet: the exchange position could not be read, and this one-way futures account also runs a ${other} bot on it, so the deal could trade against that bot's position. Trying again in ${OPPOSING_POSITION_RETRY_MS / 1000} s.`
+}
+
+/** Spec 285 §4.1.2: the warning for held safety orders. */
+export const safetyOrderHeldMessage = (params: {
+  symbol: string
+  side: NetSide
+  hold: Extract<OpposingHold, { hold: true }>
+  holder?: { dealId: string; botName?: string } | null
+}): string => {
+  const { symbol, side, hold, holder } = params
+  const retry = `Safety orders are held and retried every ${OPPOSING_POSITION_RETRY_MS / 1000} s.`
+  if (hold.why === 'unreadable') {
+    return `${side} safety order on ${symbol} not placed: the exchange position could not be read, and this one-way futures account also runs a ${side === 'LONG' ? 'SHORT' : 'LONG'} bot on it. ${retry}`
+  }
+  const owner = holder
+    ? ` It belongs to open deal ${holder.dealId}${holder.botName ? ` on bot "${holder.botName}"` : ''}.`
+    : ''
+  return `${side} safety order on ${symbol} not placed: this one-way futures account holds a ${hold.heldSide} position on it, and both share one net position on the exchange, so the order would only reduce that position.${owner} ${retry} Close one of the two directions, or enable hedge mode on the exchange account.`
+}
