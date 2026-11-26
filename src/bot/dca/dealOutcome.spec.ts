@@ -85,6 +85,24 @@ describe('dealOutcome', () => {
         }),
       ).to.equal('Deal closed, id: 000000000000000000000001, profit: 12.5$')
     })
+    // Spec 282: a "profit unknown" close gives no number for the close.
+    it('a closed deal flagged profitUnknown says so, and names only what it realised before', () => {
+      const unknown = {
+        ...abandoned,
+        status: DCADealStatusEnum.closed,
+        flags: ['closedExternally', 'profitUnknown'],
+      }
+      expect(
+        dealCloseEventDescription({ ...unknown, profit: { totalUsd: 0 } }),
+      ).to.equal(
+        'Deal closed, id: 000000000000000000000001, profit: unknown - the exchange did not report the fills that closed the position',
+      )
+      expect(
+        dealCloseEventDescription({ ...unknown, profit: { totalUsd: 2.5 } }),
+      ).to.equal(
+        'Deal closed, id: 000000000000000000000001, profit: unknown - the exchange did not report the fills that closed the position (booked: 2.5$ realised before the close)',
+      )
+    })
     it('a closed deal that still shows size is not treated as abandoned', () => {
       expect(
         dealCloseEventDescription({

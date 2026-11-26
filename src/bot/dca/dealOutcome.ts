@@ -20,7 +20,11 @@
  * defect was a sentence, and a sentence is exactly the kind of thing that gets
  * "tidied" back into being wrong.
  */
-import { DCACloseTriggerEnum, DCADealStatusEnum } from '../../../types'
+import {
+  DCACloseTriggerEnum,
+  DCADealFlags,
+  DCADealStatusEnum,
+} from '../../../types'
 
 export type DealOutcome = {
   _id: string
@@ -32,7 +36,16 @@ export type DealOutcome = {
   child?: boolean
   /** The deal it was merged into. */
   parentId?: string | null
+  flags?: string[]
 }
+
+/**
+ * Spec `282`. A deal closed outside the bot whose closing fills the venue did
+ * not report (spec `277`): the result of the close is not known, so nothing
+ * but what it realised before the close is booked as its profit.
+ */
+export const isProfitUnknown = (deal: { flags?: string[] | null }): boolean =>
+  !!deal.flags?.includes(DCADealFlags.profitUnknown)
 
 /**
  * Volume the deal still holds on the exchange, or 0.
@@ -54,6 +67,14 @@ const unmanaged =
 /** Deal-event text: names the outcome, not the code path that produced it. */
 export const dealCloseEventDescription = (deal: DealOutcome): string => {
   if (deal.status !== DCADealStatusEnum.canceled) {
+    // Spec `282`. No number: the close's result is not known. Avoids the word
+    // "open" — V2's event taxonomy reads any deal line holding it as an opening.
+    if (isProfitUnknown(deal)) {
+      const before = deal.profit.totalUsd
+        ? ` (booked: ${deal.profit.totalUsd}$ realised before the close)`
+        : ''
+      return `Deal closed, id: ${deal._id}, profit: unknown - the exchange did not report the fills that closed the position${before}`
+    }
     return `Deal closed, id: ${deal._id}, profit: ${deal.profit.totalUsd}$`
   }
   // A merge cancels its source deals, but their position is not abandoned: it

@@ -387,6 +387,7 @@ import {
   closeTriggerForFilledClose,
   dealCloseEventDescription,
   dealLeftOpenSize,
+  isProfitUnknown,
   leftOpenPositionMessage,
   unbookedEntryQty,
   strandedStartCancelMessage,
@@ -5008,9 +5009,16 @@ function createDCABotHelper<
           findDeal.deal.status = DCADealStatusEnum.closed
           findDeal.deal.updateTime = +new Date()
           const commDeal = await this.getCommDeal(findDeal.deal)
+          // Spec `282`. A "profit unknown" close (spec `277`) has no price for
+          // the position it closed, so its result is not known: its fees (and
+          // its funding, below) are recorded on the deal but are not booked as
+          // its profit. Booked, they turned a deal that lost on the price move
+          // into a stored gain counted by the bot and the user profit totals.
+          // What it realised before the close (combo grid levels) stays.
+          const bookedComm = isProfitUnknown(findDeal.deal) ? 0 : commDeal
           const commUsd =
-            commDeal * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate
-          findDeal.deal.profit.total -= commDeal
+            bookedComm * (!profitBase ? 1 : findDeal.deal.lastPrice) * rate
+          findDeal.deal.profit.total -= bookedComm
           findDeal.deal.profit.totalUsd -= commUsd
           findDeal.deal.commission = commDeal
           this.data.profit.total += findDeal.deal.profit.total
@@ -5057,7 +5065,9 @@ function createDCABotHelper<
         const fundingTotalUsd = findDeal.deal.funding?.totalUsd ?? 0
         if (
           findDeal.deal.status === DCADealStatusEnum.closed &&
-          (fundingTotal || fundingTotalUsd)
+          (fundingTotal || fundingTotalUsd) &&
+          // Spec `282`: stays the breakdown line on a "profit unknown" close.
+          !isProfitUnknown(findDeal.deal)
         ) {
           findDeal.deal.profit.total += fundingTotal
           findDeal.deal.profit.totalUsd += fundingTotalUsd
