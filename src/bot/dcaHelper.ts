@@ -11612,6 +11612,10 @@ function createDCABotHelper<
           // dropped what was paid for them, so cost and P&L left the addition
           // out. Fills not booked yet are left to their own `updateDeal`.
           await this.updateDealBalances(findDeal, true)
+          // `display` reads the deal's balances, which only hold this fill
+          // from here on. Taken with `avg` above, it kept the break-even of
+          // the fills before the addition.
+          findDeal.deal.displayAvg = (await this.getAvgPrice(dealId)).display
           findDeal.closeByTp = false
           // Spec 139 §3.4: a single-position entry grows the position.
           const positionEntry = !!order.positionEntry
@@ -17115,6 +17119,40 @@ function createDCABotHelper<
     }
 
     /**
+     * Recompute an open deal's break-even average (`displayAvg`) on start.
+     *
+     * An add-funds fill used to store the break-even of the fills before it
+     * (`updateDeal` read the balances before adding the fill), and nothing
+     * recomputed it until the deal's next fill. Only a deal with an addition
+     * can hold that value, so only those are checked. Writes `displayAvg`
+     * alone; sends, cancels and re-prices nothing. Skipped until the pair's
+     * fee is known, so a fee-less figure never replaces a correct one.
+     */
+    private async refreshAddFundsDisplayAvg(d: FullDeal<ExcludeDoc<Deal>>) {
+      // Combo books its own break-even (`comboHelper`).
+      if (this.combo || d.deal.parent || !(d.deal.funds ?? []).length) {
+        return
+      }
+      if (!(await this.getUserFee(d.deal.symbol.symbol))) {
+        return
+      }
+      const { display } = await this.getAvgPrice(`${d.deal._id}`)
+      const stored = d.deal.displayAvg ?? 0
+      if (
+        !(display > 0) ||
+        !isFinite(display) ||
+        Math.abs(display - stored) <= 1e-9 * display
+      ) {
+        return
+      }
+      this.handleLog(
+        `Deal ${d.deal._id} break-even average left out an addition, set ${display} (was ${stored})`,
+      )
+      d.deal.displayAvg = display
+      this.saveDeal(d, { displayAvg: display })
+    }
+
+    /**
      * Confirm, on a cold restart, a deal entry the order map holds FILLED while
      * its Mongo row does not: the FILLED write died with the process. Asks the
      * venue by client order id. A venue answer that is not FILLED replaces the
@@ -17491,6 +17529,7 @@ function createDCABotHelper<
           this.resumeBaseEntryRemainder(d)
           // Spec 129: before anything below places from `currentOrders`.
           await this.restoreSettledBaseEntryAverage(d)
+          await this.refreshAddFundsDisplayAvg(d)
           if (!serviceRestart) {
             this.updateDealBalances(d)
             const completeLevels =
