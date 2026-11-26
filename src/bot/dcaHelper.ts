@@ -1345,6 +1345,8 @@ function createDCABotHelper<
     defaultedSlDeals: Set<string> = new Set()
     /** Spec 272 §1.6: deals already logged as held past their level. */
     defaultedSlHeldLogged: Set<string> = new Set()
+    /** Spec 272 §1.6: deals this process saw on their stop's safe side. */
+    slSafeSideSeen: Set<string> = new Set()
     dealsForIndicatorUnpnl: Map<string, DealIndicatorUnpnlVal> = new Map()
     dealsForStopLossCombo: Map<string, DealStopLossCombo> = new Map()
     dealsDCALevelCheck: Map<string, number> = new Map()
@@ -30980,6 +30982,60 @@ function createDCABotHelper<
       }
     }
 
+    /**
+     * Spec 272 §1.6: whether the deal's STORED documents say its stop loss
+     * exists only by the missing-condition default and was never armed —
+     * neither the deal nor the bot saved `dealCloseConditionSL`, and the deal
+     * has no persisted `defaultSlArmed`. Lean reads, so no schema default can
+     * fill the field in. `fallback` (the in-memory verdict) is used when the
+     * read fails. A verdict is reused for a minute.
+     */
+    private storedSlVerdict: Map<string, { held: boolean; at: number }> =
+      new Map()
+    async isStoredSlUnarmedDefault(
+      dealId: string,
+      fallback: boolean,
+    ): Promise<boolean> {
+      this.storedSlVerdict ??= new Map()
+      const cached = this.storedSlVerdict.get(dealId)
+      if (cached && Date.now() - cached.at < 60 * 1000) {
+        return cached.held
+      }
+      const [deal, bot] = await Promise.all([
+        this.dealsDb?.readData(
+          { _id: dealId } as any,
+          { 'settings.dealCloseConditionSL': 1, defaultSlArmed: 1 } as any,
+        ),
+        this.db?.readData(
+          { _id: this.botId } as any,
+          { 'settings.dealCloseConditionSL': 1 } as any,
+        ),
+      ])
+      if (
+        !deal ||
+        !bot ||
+        deal.status !== StatusEnum.ok ||
+        bot.status !== StatusEnum.ok ||
+        !deal.data?.result ||
+        !bot.data?.result
+      ) {
+        return fallback
+      }
+      const storedDeal = deal.data.result as {
+        settings?: { dealCloseConditionSL?: unknown }
+        defaultSlArmed?: boolean
+      }
+      const storedBot = bot.data.result as {
+        settings?: { dealCloseConditionSL?: unknown }
+      }
+      const held =
+        storedDeal.settings?.dealCloseConditionSL == null &&
+        storedBot.settings?.dealCloseConditionSL == null &&
+        !storedDeal.defaultSlArmed
+      this.storedSlVerdict.set(dealId, { held, at: Date.now() })
+      return held
+    }
+
     private async baseSlOn(deal?: ExcludeDoc<Deal>) {
       if (this.combo) {
         return BaseSlOnEnum.avg
@@ -31089,6 +31145,37 @@ function createDCABotHelper<
         // `moveSlArmed` idiom), so a worker restart cannot disarm it. Only the
         // plain stop loss is held; an armed trailing level was reached from
         // the profit side, so a live price has crossed it already.
+        //
+        // Held on what is STORED, not on the in-memory view: a deal restored
+        // from the worker's Redis snapshot reached this check with a condition
+        // its Mongo documents never had, so the in-memory test let the default
+        // fire a market close on the first tick. The stored read runs only
+        // when a stop not seen on its safe side in this process is about to
+        // close, and its verdict is reused for a minute.
+        if (useSl && !levelHit) {
+          this.slSafeSideSeen ??= new Set()
+          this.slSafeSideSeen.add(`${dealId}`)
+        }
+        if (
+          useSl &&
+          levelHit &&
+          !this.slSafeSideSeen?.has(`${dealId}`) &&
+          !(d.deal.trailingMode && d.deal.trailingLevel) &&
+          (await this.isStoredSlUnarmedDefault(
+            `${dealId}`,
+            !!this.defaultedSlDeals?.has(`${dealId}`) &&
+              !d.deal.defaultSlArmed,
+          ))
+        ) {
+          if (!this.defaultedSlHeldLogged?.has(`${dealId}`)) {
+            this.defaultedSlHeldLogged ??= new Set()
+            this.defaultedSlHeldLogged.add(`${dealId}`)
+            this.handleLog(
+              `Deal: ${dealId} stop loss not armed: no saved close condition and the price ${last} is already past its level ${priceToClose}; waiting for a price on the safe side`,
+            )
+          }
+          continue
+        }
         if (useSl && this.defaultedSlDeals?.has(`${dealId}`)) {
           if (!levelHit) {
             if (!d.deal.defaultSlArmed) {

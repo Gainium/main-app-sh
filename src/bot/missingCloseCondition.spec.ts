@@ -243,6 +243,33 @@ describe('a bot saved without a close condition (spec 272)', () => {
       bot.saveDeal = async (_d: unknown, patch: Record<string, unknown>) => {
         saved.push(patch)
       }
+      // The stored documents, read lean by the hold (§1.6). By default they
+      // are what the test built; `stored` overrides them to model an
+      // in-memory view (a Redis snapshot) that Mongo never had.
+      const stored = {
+        deal: (): Record<string, unknown> => ({
+          _id: DEAL_ID,
+          settings: deal.settings,
+          defaultSlArmed: (deal as any).defaultSlArmed,
+        }),
+        bot: (): Record<string, unknown> => ({
+          _id: BOT_ID,
+          settings: bot.data.settings,
+        }),
+      }
+      const reads: string[] = []
+      bot.dealsDb = {
+        readData: async () => {
+          reads.push('deal')
+          return { status: 'OK', data: { result: stored.deal() } }
+        },
+      }
+      bot.db = {
+        readData: async () => {
+          reads.push('bot')
+          return { status: 'OK', data: { result: stored.bot() } }
+        },
+      }
       bot.allowedMethods = new Set(['checkDealsStopLoss'])
       bot.dealsForStopLoss = new Map([[DEAL_ID, SL_LEVEL]])
       bot.getDeal = () => ({ deal })
@@ -253,7 +280,7 @@ describe('a bot saved without a close condition (spec 272)', () => {
         price = p
         await bot.checkDealsStopLoss(BOT_ID, SYMBOL)
       }
-      return { fired, tick, logs, saved, deal }
+      return { fired, tick, logs, saved, deal, bot, stored, reads }
     }
 
     it('does not close a deal already past its level on the first tick', async () => {
@@ -313,6 +340,65 @@ describe('a bot saved without a close condition (spec 272)', () => {
       )
       await tick(55)
       expect(fired).to.deep.equal([DEAL_ID])
+    })
+
+    it('holds on the STORED state when the in-memory bot carries a condition Mongo never saved', async () => {
+      // The prod shape: the worker restored the bot from its Redis snapshot
+      // with `dealCloseConditionSL: tp`, while neither stored document has it.
+      const { fired, tick, logs, stored } = setup({
+        dealCloseConditionSL: CloseConditionEnum.tp,
+      })
+      stored.bot = () => ({ _id: BOT_ID, settings: { useSl: true } })
+      await tick(55)
+      await tick(54)
+      expect(fired).to.deep.equal([])
+      expect(logs.filter((m) => m.includes('stop loss not armed'))).to.have.length(1)
+    })
+
+    it('holds when only the in-memory deal claims it was armed', async () => {
+      const { fired, tick, deal, stored } = setup({})
+      ;(deal as any).defaultSlArmed = true
+      stored.deal = () => ({ _id: DEAL_ID, settings: deal.settings })
+      await tick(55)
+      expect(fired).to.deep.equal([])
+    })
+
+    it('a held deal is released by a safe-side tick and closes on the next crossing', async () => {
+      const { fired, tick, stored } = setup({
+        dealCloseConditionSL: CloseConditionEnum.tp,
+      })
+      stored.bot = () => ({ _id: BOT_ID, settings: { useSl: true } })
+      await tick(55)
+      await tick(95)
+      await tick(89)
+      expect(fired).to.deep.equal([DEAL_ID])
+    })
+
+    it('reads the stored documents once per minute, not once per tick', async () => {
+      const { tick, reads } = setup({})
+      await tick(55)
+      await tick(54)
+      await tick(53)
+      expect(reads.sort()).to.deep.equal(['bot', 'deal'])
+    })
+
+    it('a deal not yet past its level reads nothing from the database', async () => {
+      const { tick, reads } = setup({})
+      await tick(100)
+      await tick(99)
+      expect(reads).to.deep.equal([])
+    })
+
+    it('the stored read only adds a hold: an in-memory default stays held', async () => {
+      const { fired, tick, stored } = setup({})
+      stored.bot = () => ({
+        _id: BOT_ID,
+        settings: { useSl: true, dealCloseConditionSL: CloseConditionEnum.tp },
+      })
+      // In memory the deal is defaulted, so the in-memory hold still applies:
+      // the stored read only ever ADDS a hold, it never removes one.
+      await tick(55)
+      expect(fired).to.deep.equal([])
     })
   })
 })
