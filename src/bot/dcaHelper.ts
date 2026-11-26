@@ -154,6 +154,7 @@ import MainBot, {
   QUANT_RULES_RETRY_BUDGET_ASAP,
 } from './main'
 import { underfilledTpQty } from './dca/partialTp'
+import { NewDealMarginClaims } from './dca/newDealMarginClaims'
 import {
   looksLikeQtyFromPrice,
   repairRestoredDcaLadder,
@@ -1265,6 +1266,11 @@ function createDCABotHelper<
     lockSLCheck = false
     /** Pending deals */
     pendingDeals = 0
+    /**
+     * Spec 288: futures base-order margin promised to deals this bot is
+     * opening, not yet visible in a balance read — see {@link checkBalance}.
+     */
+    newDealMarginClaims = new NewDealMarginClaims()
     pendingDealsOver = 0
     pendingDealsUnder = 0
     /** Pending deals per pair */
@@ -18726,7 +18732,15 @@ function createDCABotHelper<
      * for sizing (reduce-to-available) or when stored balances are known to
      * be incomplete for the venue (holds not streamed; no stored balances).
      */
-    async checkBalanceGate(symbol: string) {
+    async checkBalanceGate(
+      symbol: string,
+      /**
+       * Spec 288: the open-new-deal gate. On futures, subtract the margin of
+       * deals this bot is still opening and claim this deal's on a pass —
+       * the caller must then settle it (`newDealMarginClaims`).
+       */
+      claimMargin = false,
+    ) {
       const settings = await this.getAggregatedSettings()
       const exchange = this.data?.exchange
       const storedUsable =
@@ -18743,7 +18757,7 @@ function createDCABotHelper<
           return stored
         }
       }
-      return this.checkBalance(symbol)
+      return this.checkBalance(symbol, 1, 'whole', 'live', claimMargin)
     }
 
     async checkBalance(
@@ -18754,6 +18768,8 @@ function createDCABotHelper<
       sizeScope: 'base' | 'whole' = 'whole',
       /** `stored`: decide from stored balances only — see checkBalanceGate */
       source: 'live' | 'stored' = 'live',
+      /** spec 288 — see {@link checkBalanceGate} */
+      claimMargin = false,
     ): Promise<{
       status: boolean
       required: number
@@ -18769,8 +18785,18 @@ function createDCABotHelper<
        * bot's direction implies (a bot-funded short is refused on quote).
        */
       asset?: string
+      /** Spec 288: the margin claim this pass took, to settle by the caller. */
+      marginClaim?: string
+      /** Spec 288: margin already subtracted from `available` for deals in flight. */
+      claimed?: number
     }> {
-      const result = {
+      const result: {
+        status: boolean
+        required: number
+        available: number
+        price: number
+        marginClaim?: string
+      } = {
         status: true,
         required: 0,
         available: 0,
@@ -18806,6 +18832,9 @@ function createDCABotHelper<
       if (!ed) {
         return result
       }
+      // Spec 288: taken before the request, so only claims placed before it
+      // are treated as already in the figure.
+      const readStartedAt = Date.now()
       const balance =
         source === 'stored'
           ? await this.checkAssets(true, false, true)
@@ -19020,12 +19049,31 @@ function createDCABotHelper<
           }).spendable
         }
       }
-      if (requiredAmount / leverage > available) {
+      // Spec 288: on futures the open-new-deal gate also counts the margin of
+      // deals this bot passed and has not yet seen in a live read. Only the
+      // live read settles claims and takes one: a stored figure can only
+      // refuse, and its age says nothing about which claims it reflects.
+      const claims =
+        this.futures && claimMargin && source === 'live'
+          ? this.newDealMarginClaims
+          : null
+      const claimAsset = this.coinm ? ed.baseAsset.name : ed.quoteAsset.name
+      claims?.settle(readStartedAt)
+      if (
+        requiredAmount / leverage >
+        available - (claims?.claimed(claimAsset) ?? 0)
+      ) {
         available = await this.pooledMarginOrKeep(
           ed.quoteAsset.name,
           available,
           latestPrice,
         )
+      }
+      // No await from here to the claim: deals of one burst gate concurrently
+      // and each must see the claims of the ones that passed before it.
+      const claimed = claims?.claimed(claimAsset) ?? 0
+      if (claimed > 0) {
+        available = Math.max(0, available - claimed)
       }
       if (requiredAmount / leverage > available) {
         return {
@@ -19033,6 +19081,15 @@ function createDCABotHelper<
           required: requiredAmount / leverage,
           available,
           price: latestPrice,
+          ...(claimed > 0 ? { claimed } : {}),
+        }
+      }
+      if (claims) {
+        // What this gate just required: the base order and the safety orders
+        // that rest with it, the same figure the next deal is compared on.
+        return {
+          ...result,
+          marginClaim: claims.claim(claimAsset, requiredAmount / leverage),
         }
       }
       return result
@@ -20878,7 +20935,7 @@ function createDCABotHelper<
           this.handleLog(
             `Bot status is ${this.data?.status}, close after tp ${this.closeAfterTpFilled}`,
           )
-          let checkBalance = await this.checkBalanceGate(symbol)
+          let checkBalance = await this.checkBalanceGate(symbol, true)
           if (!checkBalance.status) {
             this.handleDebug(
               checkBalance.unknown
@@ -20886,7 +20943,7 @@ function createDCABotHelper<
                 : `Not enough balance to start new deal. Required: ${checkBalance.required}, available: ${checkBalance.available}, repeat check in 5 seconds`,
             )
             await sleep(5000)
-            checkBalance = await this.checkBalanceGate(symbol)
+            checkBalance = await this.checkBalanceGate(symbol, true)
           }
           if (checkBalance.unknown) {
             // The balance could not be READ — twice, with the retry above in
@@ -20915,6 +20972,10 @@ function createDCABotHelper<
             }
             return
           }
+          // Spec 288: the margin this deal claimed at the gate. Released if the
+          // deal ends before its base order is sent; settled by a later read
+          // once it is.
+          const marginClaim = checkBalance.marginClaim
           // `reduceToAvailableBalance`: a shortfall opens a smaller deal
           // instead of none, unless the reduced base order is under the floor.
           const reduce = checkBalance.status
@@ -20941,6 +21002,7 @@ function createDCABotHelper<
                 this.handleDebug(
                   `Deal must wait because of cooldown start check. Time: ${cooldownStart.time}, last opened: ${cooldownStart.last}, diff: ${cooldownStart.diff}, cooldown: ${cooldownStart.cooldown} ${symbol} ${settings.cooldownAfterDealStartOption}`,
                 )
+                this.newDealMarginClaims.release(marginClaim)
                 this.resetPending(this.botId, symbol)
                 if (settings.startCondition === StartConditionEnum.asap) {
                   this.openNewDealTimer.set(
@@ -20980,6 +21042,7 @@ function createDCABotHelper<
                     ),
                   )
                 }
+                this.newDealMarginClaims.release(marginClaim)
                 this.resetPending(this.botId, symbol)
                 this.endMethod(_id)
                 if (cbIfNotOpened) {
@@ -21003,6 +21066,7 @@ function createDCABotHelper<
                 false,
                 symbol,
               )
+              this.newDealMarginClaims.release(marginClaim)
               this.resetPending(this.botId, symbol)
               this.endMethod(_id)
               if (cbIfNotOpened) {
@@ -21022,6 +21086,7 @@ function createDCABotHelper<
                 await this.getLatestPrice(symbol),
               )
               if (!riskReward) {
+                this.newDealMarginClaims.release(marginClaim)
                 this.resetPending(this.botId, symbol)
                 this.endMethod(_id)
                 if (cbIfNotOpened) {
@@ -21065,6 +21130,7 @@ function createDCABotHelper<
                     true,
                   )
                 }
+                this.newDealMarginClaims.release(marginClaim)
                 this.resetPending(this.botId, symbol)
                 this.endMethod(_id)
                 if (cbIfNotOpened) {
@@ -21088,6 +21154,7 @@ function createDCABotHelper<
                 this.handleDebug(
                   `Cannot size a reduced deal for ${symbol}, wont open new deal`,
                 )
+                this.newDealMarginClaims.release(marginClaim)
                 this.resetPending(this.botId, symbol)
                 this.endMethod(_id)
                 if (cbIfNotOpened) {
@@ -21098,6 +21165,7 @@ function createDCABotHelper<
               sizes = reduced
             }
             if (await this.refuseDealBelowExchangeMin(symbol, fixSize, sizes)) {
+              this.newDealMarginClaims.release(marginClaim)
               this.resetPending(this.botId, symbol)
               this.endMethod(_id)
               if (cbIfNotOpened) {
@@ -21121,6 +21189,7 @@ function createDCABotHelper<
               settings.indicators,
             )
             if (!approval) {
+              this.newDealMarginClaims.release(marginClaim)
               this.resetPending(this.botId, symbol)
               this.endMethod(_id)
               if (cbIfNotOpened) {
@@ -21152,22 +21221,27 @@ function createDCABotHelper<
               })
             }
             this.updateDealLastTime(this.botId, 'opened', +new Date(), symbol)
-            await this.placeBaseOrder(
-              this.botId,
-              symbol,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              fixSl,
-              fixTp,
-              fixSize,
-              dynamicAr,
-              sizes,
-              undefined,
-              false,
-              signalOverrides,
-            )
+            this.newDealMarginClaims.placing(marginClaim)
+            try {
+              await this.placeBaseOrder(
+                this.botId,
+                symbol,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                fixSl,
+                fixTp,
+                fixSize,
+                dynamicAr,
+                sizes,
+                undefined,
+                false,
+                signalOverrides,
+              )
+            } finally {
+              this.newDealMarginClaims.placed(marginClaim, Date.now())
+            }
             this.releaseReduceToAvailableClaim(symbol)
             await this.reportNewDealSize(symbol, approval, sized.outcome)
           } else {
@@ -21186,6 +21260,10 @@ function createDCABotHelper<
             const msg = `Not enough balance to start new deal required: ${
               checkBalance.required
             } ${shown}, available: ${checkBalance.available} ${shown}${
+              checkBalance.claimed
+                ? ` (after ${this.math.round(checkBalance.claimed, 8)} ${shown} committed to deals this bot is opening)`
+                : ''
+            }${
               checkBalance.price
                 ? `, price: ${checkBalance.price} ${ed.quoteAsset.name}`
                 : ''
