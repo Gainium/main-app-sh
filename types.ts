@@ -2191,6 +2191,12 @@ export type AddFundsSettings = {
    * fill scales the deal by `1 ± executed / positionBase`.
    */
   positionBase?: number
+  /**
+   * How a manual add is placed (Add funds dialog). `chase` and `split` run
+   * through the deal's slice runner; `limit` / `market` / absent keep the
+   * plain `useLimitPrice` order. Add funds on DCA deals only.
+   */
+  execution?: OrderExecution | null
 }
 
 export interface ComboDealsSchema extends DCADealsSchema {

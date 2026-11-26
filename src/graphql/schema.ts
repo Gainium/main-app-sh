@@ -1416,6 +1416,11 @@ export const BotSchema = /* GraphQL */ `
     # The deal is a Combo deal. Optional: resolved from the deal when omitted.
     # A Combo add / reduce scales every rung of the deal (MARKET only).
     combo: Boolean
+    """
+    How an add is placed: market, limit (at limitPrice), chasing limit or
+    split. Chasing limit and split are for adding to DCA deals only.
+    """
+    execution: OrderExecutionInput
   }
   """
   Execute a DCA deal's next safety order immediately, at market.

@@ -285,6 +285,7 @@ import {
   entryChaseCapPerc,
   entryOrderType,
   entrySplitEligible,
+  planFundsExecution,
   planSplitSizes,
   resolveExecution,
   fitStopLossSplit,
@@ -1209,10 +1210,15 @@ function createDCABotHelper<
     splitFinalizing?: Set<string>
     /** Spec 242 — the last reduce-funds order placed per deal (split slices). */
     lastReduceOrderId?: Map<string, string>
-    /** Spec 242 §6.5 — base-order splits per deal (slice 1 = the base order). */
+    /**
+     * Spec 242 §6.5 — base-order splits per deal (slice 1 = the base order).
+     * Also runs a manual add-funds chase / split (`funds`, slice 1 = nothing).
+     */
     entrySplits?: Map<
       string,
       {
+        /** A manual add funds, not the base order's split. Logs only. */
+        funds?: boolean
         execution: OrderExecution
         side: 'BUY' | 'SELL'
         triggerPrice: number
@@ -26668,6 +26674,38 @@ function createDCABotHelper<
       )
     }
 
+    /**
+     * Add funds dialog — a chasing limit or a split add. Runs on the base-order
+     * split runner with an empty slice 0, so each slice is an add-funds order
+     * that is re-priced, timed out to market and resumed after a restart the
+     * same way. Deferred: the caller holds this deal's add-funds mutex, which
+     * every slice takes again.
+     */
+    private startFundsRun(
+      dealId: string,
+      execution: OrderExecution,
+      sizes: number[],
+      price: number,
+    ) {
+      ;(this.entrySplits ??= new Map()).set(dealId, {
+        funds: true,
+        execution,
+        side: this.isLong ? 'BUY' : 'SELL',
+        triggerPrice: price,
+        sizes: [0, ...sizes],
+        index: 1,
+        remaining: sizes[0],
+        sliceStartedAt: 0,
+      })
+      this.persistExecutionState(dealId)
+      this.handleLog(
+        execution.mode === 'split'
+          ? `Deal ${dealId} add funds: ${sizes.length} slices [${sizes.join(', ')}], ${execution.pace === 'twap' ? `every ${execution.sliceIntervalSec ?? 30}s` : 'one at a time'}, ${execution.sliceMode === 'market' ? 'at market' : 'chasing limit'}`
+          : `Deal ${dealId} add funds: ${sizes[0]} by chasing limit, re-priced every ${execution.repriceSec ?? 10}s${(execution.timeoutSec ?? 0) > 0 ? `, the rest at market after ${execution.timeoutSec}s` : ''}`,
+      )
+      this.armEntryTimer(dealId, 0, () => void this.placeEntrySlice(dealId))
+    }
+
     private clearEntrySplit(dealId: string, persist = true) {
       const st = this.entrySplits?.get(dealId)
       if (st?.timer) {
@@ -26716,7 +26754,7 @@ function createDCABotHelper<
         return
       }
       if (st.index >= st.sizes.length) {
-        this.handleLog(`Deal ${dealId} split base order complete`)
+        this.handleLog(`Deal ${dealId} ${st.funds ? 'add funds' : 'split base order'} complete`)
         this.clearEntrySplit(dealId)
         return
       }
@@ -26738,14 +26776,14 @@ function createDCABotHelper<
             .reduce((a, b) => a + b, 0)
             .toFixed(12)
           this.handleLog(
-            `Deal ${dealId} split base order: price ${last} past the ${e.floorPerc}% floor; buying the rest (${rest}) at market`,
+            `Deal ${dealId} ${st.funds ? 'add funds' : 'split base order'}: price ${last} past the ${e.floorPerc}% floor; buying the rest (${rest}) at market`,
           )
           st.sizes = [...st.sizes.slice(0, st.index), rest]
           st.remaining = rest
           return this.sendEntrySlice(dealId, false, undefined)
         }
         this.handleLog(
-          `Deal ${dealId} split base order: price ${last} past the ${e.floorPerc}% floor; paused`,
+          `Deal ${dealId} ${st.funds ? 'add funds' : 'split base order'}: price ${last} past the ${e.floorPerc}% floor; paused`,
         )
         this.armEntryTimer(dealId, 5_000, () => void this.placeEntrySlice(dealId))
         return
@@ -26791,7 +26829,7 @@ function createDCABotHelper<
       }
       current.orderId = this.lastAddOrderId?.get(dealId)
       this.handleLog(
-        `Deal ${dealId} split base order: slice ${current.index + 1}/${current.sizes.length} (${current.remaining}) ${chase ? `limit ${limitPrice}` : 'at market'}`,
+        `Deal ${dealId} ${current.funds ? 'add funds' : 'split base order'}: slice ${current.index + 1}/${current.sizes.length} (${current.remaining}) ${chase ? `limit ${limitPrice}` : 'at market'}`,
       )
       if (e.pace === 'twap') {
         this.armEntryTimer(
@@ -26824,7 +26862,7 @@ function createDCABotHelper<
       st.remaining = st.sizes[st.index] ?? 0
       st.sliceStartedAt = 0
       if (st.index >= st.sizes.length) {
-        this.handleLog(`Deal ${dealId} split base order complete`)
+        this.handleLog(`Deal ${dealId} ${st.funds ? 'add funds' : 'split base order'} complete`)
         this.clearEntrySplit(dealId)
         return
       }
@@ -26846,12 +26884,38 @@ function createDCABotHelper<
         return null
       }
       const cancelled = await this.cancelOrderOnExchange(order)
+      const executed = +(cancelled?.executedQty ?? order.executedQty ?? 0) || 0
       if (cancelled?.status === 'FILLED') {
+        const left = +(st.remaining - executed).toFixed(12)
+        if (executed > 0 && left > 0) {
+          // Part-filled under the cancel (promoted to FILLED): the part is
+          // booked, and the runner goes on with the rest instead of taking the
+          // slice as done. Unlinked first, so that fill does not advance it.
+          st.orderId = undefined
+          this.lastAddOrderId?.delete(dealId)
+          void this.handleUnknownOrder(cancelled)
+          return left
+        }
         void this.handleUnknownOrder(cancelled)
         return null
       }
-      const executed = +(cancelled?.executedQty ?? order.executedQty ?? 0) || 0
+      if (cancelled?.status === 'CANCELED' && executed === 0) {
+        this.dropCanceledSliceEntry(dealId, order)
+      }
       return Math.max(0, +(st.remaining - executed).toFixed(12))
+    }
+
+    /**
+     * A slice the runner cancelled with nothing filled leaves its
+     * `pendingAddFunds` entry behind, and `resendPendingFunds` re-sends an
+     * entry whose order is gone on the next reload: a second buy of a slice
+     * already re-placed. Take it off with the order.
+     */
+    private dropCanceledSliceEntry(dealId: string, order: Order) {
+      const deal = this.getDeal(dealId)
+      if (deal && order.addFundsId) {
+        this.dropBaseRemainderEntry(deal, order.addFundsId)
+      }
     }
 
     private async repriceEntrySlice(dealId: string) {
@@ -26874,7 +26938,7 @@ function createDCABotHelper<
       const timeoutMs = (st.execution.timeoutSec ?? 35) * 1000
       if (timeoutMs > 0 && Date.now() - st.sliceStartedAt >= timeoutMs) {
         this.handleLog(
-          `Deal ${dealId} split base order: slice ${st.index + 1} timed out; buying it at market`,
+          `Deal ${dealId} ${st.funds ? 'add funds' : 'split base order'}: slice ${st.index + 1} timed out; buying it at market`,
         )
         return this.sendEntrySlice(dealId, false, undefined)
       }
@@ -27139,6 +27203,9 @@ function createDCABotHelper<
         for (const o of open) {
           const c = await this.cancelOrderOnExchange(o)
           left -= +(c?.executedQty ?? 0) || 0
+          if (c?.status === 'CANCELED' && !(+(c.executedQty ?? 0) > 0)) {
+            this.dropCanceledSliceEntry(dealId, o)
+          }
         }
         const ed = await this.getExchangeInfo(d.deal.symbol.symbol)
         if (!ed || !(left > 0)) {
@@ -36825,6 +36892,38 @@ function createDCABotHelper<
           false,
         )
       }
+      // Add funds dialog: a chasing limit or a split is handed to the slice
+      // runner, which sends each slice back through this method without an
+      // execution.
+      if (settings.execution) {
+        const plan = planFundsExecution({
+          execution: settings.execution,
+          qty: +origQty,
+          step: ed?.baseAsset.step ?? 0,
+          minQty: ed?.baseAsset.minAmount ?? 0,
+          minNotional: ed?.quoteAsset.minAmount,
+          price,
+        })
+        if ('error' in plan) {
+          this.endMethod(_id)
+          return this.handleErrors(`Add funds ${plan.error}`, '', '', false)
+        }
+        if (plan.run) {
+          if (this.entrySplits?.has(dealId)) {
+            this.endMethod(_id)
+            return this.handleErrors(
+              `Add funds refused: an earlier split or chasing order is still adding to this deal`,
+              '',
+              '',
+              false,
+            )
+          }
+          this.startFundsRun(dealId, plan.execution, plan.sizes, price)
+          this.endMethod(_id)
+          return
+        }
+      }
+      const { execution: _execution, ...orderSettings } = settings
       const addFundsId = v4()
       const order: Order = {
         symbol: deal.deal.symbol.symbol,
@@ -36876,7 +36975,7 @@ function createDCABotHelper<
         const live = this.getDeal(dealId) ?? deal
         live.deal.pendingAddFunds = [
           ...(live.deal.pendingAddFunds ?? []),
-          { ...settings, id: addFundsId, limitPrice: price },
+          { ...orderSettings, id: addFundsId, limitPrice: price },
         ] as Deal['pendingAddFunds']
         live.deal.levels.all += 1
         this.saveDeal(live, {

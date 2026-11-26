@@ -136,7 +136,10 @@ import {
   brokerCodesDb,
 } from '../db/dbInit'
 import { withTerminalMoveGuard } from './handlers/terminalMove'
-import { validateOrderExecution } from '../bot/dca/orderExecution'
+import {
+  fundsExecutionError,
+  validateOrderExecution,
+} from '../bot/dca/orderExecution'
 import { backtestNotFound, dealNotFound, errorAccess } from './errorResponse'
 import {
   createPaperUser,
@@ -5639,6 +5642,7 @@ const resolvers = <
           dealId: string
           botId: string
           combo?: boolean
+          execution?: OrderExecution | null
         }
       },
       { token, req, paperContext }: InputRequest,
@@ -5651,6 +5655,10 @@ const resolvers = <
         return user
       }
       const { botId, dealId, combo, ...rest } = input
+      const fundsError = fundsExecutionError(input.execution, combo === true)
+      if (fundsError) {
+        return { status: StatusEnum.notok, reason: fundsError, data: null }
+      }
       return await Bot.addDealFunds(
         botId,
         dealId,
@@ -5733,6 +5741,7 @@ const resolvers = <
           dealId: string
           botId: string
           combo?: boolean
+          execution?: OrderExecution | null
         }
       },
       { token, req, paperContext }: InputRequest,
@@ -5744,7 +5753,15 @@ const resolvers = <
       if (user.status === StatusEnum.notok) {
         return user
       }
-      const { botId, dealId, combo, ...rest } = input
+      const { botId, dealId, combo, execution, ...rest } = input
+      const mode = execution?.mode
+      if (mode === 'chase' || mode === 'split') {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Reduce funds is placed at market or as a limit order',
+          data: null,
+        }
+      }
       return await Bot.reduceDealFunds(
         botId,
         dealId,

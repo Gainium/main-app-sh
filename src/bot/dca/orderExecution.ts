@@ -600,3 +600,109 @@ export const entrySplitEligible = (
     ctx.singlePosition
   )
 }
+
+/**
+ * A manual add-funds execution (Add funds dialog / API), checked and fitted
+ * to what the slice runner executes. Nothing can rest at a level for a manual
+ * add, so a split's slices chase or go at market. `run: false` means the plain
+ * add-funds order (market, or limit at `limitPrice`) handles it.
+ */
+export type FundsExecutionPlan =
+  | { error: string }
+  | { run: false }
+  | { run: true; execution: OrderExecution; sizes: number[] }
+
+export const planFundsExecution = (p: {
+  execution: unknown
+  qty: number
+  step: number
+  minQty: number
+  minNotional?: number
+  price: number
+}): FundsExecutionPlan => {
+  if (p.execution === null || p.execution === undefined) {
+    return { run: false }
+  }
+  if (typeof p.execution !== 'object' || Array.isArray(p.execution)) {
+    return { error: 'execution must be an object or null' }
+  }
+  // GraphQL hands unset input fields back as null.
+  const raw = Object.fromEntries(
+    Object.entries(p.execution as Record<string, unknown>).filter(
+      ([k, v]) => v !== null && v !== undefined && k !== '__typename',
+    ),
+  )
+  const invalid = validateOrderExecution(raw)
+  if (invalid) {
+    return { error: `execution ${invalid}` }
+  }
+  const e = raw as unknown as OrderExecution
+  if (e.mode === 'market' || e.mode === 'limit') {
+    return { run: false }
+  }
+  if (e.mode === 'chase') {
+    return {
+      run: true,
+      execution: {
+        mode: 'chase',
+        repriceSec: e.repriceSec ?? DEFAULT_REPRICE_SEC,
+        maxChasePerc: e.maxChasePerc ?? 0,
+        timeoutSec: e.timeoutSec ?? 0,
+      },
+      sizes: [p.qty],
+    }
+  }
+  const execution: OrderExecution = {
+    ...e,
+    sliceMode: e.sliceMode === 'market' ? 'market' : 'chase',
+  }
+  const sizes = planSplitSizes({
+    totalQty: p.qty,
+    slices: e.slices ?? 5,
+    step: p.step,
+    minQty: p.minQty,
+    minNotional: p.minNotional,
+    price: p.price,
+  })
+  if (sizes.length > 1) {
+    return { run: true, execution, sizes }
+  }
+  // Too small to split: one order, placed the way each slice would have been.
+  return {
+    run: true,
+    execution: {
+      mode: 'chase',
+      repriceSec: e.repriceSec ?? DEFAULT_REPRICE_SEC,
+      maxChasePerc: e.maxChasePerc ?? 0,
+      timeoutSec:
+        execution.sliceMode === 'market'
+          ? 1
+          : e.timeoutSec || DEFAULT_CLOSE_TIMEOUT_SEC,
+    },
+    sizes: [p.qty],
+  }
+}
+
+/**
+ * Request-time check of an add-funds execution (GraphQL / API), so a bad one
+ * is refused in the answer rather than in a bot message later. Null = fine.
+ */
+export const fundsExecutionError = (
+  execution: unknown,
+  combo: boolean,
+): string | null => {
+  const plan = planFundsExecution({
+    execution,
+    qty: 1,
+    step: 0,
+    minQty: 0,
+    price: 1,
+  })
+  if ('error' in plan) {
+    return `Add funds ${plan.error}`
+  }
+  if (plan.run && combo) {
+    return 'Combo deals add funds at market'
+  }
+  return null
+}
