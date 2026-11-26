@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.134.9] - 2026-11-26
+
+### Fixed
+
+- A deal closed outside the bot with its profit unknown no longer books its fees and funding as profit, and its close event says the profit is unknown
+
 ## [1.134.8] - 2026-11-26
 
 ### Fixed
