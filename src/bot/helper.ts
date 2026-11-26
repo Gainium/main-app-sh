@@ -3317,16 +3317,9 @@ function createBotHelper<
       return null
     }
     private refreshTpSlEntry(fill?: Order): Promise<void> {
-      const settings = this.data?.settings
-      if (
-        !settings ||
-        !this.futures ||
-        !this.usesUnpairedEntry ||
-        !(
-          (settings.tpSl && settings.tpSlCondition === 'valueChanged') ||
-          (settings.sl && settings.slCondition === 'valueChanged')
-        )
-      ) {
+      // Spec 287: every neutral grid, whatever its TP/SL. Its realized is
+      // booked per matched pair, so the held coins are worth this entry.
+      if (!this.data?.settings || !this.futures || !this.usesUnpairedEntry) {
         return this.tpSlEntryQueue
       }
       // Chained, so the last refresh to finish is the last one started.
@@ -6265,6 +6258,14 @@ function createBotHelper<
       }
       this.handleDebug(`Updating live stats at time ${time}`)
       this.lastStatsCheck = time
+      // Spec 287: a position no fill refreshed (restart, out-of-range grid).
+      if (
+        this.futures &&
+        this.data.position &&
+        this.tpSlEntryPrice(this.data.position) === null
+      ) {
+        await this.tpSlEntryQueue
+      }
       const botStats: CalculateGridLiveStatsParams = {
         bot: {
           _id: this.botId,
