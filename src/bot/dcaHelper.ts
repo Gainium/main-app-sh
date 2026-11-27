@@ -1423,6 +1423,8 @@ function createDCABotHelper<
     defaultedSlDeals: Set<string> = new Set()
     /** Spec 272 §1.6: deals already logged as held past their level. */
     defaultedSlHeldLogged: Set<string> = new Set()
+    /** Deals already told their stop-loss % cannot be turned into a price. */
+    slLevelUnresolvedWarned: Set<string> = new Set()
     /** Spec 272 §1.6: deals this process saw on their stop's safe side. */
     slSafeSideSeen: Set<string> = new Set()
     dealsForIndicatorUnpnl: Map<string, DealIndicatorUnpnlVal> = new Map()
@@ -30700,6 +30702,22 @@ function createDCABotHelper<
             }
             return price
           }
+          // An unparseable stop-loss % (NaN) used to fall through to the 0
+          // below and read as a level: never hit on a long, hit on the next
+          // tick on a short. checkDealsStopLoss now skips a level of 0, so say
+          // once that this deal has no working stop loss.
+          this.slLevelUnresolvedWarned ??= new Set()
+          if (!this.slLevelUnresolvedWarned.has(`${dealId}`)) {
+            this.slLevelUnresolvedWarned.add(`${dealId}`)
+            this.handleErrors(
+              `Deal ${dealId}: stop loss is on, but its percentage "${slPerc}" is not a number, so no stop loss level can be set. Edit the deal's stop loss to fix it.`,
+              'getDealStopLossPrice',
+              'stop loss level',
+              false,
+              true,
+              true,
+            )
+          }
         }
       } else if (
         this.slAr &&
@@ -32289,6 +32307,13 @@ function createDCABotHelper<
         const lastStreamData = this.getLastStreamData(d.deal.symbol.symbol)
         const last = lastStreamData?.price
         if (!last) {
+          continue
+        }
+        // A stop price is never 0 or NaN. getDealStopLossPrice returns 0 when
+        // it cannot work out a level (unparseable %, ATR/ADR value not in
+        // yet), and `last >= 0` is always true, so a short deal used to close
+        // at market on the next tick. No level means nothing to check.
+        if (!Number.isFinite(priceToClose) || priceToClose <= 0) {
           continue
         }
         const {

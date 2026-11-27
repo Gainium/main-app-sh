@@ -128,6 +128,7 @@ import {
   convertHedgeComboBotToArray,
   findPairBySymbol,
   updateRelatedBotsInVar,
+  checkDealEditProtectionNumbers,
 } from './utils'
 import { statsAfterReset } from './dca/botStatsReset'
 import { oldStartDcaDealsFilter } from './dca/oldStartDealsFilter'
@@ -11250,6 +11251,13 @@ class Bot<T extends UserSchema = UserSchema> {
     if (!findDeal.data.result) {
       return this.entityNotFound('Deal')
     }
+    const numbersCheck = checkDealEditProtectionNumbers(
+      findDeal.data.result.settings,
+      settings,
+    )
+    if (numbersCheck.status === StatusEnum.notok) {
+      return { ...numbersCheck, data: null }
+    }
     const botId = findDeal.data.result.botId
     const findLocal = this.dcaBots.find(
       (d) => d.id === botId && d.userId === userId,
@@ -11386,6 +11394,13 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     if (!findDeal.data.result) {
       return this.entityNotFound('Deal')
+    }
+    const numbersCheck = checkDealEditProtectionNumbers(
+      findDeal.data.result.settings,
+      settings,
+    )
+    if (numbersCheck.status === StatusEnum.notok) {
+      return { ...numbersCheck, data: null }
     }
     const botId = findDeal.data.result.botId
     const findLocal = this.comboBots.find(

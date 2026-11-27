@@ -1048,6 +1048,92 @@ export const closeByTimerSettingsKeys = [
   'closeByTimerUnits',
 ]
 const onlyComboSettingsKeys = ['comboTpBase']
+/**
+ * A percentage the engine will turn into a price must parse as a finite number.
+ * `parseFloat('abc')` is NaN, and a NaN stop-loss percentage leaves the engine
+ * with a level of 0: a long deal's stop can then never trigger and a short
+ * deal's triggers on the next tick. Accepts what the deal forms send (numeric
+ * strings) and plain numbers.
+ */
+const isFiniteNumberLike = (v: unknown) =>
+  typeof v === 'number'
+    ? Number.isFinite(v)
+    : typeof v === 'string' && v.trim() !== '' && Number.isFinite(+v)
+
+/**
+ * Deal-edit guard shared by every route (GraphQL, REST v1, REST v2) that ends
+ * in `updateDCADealSettings` / `updateComboDealSettings`.
+ *
+ * Unlike {@link checkDCADealSettings} it does not police which keys a caller
+ * may send. The dashboard's deal drawer sends many keys that validator does
+ * not list, often as null. It looks only at the settings the deal will have
+ * after the edit, and refuses when stop loss or take profit is switched on
+ * but the number the engine needs for it cannot be parsed.
+ */
+export const checkDealEditProtectionNumbers = (
+  current: Partial<DCADealsSettings>,
+  patch: Partial<DCADealsSettings>,
+): { status: StatusEnum.ok } | { status: StatusEnum.notok; reason: string } => {
+  const merged = { ...(current ?? {}), ...(patch ?? {}) } as Partial<
+    DCADealsSettings
+  >
+  const slByPercent =
+    !!merged.useSl &&
+    (merged.dealCloseConditionSL === undefined ||
+      merged.dealCloseConditionSL === null ||
+      merged.dealCloseConditionSL === CloseConditionEnum.tp)
+  if (slByPercent) {
+    if (merged.useMultiSl) {
+      if (
+        !(merged.multiSl ?? []).every((t) => isFiniteNumberLike(t?.target))
+      ) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Stop loss levels must be numbers',
+        }
+      }
+    } else if (
+      !(
+        merged.useFixedSLPrices && isFiniteNumberLike(merged.fixedSlPrice)
+      ) &&
+      !isFiniteNumberLike(merged.slPerc)
+    ) {
+      return {
+        status: StatusEnum.notok,
+        reason: 'Stop loss % must be a number',
+      }
+    }
+  }
+  const tpByPercent =
+    !!merged.useTp &&
+    (merged.dealCloseCondition === undefined ||
+      merged.dealCloseCondition === null ||
+      merged.dealCloseCondition === CloseConditionEnum.tp)
+  if (tpByPercent) {
+    if (merged.useMultiTp) {
+      if (
+        !(merged.multiTp ?? []).every((t) => isFiniteNumberLike(t?.target))
+      ) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Take profit levels must be numbers',
+        }
+      }
+    } else if (
+      !(
+        merged.useFixedTPPrices && isFiniteNumberLike(merged.fixedTpPrice)
+      ) &&
+      !isFiniteNumberLike(merged.tpPerc)
+    ) {
+      return {
+        status: StatusEnum.notok,
+        reason: 'Take profit % must be a number',
+      }
+    }
+  }
+  return { status: StatusEnum.ok }
+}
+
 export const checkDCADealSettings = (
   parentSettings: DCABotSettings | DCADealsSettings,
   settings: Partial<DCADealsSettings>,
