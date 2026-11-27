@@ -232,7 +232,26 @@ export function heldOutOfBandReason(
   band: number,
   exchange: string,
 ): string {
-  const reason = `Held: ${side} ${price} is more than ${Math.round(band * 100)}% from the price ${market}, which ${exchange} refuses`
+  return markHeld(
+    `Held: ${side} ${price} is more than ${Math.round(band * 100)}% from the price ${market}, which ${exchange} refuses`,
+  )
+}
+
+/**
+ * The refusal a safety order held past its deal's DCA range returns in place
+ * of the venue's answer (spec 294). Recognised by {@link isHeldOutOfBandReason}.
+ */
+export function heldPastLadderReason(
+  side: string,
+  price: number,
+  market: number,
+): string {
+  return markHeld(
+    `Held: ${side} ${price} waits for the price ${market} to come back within the deal's DCA range`,
+  )
+}
+
+function markHeld(reason: string): string {
   heldReasons.delete(reason)
   heldReasons.add(reason)
   if (heldReasons.size > HELD_REASONS_MAX) {
@@ -245,7 +264,8 @@ export function heldOutOfBandReason(
 }
 
 /**
- * Was `reason` made by {@link heldOutOfBandReason}? A held order is waiting for
+ * Was `reason` made by {@link heldOutOfBandReason} or
+ * {@link heldPastLadderReason}? A held order is waiting for
  * the price, not refused: it is noticed once by `noticeHeldOutOfBand` and must
  * never be reported as an error.
  */

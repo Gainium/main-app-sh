@@ -151,3 +151,30 @@ export function priceBandRepriceTarget(input: {
       : Math.max(market, bound, price)
   return target !== price ? target : null
 }
+
+/**
+ * Exchange rejections that mean "this order's notional is under the venue
+ * minimum". They route the order into the slippage-retry ladder, which on a
+ * combo bot terminates in the `count === slippageRetry` branch of
+ * `closeDealById` that books the deal closed without an order — the only
+ * possible resolution when what is left to close is a residue the venue will
+ * never accept an order for. Anything not listed here falls through to the
+ * generic handler, which classifies it as `Order params` and stops the bot.
+ */
+export const notionalReasons = [
+  // KuCoin
+  'The order funds should be more than',
+  // Binance NOTIONAL / MIN_NOTIONAL filter
+  'NOTIONAL',
+  // Hyperliquid — "order must have minimum value of $10. asset=122"
+  'must have minimum value of',
+]
+
+/**
+ * Did the venue refuse the order as below its minimum order value
+ * ({@link notionalReasons})?
+ */
+export function isBelowMinNotionalRefusal(reason: unknown): boolean {
+  const text = `${reason ?? ''}`.toLowerCase()
+  return notionalReasons.some((r) => text.includes(r.toLowerCase()))
+}

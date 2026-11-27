@@ -351,6 +351,7 @@ import {
   toleratedLadderEnd,
 } from './dca/gridBreakpoints'
 import { resolveLevelClientOrderId } from './clientOrderIdReissue'
+import { notionalReasons } from './priceBandReprice'
 import { splitPendingFunds } from './dca/pendingFundsResend'
 import {
   missedLadderLevels,
@@ -931,23 +932,7 @@ const restingTpPositionGoneBackoff = new RetryBackoff({
  */
 export const restingTpPositionGoneCloseAfterMs = 60 * 60 * 1000
 
-/**
- * Exchange rejections that mean "this order's notional is under the venue
- * minimum". They route the order into the slippage-retry ladder, which on a
- * combo bot terminates in the `count === slippageRetry` branch of
- * `closeDealById` that books the deal closed without an order — the only
- * possible resolution when what is left to close is a residue the venue will
- * never accept an order for. Anything not listed here falls through to the
- * generic handler, which classifies it as `Order params` and stops the bot.
- */
-export const notionalReasons = [
-  // KuCoin
-  'The order funds should be more than',
-  // Binance NOTIONAL / MIN_NOTIONAL filter
-  'NOTIONAL',
-  // Hyperliquid — "order must have minimum value of $10. asset=122"
-  'must have minimum value of',
-]
+export { notionalReasons }
 
 const maxTimeout = 2 ** 31 - 1
 
@@ -2319,6 +2304,36 @@ function createDCABotHelper<
         }
       }
       return false
+    }
+
+    /**
+     * The deal's start and its deepest safety level on the order's side, for
+     * the spec 294 hold of a safety order the market is far past.
+     */
+    protected override dealLadder(
+      order: Order,
+    ): { start: number; end: number } | undefined {
+      if (order.typeOrder !== TypeOrderEnum.dealRegular || !order.dealId) {
+        return
+      }
+      const d = this.getDeal(order.dealId)
+      const start = Number(d?.deal.initialPrice)
+      const levels = (d?.initialOrders ?? [])
+        .filter(
+          (o) =>
+            o.type === TypeOrderEnum.dealRegular &&
+            o.side === order.side &&
+            o.price > 0,
+        )
+        .map((o) => o.price)
+      if (!(start > 0) || !levels.length) {
+        return
+      }
+      return {
+        start,
+        end:
+          order.side === 'BUY' ? Math.min(...levels) : Math.max(...levels),
+      }
     }
 
     /**

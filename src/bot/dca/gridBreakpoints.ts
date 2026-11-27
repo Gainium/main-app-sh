@@ -99,6 +99,41 @@ export function isDisplacementInLadder(
   return long ? displacedPrice >= ladderEnd : displacedPrice <= ladderEnd
 }
 
+/**
+ * Is `market` beyond the deal's whole DCA ladder (spec 294)? The same wall as
+ * {@link isDisplacementInLadder} against {@link toleratedLadderEnd}, with the
+ * tolerance never wider than {@link LADDER_END_SLACK} of the deepest level's
+ * own price: a long ladder deeper than half its start otherwise has a
+ * tolerated end at or below zero, and no market is ever beyond it. False when
+ * the ladder is unknown.
+ */
+export function isMarketBeyondLadder(
+  market: number,
+  start: number,
+  ladderEnd: number | undefined,
+  long: boolean,
+): boolean {
+  if (
+    !(market > 0) ||
+    ladderEnd === undefined ||
+    !Number.isFinite(ladderEnd) ||
+    ladderEnd <= 0
+  ) {
+    return false
+  }
+  const tolerated = toleratedLadderEnd(start, ladderEnd, long)
+  const floor = long
+    ? ladderEnd * (1 - LADDER_END_SLACK)
+    : ladderEnd * (1 + LADDER_END_SLACK)
+  const bound =
+    tolerated === undefined
+      ? ladderEnd
+      : long
+        ? Math.max(tolerated, floor)
+        : Math.min(tolerated, floor)
+  return !isDisplacementInLadder(market, bound, long)
+}
+
 /** The fields {@link isLevelFilled} reads off an order row. */
 export type LevelOrderRow = {
   origPrice: string

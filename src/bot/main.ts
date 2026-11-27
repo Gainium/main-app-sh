@@ -117,10 +117,12 @@ import {
   webhookSignalIgnored,
 } from './utils'
 import {
+  isBelowMinNotionalRefusal,
   isPriceBandRefusal,
   priceBandRepriceTarget,
   repricesOnPriceBand,
 } from './priceBandReprice'
+import { isMarketBeyondLadder } from './dca/gridBreakpoints'
 import {
   MARKET_CLOSED_SPELL_GAP_MS,
   balanceRefusalExpired,
@@ -138,6 +140,7 @@ import {
   bandFractionFromReason,
   holdOutsideKnownBand,
   heldOutOfBandReason,
+  heldPastLadderReason,
   isHeldOutOfBandReason,
   isAheadOfMarket,
   isWithinBand,
@@ -2502,6 +2505,114 @@ class MainBot<T extends IMainBot> {
     }
     market ??= await this.getLatestPrice(order.symbol)
     this.holdOutOfBand(order, band, market)
+  }
+
+  /**
+   * Safety orders held instead of being moved to the market (spec 294), by
+   * level: `beyondLadder` while the market is past the deal's whole DCA
+   * ladder, `notional` after the re-priced order was refused as below the
+   * venue's minimum value, until the market is no longer through the level.
+   */
+  protected pastLadderHeld?: Map<
+    string,
+    { kind: 'beyondLadder' | 'notional'; since: number }
+  >
+
+  /**
+   * The DCA ladder of `order`'s deal: its start price and its deepest safety
+   * level on the order's side. Engines with deals override it; `undefined`
+   * means unknown, and nothing is held past it.
+   */
+  protected dealLadder(
+    _order: Order,
+  ): { start: number; end: number } | undefined {
+    return undefined
+  }
+
+  /** Is the market past `order`'s deal ladder (spec 294 §1.4)? */
+  protected isBeyondDealLadder(order: Order, market: number): boolean {
+    if (order.typeOrder !== TypeOrderEnum.dealRegular) {
+      return false
+    }
+    const ladder = this.dealLadder(order)
+    return (
+      !!ladder &&
+      isMarketBeyondLadder(market, ladder.start, ladder.end, order.side === 'BUY')
+    )
+  }
+
+  /** Should a level held past the ladder still be held at `market`? */
+  protected stillHeldPastLadder(
+    order: Order,
+    kind: 'beyondLadder' | 'notional',
+    market: number,
+  ): boolean {
+    if (this.isBeyondDealLadder(order, market)) {
+      return true
+    }
+    if (kind === 'beyondLadder') {
+      return false
+    }
+    // Held after a below-minimum refusal at the market: until the level's own
+    // price is a resting limit again.
+    const level = Number(order.origPrice) || Number(order.price)
+    return order.side === 'BUY' ? market < level : market > level
+  }
+
+  /**
+   * Hold a safety order by level instead of moving it to the market, and tell
+   * the user once per level, as a warning (spec 294).
+   */
+  protected async holdPastLadder(
+    order: Order,
+    kind: 'beyondLadder' | 'notional',
+    market: number,
+  ) {
+    const held = (this.pastLadderHeld ??= new Map())
+    const key = marketClosedLevelKey(order)
+    const price = Number(order.origPrice) || Number(order.price)
+    const deepest = this.dealLadder(order)?.end
+    const prev = held.get(key)
+    if (!prev) {
+      this.handleLog(
+        kind === 'beyondLadder'
+          ? `Order ${order.clientOrderId} ${order.side} ${price}: ${order.symbol} at ${market} is past deal ${order.dealId}'s deepest DCA level ${deepest}. Not moved to the market; held until the price is back within the ladder`
+          : `Order ${order.clientOrderId} ${order.side} ${price}: moved to the market ${market} it is below the exchange minimum value. Held until the price is back at the level`,
+      )
+    }
+    held.delete(key)
+    held.set(key, { kind, since: prev?.since ?? Date.now() })
+    if (held.size > 1000) {
+      const oldest = held.keys().next().value
+      if (oldest !== undefined) {
+        held.delete(oldest)
+      }
+    }
+    if (
+      !this.data ||
+      (this.data.status !== BotStatusEnum.open &&
+        this.data.status !== BotStatusEnum.range) ||
+      !(await OutOfBandNotice.claim(this.botId, `${key}|pastLadder`))
+    ) {
+      return
+    }
+    const side = order.side === 'BUY' ? 'buy' : 'sell'
+    const message =
+      kind === 'beyondLadder'
+        ? `DCA order ${side} at ${price} is waiting for the price: the ${order.symbol} price ${market} is past the deal's deepest DCA level${deepest ? ` ${deepest}` : ''}, so the order is not moved to the price. It will be placed when the price is back within the deal's DCA range`
+        : `DCA order ${side} at ${price} is waiting for the price: moved to the ${order.symbol} price ${market} it would be below the exchange's minimum order value. It will be placed at its own price when the price is back at it`
+    await this.processError(
+      this.botId,
+      orderWaitingForPrice,
+      false,
+      false,
+      true,
+      message,
+      Date.now(),
+      message,
+      false,
+      order.symbol,
+    )
   }
 
   /**
@@ -10796,6 +10907,9 @@ class MainBot<T extends IMainBot> {
         // only refuse it again. A bot reload rebuilds every level that is not
         // resting, and used to re-send all of them on each one.
         let outOfBandShortCircuit = false
+        // Set when a safety order is held past its deal ladder (spec 294): the
+        // market it was held at.
+        let heldPastLadderAt: number | undefined
         if (
           !request &&
           `${requestData.type}`.toUpperCase() === 'LIMIT' &&
@@ -10826,6 +10940,38 @@ class MainBot<T extends IMainBot> {
                 ),
                 data: null,
               }
+            }
+          }
+        }
+        // Spec 294. A safety level held past its deal's ladder, or after its
+        // re-price was refused below the minimum value: served from the hold
+        // while that still holds, without asking the venue again.
+        if (
+          !request &&
+          `${requestData.type}`.toUpperCase() === 'LIMIT' &&
+          order.typeOrder === TypeOrderEnum.dealRegular &&
+          this.pastLadderHeld?.size
+        ) {
+          const key = marketClosedLevelKey(order)
+          const held = this.pastLadderHeld.get(key)
+          if (held) {
+            const market = await this.getLatestPrice(order.symbol)
+            if (this.stillHeldPastLadder(order, held.kind, market)) {
+              outOfBandShortCircuit = true
+              request = {
+                status: StatusEnum.notok,
+                reason: heldPastLadderReason(
+                  order.side,
+                  Number(order.origPrice) || Number(order.price),
+                  market,
+                ),
+                data: null,
+              }
+            } else {
+              this.pastLadderHeld.delete(key)
+              this.handleLog(
+                `Order ${order.clientOrderId} ${order.side} ${order.origPrice}: ${order.symbol} at ${market}, no longer held past the deal ladder`,
+              )
             }
           }
         }
@@ -11187,7 +11333,13 @@ class MainBot<T extends IMainBot> {
               await this.reportUnplaceableGridOrder(order, request.reason)
             } else {
               const market = await this.getLatestPrice(order.symbol)
-              const target = priceBandRepriceTarget({
+              // Spec 294 §1.1: a market past the deal's whole ladder is not a
+              // price to move a safety level to. Held, and told once.
+              if (this.isBeyondDealLadder(order, market)) {
+                await this.holdPastLadder(order, 'beyondLadder', market)
+                heldPastLadderAt = market
+              }
+              const target = heldPastLadderAt !== undefined ? null : priceBandRepriceTarget({
                 side: order.side === 'BUY' ? 'BUY' : 'SELL',
                 price: +order.price,
                 market,
@@ -11211,6 +11363,21 @@ class MainBot<T extends IMainBot> {
                 return this.sendOrderToExchange(order, returnError, count)
               }
             }
+          }
+          // Spec 294 §1.3: a safety order already moved to the market and
+          // refused there as below the venue's minimum value. Re-sent at the
+          // market by every later cycle it is refused the same way, so it is
+          // held by level and told once instead.
+          if (
+            !outOfBandShortCircuit &&
+            order.typeOrder === TypeOrderEnum.dealRegular &&
+            this.priceBandRepriced?.has(order.clientOrderId) &&
+            isBelowMinNotionalRefusal(request.reason)
+          ) {
+            this.priceBandRepriced.delete(order.clientOrderId)
+            const market = await this.getLatestPrice(order.symbol)
+            await this.holdPastLadder(order, 'notional', market)
+            heldPastLadderAt = market
           }
           // The QUANTITY twin of the tick-size branch above, and it exists for
           // the same reason with one extra twist: the cached filter is not
@@ -11673,7 +11840,14 @@ class MainBot<T extends IMainBot> {
           await this.markDealStartBlocked(order, request.reason)
           if (returnError) {
             this.endMethod(_id)
-            return request.reason
+            // A level held past the ladder is waiting, not refused (spec 294).
+            return heldPastLadderAt !== undefined
+              ? heldPastLadderReason(
+                  order.side,
+                  Number(order.origPrice) || Number(order.price),
+                  heldPastLadderAt,
+                )
+              : request.reason
           }
           const setError = this.needToSendOrder(order)
           // A rejection this process served from its own cooldown is not news:
@@ -11690,7 +11864,8 @@ class MainBot<T extends IMainBot> {
             !authShortCircuit &&
             !riskTierShortCircuit &&
             !gridReduceOnlyShortCircuit &&
-            !outOfBandShortCircuit
+            !outOfBandShortCircuit &&
+            heldPastLadderAt === undefined
           ) {
             this.handleOrderErrors(
               request.reason,
