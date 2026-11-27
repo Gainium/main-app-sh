@@ -660,6 +660,19 @@ export const UserSchema = /* GraphQL */ `
     connection.
     """
     rotationRequired: Boolean
+    """
+    Hyperliquid only: the connection's API (agent) wallet and when it expires.
+    Null until it has been read.
+    """
+    hlAgent: exchangeHlAgent
+  }
+  type exchangeHlAgent {
+    address: String
+    "active | expired | missing | master | unknown"
+    state: String
+    "ms epoch; null when the agent has no expiry or is not listed"
+    expiresAt: Float
+    checkedAt: Float
   }
   type deleteExchangeResponse implements BasicResponse {
     status: Status

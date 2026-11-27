@@ -1,4 +1,5 @@
 import { v4 } from 'uuid'
+import AuthFailureGuard from '../bot/authGuard'
 import { reportingProfitExpr } from '../utils/fiatProfit'
 import { reportingRateSeries } from '../utils/fxHistory'
 import { withExchangeCaller } from '../exchange/requestContext'
@@ -7177,6 +7178,9 @@ const resolvers = <
         const oldOkxSource = find.okxSource
         const oldBybitHost = find.bybitHost
         const oldSubaccount = find.subaccount
+        // Set when the stored credential is genuinely replaced; read after the
+        // save to drop the dead key's auth cooldown.
+        let credentialsReplaced = false
         if (!paperExchanges.includes(find.provider)) {
           if (
             oldKey !== key ||
@@ -7277,6 +7281,9 @@ const resolvers = <
                 `Rotation nudge cleared: user ${user.data._id} (${user.data.username}) replaced ${find.provider} credential ${find.uuid}`,
               )
             }
+            if (credentialsChanged) {
+              credentialsReplaced = true
+            }
           }
           // Held on to before re-encryption. The change detection and the
           // open-stream payload below used to recover these by decrypting what
@@ -7348,6 +7355,16 @@ const resolvers = <
             }
           }
           logger.debug(`Update Exchange for user ${user.data._id} ${uuid}`)
+          // The auth cooldown is keyed on the connection and replays the OLD
+          // key's rejection to every bot for up to an hour. That key no longer
+          // exists, so drop it and let the bots' next call use the new one.
+          if (credentialsReplaced) {
+            await AuthFailureGuard.clear(uuid).catch((e) =>
+              logger.warn(
+                `[updateExchange] auth cooldown clear failed for ${uuid}: ${e}`,
+              ),
+            )
+          }
           userUtils
             .connectUserBalance(user.data._id.toString(), uuid)
             .then(() =>

@@ -2555,6 +2555,25 @@ export type ExchangeInUser = {
    * self-hosted install has one.
    */
   rotationFlag?: ExchangeRotationFlag
+  /**
+   * Hyperliquid only: where the connection's API (agent) wallet stands —
+   * address, expiry and the state of the expiry notices. Absent until the
+   * cloud expiry sync or a credential change reads it.
+   */
+  hlAgent?: ExchangeHlAgent
+}
+
+export type ExchangeHlAgent = {
+  address?: string
+  walletHash?: string
+  state?: 'active' | 'expired' | 'missing' | 'master' | 'unknown'
+  expiresAt?: number | null
+  checkedAt?: number
+  /** The `expiresAt` the notice ladder below belongs to. */
+  noticeFor?: number | null
+  /** Last ladder rung sent, in days before expiry (negative = after). */
+  noticeStage?: number | null
+  lastNoticeAt?: number
 }
 
 export interface FavoritePairsSchema extends SchemaI {
