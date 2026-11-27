@@ -1073,11 +1073,28 @@ const isFiniteNumberLike = (v: unknown) =>
 export const checkDealEditProtectionNumbers = (
   current: Partial<DCADealsSettings>,
   patch: Partial<DCADealsSettings>,
+  opts: {
+    /** `vars.paths[].path` of the bot: a value bound to a global variable is
+     * resolved at run time, so its stored copy is not what the engine reads. */
+    boundPaths?: string[]
+    /** A hedge leg whose stop loss / take profit the hedge owns (externalSl /
+     * externalTp) does not read its own percentage. */
+    skipSl?: boolean
+    skipTp?: boolean
+  } = {},
 ): { status: StatusEnum.ok } | { status: StatusEnum.notok; reason: string } => {
   const merged = { ...(current ?? {}), ...(patch ?? {}) } as Partial<
     DCADealsSettings
   >
+  const bound = (key: string) =>
+    (opts.boundPaths ?? []).some(
+      (p) => p === `settings.${key}` || p.startsWith(`settings.${key}.`),
+    )
   const slByPercent =
+    !opts.skipSl &&
+    !bound('slPerc') &&
+    !bound('multiSl') &&
+    !bound('fixedSlPrice') &&
     !!merged.useSl &&
     (merged.dealCloseConditionSL === undefined ||
       merged.dealCloseConditionSL === null ||
@@ -1105,6 +1122,10 @@ export const checkDealEditProtectionNumbers = (
     }
   }
   const tpByPercent =
+    !opts.skipTp &&
+    !bound('tpPerc') &&
+    !bound('multiTp') &&
+    !bound('fixedTpPrice') &&
     !!merged.useTp &&
     (merged.dealCloseCondition === undefined ||
       merged.dealCloseCondition === null ||

@@ -1558,6 +1558,34 @@ class Bot<T extends UserSchema = UserSchema> {
     return undefined
   }
 
+  /**
+   * Refuse a bot create/edit that leaves stop loss or take profit on with a
+   * percentage that does not parse (see checkDealEditProtectionNumbers). The
+   * GraphQL bot mutations ran no validation at all, and the REST validator
+   * cannot be reused there: it rejects keys and nulls the dashboard form sends.
+   * Returns null when the settings are fine.
+   */
+  protected botProtectionNumbersRefusal(
+    current: unknown,
+    patch: unknown,
+    vars?: BotVars | null,
+    skip: { skipSl?: boolean; skipTp?: boolean } = {},
+    label = '',
+  ) {
+    const check = checkDealEditProtectionNumbers(
+      (current ?? {}) as Partial<DCADealsSettings>,
+      (patch ?? {}) as Partial<DCADealsSettings>,
+      { boundPaths: (vars?.paths ?? []).map((p) => p.path), ...skip },
+    )
+    if (check.status === StatusEnum.ok) {
+      return null
+    }
+    return {
+      status: StatusEnum.notok as const,
+      reason: label ? `${label}: ${check.reason}` : check.reason,
+      data: null,
+    }
+  }
   protected entityNotFound(entity?: string) {
     return {
       status: StatusEnum.notok as const,
@@ -4169,6 +4197,14 @@ class Bot<T extends UserSchema = UserSchema> {
         data: null,
       }
     }
+    const numbersRefusal = this.botProtectionNumbersRefusal(
+      {},
+      preparedBot.data.settings,
+      preparedBot.data.vars,
+    )
+    if (numbersRefusal) {
+      return numbersRefusal
+    }
     const saveBotRequest = await this.dcaBotDb.createData(preparedBot.data)
     if (saveBotRequest.status === StatusEnum.ok) {
       if (cb) {
@@ -4593,6 +4629,14 @@ class Bot<T extends UserSchema = UserSchema> {
         data: null,
       }
     }
+    const numbersRefusal = this.botProtectionNumbersRefusal(
+      {},
+      preparedBot.data.settings,
+      preparedBot.data.vars,
+    )
+    if (numbersRefusal) {
+      return numbersRefusal
+    }
     const saveBotRequest = await this.comboBotDb.createData(preparedBot.data)
     if (saveBotRequest.status === StatusEnum.ok) {
       await updateRelatedBotsInVar(saveBotRequest?.data?.vars?.list ?? [])
@@ -4648,6 +4692,37 @@ class Bot<T extends UserSchema = UserSchema> {
         status: StatusEnum.notok,
         reason: 'Cannot create bot',
         data: null,
+      }
+    }
+    {
+      const skip = {
+        skipSl: !!settings.sharedSettings?.useSl,
+        skipTp: !!settings.sharedSettings?.useTp,
+      }
+      const numbersRefusal =
+        this.botProtectionNumbersRefusal(
+          {},
+          preparedLongBot.data.settings,
+          preparedLongBot.data.vars,
+          skip,
+          'Long bot',
+        ) ??
+        this.botProtectionNumbersRefusal(
+          {},
+          preparedShortBot.data.settings,
+          preparedShortBot.data.vars,
+          skip,
+          'Short bot',
+        ) ??
+        this.botProtectionNumbersRefusal(
+          {},
+          settings.sharedSettings,
+          null,
+          {},
+          'Hedge',
+        )
+      if (numbersRefusal) {
+        return numbersRefusal
       }
     }
     if (settings.sharedSettings?.useTp) {
@@ -4784,6 +4859,37 @@ class Bot<T extends UserSchema = UserSchema> {
         status: StatusEnum.notok,
         reason: 'Cannot create bot',
         data: null,
+      }
+    }
+    {
+      const skip = {
+        skipSl: !!settings.sharedSettings?.useSl,
+        skipTp: !!settings.sharedSettings?.useTp,
+      }
+      const numbersRefusal =
+        this.botProtectionNumbersRefusal(
+          {},
+          preparedLongBot.data.settings,
+          preparedLongBot.data.vars,
+          skip,
+          'Long bot',
+        ) ??
+        this.botProtectionNumbersRefusal(
+          {},
+          preparedShortBot.data.settings,
+          preparedShortBot.data.vars,
+          skip,
+          'Short bot',
+        ) ??
+        this.botProtectionNumbersRefusal(
+          {},
+          settings.sharedSettings,
+          null,
+          {},
+          'Hedge',
+        )
+      if (numbersRefusal) {
+        return numbersRefusal
       }
     }
     if (settings.sharedSettings?.useTp) {
@@ -5327,6 +5433,14 @@ class Bot<T extends UserSchema = UserSchema> {
       return this.entityNotFound('Bot')
     }
     const oldSettings = [bot.data.result].flat()[0]
+    const numbersRefusal = this.botProtectionNumbersRefusal(
+      oldSettings.settings,
+      settings,
+      vars ?? oldSettings.vars,
+    )
+    if (numbersRefusal) {
+      return numbersRefusal
+    }
     const set: { $set: Partial<DCABotSchema> } = {
       $set: { vars },
     }
@@ -5651,6 +5765,14 @@ class Bot<T extends UserSchema = UserSchema> {
       return this.entityNotFound('Bot')
     }
     const oldSettings = [bot.data.result].flat()[0]
+    const numbersRefusal = this.botProtectionNumbersRefusal(
+      oldSettings.settings,
+      settings,
+      vars ?? oldSettings.vars,
+    )
+    if (numbersRefusal) {
+      return numbersRefusal
+    }
     if (
       (settings.indicators ?? []).length === 0 &&
       oldSettings.settings.indicators.length === 0
@@ -5914,6 +6036,44 @@ class Bot<T extends UserSchema = UserSchema> {
     if (bot.status === StatusEnum.ok && bot.data && !bot.data.result) {
       return this.entityNotFound('Bot')
     }
+    {
+      const stored = bot.data.result as unknown as {
+        bots?: { _id: unknown; settings?: unknown; vars?: BotVars | null }[]
+        sharedSettings?: HedgeBotSettings
+      }
+      const shared = {
+        ...(stored.sharedSettings ?? {}),
+        ...(sharedSettings ?? {}),
+      } as HedgeBotSettings
+      const skip = { skipSl: !!shared.useSl, skipTp: !!shared.useTp }
+      const leg = (
+        l: { id: string; vars?: BotVars | null } & Record<string, unknown>,
+        label: string,
+      ) => {
+        const { id: legId, vars: legVars, ...legSettings } = l
+        const old = (stored.bots ?? []).find((b) => `${b._id}` === `${legId}`)
+        return this.botProtectionNumbersRefusal(
+          old?.settings,
+          legSettings,
+          legVars ?? old?.vars,
+          skip,
+          label,
+        )
+      }
+      const numbersRefusal =
+        (long ? leg(long, 'Long bot') : null) ??
+        (short ? leg(short, 'Short bot') : null) ??
+        this.botProtectionNumbersRefusal(
+          stored.sharedSettings,
+          sharedSettings,
+          null,
+          {},
+          'Hedge',
+        )
+      if (numbersRefusal) {
+        return numbersRefusal
+      }
+    }
     const queries: Promise<unknown>[] = []
 
     bot.data.result.bots.forEach((b) => {
@@ -6038,6 +6198,44 @@ class Bot<T extends UserSchema = UserSchema> {
     }
     if (bot.status === StatusEnum.ok && bot.data && !bot.data.result) {
       return this.entityNotFound('Bot')
+    }
+    {
+      const stored = bot.data.result as unknown as {
+        bots?: { _id: unknown; settings?: unknown; vars?: BotVars | null }[]
+        sharedSettings?: HedgeBotSettings
+      }
+      const shared = {
+        ...(stored.sharedSettings ?? {}),
+        ...(sharedSettings ?? {}),
+      } as HedgeBotSettings
+      const skip = { skipSl: !!shared.useSl, skipTp: !!shared.useTp }
+      const leg = (
+        l: { id: string; vars?: BotVars | null } & Record<string, unknown>,
+        label: string,
+      ) => {
+        const { id: legId, vars: legVars, ...legSettings } = l
+        const old = (stored.bots ?? []).find((b) => `${b._id}` === `${legId}`)
+        return this.botProtectionNumbersRefusal(
+          old?.settings,
+          legSettings,
+          legVars ?? old?.vars,
+          skip,
+          label,
+        )
+      }
+      const numbersRefusal =
+        (long ? leg(long, 'Long bot') : null) ??
+        (short ? leg(short, 'Short bot') : null) ??
+        this.botProtectionNumbersRefusal(
+          stored.sharedSettings,
+          sharedSettings,
+          null,
+          {},
+          'Hedge',
+        )
+      if (numbersRefusal) {
+        return numbersRefusal
+      }
     }
     const queries: Promise<unknown>[] = []
 

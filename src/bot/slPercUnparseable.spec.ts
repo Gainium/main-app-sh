@@ -165,6 +165,48 @@ describe('a stop-loss % that is not a number', () => {
       ).to.equal(StatusEnum.ok)
     })
 
+    it('skips a value bound to a global variable', () => {
+      const opts = { boundPaths: ['settings.slPerc', 'settings.tpPerc'] }
+      expect(
+        checkDealEditProtectionNumbers(
+          { useSl: true, useTp: true } as any,
+          { slPerc: '', tpPerc: '' } as any,
+          opts,
+        ).status,
+      ).to.equal(StatusEnum.ok)
+      expect(
+        checkDealEditProtectionNumbers(
+          { useSl: true } as any,
+          { useMultiSl: true, multiSl: [{ target: '' }] } as any,
+          { boundPaths: ['settings.multiSl.0.target'] },
+        ).status,
+      ).to.equal(StatusEnum.ok)
+    })
+
+    it('skips a hedge leg whose stop / target the hedge owns', () => {
+      expect(
+        checkDealEditProtectionNumbers(
+          {} as any,
+          { useSl: true, slPerc: '', useTp: true, tpPerc: '' } as any,
+          { skipSl: true, skipTp: true },
+        ).status,
+      ).to.equal(StatusEnum.ok)
+      expect(
+        checkDealEditProtectionNumbers(
+          {} as any,
+          { useSl: true, slPerc: '', useTp: true, tpPerc: '1' } as any,
+          { skipTp: true },
+        ).status,
+      ).to.equal(StatusEnum.notok)
+    })
+
+    it('a bot create starts from nothing: the settings alone decide', () => {
+      expect(ok({}, { useSl: true, slPerc: 'abc' })).to.equal(StatusEnum.notok)
+      expect(ok({}, { useSl: true, slPerc: '-5', useTp: false })).to.equal(
+        StatusEnum.ok,
+      )
+    })
+
     it('lets an edit through when the deal already holds valid numbers', () => {
       // The dashboard drawer sends many unrelated keys, often as null.
       expect(
