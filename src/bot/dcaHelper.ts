@@ -4149,15 +4149,27 @@ function createDCABotHelper<
      * they have to be converted into the profit currency before summing. That
      * conversion uses the deal's own `lastPrice`, the same price the callers
      * of this method use to move between base and quote.
+     *
+     * `orders` defaults to the deal's FILLED rows. `closeDeal` passes the set
+     * its `feePaid` loop sums instead (FILLED plus CANCELED rows that filled
+     * part-way), because the balances it books profit from include those
+     * partial fills — their fee has to come off the same profit. The other
+     * callers (combo take-profit solving among them) keep the default.
      */
-    async getCommDeal(findDeal: ExcludeDoc<Deal>) {
+    async getCommDeal(
+      findDeal: ExcludeDoc<Deal>,
+      orders?: ReturnType<typeof this.getOrdersByStatusAndDealId>,
+    ) {
       const fee = await this.getUserFee(findDeal.symbol.symbol)
       const profitBase = await this.profitBase(findDeal)
       const dealPrice = findDeal.lastPrice || findDeal.avgPrice || 0
-      return this.getOrdersByStatusAndDealId({
-        status: 'FILLED',
-        dealId: `${findDeal._id}`,
-      }).reduce((acc, v) => {
+      return (
+        orders ??
+        this.getOrdersByStatusAndDealId({
+          status: 'FILLED',
+          dealId: `${findDeal._id}`,
+        })
+      ).reduce((acc, v) => {
         // Convert at the ORDER's own fill price, not the deal's — the estimate
         // this replaces was per order at `v.price` too, and a deal that has
         // moved since a fill would otherwise value that fill's fee at today's
@@ -4710,7 +4722,15 @@ function createDCABotHelper<
           }
           findDeal.deal.updateTime = tpOrder.updateTime
           this.settleShortCloseCarry(findDeal, tpOrder)
-          const commDeal = await this.getCommDeal(findDeal.deal)
+          // A DCA deal's commission covers the same orders as `feePaid`
+          // below: `total` is measured from balances that include a
+          // part-filled, then cancelled order's fill, so its fee is charged
+          // too. Combo deals are left on the FILLED-only count — their close
+          // books against their own minigrid ledger, not covered here.
+          const commDeal = await this.getCommDeal(
+            findDeal.deal,
+            this.combo ? undefined : dealOrders,
+          )
           let feeBaseFull = 0
           let feeQuoteFull = 0
           // Off-pair fee legs' USD value only (spec 014 §2.2) — subtracted
