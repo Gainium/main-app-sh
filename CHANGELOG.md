@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.136.0] - 2026-11-27
+
+### Added
+
+- Exchange connections expose the Hyperliquid API wallet and its expiry (hlAgent) over GraphQL
+
+### Fixed
+
+- Saving new exchange credentials clears the auth-failure cooldown, so bots use the new key straight away
+
 ## [1.135.6] - 2026-11-27
 
 ### Fixed
