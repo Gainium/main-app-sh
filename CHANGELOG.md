@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.10] - 2026-11-27
+
+### Fixed
+
+- A long spot deal whose take profit was refused because the account holds less of the coin than the deal still has to sell is now booked closed from the account's outside fills, or paused with one warning, instead of being refused forever
+
 ## [1.136.9] - 2026-11-27
 
 ### Fixed
