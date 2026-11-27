@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.1] - 2026-11-27
+
+### Fixed
+
+- A closed DCA deal's commission and profit now include the fee of an order that filled part-way before it was cancelled, the same fee its fee ledger already recorded
+
 ## [1.136.0] - 2026-11-27
 
 ### Added
