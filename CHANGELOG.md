@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.4] - 2026-11-27
+
+### Fixed
+
+- Creating or editing a DCA, Combo, Hedge DCA or Hedge Combo bot refuses a stop-loss or take-profit percentage that is not a number while that stop or target is on; values bound to a global variable and hedge legs whose stop or target the hedge owns are not checked
+
 ## [1.136.3] - 2026-11-27
 
 ### Fixed
