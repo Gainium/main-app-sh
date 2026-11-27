@@ -538,7 +538,9 @@ import {
 } from './minOrderFloor'
 import {
   classifyCloseSweepShortfall,
+  filledTpAlreadyBookedAsPartial,
   lockedRemainderMessage,
+  unsoldBaseProfit,
   unsoldRemainderMessage,
 } from './dca/closeSweepShortfall'
 
@@ -4879,7 +4881,20 @@ function createDCABotHelper<
                   (this.combo ? findDeal.deal.profit.total : 0)) +
                 (findDeal.deal.currentBalances.quote -
                   findDeal.deal.initialBalances.quote) /
-                  findDeal.deal.lastPrice) - commDeal
+                  findDeal.deal.lastPrice) -
+            commDeal -
+            // Spec `293`: coins the venue refused to sell were not sold at
+            // the close price; they stay at cost, outside the profit (spec
+            // 267's own message says so).
+            (!profitBase
+              ? unsoldBaseProfit(
+                  unsoldBase,
+                  findDeal.deal.currentBalances.base -
+                    findDeal.deal.initialBalances.base,
+                  findDeal.deal.lastPrice,
+                  findDeal.deal.avgPrice,
+                )
+              : 0)
           const rate = await this.getUsdRate(tpOrder.symbol)
           // Spec 014 §2.2: an off-pair fee's USD value moves totalUsd only —
           // total/pureBase/pureQuote above are unaffected (native currencies,
@@ -17511,6 +17526,33 @@ function createDCABotHelper<
                 `Deal ${d.deal._id} left open: TP ${tp.clientOrderId} is FILLED but sold only ${tp.executedQty} of ${tp.origQty}`,
               )
             }
+          }
+          // Spec `293`. A close that kept the deal open after its take-profit
+          // filled (the sweep of the rest was refused) booked that fill in
+          // `tpHistory`. Closing again here re-runs the refused sweep and
+          // closes the deal with the rest unsold; leave it to the limit close.
+          if (
+            !skip &&
+            findFilledTp.length &&
+            d.deal.status !== DCADealStatusEnum.closed &&
+            filledTpAlreadyBookedAsPartial({
+              filledTps: findFilledTp,
+              tpHistory: d.deal.tpHistory,
+              isLong: this.isLong,
+              ledger: d.deal.currentBalances,
+              initialBase: d.deal.initialBalances?.base ?? NaN,
+              queuedBase: this.queuedEntryFills(`${d.deal._id}`).base,
+              minAmount:
+                (await this.getExchangeInfo(d.deal.symbol.symbol))?.baseAsset
+                  ?.minAmount ?? Infinity,
+            })
+          ) {
+            skip = true
+            this.handleLog(
+              `Deal ${d.deal._id} left open: TP ${findFilledTp
+                .map((f) => f.clientOrderId)
+                .join(', ')} already booked as a partial take profit, the rest is still held`,
+            )
           }
           if (
             findFilledTp.length &&

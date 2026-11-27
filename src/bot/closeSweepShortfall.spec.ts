@@ -22,7 +22,11 @@ import { ExchangeEnum, StatusEnum } from '../../types'
 import { MathHelper } from '../utils/math'
 import { matchesNotEnoughBalance } from './main'
 import { createRequire } from 'module'
-import { classifyCloseSweepShortfall } from './dca/closeSweepShortfall'
+import {
+  classifyCloseSweepShortfall,
+  filledTpAlreadyBookedAsPartial,
+  unsoldBaseProfit,
+} from './dca/closeSweepShortfall'
 
 const DEAL_ID = 'aaaaaaaaaaaaaaaaaaaa0267'
 const BOT_ID = 'bbbbbbbbbbbbbbbbbbbb0267'
@@ -408,6 +412,149 @@ describe('close sweep refused for coins other orders hold (spec 267)', () => {
         classifyCloseSweepShortfall(142.1, { free: NaN, locked: 1 } as any)
           .kind,
       ).to.equal('unsold')
+    })
+  })
+
+  // Spec `293`. A take-profit fully FILLED but smaller than the position:
+  // the close kept the deal open (spec 267 `locked`), then the bot restarted.
+  const restartDecision = (deal: any, tps: any[], minAmount = 0.1) =>
+    filledTpAlreadyBookedAsPartial({
+      filledTps: tps,
+      tpHistory: deal.tpHistory,
+      isLong: true,
+      ledger: deal.currentBalances,
+      initialBase: deal.initialBalances.base,
+      queuedBase: 0,
+      minAmount,
+    })
+
+  describe('§6 restart after a kept-open close (spec 293)', () => {
+    it('§6.1 fully filled but smaller than the position -> restart -> deal still open', async () => {
+      const t = makeBot(KRAKEN_REFUSAL, { free: 0, locked: 260.23 })
+      await t.bot.closeDeal(BOT_ID, DEAL_ID, { ...TP })
+      expect(t.deal.status).to.equal('open')
+      // what restoreWork sees after the restart: the same FILLED TP row
+      expect(restartDecision(t.deal, [{ ...TP }])).to.equal(true)
+    })
+
+    it('§6.2 a take-profit that sold the whole position still closes on restart', () => {
+      const deal: any = makeDeal()
+      const whole = { ...TP, origQty: `${BOUGHT}`, executedQty: `${BOUGHT}` }
+      // never booked to tpHistory before its close
+      expect(restartDecision(deal, [whole])).to.equal(false)
+      // partial-fill progress rows of the same order are smaller than the fill
+      deal.tpHistory = [{ id: TP_ID, qty: 100, price: 0.9686 }]
+      expect(restartDecision(deal, [whole])).to.equal(false)
+      // a progress row equal to the full fill leaves nothing held: still closes
+      deal.tpHistory = [{ id: TP_ID, qty: BOUGHT, price: 0.9686 }]
+      expect(restartDecision(deal, [whole])).to.equal(false)
+    })
+
+    it('§6.3 a later take-profit not yet booked closes the rest as today', () => {
+      const deal: any = makeDeal()
+      deal.tpHistory = [{ id: TP_ID, qty: TP_SOLD, price: 0.9686 }]
+      const rest = {
+        ...TP,
+        clientOrderId: 'D-TP-rest',
+        origQty: `${REMAINDER}`,
+        executedQty: `${REMAINDER}`,
+      }
+      expect(restartDecision(deal, [{ ...TP }, rest])).to.equal(false)
+    })
+
+    it('§6.4 dust after the booked fills, or a lost ledger, closes as today', () => {
+      const deal: any = makeDeal()
+      deal.tpHistory = [{ id: TP_ID, qty: TP_SOLD, price: 0.9686 }]
+      expect(restartDecision(deal, [{ ...TP }], REMAINDER)).to.equal(false)
+      deal.currentBalances = { base: 0, quote: 0 }
+      expect(restartDecision(deal, [{ ...TP }])).to.equal(false)
+      deal.currentBalances = { base: NaN, quote: 0 }
+      expect(restartDecision(deal, [{ ...TP }])).to.equal(false)
+    })
+  })
+
+  // The REAL restoreWork on a service restart, stopped at the first step a
+  // deal it left open reaches (`setCloseByTimer`).
+  const restart = async (deal: any, tps: any[]) => {
+    const t = makeBot(KRAKEN_REFUSAL, undefined)
+    const recloses: any[] = []
+    Object.assign(t.bot, {
+      serviceRestart: true,
+      secondRestart: false,
+      resting: tps,
+      getOpenDeals: () => [{ deal, initialOrders: [], currentOrders: [] }],
+      getAggregatedSettings: async () => ({
+        type: 'regular',
+        useMultiTp: false,
+        useMultiSl: false,
+      }),
+      getSymbolsToOpenAsapDeals: async () => [],
+      resumeCloseSweeps: async () => {},
+      checkOrders: async () => {},
+      closeDeal: (...a: any[]) => recloses.push(a),
+      setCloseByTimer: async () => {
+        throw new Error('left-open')
+      },
+    })
+    let leftOpen = false
+    try {
+      await t.bot.restoreWork()
+    } catch (e: any) {
+      if (e?.message !== 'left-open') throw e
+      leftOpen = true
+    }
+    return { ...t, recloses, leftOpen }
+  }
+
+  describe('§6.5 restoreWork itself (spec 293)', () => {
+    it('leaves the prod-shaped deal open: no re-close, no profit', async () => {
+      const k = makeBot(KRAKEN_REFUSAL, { free: 0, locked: 260.23 })
+      await k.bot.closeDeal(BOT_ID, DEAL_ID, { ...TP })
+      expect(k.deal.status).to.equal('open')
+      const r = await restart(k.deal, [{ ...TP }])
+      expect(r.leftOpen).to.equal(true)
+      expect(r.recloses).to.have.length(0)
+      expect(r.closes).to.have.length(0)
+      expect(k.deal.status).to.equal('open')
+    })
+
+    it('still closes a deal whose take-profit sold the whole position', async () => {
+      const deal: any = makeDeal()
+      const whole = { ...TP, origQty: `${BOUGHT}`, executedQty: `${BOUGHT}` }
+      const r = await restart(deal, [whole])
+      expect(r.leftOpen).to.equal(false)
+      expect(r.recloses).to.have.length(1)
+      expect(r.recloses[0][2].clientOrderId).to.equal(TP_ID)
+    })
+  })
+
+  describe('§7 profit of a short close excludes the unsold coins (spec 293)', () => {
+    it('§7.1 books only what the sold coins realised', async () => {
+      const t = makeBot(KRAKEN_REFUSAL, { free: 0, locked: 114.68 })
+      await t.bot.closeDeal(BOT_ID, DEAL_ID, { ...TP })
+      expect(t.deal.status).to.equal('closed')
+      const realised = TP_SOLD * (0.9686 - 0.9486)
+      expect(+t.deal.profit.total.toFixed(6)).to.equal(+realised.toFixed(6))
+      expect(+t.profitWrites[0].toFixed(6)).to.equal(+realised.toFixed(6))
+    })
+
+    it('§7.2 a close with nothing unsold books the same profit as before', async () => {
+      const t = makeBot({}, { free: 0, locked: 0 })
+      const whole = { ...TP, origQty: `${BOUGHT}`, executedQty: `${BOUGHT}` }
+      await t.bot.closeDeal(BOT_ID, DEAL_ID, whole)
+      expect(t.deal.status).to.equal('closed')
+      expect(t.deal.unsoldBase).to.equal(undefined)
+      const full = BOUGHT * (0.9686 - 0.9486)
+      expect(+t.deal.profit.total.toFixed(6)).to.equal(+full.toFixed(6))
+    })
+
+    it('§7.3 unsoldBaseProfit', () => {
+      expect(unsoldBaseProfit(undefined, 10, 2, 1)).to.equal(0)
+      expect(unsoldBaseProfit(5, 10, 2, 1)).to.equal(5)
+      expect(unsoldBaseProfit(5, 3, 2, 1)).to.equal(3)
+      expect(unsoldBaseProfit(5, 10, 1, 2)).to.equal(-5)
+      expect(unsoldBaseProfit(5, -1, 2, 1)).to.equal(0)
+      expect(unsoldBaseProfit(5, 10, NaN, 1)).to.equal(0)
     })
   })
 })
