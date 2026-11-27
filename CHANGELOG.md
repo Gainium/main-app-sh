@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.6] - 2026-11-27
+
+### Fixed
+
+- A take profit that waits for the price to come back within the exchange's band is no longer reported as a bot error, and every waiting deal now gets its own notice.
+
 ## [1.136.5] - 2026-11-27
 
 ### Fixed
