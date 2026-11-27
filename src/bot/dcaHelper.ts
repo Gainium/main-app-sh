@@ -702,6 +702,16 @@ const LADDER_SETTINGS = new Set<string>([
  * takes the observed 1031 attempts in ~2 h down to 6, and any accepted close
  * clears it outright.
  */
+/**
+ * Back-off between re-checks of a take profit whose cancel the venue did not
+ * confirm, before a replacement may be placed (spec 295 §1.2). In-process
+ * timers, not `RetryBackoff`: that one suppresses calls by a Redis window, and
+ * nothing would come back to ask again. The last step repeats until the venue
+ * answers: one cancel or lookup a minute for a deal that has no take profit
+ * placed.
+ */
+const TP_RECHECK_DELAYS_MS = [5_000, 15_000, 30_000, 60_000]
+
 const tpCloseBackoff = new RetryBackoff({
   namespace: 'tpc',
   minMs: 60 * 1000,
@@ -1174,6 +1184,8 @@ function createDCABotHelper<
     bookCache?: Map<string, { at: number; book: BookTicker | null }>
     /** Deals whose next `closeDealById` is a re-placement by `checkTPOrder`. */
     closeReplacements?: Set<string>
+    /** Spec 295 — re-checks so far per held take profit, by client order id. */
+    tpRecheckAttempts?: Map<string, number>
     /**
      * Spec 249 — the execution a person chose for a manual close, per deal.
      * Read once by the `closeDealById` it is set for, then dropped.
@@ -12163,9 +12175,19 @@ function createDCABotHelper<
       reopen = true,
       forceMarket = false,
       checkProfit = false,
+      recheck = false,
     ) {
       if (this.orders) {
-        const find = this.getOrderFromMap(id)
+        // A re-check after a refused cancel (spec 295 §1.3) also reads the
+        // stored row: the venue's own report of the cancel landing late drops
+        // the order from the map, and a map-only lookup would leave the deal
+        // with no take profit at all.
+        const find =
+          this.getOrderFromMap(id) ??
+          (recheck ? await this.findOwnOrder(id) : undefined)
+        if (!recheck) {
+          this.tpRecheckAttempts?.delete(id)
+        }
         if (this.hyperliquid && +(find?.executedQty || '0') > 0) {
           this.handleLog(
             `Hyperliquid base order ${id} has partial fill ${find?.executedQty}, skip check`,
@@ -12185,13 +12207,38 @@ function createDCABotHelper<
               o.clientOrderId !== find.clientOrderId,
           )
           if (findOtherTp) {
+            this.tpRecheckAttempts?.delete(id)
             this.handleLog(`${dealId} have processed TP order`)
             return
           }
-          const cancelOrder = await this.cancelOrderOnExchange(find)
+          // A stored row the venue already ended unfilled needs no second
+          // cancel. Spec 295 §1.3.
+          const cancelOrder =
+            recheck && (find.status === 'CANCELED' || find.status === 'EXPIRED')
+              ? find
+              : await this.cancelOrderOnExchange(find)
           if (cancelOrder?.status === 'FILLED') {
+            this.tpRecheckAttempts?.delete(id)
             return this.handleUnknownOrder(cancelOrder)
           }
+          // No answer about the old take profit: the venue refused the cancel
+          // (busy, rate limit, lockout — `cancelOrderOnExchange` returns
+          // nothing) or the order lookup could not settle it (`null`). It may
+          // still rest on the venue, and a replacement on top of it is a
+          // second closing order for the same deal. Hold, and ask again after
+          // a back-off. Any answered cancel continues exactly as before.
+          // Spec 295 §1.1/§1.2.
+          if (!cancelOrder) {
+            return this.armTPRecheck(
+              id,
+              dealId,
+              closeType,
+              reopen,
+              forceMarket,
+              checkProfit,
+            )
+          }
+          this.tpRecheckAttempts?.delete(id)
           // Spec 242 — a re-placement continues the running close.
           ;(this.closeReplacements ??= new Set()).add(dealId)
           this.closeDealById(
@@ -12208,6 +12255,52 @@ function createDCABotHelper<
           )
         }
       }
+    }
+
+    /**
+     * Hold a take-profit replacement whose old order the venue did not
+     * confirm gone, and run `checkTPOrder` again after a back-off. The timer
+     * is the deal's `limitTimer`, so closing the deal or stopping the bot
+     * (`clearDealTimer`, `stop`) drops it, and a later TP placement replaces
+     * it. Spec 295 §1.2.
+     */
+    armTPRecheck(
+      id: string,
+      dealId: string,
+      closeType: CloseDCATypeEnum,
+      reopen: boolean,
+      forceMarket: boolean,
+      checkProfit: boolean,
+    ) {
+      const attempt = this.tpRecheckAttempts?.get(id) ?? 0
+      ;(this.tpRecheckAttempts ??= new Map()).set(id, attempt + 1)
+      const delay =
+        TP_RECHECK_DELAYS_MS[Math.min(attempt, TP_RECHECK_DELAYS_MS.length - 1)]
+      this.handleLog(
+        `${id} cancel not confirmed by the exchange. New take profit for deal ${dealId} held, checking again in ${delay}ms (attempt ${attempt + 1})`,
+      )
+      const dealTimer = this.dealTimersMap.get(dealId) ?? {
+        limitTimer: null,
+        enterMarketTimer: null,
+      }
+      if (dealTimer.limitTimer) {
+        clearTimeout(dealTimer.limitTimer)
+      }
+      dealTimer.limitTimer = setTimeout(
+        () =>
+          this.checkTPOrder(
+            this.botId,
+            id,
+            dealId,
+            closeType,
+            reopen,
+            forceMarket,
+            checkProfit,
+            true,
+          ),
+        delay,
+      )
+      this.dealTimersMap.set(dealId, dealTimer)
     }
     /**
      * Check base order status after timeout

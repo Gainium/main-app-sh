@@ -3447,7 +3447,7 @@ class MainBot<T extends IMainBot> {
    * This bot's order under a client order id: from memory, else its stored
    * row. A failed read answers `undefined`, as for an unknown id.
    */
-  private async findOwnOrder(clientOrderId: string): Promise<Order | undefined> {
+  protected async findOwnOrder(clientOrderId: string): Promise<Order | undefined> {
     const held = this.getOrderFromMap(clientOrderId)
     if (held) {
       return held
