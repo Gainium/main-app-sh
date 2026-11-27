@@ -466,20 +466,31 @@ class Exchange extends AbstractExchange {
    *
    * `sinceMs` pages backwards; an empty array means there is no more history
    * (and is also what every venue publishing no such feed returns).
+   *
+   * `symbol` narrows the read to one pair. Venues whose trade history is per
+   * symbol (Binance futures) answer fills only when it is named; the others
+   * ignore it.
    */
   async getAccountFills(
     sinceMs?: number,
+    symbol?: string,
     timeProfile = this.getEmptyTimeProfile('getAccountFills'),
   ): Promise<BaseReturn<AccountFill[]>> {
+    const params = {
+      ...(sinceMs ? { since: `${sinceMs}` } : {}),
+      ...(symbol ? { symbol } : {}),
+    }
     const result = await this.apiCall<AccountFill[]>(
       {
         endpoint: 'accountFills',
         method: 'get',
         isPrivate: true,
-        params: sinceMs ? { since: `${sinceMs}` } : undefined,
+        params: Object.keys(params).length ? params : undefined,
       },
       timeProfile,
-    ).catch(this.handleError(this.getAccountFills, timeProfile))
+    ).catch(
+      this.handleError(this.getAccountFills, sinceMs, symbol, timeProfile),
+    )
     this.saveTimeProfile(result.timeProfile)
     return result.data
   }

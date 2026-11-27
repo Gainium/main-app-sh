@@ -28288,8 +28288,11 @@ function createDCABotHelper<
       if (!deal || !this.exchange || !this.futures) {
         return undefined
       }
+      // Named: Binance futures publish trade history per symbol only.
       const fills = await Promise.resolve()
-        .then(() => this.exchange?.getAccountFills?.())
+        .then(() =>
+          this.exchange?.getAccountFills?.(undefined, deal.deal.symbol.symbol),
+        )
         .catch(() => undefined)
       if (fills?.status !== StatusEnum.ok || !fills.data?.length) {
         return undefined

@@ -391,7 +391,10 @@ abstract class AbsctractExchange implements Exchange {
    * Empty for every venue that publishes no such history, and for the paper
    * simulator, whose fills we already own in full.
    */
-  async getAccountFills(_sinceMs?: number): Promise<BaseReturn<AccountFill[]>> {
+  async getAccountFills(
+    _sinceMs?: number,
+    _symbol?: string,
+  ): Promise<BaseReturn<AccountFill[]>> {
     return {
       status: StatusEnum.ok,
       data: [],
