@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.136.2] - 2026-11-27
+
+### Fixed
+
+- A stop loss whose level cannot be worked out (0 or not a number) is skipped and reported once instead of being checked against the price, which closed short deals at market on the next tick
+- Deal edits refuse a stop-loss or take-profit percentage that is not a number while that stop or target is on, on every route (dashboard, API v1, API v2), for DCA and combo deals
+
 ## [1.136.1] - 2026-11-27
 
 ### Fixed
