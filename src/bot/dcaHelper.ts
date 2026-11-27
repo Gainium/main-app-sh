@@ -429,6 +429,10 @@ import {
   type VenueCloseEvidence,
 } from './dca/venueCloseEvidence'
 import {
+  spotShortfallVerdict,
+  spotShortfallHeldMessage,
+} from './dca/spotBaseShortfall'
+import {
   LIQUIDATION_ROW_PREFIX,
   bookedLiquidationChunkIds,
   liquidationChunksFromFills,
@@ -896,6 +900,37 @@ const uncoveredCloseBackoff = new RetryBackoff({
   minMs: 5 * 60 * 1000,
   maxMs: 60 * 60 * 1000,
 })
+
+/**
+ * Spec `298`. Readings of a long spot deal whose close was refused while the
+ * account holds less of its base than the deal still has to sell, and no
+ * outside fills account for the difference. The window spaces the readings
+ * (a burst of refusals is one reading); the second agreeing one holds the
+ * deal. A day, as for `dpg`, so a restart does not start the count over.
+ */
+const spotShortfallReadings = new RetryBackoff({
+  namespace: 'sbr',
+  minMs: 5 * 60 * 1000,
+  maxMs: 60 * 60 * 1000,
+  memoryMs: 24 * 60 * 60 * 1000,
+})
+
+/**
+ * Spec `298`. A held deal, so a worker restart neither re-sends the refused
+ * orders nor posts the warning a second time. Only `record`/`peek`/`clear`
+ * are used; the window itself gates nothing.
+ */
+const spotShortfallHeld = new RetryBackoff({
+  namespace: 'sbh',
+  minMs: 7 * 24 * 60 * 60 * 1000,
+  maxMs: 7 * 24 * 60 * 60 * 1000,
+  memoryMs: 7 * 24 * 60 * 60 * 1000,
+})
+
+/** Spec `298` §3.3. How often a held deal re-reads the account. */
+const SPOT_SHORTFALL_RECHECK_MS = 30 * 60 * 1000
+/** Spec `298` §3.4. How long a hold answer is served from memory. */
+const SPOT_SHORTFALL_CACHE_MS = 60 * 1000
 
 /**
  * Consecutive base orders the venue cancelled with nothing filled, per bot and
@@ -1445,6 +1480,12 @@ function createDCABotHelper<
       string,
       { at: number; avgPrice: number; hold: boolean | Promise<boolean> }
     > = new Map()
+    /** Spec 298: dealId → whether it is held for a spot base shortfall. */
+    spotShortfallHolds: Map<string, { at: number; held: boolean }> = new Map()
+    /** Spec 298: dealId → its pending shortfall re-read. */
+    spotShortfallTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
+    /** Spec 298: dealId → the shortfall check in flight (single-flight). */
+    spotShortfallInFlight: Map<string, Promise<string>> = new Map()
     /** Spec 285 §4.1.1: symbol → until when a safety-order hold stands. */
     opposingSafetyHoldUntil: Map<string, number> = new Map()
     /** Spec 285 §4.2: dealId → the held safety levels and their retry timer. */
@@ -2420,6 +2461,12 @@ function createDCABotHelper<
       // Spec 296: no re-send into a re-denominated pair; the rescale reloads
       // the bot, and the reload restores the take profit in the new units.
       if (await this.holdForTokenRatioChange(dealId)) {
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      // Spec 298: the account holds less base than the deal; a re-send is
+      // refused again. Released by the shortfall re-read, which re-arms.
+      if (await this.holdForSpotShortfall(dealId)) {
         this.clearMissingTpRearm(dealId)
         return
       }
@@ -8454,6 +8501,287 @@ function createDCABotHelper<
         )
       }
       return true
+    }
+
+    /**
+     * Spec `298` §2. Whether a refusal starts a shortfall check: a long spot
+     * DCA deal's close (`dealTP`, not a funds order) refused for balance.
+     * Futures, shorts and combo bots never do — combo's own override calls
+     * this one through `super`.
+     */
+    protected spotShortfallTriggered(e: Error | string, order: Order): boolean {
+      if (
+        this.futures ||
+        !this.isLong ||
+        this.combo ||
+        !order?.dealId ||
+        order.typeOrder !== TypeOrderEnum.dealTP ||
+        order.reduceFundsId ||
+        order.addFundsId
+      ) {
+        return false
+      }
+      return this.isErrorNotEnoughBalance(typeof e === 'string' ? e : e?.message)
+    }
+
+    override async handleOrderErrors(
+      e: Error | string,
+      order: Order,
+      method: string,
+      step?: string,
+      setError = true,
+      sendError = true,
+    ): Promise<void> {
+      await super.handleOrderErrors(e, order, method, step, setError, sendError)
+      if (!this.spotShortfallTriggered(e, order)) {
+        return
+      }
+      // Not awaited: the refusal arrives from inside `placeOrders`, which
+      // holds the `${botId}${dealId}` lock that a settle's close takes.
+      this.checkSpotBaseShortfall(`${order.dealId}`, 'refusal').catch(
+        (err: unknown) =>
+          this.handleWarn(
+            `Deal ${order.dealId} spot shortfall check after ${order.clientOrderId} failed: ${err}`,
+          ),
+      )
+    }
+
+    /** Spec `298`: the Redis-backed stores, a seam for harnesses. */
+    protected spotShortfallStores() {
+      return { readings: spotShortfallReadings, held: spotShortfallHeld }
+    }
+
+    /**
+     * Spec `298` §3.4. True while a long spot deal is held because the account
+     * holds less of its base than it still has to sell. Gates new orders for
+     * the deal (placement, the missing-TP re-send, a market safety order); not
+     * closes. Any failure answers "not held", i.e. today's behaviour.
+     */
+    async holdForSpotShortfall(dealId: string): Promise<boolean> {
+      try {
+        if (this.futures || !this.isLong || this.combo) {
+          return false
+        }
+        const live = this.getDeal(dealId)
+        if (!live || live.deal.status !== DCADealStatusEnum.open) {
+          return false
+        }
+        // Lazily created: prototype-built harnesses never run field initialisers.
+        this.spotShortfallHolds ??= new Map()
+        const now = +new Date()
+        const cached = this.spotShortfallHolds.get(dealId)
+        if (cached && now - cached.at < SPOT_SHORTFALL_CACHE_MS) {
+          return cached.held
+        }
+        const held = !!(await this.spotShortfallStores().held.peek([
+          this.botId,
+          dealId,
+        ]))
+        this.spotShortfallHolds.set(dealId, { at: now, held })
+        // A hold read back after a restart has no re-read pending yet.
+        if (held && !this.spotShortfallTimers?.get(dealId)) {
+          this.armSpotShortfallRecheck(dealId, SPOT_SHORTFALL_RECHECK_MS)
+        }
+        return held
+      } catch (e) {
+        this.handleWarn?.(
+          `Spot shortfall hold check failed for deal ${dealId}: ${(e as Error)?.message ?? e}`,
+        )
+        return false
+      }
+    }
+
+    /** Spec `298` §3.3. One pending re-read per deal, never keeping the process alive. */
+    protected armSpotShortfallRecheck(dealId: string, delayMs: number) {
+      this.spotShortfallTimers ??= new Map()
+      const prev = this.spotShortfallTimers.get(dealId)
+      if (prev) {
+        clearTimeout(prev)
+      }
+      const timer = setTimeout(() => {
+        this.spotShortfallTimers.delete(dealId)
+        if (!this.shouldProceed()) {
+          return
+        }
+        this.checkSpotBaseShortfall(dealId, 'recheck').catch((err: unknown) =>
+          this.handleWarn(`Deal ${dealId} spot shortfall re-read failed: ${err}`),
+        )
+      }, delayMs)
+      timer.unref?.()
+      this.spotShortfallTimers.set(dealId, timer)
+    }
+
+    /** Spec `298`: forget everything about a deal's shortfall. */
+    protected async clearSpotShortfall(dealId: string) {
+      const parts = [this.botId, dealId]
+      const stores = this.spotShortfallStores()
+      this.spotShortfallHolds?.delete(dealId)
+      const timer = this.spotShortfallTimers?.get(dealId)
+      if (timer) {
+        clearTimeout(timer)
+        this.spotShortfallTimers.delete(dealId)
+      }
+      await Promise.all([stores.readings.clear(parts), stores.held.clear(parts)])
+    }
+
+    /** Spec `298` §3: single-flight per deal. */
+    checkSpotBaseShortfall(
+      dealId: string,
+      origin: 'refusal' | 'recheck',
+    ): Promise<string> {
+      this.spotShortfallInFlight ??= new Map()
+      const running = this.spotShortfallInFlight.get(dealId)
+      if (running) {
+        return running
+      }
+      const run = this.evaluateSpotBaseShortfall(dealId, origin).finally(() =>
+        this.spotShortfallInFlight.delete(dealId),
+      )
+      this.spotShortfallInFlight.set(dealId, run)
+      return run
+    }
+
+    /**
+     * Spec `298` §3. Read the account's TOTAL base (free + locked) against the
+     * deal's remaining size. Covered or under the pair minimum: today's
+     * behaviour (the latter is spec `047`'s). Short: the outside fills that
+     * account for the missing part close the deal at their price; without
+     * them, two agreeing readings hold the deal and tell the user once.
+     *
+     * @returns the outcome, for logs and harnesses
+     */
+    protected async evaluateSpotBaseShortfall(
+      dealId: string,
+      origin: 'refusal' | 'recheck',
+    ): Promise<string> {
+      if (this.futures || !this.isLong || this.combo || !this.exchange) {
+        return 'skipped'
+      }
+      const live = this.getDeal(dealId)
+      if (!live || live.deal.status !== DCADealStatusEnum.open) {
+        await this.clearSpotShortfall(dealId)
+        return 'skipped'
+      }
+      const parts = [this.botId, dealId]
+      const stores = this.spotShortfallStores()
+      const wasHeld = !!(await stores.held.peek(parts))
+      // A take profit on the book (or held out of band, spec 283) means the
+      // deal is being worked: nothing to decide.
+      if (
+        !wasHeld &&
+        (this.restingTakeProfits(dealId).length ||
+          this.hasHeldTakeProfit(dealId))
+      ) {
+        return 'skipped'
+      }
+      // A burst of refusals is one reading; the timer asks for the next.
+      if (
+        origin === 'refusal' &&
+        !wasHeld &&
+        (await stores.readings.check(parts)).suppressed
+      ) {
+        return 'skipped'
+      }
+      const symbol = live.deal.symbol.symbol
+      const ed = await this.getExchangeInfo(symbol)
+      const asset = ed?.baseAsset?.name || live.deal.symbol.baseAsset
+      const balances = await withExchangeCaller('bot.spotShortfall', () =>
+        this.getBalancesFromExchange(),
+      ).catch(() => undefined)
+      let venueTotal: number | null = null
+      if (balances?.status === StatusEnum.ok && ed) {
+        const row = balances.data.find((b) => b.asset === asset)
+        venueTotal = (Number(row?.free) || 0) + (Number(row?.locked) || 0)
+      }
+      const remaining = this.dealOwnBasePosition(live)
+      const verdict = spotShortfallVerdict({
+        venueTotal,
+        remaining,
+        minAmount: Number(ed?.baseAsset?.minAmount),
+      })
+      if (verdict.kind === 'unknown') {
+        this.armSpotShortfallRecheck(
+          dealId,
+          wasHeld ? SPOT_SHORTFALL_RECHECK_MS : 5 * 60 * 1000,
+        )
+        return 'unknown'
+      }
+      if (verdict.kind === 'gone' || verdict.kind === 'covered') {
+        await this.clearSpotShortfall(dealId)
+        if (wasHeld) {
+          this.handleLog(
+            `Spot shortfall | deal ${dealId} ${symbol}: account holds ${verdict.total} ${asset} for ${remaining} — hold released (${verdict.kind})`,
+          )
+          if (verdict.kind === 'gone') {
+            // Spec 047 settles a deal with nothing left; let it ask.
+            await this.reconcileDealPosition(live, 'spot shortfall re-read')
+          } else {
+            await this.rearmMissingTp(dealId)
+          }
+        }
+        return verdict.kind
+      }
+      const fills = await Promise.resolve()
+        .then(() => this.exchange?.getAccountFills?.(undefined, symbol))
+        .catch(() => undefined)
+      const evidence =
+        fills?.status === StatusEnum.ok && fills.data?.length
+          ? venueCloseEvidence(fills.data, {
+              symbol,
+              closeSide: 'SELL',
+              sinceMs: +live.deal.createTime || 0,
+              dealQty: verdict.missing,
+            })
+          : undefined
+      this.handleLog(
+        `Spot shortfall | deal ${dealId} ${symbol}: account holds ${verdict.total} ${asset} (free + locked), deal remaining ${remaining}, missing ${verdict.missing}; outside fills ${evidence ? `${evidence.qty} at ${evidence.price}` : fills?.status === StatusEnum.ok ? 'do not cover it' : 'unreadable'}`,
+      )
+      if (evidence) {
+        await this.clearSpotShortfall(dealId)
+        await this.settleExternallyClosedDeal(dealId, evidence)
+        return 'settled'
+      }
+      if (wasHeld) {
+        this.spotShortfallHolds ??= new Map()
+        this.spotShortfallHolds.set(dealId, { at: +new Date(), held: true })
+        this.armSpotShortfallRecheck(dealId, SPOT_SHORTFALL_RECHECK_MS)
+        return 'held'
+      }
+      const reading = await stores.readings.record(
+        parts,
+        `short ${verdict.missing} ${asset}`,
+      )
+      if (reading.attempt < 2) {
+        this.armSpotShortfallRecheck(
+          dealId,
+          Math.max(reading.until - +new Date(), 0) + 5 * 1000,
+        )
+        return 'reading'
+      }
+      await stores.held.record(parts, `short ${verdict.missing} ${asset}`)
+      this.spotShortfallHolds ??= new Map()
+      this.spotShortfallHolds.set(dealId, { at: +new Date(), held: true })
+      this.armSpotShortfallRecheck(dealId, SPOT_SHORTFALL_RECHECK_MS)
+      if (this.shouldProceed()) {
+        this.botEventDb.createData({
+          userId: this.userId,
+          botId: this.botId,
+          event: 'Deal',
+          botType: this.botType,
+          description: spotShortfallHeldMessage({
+            dealId,
+            symbol,
+            asset,
+            total: verdict.total,
+            remaining,
+          }),
+          paperContext: !!this.data?.paperContext,
+          deal: dealId,
+          symbol,
+          type: MessageTypeEnum.warning,
+        })
+      }
+      return 'held'
     }
 
     /**
@@ -22204,6 +22532,15 @@ function createDCABotHelper<
         this.endMethod(_id)
         return
       }
+      // Spec 298: the account holds less of the base than the deal still has
+      // to sell, and no outside fills explain it. Closes do not come here.
+      if (orders.new.length && (await this.holdForSpotShortfall(dealId))) {
+        this.handleLog(
+          `Deal ${dealId} held: the account holds less of its base than the deal. Skip place orders: ${orders.new.length}, cancel: ${orders.cancel.length}`,
+        )
+        this.endMethod(_id)
+        return
+      }
       // Spec `160`. Nothing to pull here: `processDealClose` owns the sweep of
       // a released deal's orders.
       if (this.dealReleased(dealId)) {
@@ -33568,6 +33905,10 @@ function createDCABotHelper<
             if (await this.holdForTokenRatioChange(deal.deal._id)) {
               continue
             }
+            // Spec 298: no safety order into a deal held for a base shortfall.
+            if (await this.holdForSpotShortfall(`${deal.deal._id}`)) {
+              continue
+            }
             const ed = await this.getExchangeInfo(deal.deal.symbol.symbol)
             if (ed) {
               this.dealsByMarketProcessing.add(key)
@@ -33866,12 +34207,16 @@ function createDCABotHelper<
      * Places no order; `closeDeal` cancels what the deal still rests, as for
      * any close.
      */
-    protected async settleExternallyClosedDeal(dealId: string) {
+    protected async settleExternallyClosedDeal(
+      dealId: string,
+      given?: VenueCloseEvidence,
+    ) {
       const live = this.getDeal(dealId)
       if (!live || live.deal.status !== DCADealStatusEnum.open) {
         return
       }
-      const evidence = await this.venueCloseEvidenceFor(live)
+      // Spec 298 passes the spot fills it has already read.
+      const evidence = given ?? (await this.venueCloseEvidenceFor(live))
       const symbol = live.deal.symbol.symbol
       const exchange = `${this.data?.exchange ?? ''}`
       const flags = [
