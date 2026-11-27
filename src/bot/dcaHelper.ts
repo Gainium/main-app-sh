@@ -491,6 +491,7 @@ import {
   dcaBotDb,
   dcaDealsDb,
   fundingLotDb,
+  snapshotDb,
 } from '../db/dbInit'
 import { RunWithDelay } from '../utils/delay'
 import { DealStats } from './worker/statsService'
@@ -513,6 +514,13 @@ import { capLadderPlacements } from './ladderPlacementCap'
 import { priceMovedSince } from './priceStreamGap'
 import { wantsUserStreamOpen } from './userStreamReopen'
 import {
+  priceJumpFactor,
+  SNAPSHOT_LEAD_MS,
+  TOKEN_RATIO_RECHECK_MS,
+  tokenRatioHeldMessage,
+  tokenRatioVerdict,
+} from './tokenRatioHold'
+import {
   ConditionLatch,
   limitOnlyEntryFallback,
   maxDealsPerPairReached,
@@ -522,6 +530,7 @@ import {
   orderBelowExchangeMin,
   newDealAgainstOpposingPosition,
   safetyOrderAgainstOpposingPosition,
+  tokenRatioChangeHold,
   newDealNearDelivery,
   refusedBaseEntry,
   standingConditionKey,
@@ -1431,6 +1440,11 @@ function createDCABotHelper<
     dealsDCALevelCheck: Map<string, number> = new Map()
     dealsDCAByMarket: Map<string, number> = new Map()
     dealsByMarketProcessing: Set<string> = new Set()
+    /** Spec 296: dealId → the last token-ratio verdict and what it was for. */
+    tokenRatioHolds: Map<
+      string,
+      { at: number; avgPrice: number; hold: boolean | Promise<boolean> }
+    > = new Map()
     /** Spec 285 §4.1.1: symbol → until when a safety-order hold stands. */
     opposingSafetyHoldUntil: Map<string, number> = new Map()
     /** Spec 285 §4.2: dealId → the held safety levels and their retry timer. */
@@ -2400,6 +2414,12 @@ function createDCABotHelper<
         live.deal.status !== DCADealStatusEnum.open ||
         this.restingTakeProfits(dealId).length
       ) {
+        this.clearMissingTpRearm(dealId)
+        return
+      }
+      // Spec 296: no re-send into a re-denominated pair; the rescale reloads
+      // the bot, and the reload restores the take profit in the new units.
+      if (await this.holdForTokenRatioChange(dealId)) {
         this.clearMissingTpRearm(dealId)
         return
       }
@@ -8241,6 +8261,202 @@ function createDCABotHelper<
     }
 
     /**
+     * Spec 296. Whether `dealId` must not be traded because its pair looks
+     * re-denominated by the venue: the price is ≥2x away from the deal's
+     * average AND the account's base balance moved the same way by a like
+     * factor that no recorded fill explains (see `tokenRatioHold.ts`).
+     *
+     * Spot only. A deal near its entry is answered from memory with no read.
+     * Past the gate the evidence (one snapshot row, the pair's fills since,
+     * one balance read) is read at most once per recheck window per deal.
+     * Any read that fails answers "not held", i.e. today's behaviour.
+     *
+     * @returns {boolean} true when the deal's orders and automatic closes
+     * must not be sent now
+     */
+    async holdForTokenRatioChange(dealId: string): Promise<boolean> {
+      // A guard must never break the path it guards: any failure is "no hold".
+      try {
+        return await this.evaluateTokenRatioHold(dealId)
+      } catch (e) {
+        this.handleWarn?.(
+          `Token ratio check failed for deal ${dealId}: ${(e as Error)?.message ?? e}`,
+        )
+        return false
+      }
+    }
+
+    /** Spec 296: the cached, single-flight body of {@link holdForTokenRatioChange}. */
+    private async evaluateTokenRatioHold(dealId: string): Promise<boolean> {
+      if (this.futures) {
+        return false
+      }
+      const live = this.getDeal(dealId)
+      if (!live || live.deal.status !== DCADealStatusEnum.open) {
+        return false
+      }
+      const deal = live.deal
+      const symbol = deal.symbol.symbol
+      const price = this.getLastStreamData(symbol)?.price || deal.lastPrice
+      // Lazily created: prototype-built harnesses never run field initialisers.
+      this.tokenRatioHolds ??= new Map()
+      if (priceJumpFactor(+deal.avgPrice, +price) === null) {
+        this.tokenRatioHolds.delete(dealId)
+        return false
+      }
+      const now = +new Date()
+      const cached = this.tokenRatioHolds.get(dealId)
+      if (
+        cached &&
+        cached.avgPrice === +deal.avgPrice &&
+        now - cached.at < TOKEN_RATIO_RECHECK_MS
+      ) {
+        return cached.hold
+      }
+      const pending = this.readTokenRatioHold(dealId, +price).catch((e) => {
+        this.handleWarn(
+          `Token ratio check failed for deal ${dealId}: ${(e as Error)?.message ?? e}`,
+        )
+        return false
+      })
+      this.tokenRatioHolds.set(dealId, {
+        at: now,
+        avgPrice: +deal.avgPrice,
+        hold: pending,
+      })
+      const hold = await pending
+      const entry = this.tokenRatioHolds.get(dealId)
+      if (entry && entry.hold === pending) {
+        entry.hold = hold
+      }
+      return hold
+    }
+
+    /** Spec 296: read the evidence for {@link holdForTokenRatioChange}. */
+    protected async readTokenRatioHold(
+      dealId: string,
+      price: number,
+    ): Promise<boolean> {
+      const live = this.getDeal(dealId)
+      if (!live || !this.data) {
+        return false
+      }
+      const deal = live.deal
+      const symbol = deal.symbol.symbol
+      const baseAsset = deal.symbol.baseAsset
+      // Live rows may predate the field, so "not paper" is `$ne: true`.
+      const paperContext = this.data.paperContext ? true : { $ne: true }
+      const exchangeUUID = this.data.exchangeUUID
+      const snap = await snapshotDb.readData<{
+        updateTime: number
+        assets: {
+          name: string
+          exchanges: { uuid: string; amount: number }[]
+        }[]
+      }>(
+        {
+          userId: this.userId,
+          paperContext,
+          updateTime: { $lte: deal.createTime - SNAPSHOT_LEAD_MS },
+        },
+        { updateTime: 1, assets: 1 },
+        { sort: { updateTime: -1 }, limit: 1 },
+        true,
+      )
+      const row =
+        snap.status === StatusEnum.ok ? snap.data.result[0] : undefined
+      const baselineBase = row
+        ? (row.assets
+            ?.find((a) => a.name === baseAsset)
+            ?.exchanges?.find((e) => e.uuid === exchangeUUID)?.amount ?? null)
+        : null
+      const verdictBase = {
+        avgPrice: +deal.avgPrice,
+        price,
+        baselineBase,
+      }
+      if (!(baselineBase && baselineBase > 0) || !row) {
+        return false
+      }
+      // The window starts a full lead before the snapshot's key, so every
+      // fill the snapshot's content could postdate is counted.
+      const since = row.updateTime - SNAPSHOT_LEAD_MS
+      const fills = await this.ordersDb.readData<{
+        side: string
+        executedQty: string
+      }>(
+        {
+          userId: this.userId,
+          // A cancelled or expired order can carry a partial fill; every unit
+          // of base that moved through a recorded order must be counted, or
+          // the lower bound stops being one.
+          status: { $in: ['FILLED', 'PARTIALLY_FILLED', 'CANCELED', 'EXPIRED'] },
+          updateTime: { $gte: since },
+          // Every pair with this base, in whatever spelling the venue uses.
+          baseAsset,
+          exchangeUUID,
+          paperContext,
+        },
+        { side: 1, executedQty: 1 },
+        {},
+        true,
+      )
+      if (fills.status !== StatusEnum.ok) {
+        return false
+      }
+      let buysSince = 0
+      let sellsSince = 0
+      for (const f of fills.data.result) {
+        const q = +f.executedQty || 0
+        if (f.side === 'BUY') {
+          buysSince += q
+        } else if (f.side === 'SELL') {
+          sellsSince += q
+        }
+      }
+      const balances = await this.getBalancesFromExchange()
+      if (!balances || balances.status !== StatusEnum.ok) {
+        return false
+      }
+      const b = balances.data.find((a) => a.asset === baseAsset)
+      const venueBase = b ? +b.free + +b.locked : 0
+      const verdict = tokenRatioVerdict({
+        ...verdictBase,
+        venueBase,
+        buysSince,
+        sellsSince,
+      })
+      const key = standingConditionKey(tokenRatioChangeHold, symbol)
+      if (!verdict.hold) {
+        this.handleDebug(
+          `Token ratio check deal ${dealId} ${symbol}: not held, ${verdict.reason}`,
+        )
+        return false
+      }
+      const message = tokenRatioHeldMessage({
+        symbol,
+        priceFactor: verdict.priceFactor,
+        balanceFactor: verdict.balanceFactor,
+      })
+      this.handleLog(
+        `Token ratio hold | deal ${dealId} avg ${deal.avgPrice} price ${price} baseline ${baselineBase} venue ${venueBase} buys ${buysSince} sells ${sellsSince}: ${message}`,
+      )
+      if (this.standingConditionLatch.shouldReport(key, +new Date())) {
+        this.handleErrors(
+          message,
+          'tokenRatioHold',
+          '',
+          false,
+          true,
+          true,
+          false,
+          symbol,
+        )
+      }
+      return true
+    }
+
+    /**
      * Spec 285 §4.1. Hold a safety order that would add to this deal's side
      * on a one-way futures account when the account holds — or, unreadable,
      * may hold — the other direction on `symbol`. DCA and combo only.
@@ -9127,6 +9343,20 @@ function createDCABotHelper<
         // with no TP and no SL while the bot went quiet. Say so, once, where
         // the user will see it.
         await this.announceLeftOpenPosition(findDeal.deal)
+        this.endMethod(_id)
+        return
+      }
+      // Spec 296: an automatic close of a re-denominated deal sells the old
+      // quantity and books a profit that never happened. A close the user
+      // asked for (dashboard or API) still runs.
+      if (
+        closeTrigger !== DCACloseTriggerEnum.manual &&
+        closeTrigger !== DCACloseTriggerEnum.api &&
+        (await this.holdForTokenRatioChange(dealId))
+      ) {
+        this.handleLog(
+          `Deal ${dealId} held for a token ratio change. Skip automatic close (${closeTrigger ?? 'no trigger'})`,
+        )
         this.endMethod(_id)
         return
       }
@@ -21965,6 +22195,15 @@ function createDCABotHelper<
         this.endMethod(_id)
         return
       }
+      // Spec 296: a pair the venue re-denominated is not traded until the
+      // deal is rescaled; its orders are priced and sized in the old units.
+      if (await this.holdForTokenRatioChange(dealId)) {
+        this.handleLog(
+          `Deal ${dealId} held for a token ratio change. Skip place orders: ${orders.new.length}, cancel: ${orders.cancel.length}`,
+        )
+        this.endMethod(_id)
+        return
+      }
       // Spec `160`. Nothing to pull here: `processDealClose` owns the sweep of
       // a released deal's orders.
       if (this.dealReleased(dealId)) {
@@ -33323,6 +33562,10 @@ function createDCABotHelper<
                 deal.deal.symbol.symbol,
               )
             ) {
+              continue
+            }
+            // Spec 296: no market safety order into a re-denominated pair.
+            if (await this.holdForTokenRatioChange(deal.deal._id)) {
               continue
             }
             const ed = await this.getExchangeInfo(deal.deal.symbol.symbol)

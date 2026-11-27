@@ -134,6 +134,13 @@ export const safetyOrderAgainstOpposingPosition =
   'safetyOrderAgainstOpposingPosition'
 
 /**
+ * Spec 296: a pair's deals held because the venue looks to have changed the
+ * token's ratio (price and balance jumped together). Standing until the deals
+ * are rescaled. Keyed by PAIR.
+ */
+export const tokenRatioChangeHold = 'tokenRatioChangeHold'
+
+/**
  * A deal's resting take-profit no longer covers the position it tracks
  * (issue #696, spec `013.tp-coverage-drift-after-partial-tp`).
  *
