@@ -8972,6 +8972,55 @@ class MainBot<T extends IMainBot> {
   }
 
   /**
+   * Let go of a non-opening order (a grid level, a safety order) the
+   * Quantitative Rules retry has given up on, and keep its LEVEL for later.
+   *
+   * The two pre-send paths skip an order that `sendOrderToExchange` has
+   * already put in `this.orders` and written to the DB as `NEW` / `'-1'`. Left
+   * there, the engine believes the level is resting: the grid never places it
+   * again, and the row stays an open order the venue has never heard of until
+   * a restart writes it off. So the untouched placeholder is taken back, as
+   * every other locally served refusal does (`deleteOrderFromDb` matches only
+   * that shape, so an order the venue did see keeps its record).
+   *
+   * The level itself is handed to the engine's own place-again queue
+   * ({@link MainBot#holdRefusedForRetry}), which only takes the order types
+   * the engine re-places (grid levels, combo grid levels, DCA safety orders;
+   * never an add-funds order). That pass is not scheduled before the cooldown
+   * is over, and it re-enters `sendOrderToExchange`, whose pre-send gate still
+   * refuses to reach the venue while the restriction holds.
+   */
+  private async retireQuantRulesAbandonedOrder(
+    order: Order,
+    why: string,
+    cooldown: { until: number | null },
+  ): Promise<void> {
+    const held = this.orders?.get(order.clientOrderId)
+    if (
+      held &&
+      held.status === 'NEW' &&
+      `${held.orderId ?? ''}` === noExchangeOrderId
+    ) {
+      this.deleteOrder(order.clientOrderId)
+      await this.deleteOrderFromDb(order.clientOrderId)
+    }
+    const spell = this.holdRefusedForRetry(
+      order,
+      `Binance Quantitative Rules retry given up (${why})`,
+    )
+    if (!spell) {
+      return
+    }
+    const afterCooldown =
+      Math.max(0, (cooldown.until ?? 0) - Date.now()) +
+      QUANT_RULES_RETRY_BACKOFF_MS +
+      Math.floor(Math.random() * QUANT_RULES_RETRY_JITTER_MS)
+    if (afterCooldown > spell.delay) {
+      this.scheduleMarketClosedRetry(this.botId, afterCooldown)
+    }
+  }
+
+  /**
    * Decide whether a refused order may be re-sent, and if so when.
    *
    * Split out of {@link scheduleQuantRulesRetry} so the decision can consult
@@ -9014,6 +9063,8 @@ class MainBot<T extends IMainBot> {
       // retry it, and it never reached the venue.
       if (isDealStart) {
         await this.releaseBlockedDeal(order)
+      } else {
+        await this.retireQuantRulesAbandonedOrder(order, why, cooldown)
       }
     }
 
