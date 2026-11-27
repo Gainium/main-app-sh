@@ -344,6 +344,16 @@ const wire = (bot: any, market: { price: number }, venue: { fn: Venue }) => {
     processError: async (...a: any[]) => {
       notices.push({ subType: a[1], setError: a[3], message: a[5] })
     },
+    // a held take profit's notice, one per deal
+    postUserNotice: async (
+      message: string,
+      _symbol?: string,
+      _type?: string,
+      _event?: string,
+      subType?: string,
+    ) => {
+      notices.push({ subType: `${subType}`, setError: false, message })
+    },
     updateData: () => undefined,
     emit: () => undefined,
     setOrdersToRedis: () => undefined,

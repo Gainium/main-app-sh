@@ -137,6 +137,8 @@ import {
   bandForUnnamedRefusal,
   bandFractionFromReason,
   holdOutsideKnownBand,
+  heldOutOfBandReason,
+  isHeldOutOfBandReason,
   isAheadOfMarket,
   isWithinBand,
 } from './outOfBandRetry'
@@ -2548,9 +2550,22 @@ class MainBot<T extends IMainBot> {
     const message = takeProfit
       ? `Deal ${order.dealId} has no take profit on the exchange: its take profit, a ${side} at ${price}, is ${away}. It will be placed when the price is within range`
       : `${order.typeOrder === TypeOrderEnum.dealRegular ? 'DCA order' : 'Grid order'} ${side} at ${price} is waiting for the price: it is ${away}. It will be placed when the price is within range`
+    if (takeProfit) {
+      // One row per deal. `processError` coalesces by bot and subType, so a
+      // second deal's notice only raised the first one's count and kept its
+      // deal and pair. The claim above already makes this once per deal.
+      await this.postUserNotice(
+        message,
+        order.symbol,
+        MessageTypeEnum.warning,
+        'Bot warning',
+        positionLeftOpen,
+      )
+      return
+    }
     await this.processError(
       this.botId,
-      takeProfit ? positionLeftOpen : orderWaitingForPrice,
+      orderWaitingForPrice,
       false,
       false,
       true,
@@ -4681,6 +4696,14 @@ class MainBot<T extends IMainBot> {
     }
     const errorString =
       typeof e === 'string' ? e : (e?.message ?? 'Unknown error')
+    // An order held out of the price band (spec 264) comes back to callers
+    // that send with `returnError` as a refusal string. It is waiting for the
+    // price, already noticed once by `noticeHeldOutOfBand`, and must never put
+    // the bot in error or write an error row.
+    if (isHeldOutOfBandReason(errorString)) {
+      this.handleDebug(`Not reported, order held for the price: ${errorString}`)
+      return
+    }
     // @ts-ignore
     const terminal = this.data?.settings.type === DCATypeEnum.terminal
     const message = `${
@@ -10794,7 +10817,13 @@ class MainBot<T extends IMainBot> {
               outOfBandShortCircuit = true
               request = {
                 status: StatusEnum.notok,
-                reason: `Held: ${order.side} ${at} is more than ${Math.round(band * 100)}% from the price ${market}, which ${this.data.exchange} refuses`,
+                reason: heldOutOfBandReason(
+                  order.side,
+                  at,
+                  market,
+                  band,
+                  this.data.exchange,
+                ),
                 data: null,
               }
             }

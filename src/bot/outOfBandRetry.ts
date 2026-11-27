@@ -211,6 +211,48 @@ export function holdOutsideKnownBand(
   )
 }
 
+/**
+ * Reasons {@link heldOutOfBandReason} has produced. A held order comes back to
+ * its caller as a refusal string (`sendOrderToExchange`'s `returnError`), and
+ * the callers that report refusals must be able to tell a hold from the venue's
+ * answer without trusting the text: a reason is a hold only if this module made
+ * it. Bounded; a lookup happens in the same call chain as the make.
+ */
+const heldReasons = new Set<string>()
+const HELD_REASONS_MAX = 2000
+
+/**
+ * The refusal a pre-send hold (spec 264) returns in place of the venue's
+ * answer. Use {@link isHeldOutOfBandReason} to recognise it.
+ */
+export function heldOutOfBandReason(
+  side: string,
+  price: number,
+  market: number,
+  band: number,
+  exchange: string,
+): string {
+  const reason = `Held: ${side} ${price} is more than ${Math.round(band * 100)}% from the price ${market}, which ${exchange} refuses`
+  heldReasons.delete(reason)
+  heldReasons.add(reason)
+  if (heldReasons.size > HELD_REASONS_MAX) {
+    const oldest = heldReasons.values().next().value
+    if (oldest !== undefined) {
+      heldReasons.delete(oldest)
+    }
+  }
+  return reason
+}
+
+/**
+ * Was `reason` made by {@link heldOutOfBandReason}? A held order is waiting for
+ * the price, not refused: it is noticed once by `noticeHeldOutOfBand` and must
+ * never be reported as an error.
+ */
+export function isHeldOutOfBandReason(reason: unknown): boolean {
+  return typeof reason === 'string' && heldReasons.has(reason)
+}
+
 /** An order held out of the price band, as shown on the deal. */
 export type HeldOutOfBandOrder = {
   side: string
