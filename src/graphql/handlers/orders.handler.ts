@@ -285,6 +285,52 @@ export const getAllOpenOrders = async (
   }
 }
 
+/**
+ * Spec 296. OKX USDT-margined swaps (`okxLinear`) size positions and orders in
+ * CONTRACTS of `ctVal` coins, which the connector maps to
+ * `baseAsset.multiplier`. Returns that value when it is not 1 — the pairs
+ * whose contract count and coin size differ — else null.
+ */
+export const okxContractValue = (pair?: {
+  baseAsset?: { multiplier?: number }
+}): number | null => {
+  const m = pair?.baseAsset?.multiplier
+  return m !== undefined &&
+    m !== null &&
+    Number.isFinite(+m) &&
+    +m > 0 &&
+    +m !== 1
+    ? +m
+    : null
+}
+
+/** The pre-spec-296 conversion, kept as-is for pairs with a contract value of 1. */
+const okxStepDenominator = (pair: { baseAsset: { step: number } }) =>
+  pair.baseAsset.step > 1
+    ? 1 / pair.baseAsset.step
+    : +`1${'0'.repeat(math.getPricePrecision(`${pair.baseAsset.step ?? 1}`))}`
+
+/**
+ * Spec 296: the order quantity, in contracts, that closes an `okxLinear`
+ * position whose size `getAllOpenPositions` reported as `coins`. With a
+ * contract value other than 1 this is the bot engine's own `getOKXDenominator`
+ * rule (`ctVal > 1 ? 1/ctVal : 10^decimals(ctVal)`), rounded like the engine's
+ * order path; otherwise the previous step-based conversion, unchanged.
+ */
+export const okxLinearCloseContracts = (
+  coins: number,
+  pair?: { baseAsset: { step: number; multiplier?: number } } | null,
+): number => {
+  if (!pair) return coins
+  const ctVal = okxContractValue(pair)
+  if (ctVal === null) return coins / okxStepDenominator(pair)
+  const denominator =
+    ctVal > 1
+      ? 1 / ctVal
+      : +`1${'0'.repeat(math.getPricePrecision(`${ctVal}`))}`
+  return math.round(coins * denominator, 8)
+}
+
 export const getAllOpenPositions = async (
   exchanges: ExchangeInUser[],
   userId: string,
@@ -422,14 +468,10 @@ export const getAllOpenPositions = async (
           (p) =>
             p.pair === position.symbol && p.exchange === ExchangeEnum.okxLinear,
         )
-        if (pair) {
-          const denominator =
-            pair.baseAsset.step > 1
-              ? 1 / pair.baseAsset.step
-              : +`1${'0'.repeat(
-                  math.getPricePrecision(`${pair.baseAsset.step ?? 1}`),
-                )}`
-          position.quantity = position.quantity / denominator
+        // Spec 296: a contract value other than 1 was already applied in the
+        // venue read above; dividing again applied it twice.
+        if (pair && okxContractValue(pair) === null) {
+          position.quantity = position.quantity / okxStepDenominator(pair)
         }
       }
       return {

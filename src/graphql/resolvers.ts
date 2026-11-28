@@ -189,6 +189,7 @@ import {
   cancelOrderOnExchange,
   getAllOpenOrders,
   getAllOpenPositions,
+  okxLinearCloseContracts,
   OPEN_LIST_DEADLINE_MS,
   placeOrderOnExchange,
 } from './handlers/orders.handler'
@@ -202,7 +203,6 @@ import {
   BACKTEST_SERVICE_TARGET,
   sendServerSideRequest,
 } from './handlers/backtest'
-import { MathHelper } from '../utils/math'
 import fs from 'fs'
 import Rabbit from '../db/rabbit'
 import RedisClient from '../db/redis'
@@ -245,8 +245,6 @@ const isFavoritePresetParams = (params: string): boolean => {
     return false
   }
 }
-
-const math = new MathHelper()
 
 type PairsCacheEntry = {
   latestKey: string | null
@@ -8651,16 +8649,11 @@ const resolvers = <
           pair: activePosition.symbol,
           exchange: ExchangeEnum.okxLinear,
         })
-        const pair = pairsInfo?.data?.result
-        if (pair) {
-          const denominator =
-            pair.baseAsset.step > 1
-              ? 1 / pair.baseAsset.step
-              : +`1${'0'.repeat(
-                  math.getPricePrecision(`${pair.baseAsset.step ?? 1}`),
-                )}`
-          orderData.quantity = orderData.quantity / denominator
-        }
+        // Spec 296: coins → contracts once, by the engine's own rule.
+        orderData.quantity = okxLinearCloseContracts(
+          orderData.quantity,
+          pairsInfo?.data?.result,
+        )
       }
       const result = await placeOrderOnExchange(exchange, orderData)
       if (result.status === StatusEnum.notok) {
