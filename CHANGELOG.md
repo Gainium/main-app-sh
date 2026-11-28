@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.14] - 2026-11-28
+
+### Fixed
+
+- A late fill fee is no longer lost when the bot's order stream closes in the same moment as the fill; every late fee that cannot be saved is now logged with its reason
+
 ## [1.136.13] - 2026-11-28
 
 ### Fixed
