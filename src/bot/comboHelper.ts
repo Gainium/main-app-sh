@@ -9436,6 +9436,10 @@ function createComboBotHelper<
       await this.resumeComboFundsChanges()
       // Spec `182`: before the order checks, which only see what was loaded.
       await this.resumeCloseSweeps()
+      // Spec `308`, as in the DCA restore.
+      void this.retireFinishedDealUnplacedOrders().catch((e) =>
+        this.handleWarn(`Finished-deal unconfirmed order sweep failed: ${e}`),
+      )
       if (serviceRestart) {
         await this.cancelClosedMinigridOrders()
         await this.checkOrders(this.botId)

@@ -5840,6 +5840,37 @@ function createDCABotHelper<
       await this.persistCloseSweeps()
     }
 
+    /** Spec `308`. DCA and combo deals: read from this bot's deal collection. */
+    protected override async finishedOrMissingDealIds(
+      dealIds: string[],
+    ): Promise<Set<string> | null> {
+      const unheld = dealIds.filter((id) => !this.getDeal(id))
+      if (!unheld.length) {
+        return new Set()
+      }
+      const read = await this.dealsDb.readData(
+        { botId: this.botId, _id: { $in: unheld } } as any,
+        { status: 1 },
+        {},
+        true,
+      )
+      if (read.status !== StatusEnum.ok) {
+        this.handleWarn(`Cannot read the deals of unconfirmed orders: ${read.reason}`)
+        return null
+      }
+      const live = new Set(
+        read.data.result
+          .filter(
+            (d) =>
+              ![DCADealStatusEnum.closed, DCADealStatusEnum.canceled].includes(
+                d.status as DCADealStatusEnum,
+              ),
+          )
+          .map((d) => `${d._id}`),
+      )
+      return new Set(unheld.filter((id) => !live.has(id)))
+    }
+
     /**
      * Spec `182` §4.3. Finish the close sweeps a previous process recorded and
      * never completed: the deal is closed, but its orders the sweep had not
@@ -18102,6 +18133,12 @@ function createDCABotHelper<
       const asapSymbols = await this.getSymbolsToOpenAsapDeals()
       // Spec `182`: before the order checks, which only see what was loaded.
       await this.resumeCloseSweeps()
+      // Spec `308`: the order checks skip every deal they do not hold, so an
+      // unconfirmed order of a finished deal is asked about here. In the
+      // background: it is a backstop and must not delay the bot's start.
+      void this.retireFinishedDealUnplacedOrders().catch((e) =>
+        this.handleWarn(`Finished-deal unconfirmed order sweep failed: ${e}`),
+      )
       if (serviceRestart || this.keepOrders) {
         // `keepOrders` is a settings save or a deal restore. It is not a cold
         // service restart, but it is emphatically not the user starting the bot

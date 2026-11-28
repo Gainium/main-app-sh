@@ -1076,6 +1076,14 @@ const orderNeverReachedExchange = 'Order not found: no exchange order id'
  */
 const orderAbsentOnVenue =
   'Order not found: no order under this client order id on the exchange'
+/**
+ * Rows one bot load asks the venue about in
+ * {@link MainBot.retireFinishedDealUnplacedOrders}. The rest wait for the next
+ * load: the sweep is a backstop, not a bulk job. Spec 308.
+ */
+const finishedDealUnplacedSweepLimit = Number(
+  process.env.BOT_FINISHED_DEAL_UNPLACED_SWEEP_LIMIT ?? 20,
+)
 /** Key-scheme version for `MainBot.getNotEnoughOrdersIdByOrder`. Bump when the
  *  key shape changes so counters written under the old scheme are discarded.
  *  Module-level rather than a static member: adding statics to `MainBot`
@@ -1596,6 +1604,100 @@ class MainBot<T extends IMainBot> {
     this.deleteOrder(order.clientOrderId)
     this.updateOrderOnDb(retired)
     return true
+  }
+
+  /**
+   * Of these deal ids, the ones whose deal is finished (closed or canceled)
+   * or has no record at all — never one this process holds. `null` = the
+   * deals could not be read, so nothing may be judged. Grid bots have no
+   * deals: none. Spec 308.
+   */
+  protected async finishedOrMissingDealIds(
+    _dealIds: string[],
+  ): Promise<Set<string> | null> {
+    return new Set()
+  }
+
+  /**
+   * Spec 308. Ask the venue, once per bot load, about each `'-1'` order row
+   * still NEW / PARTIALLY_FILLED on a deal that has finished or is gone.
+   *
+   * Every other reconcile path keys off a held, open deal (`checkOrders`
+   * skips a deal it does not hold), so such a row was never asked about again
+   * and stayed open in Mongo for good. Here it is read from Mongo, not from
+   * the in-memory maps, and:
+   * - a definitive not-found retires it as CANCELED, through the same
+   *   age-floored {@link MainBot.retireNeverPlacedOrder} as every other path;
+   * - a venue answer records what the venue holds on the row: its real id and
+   *   status. Nothing is booked into the finished deal;
+   * - anything else (deferred, failed, ambiguous) leaves the row alone.
+   *
+   * Nothing is ever placed or re-placed from here.
+   */
+  protected async retireFinishedDealUnplacedOrders(now = +new Date()) {
+    if (!this.exchange || !this.data || !orderQuarantineStrikes) return
+    const read = await this.ordersDb.readData(
+      {
+        botId: this.botId,
+        orderId: noExchangeOrderId,
+        status: { $in: ['NEW', 'PARTIALLY_FILLED'] },
+        dealId: { $nin: [null, ''] },
+      } as any,
+      undefined,
+      { sort: { _id: 1 }, limit: finishedDealUnplacedSweepLimit },
+      true,
+    )
+    if (read.status !== StatusEnum.ok) {
+      this.handleWarn(
+        `Cannot read the unconfirmed orders of finished deals: ${read.reason}`,
+      )
+      return
+    }
+    const rows = (read.data?.result ?? []).filter(
+      (r) =>
+        !!r.dealId &&
+        isRetirableNeverPlacedOrder(r, now, neverPlacedOrderRetireMinAgeMs()),
+    )
+    if (!rows.length) return
+    const finished = await this.finishedOrMissingDealIds([
+      ...new Set(rows.map((r) => `${r.dealId}`)),
+    ])
+    if (!finished) return
+    for (const row of rows) {
+      if (!finished.has(`${row.dealId}`)) continue
+      // The lookup reads the order from the map: its placement time bounds
+      // the venue search, and the client-id resolution needs it held.
+      const wasHeld = !!this.getOrderFromMap(row.clientOrderId)
+      const order = this.getOrderFromMap(row.clientOrderId) ?? row
+      if (!wasHeld) this.setOrder(order, false)
+      const venue = await this.getOrderForReconcile(order, { pace: true })
+      const release = () => {
+        if (!wasHeld) this.deleteOrder(order.clientOrderId, false)
+      }
+      if (isReconcileDeferred(venue)) {
+        release()
+      } else if (isDefinitiveOrderNotFound(venue, this.data?.exchange)) {
+        if (!this.retireNeverPlacedOrder(order, `${venue?.reason}`, now)) {
+          release()
+        }
+      } else if (venue?.status === StatusEnum.ok && venue.data) {
+        const updated = await this.mergeCommonOrderWithOrder(venue.data, order)
+        this.handleWarn(
+          `Order ${order.clientOrderId} of finished deal ${order.dealId} is ${updated.status} on the exchange (${updated.orderId}) — recorded, not booked into the deal`,
+        )
+        this.updateOrderOnDb(updated)
+        if (
+          wasHeld &&
+          (updated.status === 'NEW' || updated.status === 'PARTIALLY_FILLED')
+        ) {
+          this.setOrder(updated, false)
+        } else {
+          this.deleteOrder(order.clientOrderId, false)
+        }
+      } else {
+        release()
+      }
+    }
   }
 
   /**
