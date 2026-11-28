@@ -320,4 +320,114 @@ describe('spec 298 — spot close refused, account holds less than the deal', ()
     expect(await b.checkSpotBaseShortfall('d1', 'refusal')).to.equal('skipped')
     expect(rec.fillReads).to.equal(0)
   })
+  describe('#1999 — a spot hedge LONG leg whose coins its SHORT leg sold', () => {
+    /** The SHORT leg's own safety sells: bot orders, so never outside evidence. */
+    const shortLegSells = [
+      outsideSell(20, 5, { clientOrderId: 'x-BKSVA3NTD-RO-a' }),
+      outsideSell(14.35, 6, { clientOrderId: 'x-BKSVA3NTD-RO-b' }),
+    ]
+
+    /** `o` is passed through, not copied: a test moves `free` under the bot. */
+    const hedge = (o: { remaining: number; free: number; locked?: number }) => {
+      const r = bot(Object.assign(o, { fills: shortLegSells }))
+      r.b.data.parentBotId = 'parent298'
+      return r
+    }
+
+    it('is held, never settled at the SHORT leg\'s prices, and told it is short by the difference', async () => {
+      const { b, rec, elapse } = hedge({ remaining: 44.35, free: 10 })
+      expect(await b.checkSpotBaseShortfall('d1', 'refusal')).to.equal('reading')
+      elapse()
+      expect(await b.checkSpotBaseShortfall('d1', 'recheck')).to.equal('held')
+      expect(rec.settled).to.have.length(0)
+      expect(rec.events).to.have.length(1)
+      const msg = rec.events[0].description
+      expect(msg).to.contain('short side of this hedge bot')
+      expect(msg).to.contain('short by 34.35 DOT')
+      expect(msg).to.contain('resumes on its own')
+    })
+
+    it('a non-hedge deal keeps the original wording', async () => {
+      const { b, rec, elapse } = bot({ remaining: 44.35, free: 10, fills: [] })
+      await b.checkSpotBaseShortfall('d1', 'refusal')
+      elapse()
+      await b.checkSpotBaseShortfall('d1', 'recheck')
+      expect(rec.events[0].description).to.not.contain('hedge')
+      expect(rec.events[0].description).to.contain('sold or moved outside the bot')
+    })
+
+    it('a given-up take profit is read against the account, held, and re-armed once covered', async () => {
+      const o = { remaining: 44.35, free: 10 }
+      const { b, rec, elapse } = hedge(o)
+      b.checkGivenUpTpShortfall('d1')
+      await b.spotShortfallInFlight.get('d1')
+      expect(rec.fillReads).to.equal(1)
+      elapse()
+      expect(await b.checkSpotBaseShortfall('d1', 'recheck')).to.equal('held')
+      expect(rec.rearmed).to.equal(0)
+      // The SHORT leg's take profit buys the coins back.
+      o.free = 44.35
+      expect(await b.checkSpotBaseShortfall('d1', 'recheck')).to.equal('covered')
+      expect(rec.rearmed).to.equal(1)
+      expect(await b.holdForSpotShortfall('d1')).to.equal(false)
+    })
+
+    it('a given-up take profit the account covers is left as it is', async () => {
+      const { b, rec } = hedge({ remaining: 44.35, free: 4.15, locked: 42.35 })
+      b.checkGivenUpTpShortfall('d1')
+      await b.spotShortfallInFlight.get('d1')
+      expect(rec.rearmed).to.equal(0)
+      expect(rec.events).to.have.length(0)
+      expect(await b.holdForSpotShortfall('d1')).to.equal(false)
+    })
+
+    it('futures, short and combo bots are not read', () => {
+      for (const set of [
+        (b: any) => (b.data.settings.futures = true),
+        (b: any) => (b.isLong = false),
+        (b: any) => (b.combo = true),
+      ]) {
+        const { b, rec } = hedge({ remaining: 44.35, free: 10 })
+        set(b)
+        b.checkGivenUpTpShortfall('d1')
+        expect(b.spotShortfallInFlight?.get('d1')).to.equal(undefined)
+        expect(rec.fillReads).to.equal(0)
+      }
+    })
+
+    /** noteTpCoverageAfterPlacement with its reads stubbed; `given` = a give-up on record. */
+    const coverage = (given: boolean, attempt?: number) => {
+      const { b } = hedge({ remaining: 44.35, free: 10 })
+      const calls: string[] = []
+      b.missingTpRearm = new Map()
+      if (attempt !== undefined) b.missingTpRearm.set('d1', { attempt })
+      b.isDealForTPLevelCheck = async () => false
+      b.getTPOrder = async () => [{ qty: 44.35 }]
+      b.missingTpGiveUpLedger = () => ({
+        peek: async () => (given ? { attempt: 1 } : null),
+        record: async () => undefined,
+        clear: async () => undefined,
+      })
+      b.checkGivenUpTpShortfall = (id: string) => calls.push(id)
+      return { b, calls }
+    }
+
+    it('the give-up, fresh or read back after a restart, asks for the check; a re-send does not', async () => {
+      const restart = coverage(true)
+      await restart.b.noteTpCoverageAfterPlacement('d1')
+      expect(restart.calls).to.deep.equal(['d1'])
+
+      const fresh = coverage(false, 4)
+      await fresh.b.noteTpCoverageAfterPlacement('d1')
+      expect(fresh.calls).to.deep.equal(['d1'])
+      // Already given up in this worker: no second read.
+      await fresh.b.noteTpCoverageAfterPlacement('d1')
+      expect(fresh.calls).to.deep.equal(['d1'])
+
+      const ladder = coverage(false)
+      await ladder.b.noteTpCoverageAfterPlacement('d1')
+      expect(ladder.calls).to.deep.equal([])
+      clearTimeout(ladder.b.missingTpRearm.get('d1')?.timer)
+    })
+  })
 })

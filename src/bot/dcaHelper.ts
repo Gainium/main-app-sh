@@ -2297,6 +2297,7 @@ function createDCABotHelper<
         // An earlier worker already gave up on this deal's take profit.
         pending = { attempt: MISSING_TP_REARM_DELAYS_MS.length }
         this.missingTpRearm.set(dealId, pending)
+        this.checkGivenUpTpShortfall(dealId)
         return
       }
       const deal = live.deal
@@ -2326,6 +2327,7 @@ function createDCABotHelper<
           this.handleLog(
             `Missing TP | deal ${dealId} (${live.deal.symbol.symbol}) still has no take profit after ${attempt} re-sends, not re-sending again`,
           )
+          this.checkGivenUpTpShortfall(dealId)
         }
         return
       }
@@ -2350,6 +2352,33 @@ function createDCABotHelper<
           attempt + 1
         } in ${delay / 1000}s`,
       )
+    }
+
+    /**
+     * A given-up take profit of a long spot deal is not re-sent, so no refusal
+     * reaches spec `298`'s shortfall check — after a worker restart, none at
+     * all. Read the account once more here: a deal the account holds less of
+     * its base than it books is held, and the hold's own re-read re-arms the
+     * take profit as soon as the account holds the deal's amount again (a
+     * spot hedge LONG leg whose coins the SHORT leg sold, the SHORT's take
+     * profit buying them back). The give-up itself stays: nothing is re-sent
+     * before the balance covers the deal. Not awaited: this can run inside
+     * `placeOrders`, under the deal lock a settle takes.
+     */
+    protected checkGivenUpTpShortfall(dealId: string) {
+      // Runs on the give-up path: nothing here may throw into it.
+      const warn = (err: unknown) =>
+        this.handleWarn(
+          `Deal ${dealId} spot shortfall check after a given-up take profit failed: ${err}`,
+        )
+      try {
+        if (this.futures || !this.isLong || this.combo) {
+          return
+        }
+        this.checkSpotBaseShortfall(dealId, 'refusal').catch(warn)
+      } catch (err) {
+        warn(err)
+      }
     }
 
     protected clearMissingTpRearm(dealId: string) {
@@ -8899,6 +8928,7 @@ function createDCABotHelper<
             asset,
             total: verdict.total,
             remaining,
+            hedge: !!this.data?.parentBotId,
           }),
           paperContext: !!this.data?.paperContext,
           deal: dealId,

@@ -59,16 +59,25 @@ export const spotShortfallHeldMessage = ({
   asset,
   total,
   remaining,
+  hedge = false,
 }: {
   dealId: string
   symbol: string
   asset: string
   total: number
   remaining: number
+  /**
+   * A leg of a spot hedge bot. Both legs trade one coin from one account, so
+   * the coins can also have gone to the hedge's own SHORT side's sells — bot
+   * orders, which the outside-trades evidence rightly ignores.
+   */
+  hedge?: boolean
 }): string =>
   `Deal ${dealId} (${symbol}): the exchange account holds ${total} ${asset}, ` +
   `less than the ${remaining} ${asset} this deal still has to sell, and the exchange ` +
   `did not report trades outside the bot that account for the difference. ` +
-  `Part of this coin was sold or moved outside the bot, so its take profit cannot be placed. ` +
+  (hedge
+    ? `The short side of this hedge bot sells the same coin from the same account, and part of this coin was sold by it or moved outside the bot, so this deal is short by ${+(remaining - total).toPrecision(12)} ${asset} and its take profit cannot be placed. `
+    : `Part of this coin was sold or moved outside the bot, so its take profit cannot be placed. `) +
   `New take-profit and safety orders for this deal are paused; its stop loss and manual close still work. ` +
   `The deal resumes on its own once the account holds the deal's amount again, or close it manually.`
