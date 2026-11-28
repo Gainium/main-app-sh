@@ -1531,7 +1531,50 @@ class MainBot<T extends IMainBot> {
   protected isOrderQuarantined(order: Order) {
     if (!orderQuarantineStrikes) return false
     if (!order.quarantine?.since) return false
+    // A `'-1'` order is never skipped: a definitive not-found retires it
+    // (spec 109), and that answer is only heard if it is asked. Quarantine is
+    // older than the retire, so orders it marked first sat skipped for good,
+    // counted as resting though the venue never had them. Spec 306.
+    if (`${order.orderId ?? ''}` === noExchangeOrderId) return false
     this.quarantineSkipped += 1
+    return true
+  }
+
+  /**
+   * Retire an order the venue definitively reports as absent when it never
+   * reached the venue, and say whether it did. Never on its own a strike:
+   * it changes nothing unless it retires.
+   *
+   * Never reached the venue and the venue confirms it: retire it, the same
+   * write-off the unknown-order ladder gives a `-1` order (bug #369), so the
+   * bot stops treating it as resting. Spec 109. Its own, shorter age floor
+   * unless the venue's wording is one it gives about just-placed orders.
+   * Spec 177 §1.2. Never on the bot's own "no exchange order id": that answer
+   * was given without asking the venue, so it confirms nothing. Spec 184 §4.4.
+   * The reconnect pass calls it directly. Spec 306.
+   */
+  protected retireNeverPlacedOrder(
+    order: Order,
+    reason: string,
+    now = +new Date(),
+  ): boolean {
+    if (!orderQuarantineStrikes) return false
+    if (
+      reason === orderNeverReachedExchange ||
+      !isRetirableNeverPlacedOrder(
+        order,
+        now,
+        neverPlacedOrderRetireMinAgeMs(reason),
+      )
+    ) {
+      return false
+    }
+    this.handleLog(
+      `Order ${order.clientOrderId} never reached the exchange and the exchange confirms it does not exist (${reason}) — retiring it as CANCELED`,
+    )
+    const retired = { ...order, status: 'CANCELED' as const }
+    this.deleteOrder(order.clientOrderId)
+    this.updateOrderOnDb(retired)
     return true
   }
 
@@ -1547,28 +1590,7 @@ class MainBot<T extends IMainBot> {
     if (!orderQuarantineStrikes) return false
     const now = +new Date()
     const runId = this.orderCheckRunId || `${now}`
-    // Never reached the venue and the venue confirms it: retire it, the same
-    // write-off the unknown-order ladder gives a `-1` order (bug #369), so the
-    // bot stops treating it as resting. Spec 109. Its own, shorter age floor
-    // unless the venue's wording is one it gives about just-placed orders.
-    // Spec 177 §1.2. Never on the bot's own "no exchange order id": that answer
-    // was given without asking the venue, so it confirms nothing. Spec 184 §4.4.
-    if (
-      reason !== orderNeverReachedExchange &&
-      isRetirableNeverPlacedOrder(
-        order,
-        now,
-        neverPlacedOrderRetireMinAgeMs(reason),
-      )
-    ) {
-      this.handleLog(
-        `Order ${order.clientOrderId} never reached the exchange and the exchange confirms it does not exist (${reason}) — retiring it as CANCELED`,
-      )
-      const retired = { ...order, status: 'CANCELED' as const }
-      this.deleteOrder(order.clientOrderId)
-      this.updateOrderOnDb(retired)
-      return true
-    }
+    if (this.retireNeverPlacedOrder(order, reason, now)) return true
     // Too young to judge. A venue that says "unknown order id" about an order
     // placed minutes ago is describing its own propagation lag. Use the most
     // recent timestamp we have, and refuse to judge at all when we have none —

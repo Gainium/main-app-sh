@@ -16665,6 +16665,9 @@ function createDCABotHelper<
           list.push(o)
           venueConfirmed.set(dealId, list)
         }
+        // Safety orders that never reached the venue, retired below and
+        // placed again after the pass. Spec 306.
+        const retiredNeverPlaced: Order[] = []
         const toCheck = this.getOrdersByStatusAndDealId({
           defaultStatuses: true,
         })
@@ -16675,6 +16678,19 @@ function createDCABotHelper<
             onAttempts: (n) => (attemptsForOrder = n),
             pace: true,
           })
+          // A `-1` safety order the venue says it does not have was never on
+          // the book: an answer, not an unread order. Before this it was only
+          // reported unresolved, pass after pass, and the deal kept counting
+          // it as resting. A take-profit is left to the restart check, which
+          // places its replacement. Spec 306.
+          if (
+            o.typeOrder === TypeOrderEnum.dealRegular &&
+            isDefinitiveOrderNotFound(getOrder, this.data?.exchange) &&
+            this.retireNeverPlacedOrder(o, `${getOrder?.reason}`)
+          ) {
+            retiredNeverPlaced.push(o)
+            continue
+          }
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
             unresolvedLookupAttempts += attemptsForOrder
@@ -16779,6 +16795,30 @@ function createDCABotHelper<
           this.recordReconcileSweepCatch(filledOrders.length)
         }
         this.processOrdersAfterCheck(filledOrders, partiallyFilledOrders)
+        // Place the retired safety orders again, as the restart check does
+        // with the ones it retires (spec 177 §1.2.4). An order outside the
+        // venue's price band is held by `placeOrders` (spec 283). Spec 306.
+        for (const o of retiredNeverPlaced) {
+          const dealId = `${o.dealId}`
+          if (
+            this.getDeal(dealId)?.deal.status !== DCADealStatusEnum.open ||
+            this.dealBookRebuildInFlight(dealId)
+          ) {
+            continue
+          }
+          this.handleLog(
+            `Send never-placed order again ${o.clientOrderId}, ${o.side}, base: ${o.origQty}, price: ${o.price}`,
+          )
+          const precision = await this.baseAssetPrecision(o.symbol)
+          const grid = this.mapOrderToGrid({
+            ...o,
+            origQty: `${this.math.round(+o.origQty, precision)}`,
+          })
+          await this.placeOrders(this.botId, o.symbol, dealId, {
+            new: [grid],
+            cancel: [],
+          })
+        }
         // Last, and never fatal: the fills above are this pass's job, and a
         // coverage check that threw must not cost the bot its reconcile.
         await this.checkTpCoverage(venueConfirmed, coverageUnresolved).catch(

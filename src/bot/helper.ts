@@ -1326,6 +1326,16 @@ function createBotHelper<
             pace: true,
             onAttempts: (n) => (attemptsForOrder = n),
           })
+          // See the DCA copy: a `-1` order the venue says it does not have is
+          // retired, not reported unresolved. Placing it again is left to the
+          // restart check, whose grid diff finds the empty level, exactly as
+          // for an order that check retires itself. Spec 306.
+          if (
+            isDefinitiveOrderNotFound(getOrder, this.data?.exchange) &&
+            this.retireNeverPlacedOrder(o, `${getOrder?.reason}`)
+          ) {
+            continue
+          }
           if (!getOrder || !getOrder.data) {
             unresolved.push(o.clientOrderId)
             unresolvedLookupAttempts += attemptsForOrder
