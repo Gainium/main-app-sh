@@ -9042,6 +9042,31 @@ function createComboBotHelper<
       })
         .filter((o) => o.status === 'FILLED' || +o.executedQty > 0)
         .sort((a, b) => +b.updateTime - +a.updateTime)[0]
+      // Spec 048 §3.5: a reload rebuilds the minigrid lines from the database,
+      // so a trim the last fill or funds change made in memory is gone. Hold
+      // the exit lines to the position before placing, as the settings-update
+      // restart does. A failed cap must not stop the book being restored.
+      if (
+        this.comboExitsHeldInBase() ||
+        (deal.deal.fundsScale ?? []).length ||
+        deal.deal.comboFundsRebuild
+      ) {
+        try {
+          await this.capComboExitLines(
+            deal.deal._id,
+            minigrids,
+            comboPositionBase({
+              isLong: this.isLong,
+              initialBalances: deal.deal.initialBalances,
+              currentBalances: deal.deal.currentBalances,
+            }),
+          )
+        } catch (e) {
+          this.handleWarn(
+            `Deal ${deal.deal._id}: exit lines not held to the position: ${(e as Error)?.message ?? e}`,
+          )
+        }
+      }
       const diff = await this.findDiffCombo(
         [
           ...deal.currentOrders.filter((g) => g.type !== TypeOrderEnum.dealTP),
