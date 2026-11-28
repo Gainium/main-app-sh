@@ -65,6 +65,8 @@ type Opts = {
   held?: any
   dealStatus?: DCADealStatusEnum
   ownCancels?: string[]
+  /** The bot's own status. */
+  botStatus?: string
 }
 
 /** An instance of `Cls` with only I/O and the venue replaced. */
@@ -74,6 +76,7 @@ const buildBot = (Cls: any, opts: Opts = {}) => {
     held = restingEntry(),
     dealStatus = DCADealStatusEnum.start,
     ownCancels = [],
+    botStatus = 'open',
   } = opts
   const closed: string[] = []
   const persisted: any[] = []
@@ -89,7 +92,7 @@ const buildBot = (Cls: any, opts: Opts = {}) => {
   const bot: any = Object.create(Cls.prototype)
   Object.assign(bot, {
     botId: BOT_ID,
-    data: { status: 'open', settings: { pair: [SYMBOL] }, flags: [] },
+    data: { status: botStatus, settings: { pair: [SYMBOL] }, flags: [] },
     blockCheck: false,
     serviceRestart: false,
     reconcileViaSweep: false,
@@ -223,6 +226,32 @@ for (const [name, get] of [
         })
         await bot.checkOrdersAfterReconnect(BOT_ID, false)
         expect(armed(bot), typeOrder).to.equal(false)
+      }
+    })
+
+    it('§4.5 a running bot in error/range/monitoring still cancels the deal; a closed or archived bot does not', async () => {
+      for (const [botStatus, expected] of [
+        ['error', [DEAL_ID]],
+        ['range', [DEAL_ID]],
+        ['monitoring', [DEAL_ID]],
+        ['closed', []],
+        ['archive', []],
+      ] as const) {
+        clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        // The venue's cancel report has already been written to the held row.
+        const bot = buildBot(get(), {
+          botStatus,
+          held: restingEntry({ status: 'CANCELED', executedQty: '0' }),
+        })
+        bot.checkUnfilledBaseEntryCancel(
+          restingEntry({ status: 'CANCELED', executedQty: '0' }),
+        )
+        expect(armed(bot), `${botStatus}: check armed`).to.equal(true)
+        clock.tick(canceledBaseEntryDelayMs)
+        await drain()
+        expect(bot.closed, `${botStatus}: deals cancelled`).to.deep.equal(expected)
+        clock.restore()
+        clock = undefined
       }
     })
   })

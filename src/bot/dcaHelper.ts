@@ -30351,7 +30351,16 @@ function createDCABotHelper<
      * takes it.
      */
     async cancelDealOfCanceledBaseEntry(dealId: string, clientOrderId: string) {
-      if (!this.shouldProceed() || this.data?.status !== BotStatusEnum.open) {
+      // Any running status: a refused entry often leaves the bot in `error`
+      // ("Not enough balance"), and an `open`-only gate left that deal in
+      // `start` with nothing on the venue. Closed/archived bots stay out.
+      const running: (BotStatusEnum | undefined)[] = [
+        BotStatusEnum.open,
+        BotStatusEnum.error,
+        BotStatusEnum.range,
+        BotStatusEnum.monitoring,
+      ]
+      if (!this.shouldProceed() || !running.includes(this.data?.status)) {
         return
       }
       const deal = this.getDeal(dealId)
