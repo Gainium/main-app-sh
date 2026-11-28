@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.23] - 2026-11-28
+
+### Fixed
+
+- A deal whose base order the exchange cancelled unfilled is now cancelled while the bot shows an error, instead of waiting in start
+
 ## [1.136.22] - 2026-11-28
 
 ### Fixed
