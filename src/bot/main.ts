@@ -973,6 +973,26 @@ const quantRulesRejection =
 const noExchangeOrderId = '-1'
 
 /**
+ * When a never-acknowledged (`'-1'`) order was attempted, for the venue lookup.
+ *
+ * Venues whose order history is time-windowed (Bybit: 7 days unless a range
+ * is given) can only say "this order does not exist" if they are told how far
+ * back to look; without it an empty answer is not definitive and the row is
+ * asked about forever. Only `'-1'` rows carry the hint: they are the ones the
+ * not-found answer retires, and their `transactTime` is stamped at the
+ * placement attempt. Pure.
+ */
+export function placementTimeHint(order?: {
+  orderId?: string | number
+  transactTime?: number | string
+  updateTime?: number | string
+}) {
+  if (!order || `${order.orderId}` !== noExchangeOrderId) return undefined
+  const at = +(order.transactTime ?? 0) || +(order.updateTime ?? 0)
+  return isFinite(at) && at > 0 ? at : undefined
+}
+
+/**
  * The status to write off an order the venue would no longer describe.
  *
  * Giving up on a lookup used to stamp the row CANCELED whatever it already
@@ -7278,6 +7298,7 @@ class MainBot<T extends IMainBot> {
         : await this.exchange.getOrder({
             symbol,
             newClientOrderId: id,
+            since: placementTimeHint(this.getOrderFromMap(id)),
           })
       if (!result.data) {
         this.endMethod(_id)
@@ -7559,6 +7580,7 @@ class MainBot<T extends IMainBot> {
           : await this.exchange.getOrder({
               symbol,
               newClientOrderId: id,
+              since: placementTimeHint(local),
             })
       if (request.status === StatusEnum.notok) {
         this.handleLog(
