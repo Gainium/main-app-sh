@@ -23,6 +23,7 @@ import { describe, it, afterEach } from 'mocha'
 import { expect } from 'chai'
 import MainBot from './main'
 import SharedStream from './sharedStream'
+import logger from '../utils/logger'
 import { ExchangeEnum, StatusEnum } from '../../types'
 
 const AT = 1795719601707
@@ -194,7 +195,69 @@ function stream() {
   s.ordersToBotMap = new Map()
   s.botToOrdersMap = new Map()
   s.retiredRoutes = new Map()
+  s.lingering = new Map()
   return s
+}
+
+/** A fake pub/sub connection that counts (un)subscribes. */
+function fakeRedis() {
+  const r = { subscribed: 0, unsubscribed: 0 } as any
+  r.subscribe = async () => {
+    r.subscribed++
+  }
+  r.unsubscribe = async () => {
+    r.unsubscribed++
+  }
+  return r
+}
+
+/** Captures `logger.info` / `logger.debug` lines (SharedStream logs there). */
+function captureLogger() {
+  const lines = { info: [] as string[], debug: [] as string[] }
+  const info = logger.info
+  const debug = logger.debug
+  logger.info = (...m: any[]) => {
+    lines.info.push(m.join(' '))
+  }
+  logger.debug = (...m: any[]) => {
+    lines.debug.push(m.join(' '))
+  }
+  restore.push(() => {
+    logger.info = info
+    logger.debug = debug
+  })
+  return lines
+}
+
+const restore: (() => void)[] = []
+const realTtl = (SharedStream as any).RETIRED_ROUTE_TTL_MS
+const realMargin = (SharedStream as any).LINGER_MARGIN_MS
+afterEach(() => {
+  while (restore.length) restore.pop()!()
+  ;(SharedStream as any).RETIRED_ROUTE_TTL_MS = realTtl
+  ;(SharedStream as any).LINGER_MARGIN_MS = realMargin
+})
+
+/** The Kraken connector's shape of the late report (executionReport). */
+function krakenReport(id: string, over: Row = {}) {
+  return lateReport(id, {
+    eventType: 'executionReport',
+    newClientOrderId: id,
+    totalQuoteTradeQuantity: '50.4825',
+    ...over,
+  })
+}
+
+/** A bot whose stream listener runs its real accountCallback. */
+function listening(rows: Row[], botType = 'dca') {
+  const made = bot(rows, botType)
+  const s = stream()
+  const redis = fakeRedis()
+  s.redis = redis
+  s.initRedis = async () => undefined
+  made.bot.sharedStream = s
+  const cb = (m: any) => made.bot.accountCallback(m)
+  return { ...made, s, redis, cb }
 }
 
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms))
@@ -275,18 +338,215 @@ describe('spec 286: a late stream fee for an order the placement answer filled',
     expect(got, 'expired').to.have.length(1)
   })
 
-  it('§4.1 removeListener forgets the bot\'s retired routes', async () => {
+  it('§4.6 the stream closes in the same tick as the last fill: the fee still lands', async () => {
+    const id = 'D-TP-closeSameTick0000000000000001'
+    const row = answered(id)
+    const { bot: b, db, s, redis, cb, rec } = listening([row])
+    await s.addListener('acc', 'bot', cb)
+    b.setOrder({ ...row, status: 'NEW', executedQty: '0' })
+    await tick()
+    b.setOrder({ ...row })
+    b.deleteOrder(id)
+    // closeUserStream → removeListener, before the late report lands.
+    await s.removeListener('acc', 'bot')
+    expect(redis.unsubscribed, 'channel kept while a route is retired').to.equal(0)
+
+    s.redisCb(JSON.stringify(krakenReport(id)), 'acc')
+    await settle(b)
+    expect(feeFields(row)).to.deep.equal({ feePaid: FEE, feeAsset: 'USD' })
+    expect(row.updateTime).to.equal(AT)
+    expect(rec.queued).to.equal(0)
+    expect(rec.logs.join('\n')).to.not.include('STREAM-DESYNC')
+    expect(db.writes).to.have.length(1)
+  })
+
+  it('§4.6 a live route the bot still holds at removeListener is retired', async () => {
+    const id = 'D-TP-liveAtRemove00000000000000001'
     const s = stream()
+    s.redis = fakeRedis()
     const got: any[] = []
     s.listeners.set('bot', (m: any) => got.push(m))
-    s.subscribers.set('acc', new Set(['bot', 'other']))
-    const id = 'D-TP-retiredRouteListener0000000001'
+    s.subscribers.set('acc', new Set(['bot']))
+    await s.addOrder('bot', id)
+    await s.removeListener('acc', 'bot')
+    expect(s.ordersToBotMap.has(id)).to.equal(false)
+    s.redisCb(JSON.stringify(krakenReport(id, { orderStatus: 'CANCELED' })), 'acc')
+    expect(got, 'only a fee-bearing FILLED goes through a retired route').to.have.length(0)
+    s.redisCb(JSON.stringify(krakenReport(id)), 'acc')
+    expect(got).to.have.length(1)
+  })
+
+  it('§4.6 a lingering bot gets no liquidation broadcast', async () => {
+    const id = 'D-TP-lingerNoLiq00000000000000001'
+    const s = stream()
+    s.redis = fakeRedis()
+    const got: any[] = []
+    s.listeners.set('bot', (m: any) => got.push(m))
+    s.subscribers.set('acc', new Set(['bot']))
+    await s.addOrder('bot', id)
+    await s.removeListener('acc', 'bot')
+    s.redisCb(JSON.stringify(krakenReport('', { liquidation: true })), 'acc')
+    expect(got).to.have.length(0)
+  })
+
+  it('§4.6 after the window the listener and the subscription go, as before', async () => {
+    ;(SharedStream as any).RETIRED_ROUTE_TTL_MS = 20
+    ;(SharedStream as any).LINGER_MARGIN_MS = 0
+    const id = 'D-TP-lingerExpires000000000000001'
+    const s = stream()
+    const redis = fakeRedis()
+    s.redis = redis
+    s.initRedis = async () => undefined
+    await s.addListener('acc', 'bot', () => undefined)
     await s.addOrder('bot', id)
     await s.removeOrder('bot', id)
     await s.removeListener('acc', 'bot')
-    s.listeners.set('bot', (m: any) => got.push(m))
-    s.redisCb(JSON.stringify(lateReport(id)), 'acc')
-    expect(got).to.have.length(0)
+    expect(s.listeners.has('bot')).to.equal(true)
+    await tick(60)
+    expect(s.listeners.has('bot')).to.equal(false)
+    expect(s.subscribers.has('acc')).to.equal(false)
+    expect(redis.unsubscribed).to.equal(1)
+    expect([...s.retiredRoutes.values()].some((r: any) => r.botId === 'bot')).to.equal(false)
+  })
+
+  it('§4.6 no retired route: removeListener tears down at once, as before', async () => {
+    const s = stream()
+    const redis = fakeRedis()
+    s.redis = redis
+    s.initRedis = async () => undefined
+    await s.addListener('acc', 'bot', () => undefined)
+    await s.removeListener('acc', 'bot')
+    expect(s.listeners.has('bot')).to.equal(false)
+    expect(s.subscribers.has('acc')).to.equal(false)
+    expect(redis.unsubscribed).to.equal(1)
+  })
+
+  it('§4.6 an addListener in the window (restart) cancels the pending teardown', async () => {
+    ;(SharedStream as any).RETIRED_ROUTE_TTL_MS = 20
+    ;(SharedStream as any).LINGER_MARGIN_MS = 0
+    const id = 'D-TP-lingerRestart000000000000001'
+    const s = stream()
+    const redis = fakeRedis()
+    s.redis = redis
+    s.initRedis = async () => undefined
+    await s.addListener('acc', 'bot', () => undefined)
+    await s.addOrder('bot', id)
+    await s.removeOrder('bot', id)
+    await s.removeListener('acc', 'bot')
+    const fresh = () => undefined
+    await s.addListener('acc', 'bot', fresh)
+    await tick(60)
+    expect(s.listeners.get('bot')).to.equal(fresh)
+    expect(s.subscribers.get('acc')?.has('bot')).to.equal(true)
+    expect(redis.unsubscribed).to.equal(0)
+    expect(redis.subscribed, 'never unsubscribed, so no resubscribe').to.equal(1)
+  })
+
+  it('§4.6 another bot lingering keeps the channel when the last live bot leaves', async () => {
+    ;(SharedStream as any).RETIRED_ROUTE_TTL_MS = 20
+    ;(SharedStream as any).LINGER_MARGIN_MS = 0
+    const s = stream()
+    const redis = fakeRedis()
+    s.redis = redis
+    s.initRedis = async () => undefined
+    await s.addListener('acc', 'a', () => undefined)
+    await s.addListener('acc', 'b', () => undefined)
+    await s.addOrder('a', 'D-TP-lingerOther00000000000000001')
+    await s.removeListener('acc', 'a')
+    await s.removeListener('acc', 'b')
+    expect(redis.unsubscribed, 'a still lingers').to.equal(0)
+    await tick(60)
+    expect(redis.unsubscribed).to.equal(1)
+    expect(s.subscribers.has('acc')).to.equal(false)
+  })
+
+  it('§4.7 SharedStream logs route expired and route present but no listener at info, no route at debug', async () => {
+    const lines = captureLogger()
+    const s = stream()
+    const expired = 'D-TP-dropExpired00000000000000001'
+    const orphan = 'D-TP-dropNoListener0000000000001'
+    const nobody = 'D-TP-dropNoRoute000000000000001'
+    await s.addOrder('gone', orphan)
+    await s.removeOrder('gone', orphan)
+    s.redisCb(JSON.stringify(krakenReport(orphan)), 'acc')
+    s.redisCb(JSON.stringify(krakenReport(nobody)), 'acc')
+    await s.addOrder('bot', expired)
+    await s.removeOrder('bot', expired)
+    const start = realNow()
+    Date.now = () => start + (SharedStream as any).RETIRED_ROUTE_TTL_MS + 1
+    s.redisCb(JSON.stringify(krakenReport(expired)), 'acc')
+    const info = lines.info.join('\n')
+    expect(info).to.include(`LATE-FEE-DROP ${orphan} route present but no listener`)
+    expect(info).to.include(`LATE-FEE-DROP ${expired} route expired`)
+    expect(info).to.not.include(nobody)
+    expect(lines.debug.join('\n')).to.include(`LATE-FEE-DROP ${nobody} no route`)
+    // A report with no fee is not a fee drop: nothing logged for it.
+    lines.info.length = 0
+    s.redisCb(JSON.stringify(krakenReport(orphan, { feePaid: undefined })), 'acc')
+    expect(lines.info.join('\n')).to.not.include('LATE-FEE-DROP')
+  })
+
+  it('§4.7 the bot logs no stored row', async () => {
+    const id = 'D-TP-dropNoRow000000000000000001'
+    const { bot: b, rec } = bot([])
+    await b.accountCallback(krakenReport(id))
+    expect(rec.logs.join('\n')).to.include(`LATE-FEE-DROP ${id} no stored row`)
+  })
+
+  it('§4.7 write race: the row still reads NEW, the drop names the status', async () => {
+    // The answer's FILLED write is not awaited; a report read before it lands
+    // sees the placement row (NEW).
+    const id = 'D-TP-dropWriteRace0000000000001'
+    const row = answered(id, { status: 'NEW', executedQty: '0' })
+    const { bot: b } = bot([row])
+    const lines: string[] = []
+    b.handleLog = (m: string) => lines.push(m)
+    await b.accountCallback(krakenReport(id))
+    expect(lines.join('\n')).to.include(`LATE-FEE-DROP ${id} stored row not FILLED (NEW)`)
+    expect(row.feePaid).to.equal(undefined)
+  })
+
+  it('§4.7 a stored FILLED row with a fee already: guard refused, with its fee', async () => {
+    const id = 'D-TP-dropHasFee000000000000000001'
+    const row = answered(id, { feePaid: '0.01', feeAsset: 'USD', feeBreakdown: [] })
+    const { bot: b, db, rec } = bot([row])
+    await b.accountCallback(krakenReport(id))
+    expect(db.writes).to.have.length(0)
+    expect(rec.logs.join('\n')).to.include(
+      `LATE-FEE-DROP ${id} guard refused (feePaid=0.01, feeBreakdown=[])`,
+    )
+  })
+
+  it('§4.7 the write\'s guard refuses (held FILLED with no fee, row has one): logged with the row\'s fee', async () => {
+    const id = 'D-TP-dropGuard00000000000000000001'
+    const row = answered(id, { feePaid: '0.01', feeAsset: 'USD' })
+    const { bot: b, rec } = bot([row])
+    b.setOrder({ ...row, feePaid: undefined, feeAsset: undefined })
+    await b.accountCallback(lateReport(id))
+    await settle(b)
+    expect(row.feePaid).to.equal('0.01')
+    expect(rec.logs.join('\n')).to.include(
+      `LATE-FEE-DROP ${id} guard refused (feePaid=0.01, feeBreakdown=[])`,
+    )
+  })
+
+  it('§4.7 a tracked id the bot does not hold is logged', async () => {
+    const id = 'D-TP-dropTrackedNotHeld00000000001'
+    const { bot: b, rec } = bot([answered(id)])
+    b.ordersKeys.add(id)
+    await b.accountCallback(krakenReport(id))
+    expect(rec.logs.join('\n')).to.include(`LATE-FEE-DROP ${id} tracked but not held`)
+  })
+
+  it('§4.7 a deduped report for a held FILLED order with no fee is logged', async () => {
+    const id = 'D-TP-dropDeduped0000000000000001'
+    const row = answered(id)
+    const { bot: b, rec } = bot([row])
+    b.setOrder({ ...row })
+    b.processedOrders.set(`${id}FILLED53`, { id, status: 'FILLED', qty: 53 })
+    await b.accountCallback(lateReport(id))
+    await settle(b)
+    expect(rec.logs.join('\n')).to.include(`LATE-FEE-DROP ${id} already processed`)
   })
 
   it('§4.4 never overwrites a fee the row already holds', async () => {

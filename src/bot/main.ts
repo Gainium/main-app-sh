@@ -8868,6 +8868,15 @@ class MainBot<T extends IMainBot> {
         if (order.status === 'CANCELED') {
           this.noteVenueCancel(order)
         }
+      } else {
+        const held = this.getOrderFromMap(orderId)
+        if (
+          held?.status === 'FILLED' &&
+          !hasObservedFee(held) &&
+          lateFillFeeFields(msg)
+        ) {
+          this.logLateFeeDrop(orderId, 'already processed')
+        }
       }
       next()
     }
@@ -9386,9 +9395,17 @@ class MainBot<T extends IMainBot> {
           if (row?.status === 'FILLED') {
             if (!hasObservedFee(row)) {
               await this.recordLateFillFee(clientOrderId, lateFee)
+            } else {
+              this.logLateFeeDrop(clientOrderId, this.guardRefusedReason(row))
             }
             return
           }
+          // Spec 286 §4.7. NEW here is the answer's FILLED write not landed
+          // yet (`updateOrderOnDb` is not awaited).
+          this.logLateFeeDrop(
+            clientOrderId,
+            row ? `stored row not FILLED (${row.status})` : 'no stored row',
+          )
         }
         // Reaching here means SharedStream's `ordersToBotMap` says this order is
         // ours while our own book does not — it routed the event to this bot
@@ -9485,6 +9502,9 @@ class MainBot<T extends IMainBot> {
               : 'wont be processed in bot'
           }`,
         )
+      }
+      if (!find && !liquidation && lateFillFeeFields(msg)) {
+        this.logLateFeeDrop(clientOrderId, 'tracked but not held')
       }
       if (find || liquidation) {
         const tmp = [...this.orderQueue]
@@ -12843,6 +12863,17 @@ class MainBot<T extends IMainBot> {
    * `updateOrderOnDb` cannot carry it — its status guard refuses FILLED rows.
    * A failure is logged and changes nothing else.
    */
+  /** A fee-bearing FILLED report whose fee is not saved (spec 286 §4.7). */
+  logLateFeeDrop(clientOrderId: string, reason: string) {
+    this.handleLog(`LATE-FEE-DROP ${clientOrderId} ${reason}`)
+  }
+
+  guardRefusedReason(row?: Pick<Order, 'feePaid' | 'feeBreakdown'> | null) {
+    return `guard refused (feePaid=${row?.feePaid ?? ''}, feeBreakdown=${JSON.stringify(
+      row?.feeBreakdown ?? [],
+    )})`
+  }
+
   async recordLateFillFee(
     clientOrderId: string,
     fields: NonNullable<ReturnType<typeof lateFillFeeFields>>,
@@ -12867,19 +12898,33 @@ class MainBot<T extends IMainBot> {
         )
         return
       }
-      if (res?.data) {
-        this.handleLog(
-          `Order ${clientOrderId} late fee saved: ${
-            fields.feePaid ?? ''
-          } ${fields.feeAsset ?? ''}${
-            fields.feeBreakdown?.length
-              ? ` ${fields.feeBreakdown
-                  .map((f) => `${f.amount} ${f.asset}`)
-                  .join(', ')}`
-              : ''
-          }`,
+      if (!res?.data) {
+        const stored = await this.ordersDb
+          .readData({ clientOrderId, botId: this.botId })
+          .catch(() => null)
+        const row =
+          stored?.status === StatusEnum.ok ? stored.data?.result : null
+        this.logLateFeeDrop(
+          clientOrderId,
+          !row
+            ? 'no stored row'
+            : row.status !== 'FILLED'
+              ? `stored row not FILLED (${row.status})`
+              : this.guardRefusedReason(row),
         )
+        return
       }
+      this.handleLog(
+        `Order ${clientOrderId} late fee saved: ${
+          fields.feePaid ?? ''
+        } ${fields.feeAsset ?? ''}${
+          fields.feeBreakdown?.length
+            ? ` ${fields.feeBreakdown
+                .map((f) => `${f.amount} ${f.asset}`)
+                .join(', ')}`
+            : ''
+        }`,
+      )
     } catch (e) {
       this.handleWarn(`Order ${clientOrderId} late fee not saved: ${e}`)
     }
