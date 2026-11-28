@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.13] - 2026-11-28
+
+### Fixed
+
+- OKX USDT perpetuals with a contract value of 1 and a fractional lot size now show their full size in open positions, and Close position closes the whole position instead of a fraction of it
+
 ## [1.136.12] - 2026-11-28
 
 ### Fixed
