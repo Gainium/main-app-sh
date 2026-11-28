@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.12] - 2026-11-28
+
+### Fixed
+
+- Open positions on OKX USDT perpetuals whose contract is not one coin now show their real size, and "Close position" sends exactly that position's contract count
+
 ## [1.136.11] - 2026-11-28
 
 ### Fixed
