@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.24] - 2026-11-28
+
+### Fixed
+
+- An order the exchange never confirmed no longer stays open forever once its deal has closed: the bot now asks the exchange about it once when it loads, marks it canceled if the exchange never had it, and records it if it did, without placing anything again
+
 ## [1.136.23] - 2026-11-28
 
 ### Fixed
