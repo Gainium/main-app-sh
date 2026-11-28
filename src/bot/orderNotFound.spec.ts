@@ -25,6 +25,7 @@ import {
   isKucoinOrderNotExist,
   isNotFoundUnreliableJustAfterPlacement,
   isRetirableNeverPlacedOrder,
+  placementTimeHint,
   reconcileLookup,
 } from './main'
 
@@ -47,6 +48,8 @@ describe('isDefinitiveOrderNotFound', () => {
       'Order not found in history',
       'Order not found',
       'Order not found: no exchange order id',
+      // Bybit, once history was searched back to the placement attempt.
+      'Order not found in active orders or order history since placement',
       'Coinbase order not found after execution.',
       'Order does not exist',
       'unknownOid',
@@ -151,5 +154,31 @@ describe('KuCoin orderNotExist and never-placed orders (Spec 109)', () => {
         DAY,
       ),
     ).to.be.false
+  })
+})
+
+describe('placementTimeHint', () => {
+  it('tells the venue how far back to look, for a never-acknowledged order', () => {
+    expect(placementTimeHint({ orderId: '-1', transactTime: 1000 })).to.equal(
+      1000,
+    )
+    // The placement attempt, not a later touch, bounds the search.
+    expect(
+      placementTimeHint({ orderId: '-1', transactTime: 1000, updateTime: 5000 }),
+    ).to.equal(1000)
+    expect(placementTimeHint({ orderId: '-1', updateTime: 5000 })).to.equal(
+      5000,
+    )
+  })
+
+  it('sends nothing for an order the venue acknowledged, or with no time', () => {
+    // An acknowledged order is never retired on "not found", so it keeps the
+    // venue's ordinary, non-definitive lookup.
+    expect(placementTimeHint({ orderId: '6a1b2c', transactTime: 1000 })).to.be
+      .undefined
+    expect(placementTimeHint({ orderId: '-1' })).to.be.undefined
+    expect(placementTimeHint({ orderId: '-1', transactTime: 'x' })).to.be
+      .undefined
+    expect(placementTimeHint(undefined)).to.be.undefined
   })
 })

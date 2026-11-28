@@ -53,6 +53,8 @@ export interface Exchange {
   }: {
     symbol: string
     newClientOrderId: string
+    /** Placement time (ms); optional hint for time-windowed venue history. */
+    since?: number
   }): Promise<BaseReturn<CommonOrder>>
   cancelOrder({
     symbol,
@@ -431,6 +433,8 @@ abstract class AbsctractExchange implements Exchange {
   }: {
     symbol: string
     newClientOrderId: string
+    /** Placement time (ms); optional hint for time-windowed venue history. */
+    since?: number
   }): Promise<BaseReturn<CommonOrder>>
   /** Cancel order
    * @param {string} options.symbol pair

@@ -518,10 +518,16 @@ class Exchange extends AbstractExchange {
     data: {
       symbol: string
       newClientOrderId: string
+      /**
+       * When the order was placed (ms). Optional hint: venues whose order
+       * history is time-windowed (Bybit) can then answer "not found"
+       * definitively instead of only for the recent window.
+       */
+      since?: number
     },
     timeProfile = this.getEmptyTimeProfile('getOrder'),
   ): Promise<BaseReturn<CommonOrder>> {
-    const { newClientOrderId, symbol } = data
+    const { newClientOrderId, symbol, since } = data
     const result = await this.apiCall<CommonOrder>(
       {
         endpoint: 'order',
@@ -529,6 +535,7 @@ class Exchange extends AbstractExchange {
         params: {
           newClientOrderId,
           symbol,
+          ...(since !== undefined ? { since } : {}),
         },
         isPrivate: true,
       },
