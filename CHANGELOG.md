@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.19] - 2026-11-28
+
+### Fixed
+
+- A safety order that never reached the exchange and had been set aside as unreadable is now retired and placed again once the exchange confirms it does not exist. Before, the deal kept counting it as resting on the exchange.
+
 ## [1.136.18] - 2026-11-28
 
 ### Fixed
