@@ -24,8 +24,10 @@ const pairs = [
   { pair: 'PEPE-USD_UM_XPERP', ctVal: 1e6, step: 1e6 },
   { pair: 'ONDO-USD_UM_XPERP', ctVal: 10, step: 10 },
   { pair: 'SUI-USD_UM_XPERP', ctVal: 1, step: 1 },
-  // OKX global ctVal-1 swap with a fractional lot: untouched by spec 296 (§1.3)
+  // ctVal-1 swaps with a fractional lot (spec 297): step = minSz < 1
   { pair: 'LINK-USDT', ctVal: 1, step: 0.1 },
+  { pair: 'SOL-USDT', ctVal: 1, step: 0.01 },
+  { pair: 'GOOGL-USD_UM_XPERP', ctVal: 1, step: 0.01 },
 ].map((p) => ({
   pair: p.pair,
   exchange: ExchangeEnum.okxLinear,
@@ -122,12 +124,26 @@ describe('spec 296 — OKX swap position size applies ctVal once', () => {
     expect(close('ONDO-USD_UM_XPERP', q)).to.equal(37)
   })
 
-  it('§1.3 ctVal 1 pairs read and close exactly as before', async () => {
-    // SUI: step 1 → denominator 1, the contract count both ways
+  it('§1.3 SUI ctVal 1, step 1: 250 contracts read 250 and close 250', async () => {
     expect(await read('SUI-USD_UM_XPERP', '250')).to.equal(250)
     expect(close('SUI-USD_UM_XPERP', 250)).to.equal(250)
-    // LINK-USDT (step 0.1): previous arithmetic, ÷10 on read and on close
-    expect(await read('LINK-USDT', '50')).to.equal(5)
-    expect(close('LINK-USDT', 5)).to.equal(0.5)
+  })
+
+  it('spec 297 §1.1/§1.2 LINK-USDT ctVal 1, step 0.1: 50 contracts read 50 and close 50', async () => {
+    const q = await read('LINK-USDT', '50')
+    expect(q).to.equal(50)
+    expect(close('LINK-USDT', q)).to.equal(50)
+  })
+
+  it('spec 297 §1.1/§1.2 SOL-USDT ctVal 1, step 0.01: 12.34 contracts read 12.34 and close 12.34', async () => {
+    const q = await read('SOL-USDT', '-12.34')
+    expect(q).to.equal(12.34)
+    expect(close('SOL-USDT', q)).to.equal(12.34)
+  })
+
+  it('spec 297 §1.1/§1.2 X-Perp ctVal 1, step 0.01: 1.47 contracts read 1.47 and close 1.47', async () => {
+    const q = await read('GOOGL-USD_UM_XPERP', '1.47')
+    expect(q).to.equal(1.47)
+    expect(close('GOOGL-USD_UM_XPERP', q)).to.equal(1.47)
   })
 })

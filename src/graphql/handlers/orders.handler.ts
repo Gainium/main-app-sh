@@ -304,26 +304,20 @@ export const okxContractValue = (pair?: {
     : null
 }
 
-/** The pre-spec-296 conversion, kept as-is for pairs with a contract value of 1. */
-const okxStepDenominator = (pair: { baseAsset: { step: number } }) =>
-  pair.baseAsset.step > 1
-    ? 1 / pair.baseAsset.step
-    : +`1${'0'.repeat(math.getPricePrecision(`${pair.baseAsset.step ?? 1}`))}`
-
 /**
- * Spec 296: the order quantity, in contracts, that closes an `okxLinear`
- * position whose size `getAllOpenPositions` reported as `coins`. With a
- * contract value other than 1 this is the bot engine's own `getOKXDenominator`
- * rule (`ctVal > 1 ? 1/ctVal : 10^decimals(ctVal)`), rounded like the engine's
- * order path; otherwise the previous step-based conversion, unchanged.
+ * Specs 296/297: the order quantity, in contracts, that closes an `okxLinear`
+ * position whose size `getAllOpenPositions` reported as `coins`. This is the
+ * bot engine's own `getOKXDenominator` rule (`ctVal > 1 ? 1/ctVal :
+ * 10^decimals(ctVal)`), rounded like the engine's order path. A contract
+ * value of 1 gives a denominator of 1 whatever the lot size (`step`), so
+ * the coin size is the contract count.
  */
 export const okxLinearCloseContracts = (
   coins: number,
   pair?: { baseAsset: { step: number; multiplier?: number } } | null,
 ): number => {
   if (!pair) return coins
-  const ctVal = okxContractValue(pair)
-  if (ctVal === null) return coins / okxStepDenominator(pair)
+  const ctVal = okxContractValue(pair) ?? 1
   const denominator =
     ctVal > 1
       ? 1 / ctVal
@@ -463,17 +457,9 @@ export const getAllOpenPositions = async (
     status: StatusEnum.ok,
     reason,
     data: positionsFromExchanges.map((position) => {
-      if (position.exchange === ExchangeEnum.okxLinear) {
-        const pair = pairsInfo.data.result.find(
-          (p) =>
-            p.pair === position.symbol && p.exchange === ExchangeEnum.okxLinear,
-        )
-        // Spec 296: a contract value other than 1 was already applied in the
-        // venue read above; dividing again applied it twice.
-        if (pair && okxContractValue(pair) === null) {
-          position.quantity = position.quantity / okxStepDenominator(pair)
-        }
-      }
+      // Specs 296/297: an `okxLinear` position is already in coins here — the
+      // venue read above multiplied the contract count by the contract value.
+      // The lot size (`baseAsset.step`) is not a unit and must not divide it.
       return {
         exchange: position.exchange,
         exchangeUUID: position.exchangeUUID,
