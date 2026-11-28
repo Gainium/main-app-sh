@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.21] - 2026-11-28
+
+### Fixed
+
+- Combo bot: restarting or reloading a bot no longer puts back exit orders that together add up to more than the deal's position
+
 ## [1.136.20] - 2026-11-28
 
 ### Fixed
