@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.15] - 2026-11-28
+
+### Fixed
+
+- Futures grid bots now estimate the fee of a position close that took liquidity (a market close, or a limit close that filled on arrival) at the taker rate when the exchange reports no fee, instead of the maker rate, so profit is no longer overstated on those closes
+
 ## [1.136.14] - 2026-11-28
 
 ### Fixed
