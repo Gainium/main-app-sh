@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.136.20] - 2026-11-28
+
+### Fixed
+
+- When a client order id is in neither active orders nor histo
+
 ## [1.136.19] - 2026-11-28
 
 ### Fixed
