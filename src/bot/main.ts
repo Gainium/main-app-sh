@@ -10328,6 +10328,7 @@ class MainBot<T extends IMainBot> {
       )
     } finally {
       slot.placement?.settle()
+      this.heldFundsSendSettled(order)
     }
   }
 
@@ -13201,6 +13202,14 @@ class MainBot<T extends IMainBot> {
     _order: Order,
   ): Promise<string | null> {
     return null
+  }
+
+  /**
+   * Core spec 261 §3.7: this order's send has ended (sent, refused or thrown),
+   * so a live balance read from now on reflects whatever the venue did with it.
+   */
+  protected heldFundsSendSettled(_order: Order): void {
+    return
   }
 
   /**

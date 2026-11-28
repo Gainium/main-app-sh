@@ -25700,29 +25700,109 @@ function createDCABotHelper<
         return null
       }
       const qty = +order.origQty
+      // §3.7: sells this check passed that a balance may not show yet. The
+      // stored balance can lag a sell by as long as the user stream takes, so
+      // while any short sell is recent it is not trusted to pass one: the
+      // live read decides. Decide and reserve with no await after the read,
+      // so sells checked together (a deal's base + safety burst) share one
+      // spare.
       const stored = await this.checkAssets(true, false, true)
       const storedFree = stored?.get(asset)?.free
-      if (
-        storedFree === undefined ||
-        hedgeShortSellFits({ freeBase: storedFree, heldByLong: held, qty })
-          .fits
-      ) {
+      if (storedFree === undefined) {
         return null
       }
+      if (
+        !this.hedgeShortRecent(asset) &&
+        hedgeShortSellFits({ freeBase: storedFree, heldByLong: held, qty }).fits
+      ) {
+        this.reserveHedgeShortSell(order, asset, qty)
+        return null
+      }
+      const readStart = this.hedgeShortTick()
       const live = await this.checkAssets(true, true)
       const liveFree = live?.get(asset)?.free
       if (liveFree === undefined) {
         return null
       }
+      // The live read reflects every send that ended before it began.
+      const inFlight = this.hedgeShortPendingQty(asset, readStart)
       const check = hedgeShortSellFits({
-        freeBase: liveFree,
+        freeBase: liveFree - inFlight,
         heldByLong: held,
         qty,
       })
       if (check.fits) {
+        this.reserveHedgeShortSell(order, asset, qty)
         return null
       }
-      return `Insufficient balance: ${qty} ${asset} to sell, ${liveFree} ${asset} free of which ${held} ${asset} is held by the long side of this hedge bot for its take profit`
+      const placing = inFlight
+        ? ` and ${inFlight} ${asset} is being sold by orders still being placed`
+        : ''
+      return `Insufficient balance: ${qty} ${asset} to sell, ${liveFree} ${asset} free of which ${held} ${asset} is held by the long side of this hedge bot for its take profit${placing}`
+    }
+
+    /**
+     * Core spec 261 §3.7. Short-leg sells {@link refuseSpendingHeldFunds}
+     * accepted, by client order id. `settledTick` is set when the send ends:
+     * a live read that began after it reflects the sell. `settledAt` (clock)
+     * keeps the entry for {@link HEDGE_SHORT_RECENT_MS}, the window in which
+     * the stored balance is not trusted to show it. Ticks, not clock time,
+     * order a send against a read: the two can share a millisecond.
+     */
+    private hedgeShortInFlight?: Map<
+      string,
+      { asset: string; qty: number; settledTick?: number; settledAt?: number }
+    >
+
+    private hedgeShortSeq?: number
+
+    private hedgeShortTick() {
+      this.hedgeShortSeq = (this.hedgeShortSeq ?? 0) + 1
+      return this.hedgeShortSeq
+    }
+
+    private reserveHedgeShortSell(order: Order, asset: string, qty: number) {
+      this.hedgeShortInFlight ??= new Map()
+      this.hedgeShortInFlight.set(order.clientOrderId, { asset, qty })
+    }
+
+    /** Whether a short sell of `asset` is still being placed or is recent. */
+    private hedgeShortRecent(asset: string) {
+      const now = Date.now()
+      let recent = false
+      for (const [id, r] of this.hedgeShortInFlight ?? []) {
+        if (
+          r.settledAt !== undefined &&
+          now - r.settledAt > HEDGE_SHORT_RECENT_MS
+        ) {
+          this.hedgeShortInFlight?.delete(id)
+        } else if (r.asset === asset) {
+          recent = true
+        }
+      }
+      return recent
+    }
+
+    /** Base of `asset` accepted and not reflected in a live read begun at `readStart`. */
+    private hedgeShortPendingQty(asset: string, readStart: number) {
+      let total = 0
+      for (const r of this.hedgeShortInFlight?.values() ?? []) {
+        if (
+          r.asset === asset &&
+          (r.settledTick === undefined || r.settledTick > readStart)
+        ) {
+          total += r.qty
+        }
+      }
+      return total
+    }
+
+    protected override heldFundsSendSettled(order: Order) {
+      const r = this.hedgeShortInFlight?.get(order.clientOrderId)
+      if (r && r.settledTick === undefined) {
+        r.settledTick = this.hedgeShortTick()
+        r.settledAt = Date.now()
+      }
     }
 
     /**
@@ -39905,5 +39985,12 @@ function createDCABotHelper<
     ignoreStats?: boolean,
   ) => DCABotHelper & InstanceType<TBaseClass>
 }
+
+/**
+ * Core spec 261 §3.7: after a spot hedge short leg's sell is placed, how long
+ * its stored balance is not trusted to show it (each later short sell is
+ * checked against a live read instead).
+ */
+const HEDGE_SHORT_RECENT_MS = 5 * 60_000
 
 export default createDCABotHelper

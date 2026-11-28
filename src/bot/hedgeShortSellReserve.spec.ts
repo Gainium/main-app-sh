@@ -398,6 +398,114 @@ describe('spot hedge short leg keeps the long leg coins (core spec 261)', () => 
     })
   })
 
+  // A deal opening sends its base sell and every safety sell in one burst.
+  // Each one fit the spare on its own, read against one stored balance, so
+  // together they spent the long leg coins (the prod FORM case: base 37.2 +
+  // 5 safety sells of ~35 against 63 spare, all six placed).
+  describe('§3.7 sells placed together share the spare', () => {
+    const SPARE = 63
+    const HELD = 160.9
+    const burst = () => [
+      order({
+        typeOrder: 'dealStart',
+        type: 'MARKET',
+        clientOrderId: 'D-BO',
+        origQty: '37.2',
+      }),
+      ...[34.9, 35.1, 35.3, 35.5, 35.7].map((q, i) =>
+        order({ clientOrderId: `D-SO-${i + 1}`, origQty: `${q}` }),
+      ),
+    ]
+    /** A venue whose live balance drops by each sell it accepts; the stored row stays stale. */
+    const venueLeg = () => {
+      db.longDeals = [{ _id: 'long-deal', currentBalances: { base: HELD } }]
+      const r = shortLeg({ free: HELD + SPARE })
+      const live = { free: HELD + SPARE }
+      const sold: number[] = []
+      const openOrder = r.bot.exchange.openOrder
+      r.bot.exchange.openOrder = async (req: any) => {
+        live.free -= +req.quantity
+        sold.push(+req.quantity)
+        return openOrder(req)
+      }
+      r.bot.checkAssets = async (_rd: boolean, direct: boolean) =>
+        new Map([
+          [
+            'SOXS',
+            {
+              asset: 'SOXS',
+              free: direct ? live.free : HELD + SPARE,
+              locked: 0,
+            },
+          ],
+          ['USDT', { asset: 'USDT', free: 1000, locked: 0 }],
+        ])
+      return { ...r, sold }
+    }
+    const sum = (a: number[]) => a.reduce((x, y) => x + y, 0)
+
+    it('one after another: only the sells whose running total fits are sent', async () => {
+      const { bot, rec, sold } = venueLeg()
+      for (const o of burst()) await bot.sendOrderToExchange(o)
+      expect(rec.open).to.deep.equal(['D-BO'])
+      expect(sum(sold)).to.be.at.most(SPARE)
+      expect(rec.orderErrors).to.have.length(5)
+      expect(rec.orderErrors[0]).to.contain(
+        'held by the long side of this hedge bot',
+      )
+    })
+
+    it('all at once: the burst never spends more than the spare', async () => {
+      const { bot, rec, sold } = venueLeg()
+      await Promise.all(burst().map((o) => bot.sendOrderToExchange(o)))
+      expect(rec.open).to.have.length(1)
+      expect(sum(sold)).to.be.at.most(SPARE)
+    })
+
+    it('sells that fit together are all sent', async () => {
+      const { bot, rec } = venueLeg()
+      await Promise.all(
+        [20, 20, 20].map((q, i) =>
+          bot.sendOrderToExchange(
+            order({ clientOrderId: `S-${i}`, origQty: `${q}` }),
+          ),
+        ),
+      )
+      expect(rec.open).to.have.length(3)
+    })
+
+    it('one after another, sells that fit together are all sent (no double count once the venue shows them)', async () => {
+      const { bot, rec, sold } = venueLeg()
+      for (const [i, q] of [20, 20, 20].entries()) {
+        await bot.sendOrderToExchange(
+          order({ clientOrderId: `S-${i}`, origQty: `${q}` }),
+        )
+      }
+      expect(rec.open).to.have.length(3)
+      expect(sum(sold)).to.equal(60)
+    })
+
+    it('a sell the venue refused holds nothing afterwards', async () => {
+      const { bot, rec } = venueLeg()
+      const openOrder = bot.exchange.openOrder
+      bot.exchange.openOrder = async () => ({
+        status: StatusEnum.notok,
+        reason: 'Filter failure: LOT_SIZE',
+        data: null,
+      })
+      await bot.sendOrderToExchange(
+        order({ clientOrderId: 'X-1', origQty: '50' }),
+      )
+      expect(rec.open).to.deep.equal([])
+      // The venue spent nothing, so the whole spare is there for the next one.
+      bot.exchange.openOrder = openOrder
+      await bot.sendOrderToExchange(
+        order({ clientOrderId: 'X-2', origQty: '50' }),
+      )
+      expect(rec.open).to.deep.equal(['X-2'])
+    })
+  })
+
   describe('§3.5 what does not change', () => {
     const sent = async (o: Opts, over: Record<string, unknown> = {}) => {
       const { bot, rec } = shortLeg(o)
