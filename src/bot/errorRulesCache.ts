@@ -352,6 +352,9 @@ const DEFAULT_PER_SYMBOL_SUBTYPES = new Set<string>([
   // `refusedBaseEntrySubType` (bot/utils.ts): one pair's book refuses the
   // entry; the bot's other pairs keep trading. Spec `228`.
   'Base order cancelled by exchange',
+  // `opposingSpotBotSubType` (bot/opposingSpotBot.ts): an opposite-direction
+  // spot bot shares one pair's coins; the user resolves it per pair. Spec 305.
+  'Opposite-direction bot on the same coins',
 ])
 
 /** Does this subType describe one contract rather than the whole bot? */

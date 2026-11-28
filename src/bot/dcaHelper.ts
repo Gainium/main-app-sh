@@ -484,6 +484,13 @@ import {
   type TpCoverageProbe,
 } from './dca/tpCoverageReconcile'
 import RetryBackoff from './retryBackoff'
+import {
+  opposingSpotBotSubType,
+  opposingSpotBotWarning,
+  opposingSpotPairs,
+  type OpposingSpotBot,
+  type OpposingSpotDeal,
+} from './opposingSpotBot'
 import AuthFailureGuard, { isKeyPermissionRefusal } from './authGuard'
 import Bot from './index'
 import { getIntersection } from '../utils/set'
@@ -492,6 +499,7 @@ import logger from '../utils/logger'
 import {
   botProfitChartDb,
   comboBotDb,
+  comboDealsDb,
   dcaBotDb,
   dcaDealsDb,
   fundingLotDb,
@@ -1133,6 +1141,8 @@ function createDCABotHelper<
     deals: Map<string, FullDeal<ExcludeDoc<Deal>>> = new Map()
     /** Map status to deal */
     dealStatusMap: Map<DCADealStatusEnum, Set<string>> = new Map()
+    /** Spec 305: the next `start()` is a user settings save (see reloadBot). */
+    warnOpposingSpotOnStart = false
     /** Map symbol to deal */
     dealSymbolMap: Map<string, Set<string>> = new Map()
     /** DB instance to work with deals */
@@ -8305,6 +8315,121 @@ function createDCABotHelper<
         return false
       }
       return false
+    }
+
+    /**
+     * Spec 305. Warn, once per pair, when this SPOT DCA/combo bot starts or is
+     * saved while another bot of this user on the same exchange account trades
+     * the opposite direction on one of its pairs (running, or holding an open
+     * deal). The two bots buy and sell one wallet balance of the base coin, so
+     * either may be unable to close in full.
+     *
+     * A warning only: nothing is refused, held or resized. Every read is
+     * best-effort and a failure is silence, i.e. today's behaviour.
+     *
+     * @returns the pairs warned about (for tests and logs)
+     */
+    async warnOpposingSpotBots(): Promise<string[]> {
+      try {
+        if (
+          this.futures ||
+          (this.botType !== BotType.dca && this.botType !== BotType.combo) ||
+          !this.userId ||
+          !this.botId ||
+          !this.data?.exchangeUUID
+        ) {
+          return []
+        }
+        const pairs = [this.data?.settings?.pair ?? []].flat().filter(Boolean)
+        if (!pairs.length) {
+          return []
+        }
+        const opposite = this.isLong ? StrategyEnum.short : StrategyEnum.long
+        const paperContext = this.data?.paperContext
+          ? { $eq: true }
+          : { $ne: true }
+        const running = [
+          BotStatusEnum.open,
+          BotStatusEnum.range,
+          BotStatusEnum.error,
+          BotStatusEnum.monitoring,
+        ] as string[]
+        const botFields = { _id: 1, status: 1, settings: 1 } as const
+        const bots: OpposingSpotBot[] = []
+        for (const db of [dcaBotDb, comboBotDb] as const) {
+          const res = await (db as typeof dcaBotDb).readData(
+            {
+              userId: this.userId,
+              _id: { $ne: this.botId },
+              exchangeUUID: this.data.exchangeUUID,
+              'settings.pair': { $in: pairs },
+              'settings.strategy': opposite,
+              isDeleted: { $ne: true },
+              paperContext,
+            } as never,
+            botFields,
+            { limit: 100 },
+            true,
+          )
+          for (const b of res.status === StatusEnum.ok
+            ? (res.data?.result ?? [])
+            : []) {
+            bots.push({
+              botId: `${b._id}`,
+              name: b.settings?.name,
+              pairs: [b.settings?.pair ?? []].flat(),
+              running: running.includes(`${b.status}`),
+            })
+          }
+        }
+        if (!bots.length) {
+          return []
+        }
+        const deals: OpposingSpotDeal[] = []
+        for (const db of [dcaDealsDb, comboDealsDb] as const) {
+          const res = await (db as typeof dcaDealsDb).readData(
+            {
+              userId: this.userId,
+              'symbol.symbol': { $in: pairs },
+              status: DCADealStatusEnum.open,
+              isDeleted: { $ne: true },
+              botId: { $in: bots.map((b) => b.botId) },
+              strategy: opposite,
+              paperContext,
+            } as never,
+            { botId: 1, symbol: 1 },
+            { limit: 100 },
+            true,
+          )
+          for (const d of res.status === StatusEnum.ok
+            ? (res.data?.result ?? [])
+            : []) {
+            deals.push({ botId: `${d.botId}`, symbol: d.symbol?.symbol })
+          }
+        }
+        const found = opposingSpotPairs(pairs, bots, deals)
+        for (const { symbol, bots: holders } of found) {
+          const message = opposingSpotBotWarning({
+            symbol,
+            strategy: this.isLong ? StrategyEnum.long : StrategyEnum.short,
+            bots: holders,
+          })
+          this.handleLog(message)
+          await this.reportPerPairWarning(
+            opposingSpotBotSubType,
+            symbol,
+            message,
+          )
+        }
+        return found.map((f) => f.symbol)
+      } catch (e) {
+        this.handleWarn(
+          `Cannot check for opposite-direction spot bots: ${
+            (e as Error)?.message ?? e
+          }`,
+        )
+        return []
+      }
     }
 
     /**
@@ -32576,6 +32701,15 @@ function createDCABotHelper<
         await this.loadOrders()
         await this.checkAllowedMethods()
         await this.checkSettingsPairs()
+        // Spec 305: a user start or save (never a service restart, where
+        // nobody started anything) warns about an opposite-direction spot bot
+        // on the same account and pair. Warning only; nothing is refused.
+        const userStartOrSave =
+          (!wasServiceRestart && !restart) || this.warnOpposingSpotOnStart
+        this.warnOpposingSpotOnStart = false
+        if (userStartOrSave && this.data?.status !== BotStatusEnum.closed) {
+          await this.warnOpposingSpotBots()
+        }
         if (this.pairsNotFound.size) {
           // A pair with an open deal must never be auto-removed or have its
           // deals force-closed here — a live position keeps its pair even when
@@ -35168,6 +35302,10 @@ function createDCABotHelper<
         }
         this.handleLog(`Reload bot`)
         const _id = this.startMethod('reloadBot')
+        // Spec 305: `rebuildIndicators` is passed by a user settings save
+        // (changeDCABot / changeComboBot) — the start below is then a save the
+        // user made, and warns like a fresh start does.
+        this.warnOpposingSpotOnStart = rebuildIndicators
         for (const [id, timer] of this.openNewDealTimer.entries()) {
           clearInterval(timer)
           this.openNewDealTimer.delete(id)
