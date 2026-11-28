@@ -6981,6 +6981,50 @@ class Bot<T extends UserSchema = UserSchema> {
     }
   }
 
+  /**
+   * Ids (of `botIds`) that still have an open or starting deal — i.e. a deal
+   * that may hold a venue position. Read from the deals collection itself, so
+   * it is correct whether or not a worker has the bot loaded.
+   */
+  private async botsWithOpenDeals(
+    type: BotType.dca | BotType.combo,
+    botIds: string[],
+  ): Promise<BaseReturn<{ result: Set<string> }>> {
+    if (!botIds.length) {
+      return {
+        status: StatusEnum.ok,
+        reason: null,
+        data: { result: new Set() },
+      }
+    }
+    const search = {
+      botId: { $in: botIds },
+      status: { $in: [DCADealStatusEnum.open, DCADealStatusEnum.start] },
+    }
+    const deals =
+      type === BotType.combo
+        ? await this.comboDealsDb.readData<{ botId: string }>(
+            search,
+            { botId: 1 },
+            {},
+            true,
+          )
+        : await this.dcaDealsDb.readData<{ botId: string }>(
+            search,
+            { botId: 1 },
+            {},
+            true,
+          )
+    if (deals.status !== StatusEnum.ok) {
+      return deals
+    }
+    return {
+      status: StatusEnum.ok,
+      reason: null,
+      data: { result: new Set(deals.data.result.map((d) => `${d.botId}`)) },
+    }
+  }
+
   public async deleteBot(
     userId: string,
     id: string,
@@ -7001,6 +7045,19 @@ class Bot<T extends UserSchema = UserSchema> {
       )
     }
     if (type && type === BotType.dca) {
+      // Checked against the deals themselves, not the loaded bot's counters: a
+      // bot no worker holds still has deals that may hold a position.
+      const openDeals = await this.botsWithOpenDeals(BotType.dca, [id])
+      if (openDeals.status !== StatusEnum.ok) {
+        return openDeals
+      }
+      if (openDeals.data.result.size > 0) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Cannot delete bot with active deal',
+          data: null,
+        }
+      }
       const bot = this.dcaBots.find((b) => b.id === id && b.userId === userId)
       if (bot) {
         const getBot = await this.getDCABotFromDb(
@@ -7095,6 +7152,19 @@ class Bot<T extends UserSchema = UserSchema> {
       }
       return deleteBotRequest
     } else if (type && type === BotType.combo) {
+      // Checked against the deals themselves, not the loaded bot's counters: a
+      // bot no worker holds still has deals that may hold a position.
+      const openDeals = await this.botsWithOpenDeals(BotType.combo, [id])
+      if (openDeals.status !== StatusEnum.ok) {
+        return openDeals
+      }
+      if (openDeals.data.result.size > 0) {
+        return {
+          status: StatusEnum.notok,
+          reason: 'Cannot delete bot with active deal',
+          data: null,
+        }
+      }
       const bot = this.comboBots.find((b) => b.id === id && b.userId === userId)
       if (bot) {
         const getBot = await this.getComboBotFromDb(
@@ -15561,11 +15631,41 @@ class Bot<T extends UserSchema = UserSchema> {
     if (combo.status !== StatusEnum.ok) {
       return logger.error(combo.reason)
     }
-    const botIds = [
-      ...grid.data.result.map((r) => r._id.toString()),
-      ...trading.data.result.map((r) => r._id.toString()),
-      ...combo.data.result.map((r) => r._id.toString()),
-    ]
+    // A soft-deleted bot whose deals still hold a position must not be purged:
+    // the cascade below would erase the only record of that position. Drop
+    // such bots from this run and log them; they are retried next run.
+    const tradingOpen = await this.botsWithOpenDeals(
+      BotType.dca,
+      trading.data.result.map((r) => `${r._id}`),
+    )
+    if (tradingOpen.status !== StatusEnum.ok) {
+      return logger.error(tradingOpen.reason)
+    }
+    const comboOpen = await this.botsWithOpenDeals(
+      BotType.combo,
+      combo.data.result.map((r) => `${r._id}`),
+    )
+    if (comboOpen.status !== StatusEnum.ok) {
+      return logger.error(comboOpen.reason)
+    }
+    const held = [...tradingOpen.data.result, ...comboOpen.data.result]
+    if (held.length) {
+      logger.warn(
+        `premanenetlyDeleteBots | skipped ${held.length} bot(s) with open deals: ${held.join(', ')}`,
+      )
+    }
+    trading.data.result = trading.data.result.filter(
+      (r) => !tradingOpen.data.result.has(`${r._id}`),
+    )
+    trading.data.count = trading.data.result.length
+    combo.data.result = combo.data.result.filter(
+      (r) => !comboOpen.data.result.has(`${r._id}`),
+    )
+    combo.data.count = combo.data.result.length
+    const gridIds = grid.data.result.map((r) => r._id.toString())
+    const tradingIds = trading.data.result.map((r) => r._id.toString())
+    const comboIds = combo.data.result.map((r) => r._id.toString())
+    const botIds = [...gridIds, ...tradingIds, ...comboIds]
     // Cold-archived bots have their orders/transactions in ClickHouse, not
     // Mongo, so the Mongo cascade below deletes nothing for them — GC the CH
     // rows too (design §1b). Batched: ONE DELETE WHERE botId IN(…), idempotent.
@@ -15654,21 +15754,27 @@ class Bot<T extends UserSchema = UserSchema> {
       }
       result = `${result}Combo transactions: ${comboTransactions.reason}, `
       if (trading.data.count > 0) {
-        const tradingDelete = await this.dcaBotDb.deleteManyData(filter)
+        const tradingDelete = await this.dcaBotDb.deleteManyData({
+          _id: { $in: tradingIds },
+        })
         if (tradingDelete.status !== StatusEnum.ok) {
           return logger.error(tradingDelete.reason)
         }
         result = `${result}Trading: ${tradingDelete.reason}, `
       }
       if (combo.data.count > 0) {
-        const comboDelete = await this.comboBotDb.deleteManyData(filter)
+        const comboDelete = await this.comboBotDb.deleteManyData({
+          _id: { $in: comboIds },
+        })
         if (comboDelete.status !== StatusEnum.ok) {
           return logger.error(comboDelete.reason)
         }
         result = `${result}Combo: ${comboDelete.reason}, `
       }
       if (grid.data.count > 0) {
-        const gridDelete = await this.botDb.deleteManyData(filter)
+        const gridDelete = await this.botDb.deleteManyData({
+          _id: { $in: gridIds },
+        })
         if (gridDelete.status !== StatusEnum.ok) {
           return logger.error(gridDelete.reason)
         }
