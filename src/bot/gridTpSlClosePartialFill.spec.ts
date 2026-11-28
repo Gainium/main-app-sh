@@ -228,7 +228,7 @@ const makeBot = (opts: {
       return CLOSE_PRICE
     }
     async getUserFee() {
-      return { maker: 0.0002, taker: 0.00055 }
+      return { maker: MAKER, taker: TAKER }
     }
     async getUsdRate() {
       return 1
@@ -276,9 +276,15 @@ const done = (bot: any) => {
   }
 }
 
-/** (close - entry) * qty - the close fill's fee, the fold `profitAfterPositionClosed` books (spec 276). */
-const profitOf = (qty: number) =>
-  (CLOSE_PRICE - ENTRY) * qty - CLOSE_PRICE * qty * 0.0002
+/**
+ * (close - entry) * qty - the close fill's fee, the fold `profitAfterPositionClosed`
+ * books (spec 276). The fixture's closes report no fee, so it is the estimate:
+ * maker for a resting LIMIT, taker for a MARKET close (spec 304).
+ */
+const MAKER = 0.0002
+const TAKER = 0.00055
+const profitOf = (qty: number, rate = MAKER) =>
+  (CLOSE_PRICE - ENTRY) * qty - CLOSE_PRICE * qty * rate
 
 describe('a part-filled futures grid TP/SL close keeps closing (spec 274)', () => {
   before(function () {
@@ -368,8 +374,11 @@ describe('a part-filled futures grid TP/SL close keeps closing (spec 274)', () =
         type: 'MARKET',
         reduceOnly: true,
       })
-      // 150 at the LIMIT, then the 200 the MARKET closed.
-      expect(bot.data.profit.total).to.be.closeTo(profitOf(350), 1e-12)
+      // 150 at the LIMIT (maker), then the 200 the MARKET closed (taker).
+      expect(bot.data.profit.total).to.be.closeTo(
+        profitOf(150) + profitOf(200, TAKER),
+        1e-12,
+      )
       expect(bot.data.position.qty).to.equal(0)
       expect(bot.stopped).to.have.length(1)
     })
@@ -399,7 +408,8 @@ describe('a part-filled futures grid TP/SL close keeps closing (spec 274)', () =
       expect(bot.sent).to.have.length(1)
       expect(bot.sent[0].grid.qty).to.equal(200)
       expect(bot.sent[0].additional.type).to.equal('MARKET')
-      expect(bot.data.profit.total).to.be.closeTo(profitOf(350), 1e-12)
+      // Both legs are MARKET (spec 304: taker).
+      expect(bot.data.profit.total).to.be.closeTo(profitOf(350, TAKER), 1e-12)
       expect(bot.stopped).to.have.length(1)
     })
   })

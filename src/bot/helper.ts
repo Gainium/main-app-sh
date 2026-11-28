@@ -30,6 +30,7 @@ import MainBot, {
   reconcileUnresolvedWarn,
 } from './main'
 import { observedFeeOnSide, observedFeeSplit } from './orderFee'
+import { estimatedFeeRate } from './placedOrderType'
 import { observedFeeLegs, accrueFeeLedger } from './feeLedger'
 import { gridBudgetVerdict, gridBudgetRefusalMessage } from './gridBudgetGuard'
 
@@ -3361,7 +3362,8 @@ function createBotHelper<
      * the unit the close leg's PnL is booked in (price × qty). The venue's
      * observed fee when the bot books observed fees (`BotFlags.feeByAsset`,
      * the same gate `createTransaction` uses), scaled to `qty` when the order
-     * executed more; otherwise the stored maker-rate estimate on the notional.
+     * executed more; otherwise the stored rate it traded at (taker or maker,
+     * `estimatedFeeRate`) on the notional.
      */
     private async closeLegFeeQuote(result: Order, qty: number) {
       const price = +result.price
@@ -3383,8 +3385,12 @@ function createBotHelper<
           return executed > qty ? (observed * qty) / executed : observed
         }
       }
+      // Spec 304: a close that took liquidity (MARKET, or a LIMIT filled on
+      // arrival) paid taker, not maker.
       return (
-        price * qty * ((await this.getUserFee(result.symbol))?.maker ?? 0)
+        price *
+        qty *
+        estimatedFeeRate(result, await this.getUserFee(result.symbol))
       )
     }
     /**

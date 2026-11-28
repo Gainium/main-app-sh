@@ -41,6 +41,7 @@ const ENTRY = 0.06362
 const CLOSE_PRICE = 0.06374
 const CLOSE_FEE = 0.00012748
 const MAKER = 0.0004
+const TAKER = 0.001
 const BEFORE_CLOSE = 0.00171912
 /** (0.06362 − 0.06374) × 5 */
 const GROSS = -0.0006
@@ -113,7 +114,7 @@ const makeBot = (opts: { feeByAsset: boolean }) => {
       return ENTRY
     }
     async getUserFee() {
-      return { maker: MAKER, taker: 0.001 }
+      return { maker: MAKER, taker: TAKER }
     }
     async getUsdRate() {
       return USD_RATE
@@ -208,5 +209,54 @@ describe('futures grid close books the close fill fee (spec 276)', () => {
       BEFORE_CLOSE + GROSS - CLOSE_PRICE * QTY * MAKER,
       1e-12,
     )
+  })
+  describe('§304 the estimate uses the rate the close traded at', () => {
+    const noFee = { ...closeFill, feePaid: undefined, feeSide: undefined }
+    const callers: [string, (bot: any, order: any) => Promise<void>][] = [
+      ['close', (bot, order) => bot.profitAfterPositionClosed(order)],
+      [
+        'liquidation',
+        (bot, order) =>
+          bot.processLiquidationOrder({
+            ...order,
+            clientOrderId: 'liq-0304',
+            typeOrder: TypeOrderEnum.regular,
+          }),
+      ],
+    ]
+    for (const [name, run] of callers) {
+      for (const feeByAsset of [false, true]) {
+        const tag = `${name}, feeByAsset ${feeByAsset ? 'on' : 'off'}`
+        it(`§1.1.1 a MARKET close with no observed fee books the taker rate (${tag})`, async () => {
+          const bot = makeBot({ feeByAsset })
+          await run(bot, { ...noFee, type: 'MARKET' })
+          expect(bot.data.profit.total).to.be.closeTo(
+            BEFORE_CLOSE + GROSS - CLOSE_PRICE * QTY * TAKER,
+            1e-12,
+          )
+        })
+        it(`§1.1.1 a LIMIT close that filled on arrival books the taker rate (${tag})`, async () => {
+          const bot = makeBot({ feeByAsset })
+          await run(bot, { ...noFee, type: 'LIMIT', filledOnArrival: true })
+          expect(bot.data.profit.total).to.be.closeTo(
+            BEFORE_CLOSE + GROSS - CLOSE_PRICE * QTY * TAKER,
+            1e-12,
+          )
+        })
+        it(`§1.1.2 a resting LIMIT close keeps the maker rate (${tag})`, async () => {
+          const bot = makeBot({ feeByAsset })
+          await run(bot, { ...noFee, type: 'LIMIT' })
+          expect(bot.data.profit.total).to.be.closeTo(
+            BEFORE_CLOSE + GROSS - CLOSE_PRICE * QTY * MAKER,
+            1e-12,
+          )
+        })
+      }
+    }
+    it('§1.3 a MARKET close with an observed fee keeps the observed fee', async () => {
+      const bot = makeBot({ feeByAsset: true })
+      await bot.profitAfterPositionClosed({ ...closeFill, type: 'MARKET' })
+      expect(bot.data.profit.total).to.be.closeTo(CASH, 1e-12)
+    })
   })
 })
